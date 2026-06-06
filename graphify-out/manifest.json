@@ -1,8 +1,8 @@
 {
   "/home/orel/workspace/blue2th/src/main.rs": {
-    "mtime": 1780695970.8300164,
-    "ast_hash": "1108af3f56582f9a97b6197fcc9cf036",
-    "semantic_hash": "1108af3f56582f9a97b6197fcc9cf036"
+    "mtime": 1780783243.7334301,
+    "ast_hash": "cc168efeb837742b3d462653cd86acf3",
+    "semantic_hash": "cc168efeb837742b3d462653cd86acf3"
   },
   "/home/orel/workspace/blue2th/AGENTS.md": {
     "mtime": 1780700012.0570335,
@@ -10,13 +10,78 @@
     "semantic_hash": "1eedbc93d84b0536ce16c4b5ef092395"
   },
   "/home/orel/workspace/blue2th/README.md": {
-    "mtime": 1780695970.8320162,
-    "ast_hash": "004e81a6ef22d351fcc0d410d479235a",
-    "semantic_hash": "004e81a6ef22d351fcc0d410d479235a"
+    "mtime": 1780783682.5701163,
+    "ast_hash": "2ea1ef601d5e4451ffcb1a3be8ebb0ed",
+    "semantic_hash": "2ea1ef601d5e4451ffcb1a3be8ebb0ed"
   },
   "/home/orel/workspace/blue2th/assets/header.svg": {
     "mtime": 1780695970.782894,
     "ast_hash": "ac6be5e654026ec7eb3a1544950eec7d",
     "semantic_hash": "ac6be5e654026ec7eb3a1544950eec7d"
+  },
+  "/home/orel/workspace/blue2th/.githooks/commit-msg": {
+    "mtime": 1780781662.564556,
+    "ast_hash": "9db3f0bafc60604a7a7769a4da0ccb0b",
+    "semantic_hash": "9db3f0bafc60604a7a7769a4da0ccb0b"
+  },
+  "/home/orel/workspace/blue2th/.githooks/pre-commit": {
+    "mtime": 1780783265.894248,
+    "ast_hash": "b35610af8edead13d61e289ba1e731bf",
+    "semantic_hash": "b35610af8edead13d61e289ba1e731bf"
+  },
+  "/home/orel/workspace/blue2th/src/bluetooth.rs": {
+    "mtime": 1780711524.0438602,
+    "ast_hash": "5d5ac511a106d05d24119a97bd31e355",
+    "semantic_hash": "5d5ac511a106d05d24119a97bd31e355"
+  },
+  "/home/orel/workspace/blue2th/.claude/agents/tdd-implementer.md": {
+    "mtime": 1780783271.3252034,
+    "ast_hash": "9fd9934f00e701f10954df7fc409605f",
+    "semantic_hash": "9fd9934f00e701f10954df7fc409605f"
+  },
+  "/home/orel/workspace/blue2th/.claude/agents/tdd-reviewer.md": {
+    "mtime": 1780783273.1871881,
+    "ast_hash": "ad7143d26d969805bd237051ed392710",
+    "semantic_hash": "ad7143d26d969805bd237051ed392710"
+  },
+  "/home/orel/workspace/blue2th/.claude/agents/tdd-test-writer.md": {
+    "mtime": 1780783269.209221,
+    "ast_hash": "acd2a6a5935717b233dbf699e44e2e7a",
+    "semantic_hash": "acd2a6a5935717b233dbf699e44e2e7a"
+  },
+  "/home/orel/workspace/blue2th/.claude/skills/tdd/SKILL.md": {
+    "mtime": 1780783276.243163,
+    "ast_hash": "32d5acad6342ef3d69f42d57e3f48f18",
+    "semantic_hash": "32d5acad6342ef3d69f42d57e3f48f18"
+  },
+  "/home/orel/workspace/blue2th/CLAUDE.md": {
+    "mtime": 1780783263.7742655,
+    "ast_hash": "cd24ebd958afa88a3087fe7c506b4e11",
+    "semantic_hash": "cd24ebd958afa88a3087fe7c506b4e11"
+  },
+  "/home/orel/workspace/blue2th/locales/en.yaml": {
+    "mtime": 1780709079.7756538,
+    "ast_hash": "853a55b576ff987fe4a8f4c5796ce0cd",
+    "semantic_hash": "853a55b576ff987fe4a8f4c5796ce0cd"
+  },
+  "/home/orel/workspace/blue2th/locales/fr.yaml": {
+    "mtime": 1780709075.2647579,
+    "ast_hash": "27488b451ed0a6b12ecee835c740b545",
+    "semantic_hash": "27488b451ed0a6b12ecee835c740b545"
+  },
+  "/home/orel/workspace/blue2th/tdd/README.md": {
+    "mtime": 1780770913.9918928,
+    "ast_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346",
+    "semantic_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346"
+  },
+  "/home/orel/workspace/blue2th/tdd/feature.md": {
+    "mtime": 1780783278.1291475,
+    "ast_hash": "919f839fc3ae55738d37967c843fd1bb",
+    "semantic_hash": "919f839fc3ae55738d37967c843fd1bb"
+  },
+  "/home/orel/workspace/blue2th/assets/bluetooth.svg": {
+    "mtime": 1780704962.405288,
+    "ast_hash": "e4f03da13eae6b381ded1e989ee3345f",
+    "semantic_hash": "e4f03da13eae6b381ded1e989ee3345f"
   }
 }
