@@ -1,0 +1,29 @@
+scan:
+  button: "Recherche appareil"
+  scanning: "Recherche en cours…"
+
+bt:
+  enable: "Activer Bluetooth"
+  confirm_title: "Activer le Bluetooth ?"
+  confirm_subtitle: "Le Bluetooth sera activé sur cet appareil."
+  confirm_yes: "Oui, activer"
+
+common:
+  no: "Non"
+  back: "← Retour"
+
+device:
+  disconnect: "Déconnecter"
+  empty: "Aucun appareil trouvé"
+
+settings:
+  title: "⚙ %{name}"
+  section_general: "Général"
+  alias: "Nom personnalisé"
+  auto_reconnect: "Reconnexion automatique"
+  trusted: "Appareil de confiance"
+  section_audio: "Audio"
+  codec: "Codec audio"
+  volume: "Volume (%{volume} %)"
+  section_danger: "Zone de danger"
+  forget: "Oublier l'appareil"

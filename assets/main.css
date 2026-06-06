@@ -1,0 +1,552 @@
+/*
+ * Copyright 2026 Blue2th
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* App-wide styling */
+body {
+    background-color: #0f1116;
+    color: #ffffff;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 20px;
+}
+
+#hero {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+#links {
+    width: 400px;
+    text-align: left;
+    font-size: x-large;
+    color: white;
+    display: flex;
+    flex-direction: column;
+}
+
+#links a {
+    color: white;
+    text-decoration: none;
+    margin-top: 20px;
+    margin: 10px 0px;
+    border: white 1px solid;
+    border-radius: 5px;
+    padding: 10px;
+}
+
+#links a:hover {
+    background-color: #1f1f1f;
+    cursor: pointer;
+}
+
+#header {
+    max-width: 1200px;
+}
+
+
+
+/* App header */
+.app-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #1e222d;
+    border: 1px solid #2c3040;
+    border-radius: 16px;
+    padding: 28px 32px;
+    margin-bottom: 56px;
+}
+
+.app-title {
+    font-size: 2.8em;
+    font-weight: 700;
+    margin: 0 0 16px 0;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+}
+
+.app-title-text {
+    background: linear-gradient(135deg, #93c5fd 0%, #ffffff 50%, #a5f3fc 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.app-title-num {
+    position: relative;
+    top: 0.18em;
+    font-size: 0.78em;
+    font-weight: 800;
+    background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 10px rgba(37, 99, 235, 0.65));
+    letter-spacing: 0;
+}
+
+.app-logo {
+    width: 72px;
+    height: 72px;
+}
+
+/* Enable bluetooth button */
+.btn-enable-bt {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 24px 0 20px 0;
+    padding: 14px 28px;
+    background: #92400e;
+    color: #fde68a;
+    border: none;
+    border-radius: 10px;
+    font-size: 1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    box-shadow: 0 4px 14px rgba(146, 64, 14, 0.4);
+}
+
+.btn-enable-bt:hover {
+    background: #b45309;
+}
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    backdrop-filter: blur(2px);
+}
+
+.modal-box {
+    background: #1e222d;
+    border: 1px solid #2c3040;
+    border-radius: 14px;
+    padding: 28px 32px;
+    min-width: 280px;
+    max-width: 360px;
+    width: 90%;
+}
+
+.modal-title {
+    font-size: 1.1em;
+    font-weight: 700;
+    margin: 0 0 8px 0;
+}
+
+.modal-subtitle {
+    font-size: 0.88em;
+    color: #9ca3af;
+    margin: 0 0 24px 0;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.modal-btn {
+    padding: 9px 20px;
+    border-radius: 8px;
+    font-size: 0.9em;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+}
+
+.modal-btn-cancel {
+    background: #374151;
+    color: #d1d5db;
+}
+
+.modal-btn-cancel:hover {
+    background: #4b5563;
+}
+
+.modal-btn-confirm {
+    background: #2563eb;
+    color: #fff;
+}
+
+.modal-btn-confirm:hover {
+    background: #1d4ed8;
+}
+
+/* Scan button */
+.btn-scan {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 24px 0 20px 0;
+    padding: 14px 28px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+}
+
+.btn-scan:hover:not(:disabled) {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45);
+}
+
+.btn-scan:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.btn-scan:disabled {
+    background: #374151;
+    color: #6b7280;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.btn-scan .scan-icon {
+    font-size: 1.2em;
+    display: inline-block;
+}
+
+.btn-scan.scanning .scan-icon {
+    animation: spin 1s linear infinite;
+}
+
+/* Device list container */
+.home {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 16px;
+}
+
+.device-list-wrapper {
+    width: 100%;
+    border: 1px solid #2c3040;
+    border-radius: 10px;
+    background: #1e222d;
+    overflow: hidden;
+}
+
+/* Connected devices — always visible, pinned at top */
+.pinned-devices {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    background: #1a2035;
+    border-bottom: 1px solid #2c3040;
+}
+
+/* Scrollable rest */
+.device-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    max-height: calc(100vh - 340px);
+    scrollbar-width: thin;
+    scrollbar-color: #3b4258 transparent;
+}
+
+.device-list::-webkit-scrollbar {
+    width: 5px;
+}
+
+.device-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.device-list::-webkit-scrollbar-thumb {
+    background: #3b4258;
+    border-radius: 10px;
+}
+
+.device-list::-webkit-scrollbar-thumb:hover {
+    background: #5a6480;
+}
+
+.device-list-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    gap: 14px;
+}
+
+.device-list-empty-icon {
+    width: 36px;
+    height: 36px;
+    opacity: 0.25;
+}
+
+.device-list-empty-text {
+    margin: 0;
+    font-size: 0.9em;
+    color: #555e72;
+}
+
+.device-row {
+    display: flex;
+    align-items: center;
+    min-height: 56px;
+    padding: 0 16px;
+    border-bottom: 1px solid #2c3040;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.device-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.device-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+.device-row:last-child {
+    border-bottom: none;
+}
+
+.device-row:hover {
+    background: #252a38;
+}
+
+/* Device list */
+.device-icon {
+    display: inline-block;
+    margin-right: 6px;
+    font-size: 0.85em;
+}
+
+.device-icon.disconnected {
+    color: #e05252;
+}
+
+.device-icon.connecting {
+    color: #888;
+    animation: spin 1s linear infinite;
+}
+
+.device-icon.connected {
+    color: #4caf50;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+.btn-disconnect {
+    margin-left: 12px;
+    padding: 2px 10px;
+    background: transparent;
+    color: #e05252;
+    border: 1px solid #e05252;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8em;
+}
+
+.btn-disconnect:hover {
+    background: #e05252;
+    color: #fff;
+}
+
+.btn-settings {
+    margin-left: 6px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    color: #888;
+    border: 1px solid #555;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1em;
+    line-height: 28px;
+    text-align: center;
+}
+
+.btn-settings:hover {
+    color: #fff;
+    border-color: #aaa;
+}
+
+/* Settings page */
+.settings-page {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.settings-header h2 {
+    margin: 0;
+}
+
+.btn-back {
+    background: transparent;
+    color: #aaa;
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 0.9em;
+}
+
+.btn-back:hover {
+    color: #fff;
+    border-color: #aaa;
+}
+
+.settings-section {
+    background: #1e222d;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+}
+
+.settings-section h3 {
+    margin: 0 0 14px 0;
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+}
+
+.settings-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #2c3040;
+}
+
+.settings-row:last-child {
+    border-bottom: none;
+}
+
+.settings-row label {
+    font-size: 0.95em;
+}
+
+.settings-row input[type="text"],
+.settings-row select {
+    background: #2c3040;
+    color: #fff;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.9em;
+    max-width: 160px;
+}
+
+.settings-row input[type="range"] {
+    max-width: 140px;
+}
+
+.danger-section {
+    border: 1px solid #5a2020;
+}
+
+.danger-section h3 {
+    color: #e05252;
+}
+
+.btn-forget {
+    background: transparent;
+    color: #e05252;
+    border: 1px solid #e05252;
+    border-radius: 6px;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 0.9em;
+    width: 100%;
+}
+
+.btn-forget:hover {
+    background: #e05252;
+    color: #fff;
+}
+
+/* Echo */
+#echo {
+    width: 360px;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 50px;
+    background-color: #1e222d;
+    padding: 20px;
+    border-radius: 10px;
+}
+
+#echo>h4 {
+    margin: 0px 0px 15px 0px;
+}
+
+
+#echo>input {
+    border: none;
+    border-bottom: 1px white solid;
+    background-color: transparent;
+    color: #ffffff;
+    transition: border-bottom-color 0.2s ease;
+    outline: none;
+    display: block;
+    padding: 0px 0px 5px 0px;
+    width: 100%;
+}
+
+#echo>input:focus {
+    border-bottom-color: #6d85c6;
+}
+
+#echo>p {
+    margin: 20px 0px 0px auto;
+}

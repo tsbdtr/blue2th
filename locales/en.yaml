@@ -1,0 +1,29 @@
+scan:
+  button: "Search device"
+  scanning: "Searching…"
+
+bt:
+  enable: "Enable Bluetooth"
+  confirm_title: "Enable Bluetooth?"
+  confirm_subtitle: "Bluetooth will be enabled on this device."
+  confirm_yes: "Yes, enable"
+
+common:
+  no: "No"
+  back: "← Back"
+
+device:
+  disconnect: "Disconnect"
+  empty: "No devices found"
+
+settings:
+  title: "⚙ %{name}"
+  section_general: "General"
+  alias: "Custom name"
+  auto_reconnect: "Auto reconnect"
+  trusted: "Trusted device"
+  section_audio: "Audio"
+  codec: "Audio codec"
+  volume: "Volume (%{volume} %)"
+  section_danger: "Danger zone"
+  forget: "Forget device"

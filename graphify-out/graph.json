@@ -1,0 +1,920 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {
+    "hyperedges": [
+      {
+        "id": "dioxus_reactive_state_system",
+        "label": "Dioxus Reactive State System",
+        "nodes": [
+          "agents_signal",
+          "agents_use_signal",
+          "agents_use_memo",
+          "agents_context_api"
+        ],
+        "relation": "implement",
+        "confidence": "INFERRED",
+        "confidence_score": 0.85,
+        "source_file": "AGENTS.md"
+      },
+      {
+        "id": "dioxus_fullstack_pipeline",
+        "label": "Dioxus Fullstack Rendering Pipeline",
+        "nodes": [
+          "agents_fullstack",
+          "agents_server_functions",
+          "agents_hydration",
+          "agents_use_server_future"
+        ],
+        "relation": "participate_in",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "AGENTS.md"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "label": "main.rs",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L1",
+      "id": "src_main",
+      "community": 3,
+      "norm_label": "main.rs"
+    },
+    {
+      "label": "main()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L8",
+      "id": "src_main_main",
+      "community": 3,
+      "norm_label": "main()"
+    },
+    {
+      "label": "App()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L13",
+      "id": "src_main_app",
+      "community": 3,
+      "norm_label": "app()"
+    },
+    {
+      "label": "Element",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L13",
+      "id": "element",
+      "community": 3,
+      "norm_label": "element"
+    },
+    {
+      "label": "Hero()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L23",
+      "id": "src_main_hero",
+      "community": 3,
+      "norm_label": "hero()"
+    },
+    {
+      "label": "Echo()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L42",
+      "id": "src_main_echo",
+      "community": 3,
+      "norm_label": "echo()"
+    },
+    {
+      "label": "echo_server()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "id": "src_main_echo_server",
+      "community": 6,
+      "norm_label": "echo_server()"
+    },
+    {
+      "label": "String",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "id": "string",
+      "community": 6,
+      "norm_label": "string"
+    },
+    {
+      "label": "Result",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "id": "result",
+      "community": 6,
+      "norm_label": "result"
+    },
+    {
+      "label": "ServerFnError",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "id": "serverfnerror",
+      "community": 6,
+      "norm_label": "serverfnerror"
+    },
+    {
+      "label": "Dioxus 0.7 Framework",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "1",
+      "source_url": "https://dioxuslabs.com/learn/0.7",
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_dioxus_07",
+      "community": 1,
+      "norm_label": "dioxus 0.7 framework"
+    },
+    {
+      "label": "dioxus::launch Entry Point",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "28",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_dioxus_launch",
+      "community": 4,
+      "norm_label": "dioxus::launch entry point"
+    },
+    {
+      "label": "App Root Component",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "32",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_app_component",
+      "community": 4,
+      "norm_label": "app root component"
+    },
+    {
+      "label": "RSX Macro (UI DSL)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "47",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_rsx_macro",
+      "community": 4,
+      "norm_label": "rsx macro (ui dsl)"
+    },
+    {
+      "label": "Component Model",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "94",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_component_model",
+      "community": 0,
+      "norm_label": "component model"
+    },
+    {
+      "label": "Signal (Reactive State)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "129",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_signal",
+      "community": 0,
+      "norm_label": "signal (reactive state)"
+    },
+    {
+      "label": "use_signal Hook",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "133",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_use_signal",
+      "community": 0,
+      "norm_label": "use_signal hook"
+    },
+    {
+      "label": "use_memo Hook",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "135",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_use_memo",
+      "community": 0,
+      "norm_label": "use_memo hook"
+    },
+    {
+      "label": "Context API (use_context_provider / use_context)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "158",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_context_api",
+      "community": 0,
+      "norm_label": "context api (use_context_provider / use_context)"
+    },
+    {
+      "label": "use_resource Hook (Async State)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "183",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_use_resource",
+      "community": 5,
+      "norm_label": "use_resource hook (async state)"
+    },
+    {
+      "label": "Dioxus Routing (Routable Enum)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "203",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_routing",
+      "community": 0,
+      "norm_label": "dioxus routing (routable enum)"
+    },
+    {
+      "label": "Fullstack Mode (Server + Client Split)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "237",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_fullstack",
+      "community": 5,
+      "norm_label": "fullstack mode (server + client split)"
+    },
+    {
+      "label": "Server Functions (#[post] / #[get] macros)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "245",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_server_functions",
+      "community": 5,
+      "norm_label": "server functions (#[post] / #[get] macros)"
+    },
+    {
+      "label": "Hydration (SSR to Client Takeover)",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "257",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_hydration",
+      "community": 5,
+      "norm_label": "hydration (ssr to client takeover)"
+    },
+    {
+      "label": "use_server_future Hook",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_use_server_future",
+      "community": 5,
+      "norm_label": "use_server_future hook"
+    },
+    {
+      "label": "asset! Macro",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "69",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_asset_macro",
+      "community": 4,
+      "norm_label": "asset! macro"
+    },
+    {
+      "label": "document::Stylesheet Component",
+      "file_type": "concept",
+      "source_file": "AGENTS.md",
+      "source_location": "82",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "agents_stylesheet_component",
+      "community": 4,
+      "norm_label": "document::stylesheet component"
+    },
+    {
+      "label": "Project Structure (main.rs, assets, Cargo.toml)",
+      "file_type": "document",
+      "source_file": "README.md",
+      "source_location": "1",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_project_structure",
+      "community": 1,
+      "norm_label": "project structure (main.rs, assets, cargo.toml)"
+    },
+    {
+      "label": "Automatic Tailwind Integration (Dioxus 0.7+)",
+      "file_type": "concept",
+      "source_file": "README.md",
+      "source_location": "13",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_tailwind_auto",
+      "community": 1,
+      "norm_label": "automatic tailwind integration (dioxus 0.7+)"
+    },
+    {
+      "label": "Tailwind Manual Install via CLI",
+      "file_type": "concept",
+      "source_file": "README.md",
+      "source_location": "25",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_tailwind_manual",
+      "community": 1,
+      "norm_label": "tailwind manual install via cli"
+    },
+    {
+      "label": "dx serve CLI Command",
+      "file_type": "concept",
+      "source_file": "README.md",
+      "source_location": "38",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_dx_serve",
+      "community": 1,
+      "norm_label": "dx serve cli command"
+    },
+    {
+      "label": "dioxus.toml Configuration File",
+      "file_type": "document",
+      "source_file": "README.md",
+      "source_location": "17",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_dioxus_toml",
+      "community": 1,
+      "norm_label": "dioxus.toml configuration file"
+    },
+    {
+      "label": "Animated SVG Header Logo",
+      "file_type": "image",
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "assets_header_logo_animation",
+      "community": 2,
+      "norm_label": "animated svg header logo"
+    },
+    {
+      "label": "Blue2th Brand Name (text)",
+      "file_type": "concept",
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "assets_header_brand_name",
+      "community": 2,
+      "norm_label": "blue2th brand name (text)"
+    },
+    {
+      "label": "Lightbulb Icon (Bluetooth symbol motif)",
+      "file_type": "image",
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "assets_header_lightbulb_icon",
+      "community": 2,
+      "norm_label": "lightbulb icon (bluetooth symbol motif)"
+    },
+    {
+      "label": "Animated Device / Screen UI Element",
+      "file_type": "image",
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "assets_header_device_animation",
+      "community": 2,
+      "norm_label": "animated device / screen ui element"
+    },
+    {
+      "label": "Tagline / Subtitle Text (is inter / is intersectable / is interesting)",
+      "file_type": "concept",
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "assets_header_tagline_text",
+      "community": 2,
+      "norm_label": "tagline / subtitle text (is inter / is intersectable / is interesting)"
+    },
+    {
+      "label": "Dark Background with Cyan and Red-Orange Accent Colors",
+      "file_type": "rationale",
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "assets_header_color_scheme",
+      "community": 2,
+      "norm_label": "dark background with cyan and red-orange accent colors"
+    }
+  ],
+  "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "src_main",
+      "target": "src_main_app",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L42",
+      "weight": 1.0,
+      "source": "src_main",
+      "target": "src_main_echo",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "weight": 1.0,
+      "source": "src_main",
+      "target": "src_main_echo_server",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L23",
+      "weight": 1.0,
+      "source": "src_main",
+      "target": "src_main_hero",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L8",
+      "weight": 1.0,
+      "source": "src_main",
+      "target": "src_main_main",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L13",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_main_app",
+      "target": "element",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L42",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_main_echo",
+      "target": "element",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L23",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_main_hero",
+      "target": "element",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_main_echo_server",
+      "target": "result",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_echo_server",
+      "target": "serverfnerror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L69",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_echo_server",
+      "target": "string",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": "1",
+      "weight": 1.0,
+      "source": "readme_project_structure",
+      "target": "agents_dioxus_07"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": "13",
+      "weight": 1.0,
+      "source": "readme_tailwind_auto",
+      "target": "agents_dioxus_07"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "28",
+      "weight": 1.0,
+      "source": "agents_dioxus_launch",
+      "target": "agents_app_component"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "README.md",
+      "source_location": "38",
+      "weight": 0.85,
+      "source": "readme_dx_serve",
+      "target": "agents_dioxus_launch"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "32",
+      "weight": 1.0,
+      "source": "agents_app_component",
+      "target": "agents_rsx_macro"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "96",
+      "weight": 1.0,
+      "source": "agents_component_model",
+      "target": "agents_rsx_macro"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "73",
+      "weight": 1.0,
+      "source": "agents_rsx_macro",
+      "target": "agents_asset_macro"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "85",
+      "weight": 1.0,
+      "source": "agents_rsx_macro",
+      "target": "agents_stylesheet_component"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "99",
+      "weight": 1.0,
+      "source": "agents_component_model",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "218",
+      "weight": 1.0,
+      "source": "agents_routing",
+      "target": "agents_component_model"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "165",
+      "weight": 1.0,
+      "source": "agents_context_api",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "135",
+      "weight": 1.0,
+      "source": "agents_use_memo",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "185",
+      "weight": 1.0,
+      "source": "agents_use_resource",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "133",
+      "weight": 1.0,
+      "source": "agents_use_signal",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "weight": 1.0,
+      "source": "agents_hydration",
+      "target": "agents_use_resource"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "weight": 0.85,
+      "source": "agents_use_server_future",
+      "target": "agents_use_resource"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "257",
+      "weight": 1.0,
+      "source": "agents_fullstack",
+      "target": "agents_hydration"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "245",
+      "weight": 1.0,
+      "source": "agents_fullstack",
+      "target": "agents_server_functions"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "weight": 1.0,
+      "source": "agents_hydration",
+      "target": "agents_use_server_future"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": "17",
+      "weight": 1.0,
+      "source": "readme_tailwind_auto",
+      "target": "readme_dioxus_toml"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": "15",
+      "weight": 1.0,
+      "source": "readme_tailwind_auto",
+      "target": "readme_dx_serve"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "README.md",
+      "source_location": "25",
+      "weight": 0.75,
+      "source": "readme_tailwind_auto",
+      "target": "readme_tailwind_manual"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_brand_name"
+    },
+    {
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_color_scheme"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_device_animation"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_lightbulb_icon"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_tagline_text"
+    },
+    {
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_lightbulb_icon",
+      "target": "assets_header_brand_name"
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "dioxus_reactive_state_system",
+      "label": "Dioxus Reactive State System",
+      "nodes": [
+        "agents_signal",
+        "agents_use_signal",
+        "agents_use_memo",
+        "agents_context_api"
+      ],
+      "relation": "implement",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "AGENTS.md"
+    },
+    {
+      "id": "dioxus_fullstack_pipeline",
+      "label": "Dioxus Fullstack Rendering Pipeline",
+      "nodes": [
+        "agents_fullstack",
+        "agents_server_functions",
+        "agents_hydration",
+        "agents_use_server_future"
+      ],
+      "relation": "participate_in",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md"
+    }
+  ]
+}
