@@ -1,8 +1,17 @@
+# Allow unwrap()/expect() inside #[cfg(test)] — idiomatic in Rust test code.
+# clippy::unwrap_used and clippy::expect_used are enabled via the cargo clippy command.
+allow-unwrap-in-tests = true
+
+# Forbid panic-prone macros in production code.
+# Using dedicated lints (clippy::panic etc.) instead of clippy::disallowed-macros
+# because disallowed-macros fires on proc-macro generated code (rsx!, #[component], #[post]
+# internally expand to panic!/unreachable! calls that clippy attributes to the call site).
+# The dedicated lints correctly skip proc-macro expanded code.
+# Activated by -W clippy::panic -W clippy::todo etc. in the cargo clippy command.
+
+# Dioxus-specific: forbid holding signal borrows across await points.
 await-holding-invalid-types = [
-  "generational_box::GenerationalRef",
-  { path = "generational_box::GenerationalRef", reason = "Reads should not be held over an await point. This will cause any writes to fail while the await is pending since the read borrow is still active." },
-  "generational_box::GenerationalRefMut",
-  { path = "generational_box::GenerationalRefMut", reason = "Write should not be held over an await point. This will cause any reads or writes to fail while the await is pending since the write borrow is still active." },
-  "dioxus_signals::WriteLock",
-  { path = "dioxus_signals::WriteLock", reason = "Write should not be held over an await point. This will cause any reads or writes to fail while the await is pending since the write borrow is still active." },
+  { path = "generational_box::GenerationalRef",    reason = "Read borrow held over await — any concurrent write will panic." },
+  { path = "generational_box::GenerationalRefMut", reason = "Write borrow held over await — any concurrent read or write will panic." },
+  { path = "dioxus_signals::WriteLock",            reason = "Write borrow held over await — any concurrent read or write will panic." },
 ]

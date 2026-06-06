@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Pre-commit quality gate for blue2th.
+# Install once with: git config core.hooksPath .githooks
+set -e
+
+echo "--- fmt ---"
+cargo fmt --check
+
+echo "--- clippy ---"
+cargo clippy -- \
+  -D warnings \
+  -W clippy::unwrap_used \
+  -W clippy::expect_used \
+  -W clippy::panic \
+  -W clippy::todo \
+  -W clippy::unreachable \
+  -W clippy::unimplemented
+
+echo "--- test ---"
+cargo test 2>&1 | tail -5
+
+echo "--- ok ---"

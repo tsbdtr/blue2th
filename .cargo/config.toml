@@ -1,0 +1,3 @@
+# Clippy lints are activated explicitly in cargo clippy commands, not here,
+# to avoid passing unknown lint names to rustc during cargo build.
+# See CLAUDE.md "Quality Commands" for the full clippy invocation.

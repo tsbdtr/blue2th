@@ -60,7 +60,7 @@ fn main() {
 
 #[component]
 fn App() -> Element {
-    let devices: Signal<Vec<(String, ConnectionStatus)>> = use_signal(|| vec![]);
+    let devices: Signal<Vec<(String, ConnectionStatus)>> = use_signal(Vec::new);
     use_context_provider(|| devices);
 
     // bt_enabled is global so it survives navigation between Home and DeviceSettings.

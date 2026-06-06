@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Validate Conventional Commits format.
+# Install once with: git config core.hooksPath .githooks
+FIRST_LINE=$(head -1 "$1")
+PATTERN='^(feat|fix|refactor|test|chore|docs|style|perf|build|ci|revert)(\([a-z0-9/_-]+\))?!?: .{1,100}$'
+
+if ! echo "$FIRST_LINE" | grep -qE "$PATTERN"; then
+  echo "ERROR: Commit message does not follow Conventional Commits."
+  echo "Expected: <type>(<scope>): <description>"
+  echo "Types: feat fix refactor test chore docs style perf build ci revert"
+  echo ""
+  echo "Got: $FIRST_LINE"
+  exit 1
+fi

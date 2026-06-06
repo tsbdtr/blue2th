@@ -6,13 +6,14 @@
 .dx/
 dist/
 
-# Graphify - cache généré localement
+# Graphify - locally generated cache
 graphify-out/cache/
 
-# Claude Code
-.claude/
+# Claude Code — personal settings ignored, workflow config versioned
+.claude/settings.json
+.claude/settings.local.json
 
-# Variables d'environnement
+# Environment variables
 .env
 .env.local
 .env.*.local
@@ -26,7 +27,7 @@ graphify-out/cache/
 ehthumbs.db
 Thumbs.db
 
-# Éditeurs / IDE
+# Editors / IDE
 .vscode/
 .idea/
 .zed/
