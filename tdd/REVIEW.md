@@ -1,17 +1,17 @@
-# Review Report — Real Bluetooth adapter state detection (Android)
+# Review Report — Replace confirm modal with Android Bluetooth enable dialog
 
 ## Issues Found & Fixed
 
-- [safety] `src/bluetooth.rs` — `unsafe { jni::JavaVM::from_raw(...) }` had no `// SAFETY:` comment; the invariant (ndk-context guarantees a valid JavaVM pointer set by the Android runtime before any Rust code runs) is non-obvious → added `// SAFETY:` comment
-- [style] `tests/bluetooth_integration.rs:44,59` — tests 3 and 4 were declared `#[tokio::test] async fn` despite containing no `.await`; misleading and unnecessary tokio overhead → converted to plain `#[test] fn`
-- [docs] `tests/bluetooth_integration.rs:16` — module doc comment referred to "Dioxus server-function macro wrapper" which was removed when fullstack was dropped → updated to accurate description
+- [style] `src/main.rs:82` — `#[cfg_attr(target_os = "android", allow(unused_mut))]` was placed on the entire `Home` component function, silencing `unused_mut` for all local bindings; only `bt_enabled` needs the suppressor (its write path is `#[cfg(not(target_os = "android"))]`-gated) → moved the `cfg_attr` to the `let mut bt_enabled` binding and added an explanatory comment.
+
+- [docs] `src/bluetooth.rs:64,101,106` — three `#[allow(dead_code)]` attributes on `enable_bluetooth_inner` (both cfg variants) and `enable_bluetooth` had no comment explaining why the suppression is necessary → added comments stating these functions are retained for the integration-test suite (lib target) but are unreachable from `main()` in the binary target after the `ConfirmModal` removal.
 
 ## New Tests Added
 
-None — existing four integration tests provide sufficient coverage for the acceptance criteria.
+None — the existing 16 tests (5 unit via lib, 5 unit via bin, 6 integration) provide sufficient coverage for all acceptance criteria.
 
 ## Final Status
 
-- `cargo test`: ✅ 6 passed (1 unit via lib, 1 unit via bin, 4 integration)
-- `cargo clippy`: ✅ clean
+- `cargo test`: ✅ 16 passed (5 lib unit, 5 bin unit, 6 integration)
+- `cargo clippy`: ✅ clean (host + aarch64-linux-android)
 - `dx build --platform android`: ✅ success

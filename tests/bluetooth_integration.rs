@@ -15,7 +15,7 @@
 //! Integration tests for the real Bluetooth adapter state detection feature.
 //! These tests exercise the async inner logic of `enable_bluetooth_inner` directly.
 
-use blue2th::bluetooth::enable_bluetooth_inner;
+use blue2th::bluetooth::{enable_bluetooth_inner, request_enable_bluetooth, request_enable_bluetooth_inner};
 
 // Criterion 3 + combined criteria 1 & 2:
 // On non-Android platforms the function falls back to the existing simulation (returns true).
@@ -65,5 +65,29 @@ fn test_no_fake_activation_when_bt_returns_error() {
     assert!(
         !bt_enabled,
         "bt_enabled must NOT be set to true when enable_bluetooth returns Err"
+    );
+}
+
+// Criterion: request_enable_bluetooth_inner() returns Ok(()) on non-Android (simulation stub).
+// Covers: "On non-Android: returns Ok(()) immediately (simulation stub)."
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_request_enable_bluetooth_inner_returns_ok_on_non_android() {
+    let result = request_enable_bluetooth_inner().await;
+    assert!(
+        result.is_ok(),
+        "request_enable_bluetooth_inner() must return Ok(()) on non-Android, got: {result:?}"
+    );
+}
+
+// Criterion: request_enable_bluetooth() returns Ok(()) and must not panic on non-Android.
+// Covers: "request_enable_bluetooth() must return Ok(()) and not panic."
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_request_enable_bluetooth_returns_ok_on_non_android() {
+    let result = request_enable_bluetooth().await;
+    assert!(
+        result.is_ok(),
+        "request_enable_bluetooth() must return Ok(()), got: {result:?}"
     );
 }
