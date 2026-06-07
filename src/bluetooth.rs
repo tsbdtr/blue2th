@@ -61,18 +61,33 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
 }
 
 #[cfg(target_os = "android")]
-// Retained for the integration-test suite (lib target); unreachable from main() in the binary
-// target now that the ConfirmModal flow is removed.
-#[allow(dead_code)]
+fn bt_err_clear(env: &mut jni::JNIEnv<'_>, e: jni::errors::Error) -> BluetoothError {
+    // Clear any pending JNI exception before returning to the caller.
+    // If the exception is not cleared, the next JNI call on the same thread (e.g.
+    // FindClass from the Dioxus WebView handler) will cause an ART abort.
+    let _ = env.exception_clear();
+    BluetoothError::new(e.to_string())
+}
+
+#[cfg(target_os = "android")]
+fn android_jni_env(vm: &jni::JavaVM) -> Result<jni::JNIEnv<'_>, BluetoothError> {
+    // Use get_env() if the thread is already attached (e.g. Dioxus WebView Java thread),
+    // otherwise attach permanently. Never use attach_current_thread(): its AttachGuard
+    // calls DetachCurrentThread on drop, which detaches a Java thread from the JVM and
+    // causes the next FindClass call on that thread to abort the process.
+    vm.get_env()
+        .or_else(|_| vm.attach_current_thread_permanently())
+        .map_err(|e| BluetoothError::new(e.to_string()))
+}
+
+#[cfg(target_os = "android")]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     let ctx = ndk_context::android_context();
     // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
     // Rust code runs; the pointer is valid for the lifetime of the process.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let mut env = vm
-        .attach_current_thread()
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let mut env = android_jni_env(&vm)?;
 
     let adapter = env
         .call_static_method(
@@ -81,7 +96,7 @@ pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
             "()Landroid/bluetooth/BluetoothAdapter;",
             &[],
         )
-        .map_err(|e| BluetoothError::new(e.to_string()))?
+        .map_err(|e| bt_err_clear(&mut env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
 
@@ -91,7 +106,7 @@ pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
 
     let enabled = env
         .call_method(&adapter, "isEnabled", "()Z", &[])
-        .map_err(|e| BluetoothError::new(e.to_string()))?
+        .map_err(|e| bt_err_clear(&mut env, e))?
         .z()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
 
@@ -99,61 +114,93 @@ pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
 }
 
 #[cfg(not(target_os = "android"))]
-// Retained for the integration-test suite (lib target); unreachable from main() in the binary
-// target now that the ConfirmModal flow is removed.
-#[allow(dead_code)]
+// Used by the Android polling path (cfg-gated) and the integration-test suite.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     Ok(true)
 }
 
-// Retained for the integration-test suite (lib target); unreachable from main() in the binary
-// target now that the ConfirmModal flow is removed.
-#[allow(dead_code)]
+// Used by the Android polling path (cfg-gated) and the integration-test suite.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
     enable_bluetooth_inner().await
 }
 
 /// Inner platform-gated implementation for launching the Android Bluetooth enable dialog.
-/// On Android: fires `ACTION_REQUEST_ENABLE` intent via JNI.
+/// On Android: checks/requests BLUETOOTH_CONNECT runtime permission (Android 12+), then
+/// fires `ACTION_REQUEST_ENABLE` intent via JNI.
 /// On non-Android: returns `Ok(())` immediately (simulation).
 #[cfg(target_os = "android")]
 pub async fn request_enable_bluetooth_inner() -> Result<(), BluetoothError> {
+    use jni::objects::JValue;
+
     let ctx = ndk_context::android_context();
     // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
     // Rust code runs; the pointer is valid for the lifetime of the process.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let mut env = vm
-        .attach_current_thread()
+    let mut env = android_jni_env(&vm)?;
+
+    // SAFETY: activity pointer is set by the Android runtime before any Rust code runs.
+    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+
+    // On Android 12+ (API 31), BLUETOOTH_CONNECT is a dangerous (runtime) permission.
+    // Check if granted; if not, show the system permission dialog and ask the user to retry.
+    let perm = env
+        .new_string("android.permission.BLUETOOTH_CONNECT")
+        .map_err(|e| bt_err_clear(&mut env, e))?;
+    let granted = env
+        .call_method(
+            &activity,
+            "checkSelfPermission",
+            "(Ljava/lang/String;)I",
+            &[JValue::Object(&perm)],
+        )
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .i()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
 
+    if granted != 0 {
+        // PackageManager.PERMISSION_GRANTED = 0; anything else means not granted.
+        let string_class = env
+            .find_class("java/lang/String")
+            .map_err(|e| bt_err_clear(&mut env, e))?;
+        let perms_array = env
+            .new_object_array(1, &string_class, &perm)
+            .map_err(|e| bt_err_clear(&mut env, e))?;
+        env.call_method(
+            &activity,
+            "requestPermissions",
+            "([Ljava/lang/String;I)V",
+            &[JValue::Object(&perms_array), JValue::Int(1001)],
+        )
+        .map_err(|e| bt_err_clear(&mut env, e))?;
+        return Err(BluetoothError::new(
+            "Bluetooth permission not yet granted — please allow it and try again",
+        ));
+    }
+
+    // Permission granted: launch the Android system Bluetooth enable dialog.
     let action = env
         .new_string("android.bluetooth.adapter.action.REQUEST_ENABLE")
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-
+        .map_err(|e| bt_err_clear(&mut env, e))?;
     let intent_class = env
         .find_class("android/content/Intent")
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-
+        .map_err(|e| bt_err_clear(&mut env, e))?;
     let intent = env
         .new_object(
             &intent_class,
             "(Ljava/lang/String;)V",
-            &[jni::objects::JValue::Object(action.as_ref())],
+            &[JValue::Object(action.as_ref())],
         )
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-
-    // SAFETY: ndk-context stores the Activity pointer set by the Android runtime; valid for
-    // the lifetime of the process.
-    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
-
+        .map_err(|e| bt_err_clear(&mut env, e))?;
     env.call_method(
         &activity,
         "startActivity",
         "(Landroid/content/Intent;)V",
-        &[jni::objects::JValue::Object(&intent)],
+        &[JValue::Object(&intent)],
     )
-    .map_err(|e| BluetoothError::new(e.to_string()))?;
+    .map_err(|e| bt_err_clear(&mut env, e))?;
 
     Ok(())
 }

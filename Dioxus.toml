@@ -1,3 +1,10 @@
+[android.raw]
+manifest = """
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+"""
+
 [web.app]
 
 # HTML title tag content
