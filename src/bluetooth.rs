@@ -61,6 +61,7 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
 }
 
 #[cfg(target_os = "android")]
+#[allow(dead_code)]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     let ctx = ndk_context::android_context();
     // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
@@ -96,35 +97,69 @@ pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
 }
 
 #[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     Ok(true)
 }
 
+#[allow(dead_code)]
 pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
     enable_bluetooth_inner().await
 }
 
-// --- request_enable_bluetooth stubs (RED phase — implementer must replace todo!()) ---
-
-/// Inner platform-gated stub for launching the Android Bluetooth enable dialog.
+/// Inner platform-gated implementation for launching the Android Bluetooth enable dialog.
 /// On Android: fires `ACTION_REQUEST_ENABLE` intent via JNI.
 /// On non-Android: returns `Ok(())` immediately (simulation).
 #[cfg(target_os = "android")]
-#[allow(clippy::todo)]
 pub async fn request_enable_bluetooth_inner() -> Result<(), BluetoothError> {
-    todo!("implement JNI startActivity for ACTION_REQUEST_ENABLE")
+    let ctx = ndk_context::android_context();
+    // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
+    // Rust code runs; the pointer is valid for the lifetime of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let action = env
+        .new_string("android.bluetooth.adapter.action.REQUEST_ENABLE")
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let intent_class = env
+        .find_class("android/content/Intent")
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let intent = env
+        .new_object(
+            &intent_class,
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(action.as_ref())],
+        )
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    // SAFETY: ndk-context stores the Activity pointer set by the Android runtime; valid for
+    // the lifetime of the process.
+    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+
+    env.call_method(
+        &activity,
+        "startActivity",
+        "(Landroid/content/Intent;)V",
+        &[jni::objects::JValue::Object(&intent)],
+    )
+    .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    Ok(())
 }
 
 #[cfg(not(target_os = "android"))]
-#[allow(clippy::todo)]
 pub async fn request_enable_bluetooth_inner() -> Result<(), BluetoothError> {
-    todo!("implement non-Android stub returning Ok(())")
+    Ok(())
 }
 
 /// Public wrapper — calls `request_enable_bluetooth_inner`.
-#[allow(clippy::todo)]
 pub async fn request_enable_bluetooth() -> Result<(), BluetoothError> {
-    todo!("delegate to request_enable_bluetooth_inner()")
+    request_enable_bluetooth_inner().await
 }
 
 #[cfg(test)]

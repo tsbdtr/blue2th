@@ -16,7 +16,7 @@ use dioxus::prelude::*;
 
 mod bluetooth;
 
-use bluetooth::{connect_device, disconnect_device, enable_bluetooth, scan_devices};
+use bluetooth::{connect_device, disconnect_device, request_enable_bluetooth, scan_devices};
 
 rust_i18n::i18n!("locales", fallback = "fr");
 
@@ -79,13 +79,13 @@ fn App() -> Element {
 }
 
 #[component]
+#[cfg_attr(target_os = "android", allow(unused_mut))]
 fn Home() -> Element {
     use_locale();
 
     let mut devices = use_context::<Signal<Vec<(String, ConnectionStatus)>>>();
     let mut bt_enabled = use_context::<Signal<bool>>();
     let mut scanning = use_signal(|| false);
-    let mut show_confirm = use_signal(|| false);
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);
 
     // When BT is disabled, clear the device list.
@@ -156,7 +156,15 @@ fn Home() -> Element {
             } else {
                 button {
                     class: "btn-enable-bt",
-                    onclick: move |_| *show_confirm.write() = true,
+                    onclick: move |_| async move {
+                        match request_enable_bluetooth().await {
+                            Ok(()) => {
+                                #[cfg(not(target_os = "android"))]
+                                { *bt_enabled.write() = true; }
+                            }
+                            Err(e) => *bt_error.write() = Some(e.to_string()),
+                        }
+                    },
                     span { "⚡" }
                     "{rust_i18n::t!(\"bt.enable\")}"
                 }
@@ -191,50 +199,6 @@ fn Home() -> Element {
                                 }
                             }
                         }
-                    }
-                }
-            }
-        }
-        if show_confirm() {
-            ConfirmModal {
-                on_confirm: move || async move {
-                    match enable_bluetooth().await {
-                        Ok(true) => *bt_enabled.write() = true,
-                        Ok(false) => {}
-                        Err(e) => *bt_error.write() = Some(e.to_string()),
-                    }
-                    *show_confirm.write() = false;
-                },
-                on_cancel: move || *show_confirm.write() = false,
-            }
-        }
-    }
-}
-
-#[component]
-fn ConfirmModal(on_confirm: EventHandler<()>, on_cancel: EventHandler<()>) -> Element {
-    use_locale();
-
-    rsx! {
-        div {
-            class: "modal-overlay",
-            onclick: move |_| on_cancel.call(()),
-            div {
-                class: "modal-box",
-                onclick: move |e: Event<MouseData>| e.stop_propagation(),
-                p { class: "modal-title", "{rust_i18n::t!(\"bt.confirm_title\")}" }
-                p { class: "modal-subtitle", "{rust_i18n::t!(\"bt.confirm_subtitle\")}" }
-                div {
-                    class: "modal-actions",
-                    button {
-                        class: "modal-btn modal-btn-cancel",
-                        onclick: move |_| on_cancel.call(()),
-                        "{rust_i18n::t!(\"common.no\")}"
-                    }
-                    button {
-                        class: "modal-btn modal-btn-confirm",
-                        onclick: move |_| on_confirm.call(()),
-                        "{rust_i18n::t!(\"bt.confirm_yes\")}"
                     }
                 }
             }
