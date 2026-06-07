@@ -79,11 +79,13 @@ fn App() -> Element {
 }
 
 #[component]
-#[cfg_attr(target_os = "android", allow(unused_mut))]
 fn Home() -> Element {
     use_locale();
 
     let mut devices = use_context::<Signal<Vec<(String, ConnectionStatus)>>>();
+    // mut is only exercised on non-Android (where Ok(()) sets bt_enabled = true);
+    // on Android the system dialog owns the state transition.
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut bt_enabled = use_context::<Signal<bool>>();
     let mut scanning = use_signal(|| false);
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);

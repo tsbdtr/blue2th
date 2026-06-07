@@ -61,6 +61,8 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
 }
 
 #[cfg(target_os = "android")]
+// Retained for the integration-test suite (lib target); unreachable from main() in the binary
+// target now that the ConfirmModal flow is removed.
 #[allow(dead_code)]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     let ctx = ndk_context::android_context();
@@ -97,11 +99,15 @@ pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
 }
 
 #[cfg(not(target_os = "android"))]
+// Retained for the integration-test suite (lib target); unreachable from main() in the binary
+// target now that the ConfirmModal flow is removed.
 #[allow(dead_code)]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     Ok(true)
 }
 
+// Retained for the integration-test suite (lib target); unreachable from main() in the binary
+// target now that the ConfirmModal flow is removed.
 #[allow(dead_code)]
 pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
     enable_bluetooth_inner().await
