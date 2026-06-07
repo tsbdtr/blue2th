@@ -63,6 +63,8 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
 #[cfg(target_os = "android")]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     let ctx = ndk_context::android_context();
+    // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
+    // Rust code runs; the pointer is valid for the lifetime of the process.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| BluetoothError::new(e.to_string()))?;
     let mut env = vm

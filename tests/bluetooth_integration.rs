@@ -13,8 +13,7 @@
 // limitations under the License.
 
 //! Integration tests for the real Bluetooth adapter state detection feature.
-//! These tests exercise the async inner logic of `enable_bluetooth` directly,
-//! bypassing the Dioxus server-function macro wrapper.
+//! These tests exercise the async inner logic of `enable_bluetooth_inner` directly.
 
 use blue2th::bluetooth::enable_bluetooth_inner;
 
@@ -41,8 +40,8 @@ async fn test_enable_bluetooth_simulation_fallback() {
 
 // Criterion 4: the UI handler must not activate BT when enable_bluetooth_inner returns Ok(false).
 // Models the ConfirmModal on_confirm handler: match result { Ok(true) => activate, _ => {} }
-#[tokio::test]
-async fn test_bt_enabled_stays_false_when_enable_bluetooth_returns_false() {
+#[test]
+fn test_bt_enabled_stays_false_when_enable_bluetooth_returns_false() {
     let mut bt_enabled = false;
     let result: Result<bool, String> = Ok(false);
     if let Ok(true) = result {
@@ -56,8 +55,8 @@ async fn test_bt_enabled_stays_false_when_enable_bluetooth_returns_false() {
 
 // Criterion 5: clicking "Enable Bluetooth" while BT is off must NOT fake-activate it.
 // An Err result must also leave bt_enabled unchanged.
-#[tokio::test]
-async fn test_no_fake_activation_when_bt_returns_error() {
+#[test]
+fn test_no_fake_activation_when_bt_returns_error() {
     let mut bt_enabled = false;
     let result: Result<bool, String> = Err("BT unavailable".to_string());
     if let Ok(true) = result {
