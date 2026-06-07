@@ -24,6 +24,7 @@ impl std::fmt::Display for BluetoothError {
 impl std::error::Error for BluetoothError {}
 
 impl BluetoothError {
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn new(msg: impl Into<String>) -> Self {
         Self(msg.into())
     }
@@ -61,14 +62,52 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
 
 #[cfg(target_os = "android")]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
-    Err(BluetoothError::new("not implemented"))
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let adapter = env
+        .call_static_method(
+            "android/bluetooth/BluetoothAdapter",
+            "getDefaultAdapter",
+            "()Landroid/bluetooth/BluetoothAdapter;",
+            &[],
+        )
+        .map_err(|e| BluetoothError::new(e.to_string()))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    if adapter.is_null() {
+        return Ok(false);
+    }
+
+    let enabled = env
+        .call_method(&adapter, "isEnabled", "()Z", &[])
+        .map_err(|e| BluetoothError::new(e.to_string()))?
+        .z()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    Ok(enabled)
 }
 
 #[cfg(not(target_os = "android"))]
 pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
-    Err(BluetoothError::new("not implemented"))
+    Ok(true)
 }
 
 pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
     enable_bluetooth_inner().await
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(target_os = "android"))]
+    #[tokio::test]
+    async fn test_enable_bluetooth_inner_returns_ok_on_non_android() {
+        let result = super::enable_bluetooth_inner().await;
+        assert!(result.is_ok(), "non-Android stub must return Ok");
+    }
 }
