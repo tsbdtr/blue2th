@@ -29,8 +29,9 @@ No gold-plating, no premature abstractions — just enough to go green.
 9. Do NOT modify or delete any test.
 10. At the end, run `cargo test` — all tests must pass (exit 0).
 11. Run `cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented` — must produce no errors.
-12. Commit all implementation changes: `git add -A && git commit -m "feat(<scope>): <description>"`.
-13. Output a summary: what you implemented and the final `cargo test` output.
+12. Run `dx build --platform android 2>&1 | tail -40` — must exit 0. This verifies that `#[cfg(target_os = "android")]` code compiles for the real target. If it fails, fix the code before committing.
+13. Commit all implementation changes: `git add -A && git commit -m "feat(<scope>): <description>"`.
+14. Output a summary: what you implemented, the final `cargo test` output, and whether `dx build --platform android` succeeded.
 
 ## What you must NOT do
 - Do not refactor code beyond what tests require.

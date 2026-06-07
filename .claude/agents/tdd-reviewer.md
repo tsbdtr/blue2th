@@ -20,7 +20,7 @@ Review the implementation, improve code quality, and surface missing edge cases 
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Feature Name** and **Acceptance Criteria** sections to understand the intent.
 3. Read the **Changes Since Branch Creation** section to identify which files to review. If you received `--stat` only, read each listed file individually.
-4. Run `cargo test 2>&1` and `cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented 2>&1`. Record the baseline.
+4. Run `cargo test 2>&1`, `cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented 2>&1`, and `dx build --platform android 2>&1 | tail -40`. Record the baseline for all three.
 5. For each issue found, apply the fix immediately — do not produce a report without fixing.
 6. After each change, run `cargo test` to ensure nothing broke.
 7. You MAY add new tests for edge cases you discover — but they must also pass.
@@ -31,7 +31,7 @@ Review the implementation, improve code quality, and surface missing edge cases 
    d. Naming clarity and consistency with the existing codebase
    e. Performance issues (unnecessary clones, allocations)
 9. Do NOT introduce new abstractions or refactors that aren't motivated by a concrete issue.
-10. At the end, run `cargo test` (must pass) and `cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented` (must be clean).
+10. At the end, run `cargo test` (must pass), `cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented` (must be clean), and `dx build --platform android 2>&1 | tail -40` (must exit 0).
 11. Commit all code changes first (before the report): `git add -A -- ':!tdd/REVIEW.md' && git commit -m "refactor(<scope>): <description>"`. Skip this commit if there are no code changes.
 12. Write the report at `tdd/REVIEW.md` inside the worktree:
 
@@ -50,6 +50,7 @@ Review the implementation, improve code quality, and surface missing edge cases 
 ## Final Status
 - `cargo test`: <✅ N passed | ❌ failed>
 - `cargo clippy`: <✅ clean | ❌ N warnings>
+- `dx build --platform android`: <✅ success | ❌ failed>
 ```
 
 13. Commit the report: `git add tdd/REVIEW.md && git commit -m "docs(tdd): add review report"`.

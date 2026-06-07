@@ -4,7 +4,7 @@ Orchestrates the Red → Green → Refactor TDD cycle using three sub-agents,
 each working in an isolated git worktree and receiving only the context relevant to its phase.
 
 ## Usage
-`/tdd [test|impl|review|all]`
+`/tdd [test|impl|review|all|done]`
 
 ## Steps
 
@@ -19,6 +19,7 @@ From the skill args:
 - `impl`          → GREEN phase only
 - `review`        → REFACTOR phase only
 - `all` or no arg → all three phases sequentially
+- `done`          → cleanup after merge (remove worktree, reset spec)
 - anything else   → show usage
 
 ### 3. Create or reuse the feature worktree
@@ -188,5 +189,36 @@ After all agents complete:
    - Next steps:
      ```bash
      git -C <WORKTREE_PATH> push -u origin <BRANCH>   # open a PR
-     git worktree remove <WORKTREE_PATH>                # clean up after merge
+     # once merged, run: /tdd done
      ```
+
+### 7. `done` — cleanup after merge
+
+Run the following using Bash:
+
+a. Read the **Feature Name** from `tdd/feature.md` and derive the slug (same rule as step 3b).
+
+b. Set:
+   - `ROOT=$(git rev-parse --show-toplevel)`
+   - `WORKTREE_PATH=$(dirname "$ROOT")/blue2th-<slug>`
+   - `BRANCH=feat/<slug>`
+
+c. Verify the worktree exists:
+   ```bash
+   git worktree list | grep "$WORKTREE_PATH"
+   ```
+   If not found, tell the user "No worktree found for this feature — nothing to clean up." and stop.
+
+d. Remove the worktree and delete the local branch:
+   ```bash
+   git worktree remove "$WORKTREE_PATH"
+   git branch -d "$BRANCH"
+   ```
+   If `git branch -d` fails (branch not yet merged), warn the user and do **not** force-delete.
+
+e. Reset the feature spec:
+   ```bash
+   git checkout HEAD -- tdd/feature.md
+   ```
+
+f. Print: `Cleaned up: worktree and branch <BRANCH> removed. tdd/feature.md reset.`
