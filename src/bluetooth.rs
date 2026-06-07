@@ -12,11 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use dioxus::prelude::*;
+#[derive(Debug)]
+pub struct BluetoothError(String);
 
-#[post("/api/bluetooth/scan")]
-pub async fn scan_devices() -> Result<Vec<String>, ServerFnError> {
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+impl std::fmt::Display for BluetoothError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BluetoothError {}
+
+impl BluetoothError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
+pub async fn scan_devices() -> Result<Vec<String>, BluetoothError> {
     Ok(vec![
         "Blue Speaker".to_string(),
         "HeadPhones Pro".to_string(),
@@ -36,22 +49,26 @@ pub async fn scan_devices() -> Result<Vec<String>, ServerFnError> {
     ])
 }
 
-#[post("/api/bluetooth/connect")]
-pub async fn connect_device(name: String) -> Result<bool, ServerFnError> {
+pub async fn connect_device(name: String) -> Result<bool, BluetoothError> {
     let _ = name;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     Ok(true)
 }
 
-#[post("/api/bluetooth/disconnect")]
-pub async fn disconnect_device(name: String) -> Result<bool, ServerFnError> {
+pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
     let _ = name;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     Ok(true)
 }
 
-#[post("/api/bluetooth/enable")]
-pub async fn enable_bluetooth() -> Result<bool, ServerFnError> {
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    Ok(true)
+#[cfg(target_os = "android")]
+pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
+    Err(BluetoothError::new("not implemented"))
+}
+
+#[cfg(not(target_os = "android"))]
+pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
+    Err(BluetoothError::new("not implemented"))
+}
+
+pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
+    enable_bluetooth_inner().await
 }
