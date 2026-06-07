@@ -86,6 +86,7 @@ fn Home() -> Element {
     let mut bt_enabled = use_context::<Signal<bool>>();
     let mut scanning = use_signal(|| false);
     let mut show_confirm = use_signal(|| false);
+    let mut bt_error: Signal<Option<String>> = use_signal(|| None);
 
     // When BT is disabled, clear the device list.
     use_effect(move || {
@@ -121,6 +122,17 @@ fn Home() -> Element {
                     class: "app-logo",
                     src: BLUETOOTH_LOGO,
                     alt: "Bluetooth",
+                }
+            }
+            if let Some(err) = bt_error() {
+                div {
+                    class: "bt-error-banner",
+                    span { "{err}" }
+                    button {
+                        class: "bt-error-dismiss",
+                        onclick: move |_| *bt_error.write() = None,
+                        "×"
+                    }
                 }
             }
             if bt_enabled() {
@@ -186,9 +198,10 @@ fn Home() -> Element {
         if show_confirm() {
             ConfirmModal {
                 on_confirm: move || async move {
-                    let ok = enable_bluetooth().await.unwrap_or(false);
-                    if ok {
-                        *bt_enabled.write() = true;
+                    match enable_bluetooth().await {
+                        Ok(true) => *bt_enabled.write() = true,
+                        Ok(false) => {}
+                        Err(e) => *bt_error.write() = Some(e.to_string()),
                     }
                     *show_confirm.write() = false;
                 },

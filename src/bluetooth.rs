@@ -12,11 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use dioxus::prelude::*;
+#[derive(Debug)]
+pub struct BluetoothError(String);
 
-#[post("/api/bluetooth/scan")]
-pub async fn scan_devices() -> Result<Vec<String>, ServerFnError> {
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+impl std::fmt::Display for BluetoothError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BluetoothError {}
+
+impl BluetoothError {
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
+pub async fn scan_devices() -> Result<Vec<String>, BluetoothError> {
     Ok(vec![
         "Blue Speaker".to_string(),
         "HeadPhones Pro".to_string(),
@@ -36,22 +50,66 @@ pub async fn scan_devices() -> Result<Vec<String>, ServerFnError> {
     ])
 }
 
-#[post("/api/bluetooth/connect")]
-pub async fn connect_device(name: String) -> Result<bool, ServerFnError> {
+pub async fn connect_device(name: String) -> Result<bool, BluetoothError> {
     let _ = name;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     Ok(true)
 }
 
-#[post("/api/bluetooth/disconnect")]
-pub async fn disconnect_device(name: String) -> Result<bool, ServerFnError> {
+pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
     let _ = name;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     Ok(true)
 }
 
-#[post("/api/bluetooth/enable")]
-pub async fn enable_bluetooth() -> Result<bool, ServerFnError> {
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+#[cfg(target_os = "android")]
+pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
+    let ctx = ndk_context::android_context();
+    // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
+    // Rust code runs; the pointer is valid for the lifetime of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let adapter = env
+        .call_static_method(
+            "android/bluetooth/BluetoothAdapter",
+            "getDefaultAdapter",
+            "()Landroid/bluetooth/BluetoothAdapter;",
+            &[],
+        )
+        .map_err(|e| BluetoothError::new(e.to_string()))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    if adapter.is_null() {
+        return Ok(false);
+    }
+
+    let enabled = env
+        .call_method(&adapter, "isEnabled", "()Z", &[])
+        .map_err(|e| BluetoothError::new(e.to_string()))?
+        .z()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    Ok(enabled)
+}
+
+#[cfg(not(target_os = "android"))]
+pub async fn enable_bluetooth_inner() -> Result<bool, BluetoothError> {
     Ok(true)
+}
+
+pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
+    enable_bluetooth_inner().await
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(target_os = "android"))]
+    #[tokio::test]
+    async fn test_enable_bluetooth_inner_returns_ok_on_non_android() {
+        let result = super::enable_bluetooth_inner().await;
+        assert!(result.is_ok(), "non-Android stub must return Ok");
+    }
 }
