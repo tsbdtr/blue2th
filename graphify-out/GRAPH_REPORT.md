@@ -1,16 +1,16 @@
 # Graph Report - blue2th  (2026-06-10)
 
 ## Corpus Check
-- 16 files · ~10,070 words
+- 16 files · ~11,395 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 174 nodes · 228 edges · 18 communities (14 shown, 4 thin omitted)
-- Extraction: 93% EXTRACTED · 7% INFERRED · 0% AMBIGUOUS · INFERRED: 15 edges (avg confidence: 0.84)
+- 190 nodes · 263 edges · 18 communities (14 shown, 4 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 20 edges (avg confidence: 0.83)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ad3af992`
+- Built from commit: `ca4bd62a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -34,16 +34,16 @@
 - [[_COMMUNITY_Community 17|Community 17]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `BluetoothError` - 14 edges
+1. `BluetoothError` - 15 edges
 2. `enable_bluetooth_inner()` - 14 edges
-3. `DeviceItem()` - 12 edges
-4. `Result` - 9 edges
-5. `request_enable_bluetooth_inner()` - 9 edges
-6. `android_jni_env()` - 8 edges
-7. `Steps` - 8 edges
-8. `scan_devices()` - 7 edges
-9. `bt_err_clear()` - 7 edges
-10. `Home()` - 7 edges
+3. `scan_devices()` - 12 edges
+4. `scan_devices_inner()` - 12 edges
+5. `DeviceItem()` - 12 edges
+6. `Result` - 10 edges
+7. `android_jni_env()` - 9 edges
+8. `request_enable_bluetooth_inner()` - 9 edges
+9. `bt_err_clear()` - 8 edges
+10. `Steps` - 8 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `test_bt_enabled_stays_false_when_enable_bluetooth_returns_false` --semantically_similar_to--> `ConfirmModal()`  [INFERRED] [semantically similar]
@@ -54,7 +54,7 @@
   tests/bluetooth_integration.rs → src/main.rs
 - `tdd-test-writer Agent (RED phase)` --references--> `scan_devices()`  [EXTRACTED]
   .claude/agents/tdd-test-writer.md → src/bluetooth.rs
-- `test_request_enable_bluetooth_returns_ok_on_non_android()` --calls--> `request_enable_bluetooth()`  [INFERRED]
+- `test_scan_devices_error_path_does_not_panic()` --calls--> `scan_devices()`  [INFERRED]
   tests/bluetooth_integration.rs → src/bluetooth.rs
 
 ## Import Cycles
@@ -71,8 +71,8 @@
 ## Communities (18 total, 4 thin omitted)
 
 ### Community 0 - "Android BT JNI & Errors"
-Cohesion: 0.16
-Nodes (22): Display, Error, Formatter, Into, JavaVM, JNIEnv, Result, Self (+14 more)
+Cohesion: 0.11
+Nodes (28): Display, Error, Formatter, Into, JavaVM, JNIEnv, Result, Self (+20 more)
 
 ### Community 1 - "Dioxus Framework Concepts"
 Cohesion: 0.08
@@ -87,8 +87,8 @@ Cohesion: 0.12
 Nodes (17): Project context, Rules, What you must NOT do, Your role (GREEN phase), Project context, Rules, What you must NOT do, Your role (REFACTOR phase) (+9 more)
 
 ### Community 4 - "BT Integration Tests & UI Flows"
-Cohesion: 0.18
-Nodes (11): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), enable_bluetooth_inner(), test_enable_bluetooth_inner_returns_ok_on_non_android(), bluetooth module (lib re-export), Review Report — Real BT Adapter State Detection, test_bt_enabled_stays_false_when_enable_bluetooth_returns_false, test_enable_bluetooth_returns_bool() (+3 more)
+Cohesion: 0.13
+Nodes (13): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), enable_bluetooth_inner(), test_enable_bluetooth_inner_returns_ok_on_non_android(), bluetooth module (lib re-export), Review Report — Real BT Adapter State Detection, test_bt_enabled_stays_false_when_enable_bluetooth_returns_false, test_enable_bluetooth_returns_bool() (+5 more)
 
 ### Community 5 - "Header SVG Assets"
 Cohesion: 0.40
@@ -119,28 +119,28 @@ Cohesion: 0.40
 Nodes (4): Project context, Rules, What you must NOT do, Your role (RED phase)
 
 ### Community 16 - "Community 16"
-Cohesion: 0.40
-Nodes (4): Final Status, Issues Found & Fixed, New Tests Added, Review Report — Replace confirm modal with Android Bluetooth enable dialog
+Cohesion: 0.53
+Nodes (5): Final Status, Issues Found & Fixed, New Tests Added, Review Report — Load bonded Bluetooth devices, Review Report — Replace confirm modal with Android Bluetooth enable dialog
 
 ## Knowledge Gaps
-- **83 isolated node(s):** `Display`, `Formatter`, `Into`, `Self`, `Vec` (+78 more)
+- **79 isolated node(s):** `Display`, `Formatter`, `Into`, `Self`, `JavaVM` (+74 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `scan_devices()` connect `Android BT JNI & Errors` to `UI App & State`, `TDD Workflow & Dev Standards`?**
-  _High betweenness centrality (0.047) - this node is a cross-community bridge._
+- **Why does `scan_devices()` connect `Android BT JNI & Errors` to `UI App & State`, `TDD Workflow & Dev Standards`, `BT Integration Tests & UI Flows`?**
+  _High betweenness centrality (0.064) - this node is a cross-community bridge._
 - **Why does `enable_bluetooth_inner()` connect `BT Integration Tests & UI Flows` to `Android BT JNI & Errors`, `UI App & State`?**
-  _High betweenness centrality (0.047) - this node is a cross-community bridge._
+  _High betweenness centrality (0.046) - this node is a cross-community bridge._
 - **Why does `tdd-test-writer Agent (RED phase)` connect `TDD Workflow & Dev Standards` to `Android BT JNI & Errors`?**
-  _High betweenness centrality (0.040) - this node is a cross-community bridge._
+  _High betweenness centrality (0.045) - this node is a cross-community bridge._
+- **Are the 3 inferred relationships involving `scan_devices()` (e.g. with `test_scan_devices_dispatches_to_inner()` and `test_scan_devices_error_path_does_not_panic()`) actually correct?**
+  _`scan_devices()` has 3 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 2 inferred relationships involving `scan_devices_inner()` (e.g. with `test_scan_devices_dispatches_to_inner()` and `test_scan_devices_simulation_non_empty()`) actually correct?**
+  _`scan_devices_inner()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `Display`, `Formatter`, `Into` to the rest of the system?**
-  _85 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Dioxus Framework Concepts` be split into smaller, more focused modules?**
-  _Cohesion score 0.08262108262108261 - nodes in this community are weakly interconnected._
-- **Should `TDD Workflow & Dev Standards` be split into smaller, more focused modules?**
-  _Cohesion score 0.11695906432748537 - nodes in this community are weakly interconnected._
-- **Should `Community 11` be split into smaller, more focused modules?**
-  _Cohesion score 0.14285714285714285 - nodes in this community are weakly interconnected._
+  _81 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Android BT JNI & Errors` be split into smaller, more focused modules?**
+  _Cohesion score 0.11261261261261261 - nodes in this community are weakly interconnected._

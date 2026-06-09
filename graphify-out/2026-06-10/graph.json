@@ -15,7 +15,7 @@
         "relation": "implement",
         "confidence": "INFERRED",
         "confidence_score": 0.85,
-        "source_file": "/home/orel/workspace/blue2th/AGENTS.md"
+        "source_file": "AGENTS.md"
       },
       {
         "id": "dioxus_fullstack_pipeline",
@@ -29,7 +29,7 @@
         "relation": "participate_in",
         "confidence": "EXTRACTED",
         "confidence_score": 1.0,
-        "source_file": "/home/orel/workspace/blue2th/AGENTS.md"
+        "source_file": "AGENTS.md"
       },
       {
         "id": "hyperedge_quality_gates",
@@ -44,7 +44,7 @@
         "relation": "implement",
         "confidence": "EXTRACTED",
         "confidence_score": 1.0,
-        "source_file": "/home/orel/workspace/blue2th/CLAUDE.md"
+        "source_file": "CLAUDE.md"
       },
       {
         "id": "tdd_cycle_bluetooth_feature",
@@ -229,31 +229,121 @@
       "norm_label": "disconnect_device()"
     },
     {
-      "label": "enable_bluetooth_inner()",
+      "label": "bt_err_clear()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
       "source_location": "L64",
-      "id": "src_bluetooth_enable_bluetooth_inner",
+      "id": "src_bluetooth_bt_err_clear",
       "community": 0,
+      "norm_label": "bt_err_clear()"
+    },
+    {
+      "label": "JNIEnv",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L64",
+      "id": "jnienv",
+      "community": 0,
+      "norm_label": "jnienv"
+    },
+    {
+      "label": "android_jni_env()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L73",
+      "id": "src_bluetooth_android_jni_env",
+      "community": 0,
+      "norm_label": "android_jni_env()"
+    },
+    {
+      "label": "JavaVM",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L73",
+      "id": "javavm",
+      "community": 0,
+      "norm_label": "javavm"
+    },
+    {
+      "label": "enable_bluetooth_inner()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L84",
+      "id": "src_bluetooth_enable_bluetooth_inner",
+      "community": 4,
       "norm_label": "enable_bluetooth_inner()"
     },
     {
       "label": "enable_bluetooth()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L103",
+      "source_location": "L125",
       "id": "src_bluetooth_enable_bluetooth",
-      "community": 0,
+      "community": 2,
       "norm_label": "enable_bluetooth()"
+    },
+    {
+      "label": "request_enable_bluetooth_inner()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L134",
+      "id": "src_bluetooth_request_enable_bluetooth_inner",
+      "community": 0,
+      "norm_label": "request_enable_bluetooth_inner()"
+    },
+    {
+      "label": "request_enable_bluetooth()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L214",
+      "id": "src_bluetooth_request_enable_bluetooth",
+      "community": 0,
+      "norm_label": "request_enable_bluetooth()"
     },
     {
       "label": "test_enable_bluetooth_inner_returns_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L111",
+      "source_location": "L222",
       "id": "src_bluetooth_test_enable_bluetooth_inner_returns_ok_on_non_android",
-      "community": 0,
+      "community": 4,
       "norm_label": "test_enable_bluetooth_inner_returns_ok_on_non_android()"
+    },
+    {
+      "label": "test_request_enable_bluetooth_inner_returns_ok_on_non_android()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L230",
+      "id": "src_bluetooth_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "community": 0,
+      "norm_label": "test_request_enable_bluetooth_inner_returns_ok_on_non_android()"
+    },
+    {
+      "label": "test_request_enable_bluetooth_returns_ok_on_non_android()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L241",
+      "id": "src_bluetooth_test_request_enable_bluetooth_returns_ok_on_non_android",
+      "community": 0,
+      "norm_label": "test_request_enable_bluetooth_returns_ok_on_non_android()"
+    },
+    {
+      "label": "test_bt_error_set_on_request_error()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L252",
+      "id": "src_bluetooth_test_bt_error_set_on_request_error",
+      "community": 0,
+      "norm_label": "test_bt_error_set_on_request_error()"
+    },
+    {
+      "label": "test_bt_enabled_true_on_non_android_ok()",
+      "file_type": "code",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L271",
+      "id": "src_bluetooth_test_bt_enabled_true_on_non_android_ok",
+      "community": 0,
+      "norm_label": "test_bt_enabled_true_on_non_android_ok()"
     },
     {
       "label": "lib.rs",
@@ -277,7 +367,7 @@
       "label": "ConnectionStatus",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L28",
+      "source_location": "L30",
       "id": "src_main_connectionstatus",
       "community": 2,
       "norm_label": "connectionstatus"
@@ -286,7 +376,7 @@
       "label": "status_icon()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L34",
+      "source_location": "L36",
       "id": "src_main_status_icon",
       "community": 2,
       "norm_label": "status_icon()"
@@ -295,7 +385,7 @@
       "label": "use_locale()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L44",
+      "source_location": "L46",
       "id": "src_main_use_locale",
       "community": 2,
       "norm_label": "use_locale()"
@@ -304,7 +394,7 @@
       "label": "Route",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L50",
+      "source_location": "L52",
       "id": "src_main_route",
       "community": 2,
       "norm_label": "route"
@@ -313,7 +403,7 @@
       "label": "main()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L57",
+      "source_location": "L59",
       "id": "src_main_main",
       "community": 2,
       "norm_label": "main()"
@@ -322,7 +412,7 @@
       "label": "App()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L62",
+      "source_location": "L64",
       "id": "src_main_app",
       "community": 2,
       "norm_label": "app()"
@@ -331,7 +421,7 @@
       "label": "Element",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L62",
+      "source_location": "L64",
       "id": "element",
       "community": 2,
       "norm_label": "element"
@@ -340,34 +430,16 @@
       "label": "Home()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L82",
+      "source_location": "L102",
       "id": "src_main_home",
       "community": 2,
       "norm_label": "home()"
     },
     {
-      "label": "ConfirmModal()",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L215",
-      "id": "src_main_confirmmodal",
-      "community": 4,
-      "norm_label": "confirmmodal()"
-    },
-    {
-      "label": "EventHandler",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L215",
-      "id": "eventhandler",
-      "community": 4,
-      "norm_label": "eventhandler"
-    },
-    {
       "label": "DeviceItem()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L246",
+      "source_location": "L247",
       "id": "src_main_deviceitem",
       "community": 2,
       "norm_label": "deviceitem()"
@@ -376,7 +448,7 @@
       "label": "String",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L246",
+      "source_location": "L247",
       "id": "src_main_rs_string",
       "community": 2,
       "norm_label": "string"
@@ -385,7 +457,7 @@
       "label": "Signal",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L246",
+      "source_location": "L247",
       "id": "signal",
       "community": 2,
       "norm_label": "signal"
@@ -394,7 +466,7 @@
       "label": "Vec",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L246",
+      "source_location": "L247",
       "id": "src_main_rs_vec",
       "community": 2,
       "norm_label": "vec"
@@ -403,7 +475,7 @@
       "label": "DeviceSettings()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L338",
+      "source_location": "L339",
       "id": "src_main_devicesettings",
       "community": 2,
       "norm_label": "devicesettings()"
@@ -454,498 +526,1207 @@
       "norm_label": "test_no_fake_activation_when_bt_returns_error()"
     },
     {
+      "label": "test_request_enable_bluetooth_inner_returns_ok_on_non_android()",
+      "file_type": "code",
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "L75",
+      "id": "tests_bluetooth_integration_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "community": 0,
+      "norm_label": "test_request_enable_bluetooth_inner_returns_ok_on_non_android()"
+    },
+    {
+      "label": "test_request_enable_bluetooth_returns_ok_on_non_android()",
+      "file_type": "code",
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "L87",
+      "id": "tests_bluetooth_integration_test_request_enable_bluetooth_returns_ok_on_non_android",
+      "community": 4,
+      "norm_label": "test_request_enable_bluetooth_returns_ok_on_non_android()"
+    },
+    {
+      "label": "tdd-implementer.md",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L1",
+      "id": "agents_tdd_implementer",
+      "community": 3,
+      "norm_label": "tdd-implementer.md"
+    },
+    {
+      "label": "Your role (GREEN phase)",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L9",
+      "id": "agents_tdd_implementer_your_role_green_phase",
+      "community": 3,
+      "norm_label": "your role (green phase)"
+    },
+    {
+      "label": "Project context",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L13",
+      "id": "agents_tdd_implementer_project_context",
+      "community": 3,
+      "norm_label": "project context"
+    },
+    {
+      "label": "Rules",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L20",
+      "id": "agents_tdd_implementer_rules",
+      "community": 3,
+      "norm_label": "rules"
+    },
+    {
+      "label": "What you must NOT do",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L36",
+      "id": "agents_tdd_implementer_what_you_must_not_do",
+      "community": 3,
+      "norm_label": "what you must not do"
+    },
+    {
+      "label": "tdd-reviewer.md",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L1",
+      "id": "agents_tdd_reviewer",
+      "community": 3,
+      "norm_label": "tdd-reviewer.md"
+    },
+    {
+      "label": "Your role (REFACTOR phase)",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L9",
+      "id": "agents_tdd_reviewer_your_role_refactor_phase",
+      "community": 3,
+      "norm_label": "your role (refactor phase)"
+    },
+    {
+      "label": "Project context",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L13",
+      "id": "agents_tdd_reviewer_project_context",
+      "community": 3,
+      "norm_label": "project context"
+    },
+    {
+      "label": "Rules",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L19",
+      "id": "agents_tdd_reviewer_rules",
+      "community": 3,
+      "norm_label": "rules"
+    },
+    {
+      "label": "What you must NOT do",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L58",
+      "id": "agents_tdd_reviewer_what_you_must_not_do",
+      "community": 3,
+      "norm_label": "what you must not do"
+    },
+    {
+      "label": "tdd-test-writer.md",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L1",
+      "id": "agents_tdd_test_writer",
+      "community": 15,
+      "norm_label": "tdd-test-writer.md"
+    },
+    {
+      "label": "Your role (RED phase)",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L9",
+      "id": "agents_tdd_test_writer_your_role_red_phase",
+      "community": 15,
+      "norm_label": "your role (red phase)"
+    },
+    {
+      "label": "Project context",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L13",
+      "id": "agents_tdd_test_writer_project_context",
+      "community": 15,
+      "norm_label": "project context"
+    },
+    {
+      "label": "Rules",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L20",
+      "id": "agents_tdd_test_writer_rules",
+      "community": 15,
+      "norm_label": "rules"
+    },
+    {
+      "label": "What you must NOT do",
+      "file_type": "document",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L35",
+      "id": "agents_tdd_test_writer_what_you_must_not_do",
+      "community": 15,
+      "norm_label": "what you must not do"
+    },
+    {
+      "label": "SKILL.md",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L1",
+      "id": "tdd_skill",
+      "community": 11,
+      "norm_label": "skill.md"
+    },
+    {
+      "label": "/tdd \u2014 TDD Workflow Skill",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L1",
+      "id": "tdd_skill_tdd_tdd_workflow_skill",
+      "community": 11,
+      "norm_label": "/tdd \u2014 tdd workflow skill"
+    },
+    {
+      "label": "Usage",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L6",
+      "id": "tdd_skill_usage",
+      "community": 11,
+      "norm_label": "usage"
+    },
+    {
+      "label": "Steps",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L9",
+      "id": "tdd_skill_steps",
+      "community": 11,
+      "norm_label": "steps"
+    },
+    {
+      "label": "1. Validate the feature spec",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L11",
+      "id": "tdd_skill_1_validate_the_feature_spec",
+      "community": 11,
+      "norm_label": "1. validate the feature spec"
+    },
+    {
+      "label": "2. Determine the phase",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L16",
+      "id": "tdd_skill_2_determine_the_phase",
+      "community": 11,
+      "norm_label": "2. determine the phase"
+    },
+    {
+      "label": "3. Create or reuse the feature worktree",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L25",
+      "id": "tdd_skill_3_create_or_reuse_the_feature_worktree",
+      "community": 11,
+      "norm_label": "3. create or reuse the feature worktree"
+    },
+    {
+      "label": "4. Spawn agents with targeted context",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L58",
+      "id": "tdd_skill_4_spawn_agents_with_targeted_context",
+      "community": 11,
+      "norm_label": "4. spawn agents with targeted context"
+    },
+    {
+      "label": "RED \u2014 tdd-test-writer",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L65",
+      "id": "tdd_skill_red_tdd_test_writer",
+      "community": 11,
+      "norm_label": "red \u2014 tdd-test-writer"
+    },
+    {
+      "label": "GREEN \u2014 tdd-implementer",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L87",
+      "id": "tdd_skill_green_tdd_implementer",
+      "community": 11,
+      "norm_label": "green \u2014 tdd-implementer"
+    },
+    {
+      "label": "REFACTOR \u2014 tdd-reviewer",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L130",
+      "id": "tdd_skill_refactor_tdd_reviewer",
+      "community": 11,
+      "norm_label": "refactor \u2014 tdd-reviewer"
+    },
+    {
+      "label": "5. Sequencing for `all`",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L176",
+      "id": "tdd_skill_5_sequencing_for_all",
+      "community": 11,
+      "norm_label": "5. sequencing for `all`"
+    },
+    {
+      "label": "6. Final report",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L181",
+      "id": "tdd_skill_6_final_report",
+      "community": 11,
+      "norm_label": "6. final report"
+    },
+    {
+      "label": "7. `done` \u2014 cleanup after merge",
+      "file_type": "document",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L195",
+      "id": "tdd_skill_7_done_cleanup_after_merge",
+      "community": 11,
+      "norm_label": "7. `done` \u2014 cleanup after merge"
+    },
+    {
+      "label": "AGENTS.md",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L1",
+      "id": "agents",
+      "community": 1,
+      "norm_label": "agents.md"
+    },
+    {
+      "label": "Dioxus Dependency",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L5",
+      "id": "agents_dioxus_dependency",
+      "community": 1,
+      "norm_label": "dioxus dependency"
+    },
+    {
+      "label": "Launching your application",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L20",
+      "id": "agents_launching_your_application",
+      "community": 1,
+      "norm_label": "launching your application"
+    },
+    {
+      "label": "UI with RSX",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L44",
+      "id": "agents_ui_with_rsx",
+      "community": 1,
+      "norm_label": "ui with rsx"
+    },
+    {
+      "label": "Assets",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L67",
+      "id": "agents_assets",
+      "community": 1,
+      "norm_label": "assets"
+    },
+    {
+      "label": "Styles",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L80",
+      "id": "agents_styles",
+      "community": 1,
+      "norm_label": "styles"
+    },
+    {
+      "label": "Components",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L92",
+      "id": "agents_components",
+      "community": 1,
+      "norm_label": "components"
+    },
+    {
+      "label": "State",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L127",
+      "id": "agents_state",
+      "community": 1,
+      "norm_label": "state"
+    },
+    {
+      "label": "Local State",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L131",
+      "id": "agents_local_state",
+      "community": 1,
+      "norm_label": "local state"
+    },
+    {
+      "label": "Context API",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L158",
+      "id": "agents_context_api",
+      "community": 1,
+      "norm_label": "context api"
+    },
+    {
+      "label": "Async",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L181",
+      "id": "agents_async",
+      "community": 1,
+      "norm_label": "async"
+    },
+    {
+      "label": "Routing",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L201",
+      "id": "agents_routing",
+      "community": 1,
+      "norm_label": "routing"
+    },
+    {
+      "label": "Fullstack",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L237",
+      "id": "agents_fullstack",
+      "community": 1,
+      "norm_label": "fullstack"
+    },
+    {
+      "label": "Server Functions",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L245",
+      "id": "agents_server_functions",
+      "community": 1,
+      "norm_label": "server functions"
+    },
+    {
+      "label": "Hydration",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L257",
+      "id": "agents_hydration",
+      "community": 1,
+      "norm_label": "hydration"
+    },
+    {
+      "label": "Errors",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": "L261",
+      "id": "agents_errors",
+      "community": 1,
+      "norm_label": "errors"
+    },
+    {
+      "label": "CLAUDE.md",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L1",
+      "id": "claude",
+      "community": 13,
+      "norm_label": "claude.md"
+    },
+    {
+      "label": "Language",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L1",
+      "id": "claude_language",
+      "community": 13,
+      "norm_label": "language"
+    },
+    {
+      "label": "Quality Commands",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L9",
+      "id": "claude_quality_commands",
+      "community": 13,
+      "norm_label": "quality commands"
+    },
+    {
+      "label": "Code Guidelines",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L19",
+      "id": "claude_code_guidelines",
+      "community": 13,
+      "norm_label": "code guidelines"
+    },
+    {
+      "label": "Error Handling",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L21",
+      "id": "claude_error_handling",
+      "community": 13,
+      "norm_label": "error handling"
+    },
+    {
+      "label": "Naming",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L27",
+      "id": "claude_naming",
+      "community": 13,
+      "norm_label": "naming"
+    },
+    {
+      "label": "Rust Style",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L33",
+      "id": "claude_rust_style",
+      "community": 13,
+      "norm_label": "rust style"
+    },
+    {
+      "label": "tdd",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L39",
+      "id": "claude_tdd",
+      "community": 13,
+      "norm_label": "tdd"
+    },
+    {
+      "label": "graphify",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "source_location": "L45",
+      "id": "claude_graphify",
+      "community": 13,
+      "norm_label": "graphify"
+    },
+    {
+      "label": "README.md",
+      "file_type": "document",
+      "source_file": "README.md",
+      "source_location": "L1",
+      "id": "readme",
+      "community": 17,
+      "norm_label": "readme.md"
+    },
+    {
+      "label": "Development",
+      "file_type": "document",
+      "source_file": "README.md",
+      "source_location": "L1",
+      "id": "readme_development",
+      "community": 17,
+      "norm_label": "development"
+    },
+    {
+      "label": "Serving Your App",
+      "file_type": "document",
+      "source_file": "README.md",
+      "source_location": "L13",
+      "id": "readme_serving_your_app",
+      "community": 17,
+      "norm_label": "serving your app"
+    },
+    {
+      "label": "README.md",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L1",
+      "id": "tdd_readme",
+      "community": 14,
+      "norm_label": "readme.md"
+    },
+    {
+      "label": "TDD Workflow \u2014 blue2th",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L1",
+      "id": "tdd_readme_tdd_workflow_blue2th",
+      "community": 14,
+      "norm_label": "tdd workflow \u2014 blue2th"
+    },
+    {
+      "label": "Usage",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L5",
+      "id": "tdd_readme_usage",
+      "community": 14,
+      "norm_label": "usage"
+    },
+    {
+      "label": "Before running",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L18",
+      "id": "tdd_readme_before_running",
+      "community": 14,
+      "norm_label": "before running"
+    },
+    {
+      "label": "Structure",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L27",
+      "id": "tdd_readme_structure",
+      "community": 14,
+      "norm_label": "structure"
+    },
+    {
+      "label": "After the cycle",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L43",
+      "id": "tdd_readme_after_the_cycle",
+      "community": 14,
+      "norm_label": "after the cycle"
+    },
+    {
+      "label": "Rust / Dioxus notes",
+      "file_type": "document",
+      "source_file": "tdd/README.md",
+      "source_location": "L50",
+      "id": "tdd_readme_rust_dioxus_notes",
+      "community": 14,
+      "norm_label": "rust / dioxus notes"
+    },
+    {
+      "label": "REVIEW.md",
+      "file_type": "document",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L1",
+      "id": "tdd_review",
+      "community": 16,
+      "norm_label": "review.md"
+    },
+    {
+      "label": "Review Report \u2014 Replace confirm modal with Android Bluetooth enable dialog",
+      "file_type": "document",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L1",
+      "id": "tdd_review_review_report_replace_confirm_modal_with_android_bluetooth_enable_dialog",
+      "community": 16,
+      "norm_label": "review report \u2014 replace confirm modal with android bluetooth enable dialog"
+    },
+    {
+      "label": "Issues Found & Fixed",
+      "file_type": "document",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L3",
+      "id": "tdd_review_issues_found_fixed",
+      "community": 16,
+      "norm_label": "issues found & fixed"
+    },
+    {
+      "label": "New Tests Added",
+      "file_type": "document",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L9",
+      "id": "tdd_review_new_tests_added",
+      "community": 16,
+      "norm_label": "new tests added"
+    },
+    {
+      "label": "Final Status",
+      "file_type": "document",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L13",
+      "id": "tdd_review_final_status",
+      "community": 16,
+      "norm_label": "final status"
+    },
+    {
+      "label": "feature.md",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L1",
+      "id": "tdd_feature",
+      "community": 12,
+      "norm_label": "feature.md"
+    },
+    {
+      "label": "TDD Feature Specification",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L1",
+      "id": "tdd_feature_tdd_feature_specification",
+      "community": 12,
+      "norm_label": "tdd feature specification"
+    },
+    {
+      "label": "Feature Name",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L8",
+      "id": "tdd_feature_feature_name",
+      "community": 12,
+      "norm_label": "feature name"
+    },
+    {
+      "label": "Description",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L12",
+      "id": "tdd_feature_description",
+      "community": 12,
+      "norm_label": "description"
+    },
+    {
+      "label": "Acceptance Criteria",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L16",
+      "id": "tdd_feature_acceptance_criteria",
+      "community": 12,
+      "norm_label": "acceptance criteria"
+    },
+    {
+      "label": "Technical Scope",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L20",
+      "id": "tdd_feature_technical_scope",
+      "community": 12,
+      "norm_label": "technical scope"
+    },
+    {
+      "label": "Files to modify",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L22",
+      "id": "tdd_feature_files_to_modify",
+      "community": 12,
+      "norm_label": "files to modify"
+    },
+    {
+      "label": "Files to create",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L26",
+      "id": "tdd_feature_files_to_create",
+      "community": 12,
+      "norm_label": "files to create"
+    },
+    {
+      "label": "Server functions needed",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L30",
+      "id": "tdd_feature_server_functions_needed",
+      "community": 12,
+      "norm_label": "server functions needed"
+    },
+    {
+      "label": "Test Strategy",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L34",
+      "id": "tdd_feature_test_strategy",
+      "community": 12,
+      "norm_label": "test strategy"
+    },
+    {
+      "label": "Unit tests (synchronous, pure logic)",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L36",
+      "id": "tdd_feature_unit_tests_synchronous_pure_logic",
+      "community": 12,
+      "norm_label": "unit tests (synchronous, pure logic)"
+    },
+    {
+      "label": "Integration tests (async, server functions)",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L40",
+      "id": "tdd_feature_integration_tests_async_server_functions",
+      "community": 12,
+      "norm_label": "integration tests (async, server functions)"
+    },
+    {
+      "label": "Constraints & Notes",
+      "file_type": "document",
+      "source_file": "tdd/feature.md",
+      "source_location": "L44",
+      "id": "tdd_feature_constraints_notes",
+      "community": 12,
+      "norm_label": "constraints & notes"
+    },
+    {
+      "label": "ConfirmModal()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L215",
+      "community": 2,
+      "norm_label": "confirmmodal()",
+      "id": "src_main_confirmmodal"
+    },
+    {
+      "label": "EventHandler",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L215",
+      "community": 2,
+      "norm_label": "eventhandler",
+      "id": "eventhandler"
+    },
+    {
       "label": "Conventional Commits Validation Hook",
       "file_type": "code",
-      "source_file": "/home/orel/workspace/blue2th/.githooks/commit-msg",
+      "source_file": ".githooks/commit-msg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "githooks_commit_msg_conventional_commits",
       "community": 3,
-      "norm_label": "conventional commits validation hook"
+      "norm_label": "conventional commits validation hook",
+      "id": "githooks_commit_msg_conventional_commits"
     },
     {
       "label": "Conventional Commits specification",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/.githooks/commit-msg",
+      "source_file": ".githooks/commit-msg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "concept_conventional_commits",
       "community": 3,
-      "norm_label": "conventional commits specification"
+      "norm_label": "conventional commits specification",
+      "id": "concept_conventional_commits"
     },
     {
       "label": "Pre-commit Quality Gate",
       "file_type": "code",
-      "source_file": "/home/orel/workspace/blue2th/.githooks/pre-commit",
+      "source_file": ".githooks/pre-commit",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "githooks_pre_commit_quality_gate",
       "community": 3,
-      "norm_label": "pre-commit quality gate"
+      "norm_label": "pre-commit quality gate",
+      "id": "githooks_pre_commit_quality_gate"
     },
     {
       "label": "Clippy strict quality gate",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/.githooks/pre-commit",
+      "source_file": ".githooks/pre-commit",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "concept_clippy_quality_gate",
       "community": 3,
-      "norm_label": "clippy strict quality gate"
+      "norm_label": "clippy strict quality gate",
+      "id": "concept_clippy_quality_gate"
     },
     {
       "label": "tdd-test-writer Agent (RED phase)",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/.claude/agents/tdd-test-writer.md",
+      "source_file": ".claude/agents/tdd-test-writer.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "claude_agents_tdd_test_writer",
       "community": 3,
-      "norm_label": "tdd-test-writer agent (red phase)"
+      "norm_label": "tdd-test-writer agent (red phase)",
+      "id": "claude_agents_tdd_test_writer"
     },
     {
       "label": "Dioxus 0.7 Framework",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "1",
       "source_url": "https://dioxuslabs.com/learn/0.7",
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_dioxus_07",
       "community": 8,
-      "norm_label": "dioxus 0.7 framework"
+      "norm_label": "dioxus 0.7 framework",
+      "id": "agents_dioxus_07"
     },
     {
       "label": "dioxus::launch Entry Point",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "28",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_dioxus_launch",
       "community": 1,
-      "norm_label": "dioxus::launch entry point"
+      "norm_label": "dioxus::launch entry point",
+      "id": "agents_dioxus_launch"
     },
     {
       "label": "App Root Component",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "32",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_app_component",
       "community": 1,
-      "norm_label": "app root component"
+      "norm_label": "app root component",
+      "id": "agents_app_component"
     },
     {
       "label": "RSX Macro (UI DSL)",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "47",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_rsx_macro",
       "community": 1,
-      "norm_label": "rsx macro (ui dsl)"
+      "norm_label": "rsx macro (ui dsl)",
+      "id": "agents_rsx_macro"
     },
     {
       "label": "Component Model",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "94",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_component_model",
       "community": 1,
-      "norm_label": "component model"
+      "norm_label": "component model",
+      "id": "agents_component_model"
     },
     {
       "label": "Signal (Reactive State)",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "129",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_signal",
       "community": 1,
-      "norm_label": "signal (reactive state)"
+      "norm_label": "signal (reactive state)",
+      "id": "agents_signal"
     },
     {
       "label": "use_signal Hook",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "133",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_use_signal",
       "community": 1,
-      "norm_label": "use_signal hook"
+      "norm_label": "use_signal hook",
+      "id": "agents_use_signal"
     },
     {
       "label": "use_memo Hook",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "135",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_use_memo",
       "community": 1,
-      "norm_label": "use_memo hook"
-    },
-    {
-      "label": "Context API (use_context_provider / use_context)",
-      "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "158",
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_context_api",
-      "community": 1,
-      "norm_label": "context api (use_context_provider / use_context)"
+      "norm_label": "use_memo hook",
+      "id": "agents_use_memo"
     },
     {
       "label": "use_resource Hook (Async State)",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "183",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_use_resource",
       "community": 1,
-      "norm_label": "use_resource hook (async state)"
-    },
-    {
-      "label": "Dioxus Routing (Routable Enum)",
-      "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "203",
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_routing",
-      "community": 1,
-      "norm_label": "dioxus routing (routable enum)"
-    },
-    {
-      "label": "Fullstack Mode (Server + Client Split)",
-      "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "237",
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_fullstack",
-      "community": 1,
-      "norm_label": "fullstack mode (server + client split)"
-    },
-    {
-      "label": "Server Functions (#[post] / #[get] macros)",
-      "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "245",
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_server_functions",
-      "community": 1,
-      "norm_label": "server functions (#[post] / #[get] macros)"
-    },
-    {
-      "label": "Hydration (SSR to Client Takeover)",
-      "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "257",
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_hydration",
-      "community": 1,
-      "norm_label": "hydration (ssr to client takeover)"
+      "norm_label": "use_resource hook (async state)",
+      "id": "agents_use_resource"
     },
     {
       "label": "use_server_future Hook",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "264",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_use_server_future",
       "community": 1,
-      "norm_label": "use_server_future hook"
+      "norm_label": "use_server_future hook",
+      "id": "agents_use_server_future"
     },
     {
       "label": "asset! Macro",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "69",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_asset_macro",
       "community": 1,
-      "norm_label": "asset! macro"
+      "norm_label": "asset! macro",
+      "id": "agents_asset_macro"
     },
     {
       "label": "document::Stylesheet Component",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
+      "source_file": "AGENTS.md",
       "source_location": "82",
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "agents_stylesheet_component",
       "community": 1,
-      "norm_label": "document::stylesheet component"
+      "norm_label": "document::stylesheet component",
+      "id": "agents_stylesheet_component"
     },
     {
       "label": "CLAUDE.md Project Instructions",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/CLAUDE.md",
+      "source_file": "CLAUDE.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "claude_md_project_instructions",
       "community": 3,
-      "norm_label": "claude.md project instructions"
+      "norm_label": "claude.md project instructions",
+      "id": "claude_md_project_instructions"
     },
     {
       "label": "README Project Overview",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/README.md",
+      "source_file": "README.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "readme_project_overview",
       "community": 2,
-      "norm_label": "readme project overview"
+      "norm_label": "readme project overview",
+      "id": "readme_project_overview"
     },
     {
       "label": "English translations (en.yaml)",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/locales/en.yaml",
+      "source_file": "locales/en.yaml",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "locales_en_translations",
       "community": 7,
-      "norm_label": "english translations (en.yaml)"
+      "norm_label": "english translations (en.yaml)",
+      "id": "locales_en_translations"
     },
     {
       "label": "French translations (fr.yaml)",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/locales/fr.yaml",
+      "source_file": "locales/fr.yaml",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "locales_fr_translations",
       "community": 7,
-      "norm_label": "french translations (fr.yaml)"
+      "norm_label": "french translations (fr.yaml)",
+      "id": "locales_fr_translations"
     },
     {
       "label": "TDD Workflow README",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/tdd/README.md",
+      "source_file": "tdd/README.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "tdd_readme_workflow",
       "community": 3,
-      "norm_label": "tdd workflow readme"
+      "norm_label": "tdd workflow readme",
+      "id": "tdd_readme_workflow"
     },
     {
       "label": "TDD Feature Specification (feature.md)",
       "file_type": "document",
-      "source_file": "/home/orel/workspace/blue2th/tdd/feature.md",
+      "source_file": "tdd/feature.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "tdd_feature_spec",
       "community": 10,
-      "norm_label": "tdd feature specification (feature.md)"
+      "norm_label": "tdd feature specification (feature.md)",
+      "id": "tdd_feature_spec"
     },
     {
       "label": "Bluetooth SVG Icon",
       "file_type": "image",
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
+      "source_file": "assets/bluetooth.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_bluetooth_svg",
       "community": 6,
-      "norm_label": "bluetooth svg icon"
+      "norm_label": "bluetooth svg icon",
+      "id": "assets_bluetooth_svg"
     },
     {
       "label": "Bluetooth Symbol",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
+      "source_file": "assets/bluetooth.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_bluetooth_bluetooth_symbol",
       "community": 6,
-      "norm_label": "bluetooth symbol"
+      "norm_label": "bluetooth symbol",
+      "id": "assets_bluetooth_bluetooth_symbol"
     },
     {
       "label": "Blue Color Scheme (#2563eb)",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
+      "source_file": "assets/bluetooth.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_bluetooth_blue_color",
       "community": 6,
-      "norm_label": "blue color scheme (#2563eb)"
+      "norm_label": "blue color scheme (#2563eb)",
+      "id": "assets_bluetooth_blue_color"
     },
     {
       "label": "24x24 Icon Format",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
+      "source_file": "assets/bluetooth.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_bluetooth_24px_icon",
       "community": 6,
-      "norm_label": "24x24 icon format"
+      "norm_label": "24x24 icon format",
+      "id": "assets_bluetooth_24px_icon"
     },
     {
       "label": "Animated SVG Header Logo",
       "file_type": "image",
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
+      "source_file": "assets/header.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_header_logo_animation",
       "community": 5,
-      "norm_label": "animated svg header logo"
+      "norm_label": "animated svg header logo",
+      "id": "assets_header_logo_animation"
     },
     {
       "label": "Blue2th Brand Name (text)",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
+      "source_file": "assets/header.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_header_brand_name",
       "community": 5,
-      "norm_label": "blue2th brand name (text)"
+      "norm_label": "blue2th brand name (text)",
+      "id": "assets_header_brand_name"
     },
     {
       "label": "Lightbulb Icon (Bluetooth symbol motif)",
       "file_type": "image",
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
+      "source_file": "assets/header.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_header_lightbulb_icon",
       "community": 5,
-      "norm_label": "lightbulb icon (bluetooth symbol motif)"
+      "norm_label": "lightbulb icon (bluetooth symbol motif)",
+      "id": "assets_header_lightbulb_icon"
     },
     {
       "label": "Animated Device / Screen UI Element",
       "file_type": "image",
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
+      "source_file": "assets/header.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_header_device_animation",
       "community": 5,
-      "norm_label": "animated device / screen ui element"
+      "norm_label": "animated device / screen ui element",
+      "id": "assets_header_device_animation"
     },
     {
       "label": "Tagline / Subtitle Text (is inter / is intersectable / is interesting)",
       "file_type": "concept",
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
+      "source_file": "assets/header.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_header_tagline_text",
       "community": 5,
-      "norm_label": "tagline / subtitle text (is inter / is intersectable / is interesting)"
+      "norm_label": "tagline / subtitle text (is inter / is intersectable / is interesting)",
+      "id": "assets_header_tagline_text"
     },
     {
       "label": "Dark Background with Cyan and Red-Orange Accent Colors",
       "file_type": "rationale",
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
+      "source_file": "assets/header.svg",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "assets_header_color_scheme",
       "community": 5,
-      "norm_label": "dark background with cyan and red-orange accent colors"
+      "norm_label": "dark background with cyan and red-orange accent colors",
+      "id": "assets_header_color_scheme"
     },
     {
       "label": "bluetooth module (lib re-export)",
@@ -956,9 +1737,9 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "src_lib_bluetooth_mod",
-      "community": 0,
-      "norm_label": "bluetooth module (lib re-export)"
+      "community": 4,
+      "norm_label": "bluetooth module (lib re-export)",
+      "id": "src_lib_bluetooth_mod"
     },
     {
       "label": "test_bt_enabled_stays_false_when_enable_bluetooth_returns_false",
@@ -969,35 +1750,9 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false",
       "community": 4,
-      "norm_label": "test_bt_enabled_stays_false_when_enable_bluetooth_returns_false"
-    },
-    {
-      "label": "tdd-implementer agent (GREEN phase)",
-      "file_type": "document",
-      "source_file": ".claude/agents/tdd-implementer.md",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_tdd_implementer",
-      "community": 3,
-      "norm_label": "tdd-implementer agent (green phase)"
-    },
-    {
-      "label": "tdd-reviewer agent (REFACTOR phase)",
-      "file_type": "document",
-      "source_file": ".claude/agents/tdd-reviewer.md",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "agents_tdd_reviewer",
-      "community": 3,
-      "norm_label": "tdd-reviewer agent (refactor phase)"
+      "norm_label": "test_bt_enabled_stays_false_when_enable_bluetooth_returns_false",
+      "id": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false"
     },
     {
       "label": "TDD Workflow Skill",
@@ -1008,9 +1763,9 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "skills_tdd_skill",
       "community": 3,
-      "norm_label": "tdd workflow skill"
+      "norm_label": "tdd workflow skill",
+      "id": "skills_tdd_skill"
     },
     {
       "label": "Review Report \u2014 Real BT Adapter State Detection",
@@ -1021,9 +1776,9 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "tdd_review_report",
       "community": 4,
-      "norm_label": "review report \u2014 real bt adapter state detection"
+      "norm_label": "review report \u2014 real bt adapter state detection",
+      "id": "tdd_review_report"
     },
     {
       "label": "JNI Android Bluetooth Detection",
@@ -1035,9 +1790,9 @@
       "author": null,
       "contributor": null,
       "rationale": "Uses ndk-context to obtain the JavaVM pointer, then calls BluetoothAdapter.getDefaultAdapter() and isEnabled() via JNI to detect real adapter state on Android. The SAFETY invariant is that ndk-context stores the pointer set by the Android runtime before any Rust code runs.",
-      "id": "concept_jni_android_bluetooth",
-      "community": 0,
-      "norm_label": "jni android bluetooth detection"
+      "community": 4,
+      "norm_label": "jni android bluetooth detection",
+      "id": "concept_jni_android_bluetooth"
     },
     {
       "label": "TDD Red-Green-Refactor Cycle",
@@ -1048,9 +1803,9 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "concept_tdd_red_green_refactor",
       "community": 3,
-      "norm_label": "tdd red-green-refactor cycle"
+      "norm_label": "tdd red-green-refactor cycle",
+      "id": "concept_tdd_red_green_refactor"
     },
     {
       "label": "Platform-Conditional Compilation (#[cfg(target_os)])",
@@ -1061,9 +1816,9 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "concept_platform_conditional_compilation",
-      "community": 0,
-      "norm_label": "platform-conditional compilation (#[cfg(target_os)])"
+      "community": 4,
+      "norm_label": "platform-conditional compilation (#[cfg(target_os)])",
+      "id": "concept_platform_conditional_compilation"
     }
   ],
   "links": [
@@ -1071,10 +1826,30 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L16",
+      "source_location": "L73",
       "weight": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_bluetootherror",
+      "target": "src_bluetooth_android_jni_env",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L16",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_bluetootherror"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L64",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_bt_err_clear",
       "confidence_score": 1.0
     },
     {
@@ -1083,9 +1858,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L53",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_connect_device",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_connect_device"
     },
     {
       "relation": "contains",
@@ -1093,9 +1868,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L58",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_disconnect_device",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_disconnect_device"
     },
     {
       "relation": "contains",
@@ -1103,9 +1878,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L103",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_enable_bluetooth",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_enable_bluetooth"
     },
     {
       "relation": "contains",
@@ -1113,8 +1888,28 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L99",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_enable_bluetooth_inner",
+      "target": "src_bluetooth_enable_bluetooth_inner"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L214",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_request_enable_bluetooth",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L209",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_request_enable_bluetooth_inner",
       "confidence_score": 1.0
     },
     {
@@ -1123,8 +1918,28 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L33",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_scan_devices",
+      "target": "src_bluetooth_scan_devices"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L271",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_test_bt_enabled_true_on_non_android_ok",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L252",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_test_bt_error_set_on_request_error",
       "confidence_score": 1.0
     },
     {
@@ -1133,8 +1948,39 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L111",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_test_enable_bluetooth_inner_returns_ok_on_non_android",
+      "target": "src_bluetooth_test_enable_bluetooth_inner_returns_ok_on_non_android"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L230",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L241",
+      "weight": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_test_request_enable_bluetooth_returns_ok_on_non_android",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_bluetooth_android_jni_env",
+      "target": "src_bluetooth_bluetootherror",
       "confidence_score": 1.0
     },
     {
@@ -1143,9 +1989,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L18",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror",
-      "target": "display",
-      "confidence_score": 1.0
+      "target": "display"
     },
     {
       "relation": "implements",
@@ -1153,9 +1999,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L24",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror",
-      "target": "error",
-      "confidence_score": 1.0
+      "target": "error"
     },
     {
       "relation": "method",
@@ -1163,9 +2009,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L19",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror",
-      "target": "src_bluetooth_bluetootherror_fmt",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_bluetootherror_fmt"
     },
     {
       "relation": "method",
@@ -1173,152 +2019,240 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L28",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror",
+      "target": "src_bluetooth_bluetootherror_new"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L64",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_bluetooth_bt_err_clear",
+      "target": "src_bluetooth_bluetootherror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L53",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_connect_device",
+      "target": "src_bluetooth_bluetootherror"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L58",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_disconnect_device",
+      "target": "src_bluetooth_bluetootherror"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L103",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_enable_bluetooth",
+      "target": "src_bluetooth_bluetootherror"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L99",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_enable_bluetooth_inner",
+      "target": "src_bluetooth_bluetootherror"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L214",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_bluetooth_request_enable_bluetooth",
+      "target": "src_bluetooth_bluetootherror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L209",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_bluetooth_request_enable_bluetooth_inner",
+      "target": "src_bluetooth_bluetootherror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L33",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_scan_devices",
+      "target": "src_bluetooth_bluetootherror"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L19",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_bluetootherror_fmt",
+      "target": "formatter"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L19",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_bluetootherror_fmt",
+      "target": "result"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_bluetooth_android_jni_env",
+      "target": "result",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L53",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_connect_device",
+      "target": "result"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L58",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_disconnect_device",
+      "target": "result"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L103",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_enable_bluetooth",
+      "target": "result"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L99",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_enable_bluetooth_inner",
+      "target": "result"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L214",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_bluetooth_request_enable_bluetooth",
+      "target": "result",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L209",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "src_bluetooth_request_enable_bluetooth_inner",
+      "target": "result",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L33",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_scan_devices",
+      "target": "result"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L64",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "src_bluetooth_bt_err_clear",
+      "target": "error",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L80",
+      "weight": 1.0,
+      "source": "src_bluetooth_android_jni_env",
       "target": "src_bluetooth_bluetootherror_new",
       "confidence_score": 1.0
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L53",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_connect_device",
-      "target": "src_bluetooth_bluetootherror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L58",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_bluetootherror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L103",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_enable_bluetooth",
-      "target": "src_bluetooth_bluetootherror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L99",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_enable_bluetooth_inner",
-      "target": "src_bluetooth_bluetootherror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L33",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_scan_devices",
-      "target": "src_bluetooth_bluetootherror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L19",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_bluetootherror_fmt",
-      "target": "formatter",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L19",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_bluetootherror_fmt",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L53",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_connect_device",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L58",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_disconnect_device",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L103",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_enable_bluetooth",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L99",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_enable_bluetooth_inner",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L33",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_scan_devices",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
       "source_location": "L28",
       "weight": 1.0,
       "context": "parameter_type",
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror_new",
-      "target": "into",
-      "confidence_score": 1.0
+      "target": "into"
     },
     {
       "relation": "references",
@@ -1327,9 +2261,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L28",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror_new",
-      "target": "self",
-      "confidence_score": 1.0
+      "target": "self"
     },
     {
       "relation": "references",
@@ -1338,8 +2272,19 @@
       "source_location": "L28",
       "weight": 1.0,
       "context": "generic_arg",
+      "confidence_score": 1.0,
       "source": "src_bluetooth_bluetootherror_new",
-      "target": "src_bluetooth_rs_string",
+      "target": "src_bluetooth_rs_string"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L69",
+      "weight": 1.0,
+      "source": "src_bluetooth_bt_err_clear",
+      "target": "src_bluetooth_bluetootherror_new",
       "confidence_score": 1.0
     },
     {
@@ -1349,7 +2294,29 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L69",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_enable_bluetooth_inner",
+      "target": "src_bluetooth_bluetootherror_new"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L141",
+      "weight": 1.0,
+      "source": "src_bluetooth_request_enable_bluetooth_inner",
+      "target": "src_bluetooth_bluetootherror_new",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L254",
+      "weight": 1.0,
+      "source": "src_bluetooth_test_bt_error_set_on_request_error",
       "target": "src_bluetooth_bluetootherror_new",
       "confidence_score": 1.0
     },
@@ -1360,9 +2327,9 @@
       "source_location": "L53",
       "weight": 1.0,
       "context": "parameter_type",
+      "confidence_score": 1.0,
       "source": "src_bluetooth_connect_device",
-      "target": "src_bluetooth_rs_string",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_rs_string"
     },
     {
       "relation": "references",
@@ -1371,9 +2338,9 @@
       "source_location": "L58",
       "weight": 1.0,
       "context": "parameter_type",
+      "confidence_score": 1.0,
       "source": "src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_rs_string",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_rs_string"
     },
     {
       "relation": "references",
@@ -1382,15 +2349,15 @@
       "source_location": "L33",
       "weight": 1.0,
       "context": "generic_arg",
+      "confidence_score": 1.0,
       "source": "src_bluetooth_scan_devices",
-      "target": "src_bluetooth_rs_string",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_rs_string"
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/.claude/agents/tdd-test-writer.md",
+      "source_file": ".claude/agents/tdd-test-writer.md",
       "source_location": null,
       "weight": 1.0,
       "source": "claude_agents_tdd_test_writer",
@@ -1403,9 +2370,9 @@
       "source_location": "L33",
       "weight": 1.0,
       "context": "generic_arg",
+      "confidence_score": 1.0,
       "source": "src_bluetooth_scan_devices",
-      "target": "src_bluetooth_rs_vec",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_rs_vec"
     },
     {
       "relation": "calls",
@@ -1436,6 +2403,83 @@
       "weight": 1.0,
       "source": "src_main_deviceitem",
       "target": "src_bluetooth_disconnect_device"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L64",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "src_bluetooth_bt_err_clear",
+      "target": "jnienv",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L99",
+      "weight": 1.0,
+      "source": "src_bluetooth_enable_bluetooth_inner",
+      "target": "src_bluetooth_bt_err_clear",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L151",
+      "weight": 1.0,
+      "source": "src_bluetooth_request_enable_bluetooth_inner",
+      "target": "src_bluetooth_bt_err_clear",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_bluetooth_android_jni_env",
+      "target": "jnienv",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "src_bluetooth_android_jni_env",
+      "target": "javavm",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L90",
+      "weight": 1.0,
+      "source": "src_bluetooth_enable_bluetooth_inner",
+      "target": "src_bluetooth_android_jni_env",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L142",
+      "weight": 1.0,
+      "source": "src_bluetooth_request_enable_bluetooth_inner",
+      "target": "src_bluetooth_android_jni_env",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -1523,6 +2567,17 @@
     },
     {
       "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/main.rs",
+      "source_location": "L80",
+      "weight": 1.0,
+      "source": "src_main_app",
+      "target": "src_bluetooth_enable_bluetooth"
+    },
+    {
+      "relation": "calls",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/main.rs",
@@ -1532,14 +2587,69 @@
       "target": "src_bluetooth_enable_bluetooth"
     },
     {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L215",
+      "weight": 1.0,
+      "source": "src_bluetooth_request_enable_bluetooth",
+      "target": "src_bluetooth_request_enable_bluetooth_inner",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L231",
+      "weight": 1.0,
+      "source": "src_bluetooth_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "target": "src_bluetooth_request_enable_bluetooth_inner",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "L76",
+      "weight": 1.0,
+      "source": "tests_bluetooth_integration_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "target": "src_bluetooth_request_enable_bluetooth_inner"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L242",
+      "weight": 1.0,
+      "source": "src_bluetooth_test_request_enable_bluetooth_returns_ok_on_non_android",
+      "target": "src_bluetooth_request_enable_bluetooth",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "L88",
+      "weight": 1.0,
+      "source": "tests_bluetooth_integration_test_request_enable_bluetooth_returns_ok_on_non_android",
+      "target": "src_bluetooth_request_enable_bluetooth"
+    },
+    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
       "source_location": "L62",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_app",
-      "confidence_score": 1.0
+      "target": "src_main_app"
     },
     {
       "relation": "contains",
@@ -1547,9 +2657,9 @@
       "source_file": "src/main.rs",
       "source_location": "L215",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_confirmmodal",
-      "confidence_score": 1.0
+      "target": "src_main_confirmmodal"
     },
     {
       "relation": "contains",
@@ -1557,9 +2667,9 @@
       "source_file": "src/main.rs",
       "source_location": "L28",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_connectionstatus",
-      "confidence_score": 1.0
+      "target": "src_main_connectionstatus"
     },
     {
       "relation": "contains",
@@ -1567,9 +2677,9 @@
       "source_file": "src/main.rs",
       "source_location": "L246",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_deviceitem",
-      "confidence_score": 1.0
+      "target": "src_main_deviceitem"
     },
     {
       "relation": "contains",
@@ -1577,9 +2687,9 @@
       "source_file": "src/main.rs",
       "source_location": "L338",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_devicesettings",
-      "confidence_score": 1.0
+      "target": "src_main_devicesettings"
     },
     {
       "relation": "contains",
@@ -1587,9 +2697,9 @@
       "source_file": "src/main.rs",
       "source_location": "L82",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_home",
-      "confidence_score": 1.0
+      "target": "src_main_home"
     },
     {
       "relation": "contains",
@@ -1597,9 +2707,9 @@
       "source_file": "src/main.rs",
       "source_location": "L57",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_main",
-      "confidence_score": 1.0
+      "target": "src_main_main"
     },
     {
       "relation": "contains",
@@ -1607,9 +2717,9 @@
       "source_file": "src/main.rs",
       "source_location": "L50",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_route",
-      "confidence_score": 1.0
+      "target": "src_main_route"
     },
     {
       "relation": "contains",
@@ -1617,9 +2727,9 @@
       "source_file": "src/main.rs",
       "source_location": "L34",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_status_icon",
-      "confidence_score": 1.0
+      "target": "src_main_status_icon"
     },
     {
       "relation": "contains",
@@ -1627,9 +2737,9 @@
       "source_file": "src/main.rs",
       "source_location": "L44",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_main",
-      "target": "src_main_use_locale",
-      "confidence_score": 1.0
+      "target": "src_main_use_locale"
     },
     {
       "relation": "references",
@@ -1732,7 +2842,7 @@
       "relation": "references",
       "confidence": "INFERRED",
       "confidence_score": 0.75,
-      "source_file": "/home/orel/workspace/blue2th/README.md",
+      "source_file": "README.md",
       "source_location": null,
       "weight": 0.75,
       "source": "readme_project_overview",
@@ -1745,9 +2855,9 @@
       "source_location": "L62",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "src_main_app",
-      "target": "element",
-      "confidence_score": 1.0
+      "target": "element"
     },
     {
       "relation": "references",
@@ -1756,9 +2866,9 @@
       "source_location": "L215",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "src_main_confirmmodal",
-      "target": "element",
-      "confidence_score": 1.0
+      "target": "element"
     },
     {
       "relation": "references",
@@ -1767,9 +2877,9 @@
       "source_location": "L246",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "src_main_deviceitem",
-      "target": "element",
-      "confidence_score": 1.0
+      "target": "element"
     },
     {
       "relation": "references",
@@ -1778,9 +2888,9 @@
       "source_location": "L338",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "src_main_devicesettings",
-      "target": "element",
-      "confidence_score": 1.0
+      "target": "element"
     },
     {
       "relation": "references",
@@ -1789,9 +2899,9 @@
       "source_location": "L82",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "src_main_home",
-      "target": "element",
-      "confidence_score": 1.0
+      "target": "element"
     },
     {
       "relation": "calls",
@@ -1817,43 +2927,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L215",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_main_confirmmodal",
-      "target": "eventhandler",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "semantically_similar_to",
-      "confidence": "INFERRED",
-      "confidence_score": 0.75,
-      "source_file": "tests/bluetooth_integration.rs",
-      "source_location": "44",
-      "weight": 1.0,
-      "source": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false",
-      "target": "src_main_confirmmodal"
-    },
-    {
-      "relation": "semantically_similar_to",
-      "confidence": "INFERRED",
-      "confidence_score": 0.75,
-      "source_file": "tests/bluetooth_integration.rs",
-      "source_location": "59",
-      "weight": 1.0,
-      "source": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error",
-      "target": "src_main_confirmmodal"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
       "source_location": "L246",
       "weight": 1.0,
       "context": "parameter_type",
+      "confidence_score": 1.0,
       "source": "src_main_deviceitem",
-      "target": "signal",
-      "confidence_score": 1.0
+      "target": "signal"
     },
     {
       "relation": "references",
@@ -1862,9 +2941,9 @@
       "source_location": "L246",
       "weight": 1.0,
       "context": "generic_arg",
+      "confidence_score": 1.0,
       "source": "src_main_deviceitem",
-      "target": "src_main_rs_string",
-      "confidence_score": 1.0
+      "target": "src_main_rs_string"
     },
     {
       "relation": "references",
@@ -1873,9 +2952,9 @@
       "source_location": "L246",
       "weight": 1.0,
       "context": "generic_arg",
+      "confidence_score": 1.0,
       "source": "src_main_deviceitem",
-      "target": "src_main_rs_vec",
-      "confidence_score": 1.0
+      "target": "src_main_rs_vec"
     },
     {
       "relation": "references",
@@ -1884,9 +2963,9 @@
       "source_location": "L338",
       "weight": 1.0,
       "context": "parameter_type",
+      "confidence_score": 1.0,
       "source": "src_main_devicesettings",
-      "target": "src_main_rs_string",
-      "confidence_score": 1.0
+      "target": "src_main_rs_string"
     },
     {
       "relation": "contains",
@@ -1894,9 +2973,9 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L44",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_bluetooth_integration",
-      "target": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_enable_bluetooth_returns_false",
-      "confidence_score": 1.0
+      "target": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_enable_bluetooth_returns_false"
     },
     {
       "relation": "contains",
@@ -1904,9 +2983,9 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L24",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_bluetooth_integration",
-      "target": "tests_bluetooth_integration_test_enable_bluetooth_returns_bool",
-      "confidence_score": 1.0
+      "target": "tests_bluetooth_integration_test_enable_bluetooth_returns_bool"
     },
     {
       "relation": "contains",
@@ -1914,9 +2993,9 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L33",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_bluetooth_integration",
-      "target": "tests_bluetooth_integration_test_enable_bluetooth_simulation_fallback",
-      "confidence_score": 1.0
+      "target": "tests_bluetooth_integration_test_enable_bluetooth_simulation_fallback"
     },
     {
       "relation": "contains",
@@ -1924,8 +3003,28 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L59",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_bluetooth_integration",
-      "target": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error",
+      "target": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "L75",
+      "weight": 1.0,
+      "source": "tests_bluetooth_integration",
+      "target": "tests_bluetooth_integration_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "L87",
+      "weight": 1.0,
+      "source": "tests_bluetooth_integration",
+      "target": "tests_bluetooth_integration_test_request_enable_bluetooth_returns_ok_on_non_android",
       "confidence_score": 1.0
     },
     {
@@ -1939,354 +3038,54 @@
       "target": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error"
     },
     {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/.githooks/commit-msg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "githooks_commit_msg_conventional_commits",
-      "target": "concept_conventional_commits"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/.claude/agents/tdd-test-writer.md",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "claude_agents_tdd_test_writer",
-      "target": "concept_conventional_commits"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/CLAUDE.md",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "claude_md_project_instructions",
-      "target": "concept_conventional_commits"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/.githooks/pre-commit",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "githooks_pre_commit_quality_gate",
-      "target": "concept_clippy_quality_gate"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/CLAUDE.md",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "claude_md_project_instructions",
-      "target": "concept_clippy_quality_gate"
-    },
-    {
       "relation": "semantically_similar_to",
       "confidence": "INFERRED",
-      "confidence_score": 0.65,
-      "source_file": "/home/orel/workspace/blue2th/.githooks/pre-commit",
-      "source_location": null,
-      "weight": 0.65,
-      "source": "concept_clippy_quality_gate",
-      "target": "concept_tdd_red_green_refactor"
+      "confidence_score": 0.75,
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "59",
+      "weight": 1.0,
+      "source": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error",
+      "target": "src_main_confirmmodal"
     },
     {
-      "relation": "implements",
+      "relation": "contains",
       "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/.claude/agents/tdd-test-writer.md",
-      "source_location": null,
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L13",
       "weight": 1.0,
-      "source": "claude_agents_tdd_test_writer",
-      "target": "concept_tdd_red_green_refactor"
+      "source": "agents_tdd_implementer",
+      "target": "agents_tdd_implementer_project_context",
+      "confidence_score": 1.0
     },
     {
-      "relation": "references",
+      "relation": "contains",
       "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/tdd/README.md",
-      "source_location": null,
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L20",
       "weight": 1.0,
-      "source": "tdd_readme_workflow",
-      "target": "claude_agents_tdd_test_writer"
+      "source": "agents_tdd_implementer",
+      "target": "agents_tdd_implementer_rules",
+      "confidence_score": 1.0
     },
     {
-      "relation": "references",
+      "relation": "contains",
       "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "28",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L36",
       "weight": 1.0,
-      "source": "agents_dioxus_launch",
-      "target": "agents_app_component"
+      "source": "agents_tdd_implementer",
+      "target": "agents_tdd_implementer_what_you_must_not_do",
+      "confidence_score": 1.0
     },
     {
-      "relation": "references",
+      "relation": "contains",
       "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "32",
+      "source_file": ".claude/agents/tdd-implementer.md",
+      "source_location": "L9",
       "weight": 1.0,
-      "source": "agents_app_component",
-      "target": "agents_rsx_macro"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "96",
-      "weight": 1.0,
-      "source": "agents_component_model",
-      "target": "agents_rsx_macro"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "73",
-      "weight": 1.0,
-      "source": "agents_rsx_macro",
-      "target": "agents_asset_macro"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "85",
-      "weight": 1.0,
-      "source": "agents_rsx_macro",
-      "target": "agents_stylesheet_component"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "99",
-      "weight": 1.0,
-      "source": "agents_component_model",
-      "target": "agents_signal"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "218",
-      "weight": 1.0,
-      "source": "agents_routing",
-      "target": "agents_component_model"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "165",
-      "weight": 1.0,
-      "source": "agents_context_api",
-      "target": "agents_signal"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "135",
-      "weight": 1.0,
-      "source": "agents_use_memo",
-      "target": "agents_signal"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "185",
-      "weight": 1.0,
-      "source": "agents_use_resource",
-      "target": "agents_signal"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "133",
-      "weight": 1.0,
-      "source": "agents_use_signal",
-      "target": "agents_signal"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "264",
-      "weight": 1.0,
-      "source": "agents_hydration",
-      "target": "agents_use_resource"
-    },
-    {
-      "relation": "semantically_similar_to",
-      "confidence": "INFERRED",
-      "confidence_score": 0.85,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "264",
-      "weight": 0.85,
-      "source": "agents_use_server_future",
-      "target": "agents_use_resource"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "257",
-      "weight": 1.0,
-      "source": "agents_fullstack",
-      "target": "agents_hydration"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "245",
-      "weight": 1.0,
-      "source": "agents_fullstack",
-      "target": "agents_server_functions"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md",
-      "source_location": "264",
-      "weight": 1.0,
-      "source": "agents_hydration",
-      "target": "agents_use_server_future"
-    },
-    {
-      "relation": "semantically_similar_to",
-      "confidence": "INFERRED",
-      "confidence_score": 0.95,
-      "source_file": "/home/orel/workspace/blue2th/locales/en.yaml",
-      "source_location": null,
-      "weight": 0.95,
-      "source": "locales_en_translations",
-      "target": "locales_fr_translations"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
-      "source_location": "line 1",
-      "weight": 1.0,
-      "source": "assets_bluetooth_svg",
-      "target": "assets_bluetooth_24px_icon"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
-      "source_location": "line 1",
-      "weight": 1.0,
-      "source": "assets_bluetooth_svg",
-      "target": "assets_bluetooth_blue_color"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/bluetooth.svg",
-      "source_location": "line 2",
-      "weight": 1.0,
-      "source": "assets_bluetooth_svg",
-      "target": "assets_bluetooth_bluetooth_symbol"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "assets_header_logo_animation",
-      "target": "assets_header_brand_name"
-    },
-    {
-      "relation": "conceptually_related_to",
-      "confidence": "INFERRED",
-      "confidence_score": 0.95,
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "assets_header_logo_animation",
-      "target": "assets_header_color_scheme"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "assets_header_logo_animation",
-      "target": "assets_header_device_animation"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "assets_header_logo_animation",
-      "target": "assets_header_lightbulb_icon"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "assets_header_logo_animation",
-      "target": "assets_header_tagline_text"
-    },
-    {
-      "relation": "conceptually_related_to",
-      "confidence": "INFERRED",
-      "confidence_score": 0.85,
-      "source_file": "/home/orel/workspace/blue2th/assets/header.svg",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "assets_header_lightbulb_icon",
-      "target": "assets_header_brand_name"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "7",
-      "weight": 1.0,
-      "source": "tdd_review_report",
-      "target": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false"
+      "source": "agents_tdd_implementer",
+      "target": "agents_tdd_implementer_your_role_green_phase",
+      "confidence_score": 1.0
     },
     {
       "relation": "conceptually_related_to",
@@ -2307,6 +3106,46 @@
       "weight": 1.0,
       "source": "skills_tdd_skill",
       "target": "agents_tdd_implementer"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "agents_tdd_reviewer",
+      "target": "agents_tdd_reviewer_project_context",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L19",
+      "weight": 1.0,
+      "source": "agents_tdd_reviewer",
+      "target": "agents_tdd_reviewer_rules",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L58",
+      "weight": 1.0,
+      "source": "agents_tdd_reviewer",
+      "target": "agents_tdd_reviewer_what_you_must_not_do",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-reviewer.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "agents_tdd_reviewer",
+      "target": "agents_tdd_reviewer_your_role_refactor_phase",
+      "confidence_score": 1.0
     },
     {
       "relation": "conceptually_related_to",
@@ -2337,6 +3176,997 @@
       "weight": 1.0,
       "source": "tdd_review_report",
       "target": "agents_tdd_reviewer"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "agents_tdd_test_writer",
+      "target": "agents_tdd_test_writer_project_context",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L20",
+      "weight": 1.0,
+      "source": "agents_tdd_test_writer",
+      "target": "agents_tdd_test_writer_rules",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L35",
+      "weight": 1.0,
+      "source": "agents_tdd_test_writer",
+      "target": "agents_tdd_test_writer_what_you_must_not_do",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "agents_tdd_test_writer",
+      "target": "agents_tdd_test_writer_your_role_red_phase",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "tdd_skill",
+      "target": "tdd_skill_tdd_tdd_workflow_skill",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "tdd_skill_tdd_tdd_workflow_skill",
+      "target": "tdd_skill_steps",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L6",
+      "weight": 1.0,
+      "source": "tdd_skill_tdd_tdd_workflow_skill",
+      "target": "tdd_skill_usage",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L11",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_1_validate_the_feature_spec",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L16",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_2_determine_the_phase",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L25",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_3_create_or_reuse_the_feature_worktree",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L58",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_4_spawn_agents_with_targeted_context",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L176",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_5_sequencing_for_all",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L181",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_6_final_report",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L195",
+      "weight": 1.0,
+      "source": "tdd_skill_steps",
+      "target": "tdd_skill_7_done_cleanup_after_merge",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L87",
+      "weight": 1.0,
+      "source": "tdd_skill_4_spawn_agents_with_targeted_context",
+      "target": "tdd_skill_green_tdd_implementer",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L65",
+      "weight": 1.0,
+      "source": "tdd_skill_4_spawn_agents_with_targeted_context",
+      "target": "tdd_skill_red_tdd_test_writer",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": ".claude/skills/tdd/SKILL.md",
+      "source_location": "L130",
+      "weight": 1.0,
+      "source": "tdd_skill_4_spawn_agents_with_targeted_context",
+      "target": "tdd_skill_refactor_tdd_reviewer",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L67",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_assets",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L181",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_async",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L92",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_components",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L5",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_dioxus_dependency",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L237",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_fullstack",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L20",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_launching_your_application",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L201",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_routing",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L127",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_state",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L44",
+      "weight": 1.0,
+      "source": "agents",
+      "target": "agents_ui_with_rsx",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L80",
+      "weight": 1.0,
+      "source": "agents_assets",
+      "target": "agents_styles",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L158",
+      "weight": 1.0,
+      "source": "agents_state",
+      "target": "agents_context_api",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L131",
+      "weight": 1.0,
+      "source": "agents_state",
+      "target": "agents_local_state",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "165",
+      "weight": 1.0,
+      "source": "agents_context_api",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "218",
+      "weight": 1.0,
+      "source": "agents_routing",
+      "target": "agents_component_model"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "257",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "agents_fullstack",
+      "target": "agents_hydration"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "245",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "agents_fullstack",
+      "target": "agents_server_functions"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "AGENTS.md",
+      "source_location": "L261",
+      "weight": 1.0,
+      "source": "agents_hydration",
+      "target": "agents_errors",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "weight": 1.0,
+      "source": "agents_hydration",
+      "target": "agents_use_resource"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "weight": 1.0,
+      "source": "agents_hydration",
+      "target": "agents_use_server_future"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L19",
+      "weight": 1.0,
+      "source": "claude",
+      "target": "claude_code_guidelines",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L45",
+      "weight": 1.0,
+      "source": "claude",
+      "target": "claude_graphify",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "claude",
+      "target": "claude_language",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "claude",
+      "target": "claude_quality_commands",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L39",
+      "weight": 1.0,
+      "source": "claude",
+      "target": "claude_tdd",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L21",
+      "weight": 1.0,
+      "source": "claude_code_guidelines",
+      "target": "claude_error_handling",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L27",
+      "weight": 1.0,
+      "source": "claude_code_guidelines",
+      "target": "claude_naming",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "CLAUDE.md",
+      "source_location": "L33",
+      "weight": 1.0,
+      "source": "claude_code_guidelines",
+      "target": "claude_rust_style",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "README.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "readme",
+      "target": "readme_development",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "README.md",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "readme_development",
+      "target": "readme_serving_your_app",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/README.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "tdd_readme",
+      "target": "tdd_readme_tdd_workflow_blue2th",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/README.md",
+      "source_location": "L43",
+      "weight": 1.0,
+      "source": "tdd_readme_tdd_workflow_blue2th",
+      "target": "tdd_readme_after_the_cycle",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/README.md",
+      "source_location": "L18",
+      "weight": 1.0,
+      "source": "tdd_readme_tdd_workflow_blue2th",
+      "target": "tdd_readme_before_running",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/README.md",
+      "source_location": "L50",
+      "weight": 1.0,
+      "source": "tdd_readme_tdd_workflow_blue2th",
+      "target": "tdd_readme_rust_dioxus_notes",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/README.md",
+      "source_location": "L27",
+      "weight": 1.0,
+      "source": "tdd_readme_tdd_workflow_blue2th",
+      "target": "tdd_readme_structure",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/README.md",
+      "source_location": "L5",
+      "weight": 1.0,
+      "source": "tdd_readme_tdd_workflow_blue2th",
+      "target": "tdd_readme_usage",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "tdd_review",
+      "target": "tdd_review_review_report_replace_confirm_modal_with_android_bluetooth_enable_dialog",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "tdd_review_review_report_replace_confirm_modal_with_android_bluetooth_enable_dialog",
+      "target": "tdd_review_final_status",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L3",
+      "weight": 1.0,
+      "source": "tdd_review_review_report_replace_confirm_modal_with_android_bluetooth_enable_dialog",
+      "target": "tdd_review_issues_found_fixed",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "tdd_review_review_report_replace_confirm_modal_with_android_bluetooth_enable_dialog",
+      "target": "tdd_review_new_tests_added",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "tdd_feature",
+      "target": "tdd_feature_tdd_feature_specification",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L16",
+      "weight": 1.0,
+      "source": "tdd_feature_tdd_feature_specification",
+      "target": "tdd_feature_acceptance_criteria",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L44",
+      "weight": 1.0,
+      "source": "tdd_feature_tdd_feature_specification",
+      "target": "tdd_feature_constraints_notes",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L12",
+      "weight": 1.0,
+      "source": "tdd_feature_tdd_feature_specification",
+      "target": "tdd_feature_description",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L8",
+      "weight": 1.0,
+      "source": "tdd_feature_tdd_feature_specification",
+      "target": "tdd_feature_feature_name",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L20",
+      "weight": 1.0,
+      "source": "tdd_feature_tdd_feature_specification",
+      "target": "tdd_feature_technical_scope",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L34",
+      "weight": 1.0,
+      "source": "tdd_feature_tdd_feature_specification",
+      "target": "tdd_feature_test_strategy",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L26",
+      "weight": 1.0,
+      "source": "tdd_feature_technical_scope",
+      "target": "tdd_feature_files_to_create",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L22",
+      "weight": 1.0,
+      "source": "tdd_feature_technical_scope",
+      "target": "tdd_feature_files_to_modify",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L30",
+      "weight": 1.0,
+      "source": "tdd_feature_technical_scope",
+      "target": "tdd_feature_server_functions_needed",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L40",
+      "weight": 1.0,
+      "source": "tdd_feature_test_strategy",
+      "target": "tdd_feature_integration_tests_async_server_functions",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "tdd/feature.md",
+      "source_location": "L36",
+      "weight": 1.0,
+      "source": "tdd_feature_test_strategy",
+      "target": "tdd_feature_unit_tests_synchronous_pure_logic",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
+      "source_location": "L215",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "confidence_score": 1.0,
+      "source": "src_main_confirmmodal",
+      "target": "eventhandler"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "tests/bluetooth_integration.rs",
+      "source_location": "44",
+      "weight": 1.0,
+      "source": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false",
+      "target": "src_main_confirmmodal"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".githooks/commit-msg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "githooks_commit_msg_conventional_commits",
+      "target": "concept_conventional_commits"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "claude_agents_tdd_test_writer",
+      "target": "concept_conventional_commits"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "CLAUDE.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "claude_md_project_instructions",
+      "target": "concept_conventional_commits"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".githooks/pre-commit",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "githooks_pre_commit_quality_gate",
+      "target": "concept_clippy_quality_gate"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "CLAUDE.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "claude_md_project_instructions",
+      "target": "concept_clippy_quality_gate"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.65,
+      "source_file": ".githooks/pre-commit",
+      "source_location": null,
+      "weight": 0.65,
+      "source": "concept_clippy_quality_gate",
+      "target": "concept_tdd_red_green_refactor"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".claude/agents/tdd-test-writer.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "claude_agents_tdd_test_writer",
+      "target": "concept_tdd_red_green_refactor"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tdd/README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "tdd_readme_workflow",
+      "target": "claude_agents_tdd_test_writer"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "28",
+      "weight": 1.0,
+      "source": "agents_dioxus_launch",
+      "target": "agents_app_component"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "32",
+      "weight": 1.0,
+      "source": "agents_app_component",
+      "target": "agents_rsx_macro"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "96",
+      "weight": 1.0,
+      "source": "agents_component_model",
+      "target": "agents_rsx_macro"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "73",
+      "weight": 1.0,
+      "source": "agents_rsx_macro",
+      "target": "agents_asset_macro"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "85",
+      "weight": 1.0,
+      "source": "agents_rsx_macro",
+      "target": "agents_stylesheet_component"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "99",
+      "weight": 1.0,
+      "source": "agents_component_model",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "135",
+      "weight": 1.0,
+      "source": "agents_use_memo",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "185",
+      "weight": 1.0,
+      "source": "agents_use_resource",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "AGENTS.md",
+      "source_location": "133",
+      "weight": 1.0,
+      "source": "agents_use_signal",
+      "target": "agents_signal"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "AGENTS.md",
+      "source_location": "264",
+      "weight": 0.85,
+      "source": "agents_use_server_future",
+      "target": "agents_use_resource"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "locales/en.yaml",
+      "source_location": null,
+      "weight": 0.95,
+      "source": "locales_en_translations",
+      "target": "locales_fr_translations"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/bluetooth.svg",
+      "source_location": "line 1",
+      "weight": 1.0,
+      "source": "assets_bluetooth_svg",
+      "target": "assets_bluetooth_24px_icon"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/bluetooth.svg",
+      "source_location": "line 1",
+      "weight": 1.0,
+      "source": "assets_bluetooth_svg",
+      "target": "assets_bluetooth_blue_color"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/bluetooth.svg",
+      "source_location": "line 2",
+      "weight": 1.0,
+      "source": "assets_bluetooth_svg",
+      "target": "assets_bluetooth_bluetooth_symbol"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_brand_name"
+    },
+    {
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_color_scheme"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_device_animation"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_lightbulb_icon"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_logo_animation",
+      "target": "assets_header_tagline_text"
+    },
+    {
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "assets/header.svg",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "assets_header_lightbulb_icon",
+      "target": "assets_header_brand_name"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tdd/REVIEW.md",
+      "source_location": "7",
+      "weight": 1.0,
+      "source": "tdd_review_report",
+      "target": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false"
     }
   ],
   "hyperedges": [
@@ -2352,7 +4182,7 @@
       "relation": "implement",
       "confidence": "INFERRED",
       "confidence_score": 0.85,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md"
+      "source_file": "AGENTS.md"
     },
     {
       "id": "dioxus_fullstack_pipeline",
@@ -2366,7 +4196,7 @@
       "relation": "participate_in",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/AGENTS.md"
+      "source_file": "AGENTS.md"
     },
     {
       "id": "hyperedge_quality_gates",
@@ -2381,7 +4211,7 @@
       "relation": "implement",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "/home/orel/workspace/blue2th/CLAUDE.md"
+      "source_file": "CLAUDE.md"
     },
     {
       "id": "tdd_cycle_bluetooth_feature",
@@ -2428,5 +4258,5 @@
       "source_file": "src/main.rs"
     }
   ],
-  "built_at_commit": "d28544b3f13efcdb658624db1e53b443824d3eac"
+  "built_at_commit": "ad3af9926b3c33817160a3dd81286851bac8f88c"
 }
