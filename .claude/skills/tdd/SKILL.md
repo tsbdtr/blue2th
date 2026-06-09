@@ -8,12 +8,7 @@ each working in an isolated git worktree and receiving only the context relevant
 
 ## Steps
 
-### 1. Validate the feature spec
-Read `tdd/feature.md`.
-If any line equals exactly `PENDING`, stop immediately and tell the user:
-> "`tdd/feature.md` still has PENDING sections. Describe the feature and I will fill the file."
-
-### 2. Determine the phase
+### 1. Determine the phase
 From the skill args:
 - `test`          → RED phase only
 - `impl`          → GREEN phase only
@@ -21,6 +16,11 @@ From the skill args:
 - `all` or no arg → all three phases sequentially
 - `done`          → cleanup after merge (remove worktree, reset spec)
 - anything else   → show usage
+
+### 2. Validate the feature spec (skip if phase is `done`)
+If the phase is **not** `done`: read `tdd/feature.md`.
+If any line equals exactly `PENDING`, stop immediately and tell the user:
+> "`tdd/feature.md` still has PENDING sections. Describe the feature and I will fill the file."
 
 ### 3. Create or reuse the feature worktree
 
@@ -211,9 +211,10 @@ c. Verify the worktree exists:
 
 d. Remove the worktree and delete the local branch:
    ```bash
-   git worktree remove "$WORKTREE_PATH"
+   git worktree remove --force "$WORKTREE_PATH"
    git branch -d "$BRANCH"
    ```
+   `--force` is required because the Rust `target/` directory is always present and untracked.
    If `git branch -d` fails (branch not yet merged), warn the user and do **not** force-delete.
 
 e. Reset the feature spec:
