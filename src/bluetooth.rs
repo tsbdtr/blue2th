@@ -347,9 +347,8 @@ mod tests {
         // Simulate the result that request_enable_bluetooth() must return on non-Android.
         let result: Result<(), super::BluetoothError> = Ok(());
         // The onclick handler (non-Android branch) must set bt_enabled = true on Ok(()).
-        match result {
-            Ok(()) => bt_enabled = true,
-            Err(_) => {}
+        if let Ok(()) = result {
+            bt_enabled = true;
         }
         assert!(
             bt_enabled,
@@ -362,9 +361,10 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     #[tokio::test]
     async fn test_scan_devices_returns_non_empty_ok_on_non_android() {
-        let result = super::scan_devices().await;
-        assert!(result.is_ok(), "scan_devices() must return Ok(_) on non-Android");
-        let devices = result.expect("already checked is_ok");
+        let Ok(devices) = super::scan_devices().await else {
+            assert!(false, "scan_devices() must return Ok(_) on non-Android");
+            return;
+        };
         assert!(
             !devices.is_empty(),
             "scan_devices() must return at least one device name on non-Android simulation"
@@ -376,9 +376,10 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     #[tokio::test]
     async fn test_scan_devices_inner_simulation_non_empty() {
-        let result = super::scan_devices_inner().await;
-        assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
-        let devices = result.expect("already checked is_ok");
+        let Ok(devices) = super::scan_devices_inner().await else {
+            assert!(false, "scan_devices_inner() must return Ok(_) on non-Android");
+            return;
+        };
         assert!(
             !devices.is_empty(),
             "scan_devices_inner() simulation must return at least one device name"
@@ -391,17 +392,18 @@ mod tests {
     #[test]
     fn test_scan_devices_returns_bluetooth_error_on_failure() {
         // Simulate a scan result that represents a JNI failure.
-        let result: Result<Vec<String>, super::BluetoothError> =
-            Err(super::BluetoothError::new("JNI adapter unavailable"));
+        let err = super::BluetoothError::new("JNI adapter unavailable");
+        let result: Result<Vec<String>, super::BluetoothError> = Err(err);
         assert!(
             result.is_err(),
             "scan_devices() must propagate BluetoothError and not panic on JNI failure"
         );
-        let err_msg = result.expect_err("already checked is_err").to_string();
-        assert!(
-            !err_msg.is_empty(),
-            "BluetoothError message must not be empty"
-        );
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().is_empty(),
+                "BluetoothError message must not be empty"
+            );
+        }
     }
 
     // Criterion 4: scan is triggered only by button click — scan_devices() must NOT be called
@@ -423,8 +425,10 @@ mod tests {
     // Covers: `locales/fr.yaml`: `scan.button` → "Charger les appareils"
     #[test]
     fn test_locale_fr_scan_button_is_charger_les_appareils() {
-        let content = std::fs::read_to_string("locales/fr.yaml")
-            .expect("locales/fr.yaml must exist");
+        let Ok(content) = std::fs::read_to_string("locales/fr.yaml") else {
+            assert!(false, "locales/fr.yaml must exist");
+            return;
+        };
         // The YAML value must contain the new label.
         assert!(
             content.contains("Charger les appareils"),
@@ -441,8 +445,10 @@ mod tests {
     // Covers: `locales/fr.yaml`: `scan.scanning` → "Chargement en cours…"
     #[test]
     fn test_locale_fr_scan_scanning_is_chargement_en_cours() {
-        let content = std::fs::read_to_string("locales/fr.yaml")
-            .expect("locales/fr.yaml must exist");
+        let Ok(content) = std::fs::read_to_string("locales/fr.yaml") else {
+            assert!(false, "locales/fr.yaml must exist");
+            return;
+        };
         assert!(
             content.contains("Chargement en cours"),
             "locales/fr.yaml scan.scanning must contain 'Chargement en cours', got:\n{content}"
@@ -457,8 +463,10 @@ mod tests {
     // Covers: `locales/en.yaml`: `scan.button` → "Load devices"
     #[test]
     fn test_locale_en_scan_button_is_load_devices() {
-        let content = std::fs::read_to_string("locales/en.yaml")
-            .expect("locales/en.yaml must exist");
+        let Ok(content) = std::fs::read_to_string("locales/en.yaml") else {
+            assert!(false, "locales/en.yaml must exist");
+            return;
+        };
         assert!(
             content.contains("Load devices"),
             "locales/en.yaml scan.button must be 'Load devices', got:\n{content}"
@@ -473,8 +481,10 @@ mod tests {
     // Covers: `locales/en.yaml`: `scan.scanning` → "Loading…"
     #[test]
     fn test_locale_en_scan_scanning_is_loading() {
-        let content = std::fs::read_to_string("locales/en.yaml")
-            .expect("locales/en.yaml must exist");
+        let Ok(content) = std::fs::read_to_string("locales/en.yaml") else {
+            assert!(false, "locales/en.yaml must exist");
+            return;
+        };
         assert!(
             content.contains("Loading"),
             "locales/en.yaml scan.scanning must contain 'Loading', got:\n{content}"

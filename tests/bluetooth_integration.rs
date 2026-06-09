@@ -112,9 +112,10 @@ async fn test_scan_devices_returns_ok_on_non_android() {
 #[cfg(not(target_os = "android"))]
 #[tokio::test]
 async fn test_scan_devices_simulation_non_empty() {
-    let result = scan_devices_inner().await;
-    assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
-    let devices = result.expect("already checked is_ok");
+    let Ok(devices) = scan_devices_inner().await else {
+        assert!(false, "scan_devices_inner() must return Ok(_) on non-Android");
+        return;
+    };
     assert!(
         !devices.is_empty(),
         "scan_devices_inner() simulation must return at least one device name, got empty vec"
@@ -136,8 +137,10 @@ async fn test_scan_devices_simulation_non_empty() {
 #[cfg(not(target_os = "android"))]
 #[tokio::test]
 async fn test_scan_devices_dispatches_to_inner() {
-    let outer = scan_devices().await.expect("scan_devices() must return Ok(_)");
-    let inner = scan_devices_inner().await.expect("scan_devices_inner() must return Ok(_)");
+    let (Ok(outer), Ok(inner)) = (scan_devices().await, scan_devices_inner().await) else {
+        assert!(false, "scan_devices() and scan_devices_inner() must both return Ok(_)");
+        return;
+    };
     // scan_devices() must delegate to scan_devices_inner(): their results must be identical.
     // This fails (red) until scan_devices() is rewritten to call scan_devices_inner().
     assert_eq!(
@@ -162,8 +165,10 @@ async fn test_scan_devices_error_path_does_not_panic() {
 // Covers: fr.yaml scan.button and scan.scanning, en.yaml scan.button and scan.scanning.
 #[test]
 fn test_locale_fr_scan_labels_updated() {
-    let content = std::fs::read_to_string("locales/fr.yaml")
-        .expect("locales/fr.yaml must exist");
+    let Ok(content) = std::fs::read_to_string("locales/fr.yaml") else {
+        assert!(false, "locales/fr.yaml must exist");
+        return;
+    };
     assert!(
         content.contains("Charger les appareils"),
         "locales/fr.yaml must contain 'Charger les appareils' for scan.button, got:\n{content}"
@@ -176,8 +181,10 @@ fn test_locale_fr_scan_labels_updated() {
 
 #[test]
 fn test_locale_en_scan_labels_updated() {
-    let content = std::fs::read_to_string("locales/en.yaml")
-        .expect("locales/en.yaml must exist");
+    let Ok(content) = std::fs::read_to_string("locales/en.yaml") else {
+        assert!(false, "locales/en.yaml must exist");
+        return;
+    };
     assert!(
         content.contains("Load devices"),
         "locales/en.yaml must contain 'Load devices' for scan.button, got:\n{content}"
