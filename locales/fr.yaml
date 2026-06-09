@@ -1,6 +1,6 @@
 scan:
-  button: "Recherche appareil"
-  scanning: "Recherche en cours…"
+  button: "Charger les appareils"
+  scanning: "Chargement en cours…"
 
 bt:
   enable: "Activer Bluetooth"

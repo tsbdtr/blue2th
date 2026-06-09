@@ -31,23 +31,7 @@ impl BluetoothError {
 }
 
 pub async fn scan_devices() -> Result<Vec<String>, BluetoothError> {
-    Ok(vec![
-        "Blue Speaker".to_string(),
-        "HeadPhones Pro".to_string(),
-        "Smart Watch X1".to_string(),
-        "Galaxy Buds 2".to_string(),
-        "AirPods Max".to_string(),
-        "Sony WH-1000XM5".to_string(),
-        "Bose QC45".to_string(),
-        "JBL Flip 6".to_string(),
-        "Logitech MX Keys".to_string(),
-        "Apple Magic Mouse".to_string(),
-        "Xbox Controller".to_string(),
-        "PS5 DualSense".to_string(),
-        "Fitbit Charge 6".to_string(),
-        "Garmin Forerunner".to_string(),
-        "Tile Mate".to_string(),
-    ])
+    scan_devices_inner().await
 }
 
 pub async fn connect_device(name: String) -> Result<bool, BluetoothError> {
@@ -220,8 +204,80 @@ pub async fn request_enable_bluetooth() -> Result<(), BluetoothError> {
 /// On non-Android: returns a non-empty simulation list (keeps host `cargo test` green).
 #[cfg(target_os = "android")]
 pub async fn scan_devices_inner() -> Result<Vec<String>, BluetoothError> {
-    // Stub — implementation not yet written.
-    Err(BluetoothError::new("scan_devices_inner: not yet implemented"))
+    let ctx = ndk_context::android_context();
+    // SAFETY: ndk-context stores the JavaVM pointer set by the Android runtime before any
+    // Rust code runs; the pointer is valid for the lifetime of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let mut env = android_jni_env(&vm)?;
+
+    let adapter = env
+        .call_static_method(
+            "android/bluetooth/BluetoothAdapter",
+            "getDefaultAdapter",
+            "()Landroid/bluetooth/BluetoothAdapter;",
+            &[],
+        )
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    if adapter.is_null() {
+        return Err(BluetoothError::new("BluetoothAdapter not available"));
+    }
+
+    let bonded_set = env
+        .call_method(
+            &adapter,
+            "getBondedDevices",
+            "()Ljava/util/Set;",
+            &[],
+        )
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    if bonded_set.is_null() {
+        return Ok(vec![]);
+    }
+
+    let iterator = env
+        .call_method(&bonded_set, "iterator", "()Ljava/util/Iterator;", &[])
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let mut names = Vec::new();
+    loop {
+        let has_next = env
+            .call_method(&iterator, "hasNext", "()Z", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .z()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        if !has_next {
+            break;
+        }
+        let device = env
+            .call_method(&iterator, "next", "()Ljava/lang/Object;", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .l()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        let name_obj = env
+            .call_method(&device, "getName", "()Ljava/lang/String;", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .l()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        let name: String = if name_obj.is_null() {
+            String::new()
+        } else {
+            env.get_string(&jni::objects::JString::from(name_obj))
+                .map_err(|e| bt_err_clear(&mut env, e))?
+                .into()
+        };
+        names.push(name);
+    }
+
+    Ok(names)
 }
 
 #[cfg(not(target_os = "android"))]
