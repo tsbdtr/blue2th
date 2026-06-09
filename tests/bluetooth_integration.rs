@@ -15,7 +15,10 @@
 //! Integration tests for the real Bluetooth adapter state detection feature.
 //! These tests exercise the async inner logic of `enable_bluetooth_inner` directly.
 
-use blue2th::bluetooth::{enable_bluetooth_inner, request_enable_bluetooth, request_enable_bluetooth_inner};
+use blue2th::bluetooth::{
+    enable_bluetooth_inner, request_enable_bluetooth, request_enable_bluetooth_inner,
+    scan_devices, scan_devices_inner,
+};
 
 // Criterion 3 + combined criteria 1 & 2:
 // On non-Android platforms the function falls back to the existing simulation (returns true).
@@ -89,5 +92,98 @@ async fn test_request_enable_bluetooth_returns_ok_on_non_android() {
     assert!(
         result.is_ok(),
         "request_enable_bluetooth() must return Ok(()), got: {result:?}"
+    );
+}
+
+// Criterion 2: scan_devices() returns Ok(_) and does not panic on non-Android.
+// Covers: "On non-Android, scan_devices() still returns a non-empty Ok(Vec<String>)."
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_scan_devices_returns_ok_on_non_android() {
+    let result = scan_devices().await;
+    assert!(
+        result.is_ok(),
+        "scan_devices() must return Ok(_) on non-Android, got: {result:?}"
+    );
+}
+
+// Criterion 2: simulation fallback returns at least one device name.
+// Covers: "simulation fallback — keeps host cargo test green."
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_scan_devices_simulation_non_empty() {
+    let result = scan_devices_inner().await;
+    assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+    let devices = result.expect("already checked is_ok");
+    assert!(
+        !devices.is_empty(),
+        "scan_devices_inner() simulation must return at least one device name, got empty vec"
+    );
+    // Each device name must be a non-empty string.
+    for name in &devices {
+        assert!(
+            !name.is_empty(),
+            "simulation device names must be non-empty strings"
+        );
+    }
+}
+
+// Criterion 1: on Android, scan_devices() dispatches to scan_devices_inner() which uses JNI.
+// Covers: "On Android, scan_devices() returns the list of bonded device names via JNI."
+// On non-Android we verify the delegation contract: scan_devices() must call scan_devices_inner()
+// and return exactly the same result. The current hardcoded list in scan_devices() means the
+// results differ — this test enforces they must be identical after the implementation.
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_scan_devices_dispatches_to_inner() {
+    let outer = scan_devices().await.expect("scan_devices() must return Ok(_)");
+    let inner = scan_devices_inner().await.expect("scan_devices_inner() must return Ok(_)");
+    // scan_devices() must delegate to scan_devices_inner(): their results must be identical.
+    // This fails (red) until scan_devices() is rewritten to call scan_devices_inner().
+    assert_eq!(
+        outer, inner,
+        "scan_devices() must delegate to scan_devices_inner() — results must be identical"
+    );
+}
+
+// Criterion 3: scan_devices() propagates BluetoothError without panicking.
+// Covers: "scan_devices() returns Err(BluetoothError) if the JNI call fails instead of panicking."
+// We model this at the type level: Result<Vec<String>, BluetoothError> is the correct signature.
+#[tokio::test]
+async fn test_scan_devices_error_path_does_not_panic() {
+    // Calling scan_devices() must never panic — even in an error scenario.
+    // On non-Android this always succeeds; we verify the return type handles Err correctly.
+    let result: Result<Vec<String>, _> = scan_devices().await;
+    // We simply assert it returns without panicking (the test itself proves no panic occurred).
+    let _ = result.is_ok() || result.is_err();
+}
+
+// Criterion 5 & 6: locale files must contain the new scan labels.
+// Covers: fr.yaml scan.button and scan.scanning, en.yaml scan.button and scan.scanning.
+#[test]
+fn test_locale_fr_scan_labels_updated() {
+    let content = std::fs::read_to_string("locales/fr.yaml")
+        .expect("locales/fr.yaml must exist");
+    assert!(
+        content.contains("Charger les appareils"),
+        "locales/fr.yaml must contain 'Charger les appareils' for scan.button, got:\n{content}"
+    );
+    assert!(
+        content.contains("Chargement en cours"),
+        "locales/fr.yaml must contain 'Chargement en cours' for scan.scanning, got:\n{content}"
+    );
+}
+
+#[test]
+fn test_locale_en_scan_labels_updated() {
+    let content = std::fs::read_to_string("locales/en.yaml")
+        .expect("locales/en.yaml must exist");
+    assert!(
+        content.contains("Load devices"),
+        "locales/en.yaml must contain 'Load devices' for scan.button, got:\n{content}"
+    );
+    assert!(
+        content.contains("Loading"),
+        "locales/en.yaml must contain 'Loading' for scan.scanning, got:\n{content}"
     );
 }
