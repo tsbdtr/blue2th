@@ -38,7 +38,11 @@ Install the pre-commit hook once with: `git config core.hooksPath .githooks`
 
 ## tdd
 - **tdd** (`.claude/skills/tdd/SKILL.md`) — orchestrate the TDD cycle (red/green/refactor). Trigger: `/tdd`
-- Before launching agents, describe the feature to Claude so it fills `tdd/feature.md`.
+- When a user describes a new feature, **before** filling `tdd/feature.md` and before running `/tdd`:
+  1. Ask the user to describe the **nominal usage scenario** (the happy path: who does what, what happens, what they see).
+  2. Identify the **obvious non-nominal cases** (errors, empty states, permission denied, unavailable hardware…) and ask the user how each should be handled.
+  3. Run a **code impact analysis**: query the knowledge graph (`graphify query`) and read the relevant source files to identify which functions/files need to change and flag any risks (breaking changes, Android-only paths, UI state implications).
+  4. Only once the scenarios and impact are clear: fill `tdd/feature.md` and tell the user to run `/tdd all`.
 - Agents are defined in `.claude/agents/`: `tdd-test-writer`, `tdd-implementer`, `tdd-reviewer`.
 When the user types `/tdd`, invoke the Skill tool with `skill: "tdd"` before doing anything else.
 

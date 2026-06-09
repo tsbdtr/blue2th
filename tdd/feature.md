@@ -13,6 +13,14 @@ PENDING
 <!-- 2-5 sentences describing the feature in detail -->
 PENDING
 
+## Nominal Scenario
+<!-- The happy path: step-by-step description of what the user does and what they see -->
+PENDING
+
+## Non-nominal Scenarios
+<!-- Edge cases and error cases, each with its expected behaviour -->
+- PENDING
+
 ## Acceptance Criteria
 <!-- Each criterion must map to one or more tests -->
 - [ ] PENDING
