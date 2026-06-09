@@ -1,6 +1,6 @@
 scan:
-  button: "Search device"
-  scanning: "Searching…"
+  button: "Load devices"
+  scanning: "Loading…"
 
 bt:
   enable: "Enable Bluetooth"
