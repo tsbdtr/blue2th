@@ -221,4 +221,17 @@ e. Reset the feature spec:
    git checkout HEAD -- tdd/feature.md
    ```
 
-f. Print: `Cleaned up: worktree and branch <BRANCH> removed. tdd/feature.md reset.`
+f. Update the knowledge graph (AST-only, no API cost):
+   ```bash
+   graphify update .
+   ```
+   If `graphify` is not found, skip this step and warn the user.
+
+g. If any files in `graphify-out/` changed, commit them:
+   ```bash
+   git add graphify-out/
+   git diff --cached --quiet || git commit -m "chore(graph): update knowledge graph after <slug>"
+   ```
+   Replace `<slug>` with the actual feature slug.
+
+h. Print: `Cleaned up: worktree and branch <BRANCH> removed. tdd/feature.md reset. Knowledge graph updated.`
