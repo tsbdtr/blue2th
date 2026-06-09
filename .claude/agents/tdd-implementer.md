@@ -14,8 +14,20 @@ No gold-plating, no premature abstractions — just enough to go green.
 - Language: Rust (edition 2021)
 - Framework: Dioxus 0.7 (mobile feature, no cx/Scope/use_state)
 - Async runtime: Tokio
-- Existing server functions: `scan_devices`, `connect_device`, `disconnect_device`, `enable_bluetooth` in `src/bluetooth.rs`
-- Existing state: `ConnectionStatus` enum (Disconnected/Connecting/Connected) in `src/main.rs`
+- i18n: `rust_i18n` with `t!()` macro; locale files at `locales/fr.yaml` and `locales/en.yaml`
+- Existing async functions in `src/bluetooth.rs`:
+  - `scan_devices()` — dispatcher → `scan_devices_inner()` on Android, simulation fallback on other platforms
+  - `scan_devices_inner()` — Android-only JNI, calls `BluetoothAdapter.getBondedDevices()`
+  - `connect_device(name: String)`, `disconnect_device(name: String)`
+  - `enable_bluetooth()` — dispatcher → `enable_bluetooth_inner()` on Android
+  - `enable_bluetooth_inner()` — Android-only JNI, checks BT adapter state
+  - `request_enable_bluetooth()` — launches Android `ACTION_REQUEST_ENABLE` intent
+- Android JNI helpers in `src/bluetooth.rs` (reuse, do not recreate):
+  - `android_jni_env(vm: &JavaVM)` — attaches thread safely (never use `attach_current_thread()`)
+  - `bt_err_clear(env, e)` — clears pending JNI exception before returning an error
+- Custom error type: `BluetoothError` (in `src/bluetooth.rs`) — use for all `Result` error variants
+- Platform-conditional code: `#[cfg(target_os = "android")]` for Android-only paths; always provide a non-Android fallback
+- Existing state in `src/main.rs`: `ConnectionStatus` enum (Disconnected/Connecting/Connected)
 
 ## Rules
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
@@ -24,7 +36,7 @@ No gold-plating, no premature abstractions — just enough to go green.
 4. Read existing source files for context before modifying them.
 5. Implement only what the tests require — nothing more.
 6. After each significant change, run `cargo test 2>&1 | tail -30` to track progress.
-7. If a test requires a new server function in `bluetooth.rs`, use the `#[post("/api/bluetooth/<name>")]` pattern.
+7. If a test requires a new async function in `bluetooth.rs`, follow the dispatcher pattern: a public `async fn foo()` that delegates to `foo_inner()` gated with `#[cfg(target_os = "android")]`, with a non-Android fallback.
 8. If a test requires new state, add it following the existing `Signal<T>` / `use_context_provider` pattern.
 9. Do NOT modify or delete any test.
 10. At the end, run `cargo test` — all tests must pass (exit 0).

@@ -15,6 +15,10 @@ Review the implementation, improve code quality, and surface missing edge cases 
 - Framework: Dioxus 0.7 (mobile feature, no cx/Scope/use_state)
 - Async runtime: Tokio
 - Linter: Clippy with `clippy.toml` at project root
+- i18n: `rust_i18n` with `t!()` macro; locale files at `locales/fr.yaml` and `locales/en.yaml`
+- Custom error type: `BluetoothError` — no `unwrap`/`expect` outside `#[cfg(test)]`
+- Platform-conditional code: every `#[cfg(target_os = "android")]` block must have a non-Android fallback
+- Android JNI helpers to reuse (never recreate): `android_jni_env()`, `bt_err_clear()` in `src/bluetooth.rs`
 
 ## Rules
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.

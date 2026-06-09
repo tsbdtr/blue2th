@@ -14,8 +14,20 @@ Tests must **compile but FAIL** at the end of your work (red phase).
 - Language: Rust (edition 2021)
 - Framework: Dioxus 0.7 (mobile feature, no cx/Scope/use_state)
 - Async runtime: Tokio (add to dev-dependencies if needed)
-- Existing server functions: `scan_devices`, `connect_device`, `disconnect_device`, `enable_bluetooth` in `src/bluetooth.rs`
-- Existing state: `ConnectionStatus` enum (Disconnected/Connecting/Connected) in `src/main.rs`
+- i18n: `rust_i18n` with `t!()` macro; locale files at `locales/fr.yaml` and `locales/en.yaml`
+- Existing async functions in `src/bluetooth.rs`:
+  - `scan_devices()` — dispatcher → `scan_devices_inner()` on Android, simulation fallback on other platforms
+  - `scan_devices_inner()` — Android-only JNI, calls `BluetoothAdapter.getBondedDevices()`
+  - `connect_device(name: String)`, `disconnect_device(name: String)`
+  - `enable_bluetooth()` — dispatcher → `enable_bluetooth_inner()` on Android
+  - `enable_bluetooth_inner()` — Android-only JNI, checks BT adapter state
+  - `request_enable_bluetooth()` — launches Android `ACTION_REQUEST_ENABLE` intent
+- Android JNI helpers in `src/bluetooth.rs` (reuse, do not recreate):
+  - `android_jni_env(vm: &JavaVM)` — attaches thread safely (never use `attach_current_thread()`)
+  - `bt_err_clear(env, e)` — clears pending JNI exception before returning an error
+- Custom error type: `BluetoothError` (in `src/bluetooth.rs`) — use for all `Result` error variants
+- Platform-conditional code: `#[cfg(target_os = "android")]` for Android-only paths; always provide a non-Android fallback
+- Existing state in `src/main.rs`: `ConnectionStatus` enum (Disconnected/Connecting/Connected)
 
 ## Rules
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
