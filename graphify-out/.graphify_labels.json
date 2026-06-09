@@ -1,1 +1,20 @@
-{"0": "Dioxus App Architecture", "1": "TDD Workflow & Quality Gates", "2": "Bluetooth Server API", "3": "Device UI Components", "4": "Branding & Visual Identity", "5": "Dioxus Type System", "6": "Application Entry Point", "7": "Bluetooth Icon Design", "8": "Reactive State", "9": "Internationalization", "10": "Dioxus Framework"}
+{
+  "0": "Android BT JNI & Errors",
+  "1": "Dioxus Framework Concepts",
+  "2": "UI App & State",
+  "3": "TDD Workflow & Dev Standards",
+  "4": "BT Integration Tests & UI Flows",
+  "5": "Header SVG Assets",
+  "6": "Bluetooth Icon Assets",
+  "7": "i18n Translations",
+  "8": "Dioxus 0.7",
+  "9": "Library Root",
+  "10": "Feature Spec",
+  "11": "Community 11",
+  "12": "Community 12",
+  "13": "Community 13",
+  "14": "Community 14",
+  "15": "Community 15",
+  "16": "Community 16",
+  "17": "Community 17"
+}
