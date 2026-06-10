@@ -304,10 +304,13 @@ fn DeviceItem(
 
     // Ephemeral error notification: auto-clears after 3 s via a spawned task.
     let mut connect_error: Signal<Option<String>> = use_signal(|| None);
+    // Controls the ripple highlight via a Rust signal instead of CSS :active, which gets
+    // stuck on Android WebView when the DOM is mutated during the touch event.
+    let mut row_active = use_signal(|| false);
 
     rsx! {
         li {
-            class: "device-row",
+            class: if row_active() { "device-row active" } else { "device-row" },
             onclick: {
                 // Clone is required: the closure must own `name` because it outlives the render frame.
                 let name = name.clone();
@@ -331,7 +334,8 @@ fn DeviceItem(
                     if connected_count >= MAX_CONNECTIONS {
                         return;
                     }
-                    // Show the spinner immediately before handing off to the background task.
+                    // Show the spinner and ripple immediately before handing off to the background task.
+                    *row_active.write() = true;
                     let idx = devices.read().iter().position(|(n, _)| n == &name);
                     if let Some(i) = idx {
                         devices.write()[i].1 = ConnectionStatus::Connecting;
@@ -344,12 +348,14 @@ fn DeviceItem(
                                 if let Some(i) = idx {
                                     devices.write()[i].1 = ConnectionStatus::Connected;
                                 }
+                                *row_active.write() = false;
                             }
                             Ok(false) => {
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
                                 if let Some(i) = idx {
                                     devices.write()[i].1 = ConnectionStatus::Disconnected;
                                 }
+                                *row_active.write() = false;
                             }
                             Err(e) => {
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
@@ -357,9 +363,11 @@ fn DeviceItem(
                                     devices.write()[i].1 = ConnectionStatus::Disconnected;
                                 }
                                 *connect_error.write() = Some(e.to_string());
+                                // Clear both the error and the ripple at the same moment.
                                 spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                                     *connect_error.write() = None;
+                                    *row_active.write() = false;
                                 });
                             }
                         }
@@ -382,7 +390,8 @@ fn DeviceItem(
                                 e.stop_propagation();
                                 // Clone is required: `spawn` captures a `'static` async block.
                                 let name = name.clone();
-                                // Show the spinner immediately before handing off to the background task.
+                                // Show the spinner and ripple immediately before handing off to the background task.
+                                *row_active.write() = true;
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
                                 if let Some(i) = idx {
                                     devices.write()[i].1 = ConnectionStatus::Connecting;
@@ -399,6 +408,7 @@ fn DeviceItem(
                                                 devices.write()[i].1 =
                                                     ConnectionStatus::Disconnected;
                                             }
+                                            *row_active.write() = false;
                                         }
                                         Ok(false) => {
                                             let idx = devices
@@ -409,6 +419,7 @@ fn DeviceItem(
                                                 devices.write()[i].1 =
                                                     ConnectionStatus::Connected;
                                             }
+                                            *row_active.write() = false;
                                         }
                                         Err(e) => {
                                             let idx = devices
@@ -420,12 +431,14 @@ fn DeviceItem(
                                                     ConnectionStatus::Connected;
                                             }
                                             *connect_error.write() = Some(e.to_string());
+                                            // Clear both the error and the ripple at the same moment.
                                             spawn(async move {
                                                 tokio::time::sleep(
                                                     std::time::Duration::from_secs(3),
                                                 )
                                                 .await;
                                                 *connect_error.write() = None;
+                                                *row_active.write() = false;
                                             });
                                         }
                                     }

@@ -366,7 +366,7 @@ body {
     transition: transform 0.45s ease-out, opacity 0.45s ease-out;
 }
 
-.device-row:active::after {
+.device-row.active::after {
     transform: scale(2.5);
     opacity: 1;
     transition: none;
@@ -392,8 +392,10 @@ body {
     border-bottom: none;
 }
 
-.device-row:hover {
-    background: #252a38;
+@media (hover: hover) {
+    .device-row:hover {
+        background: #252a38;
+    }
 }
 
 /* Device list */
