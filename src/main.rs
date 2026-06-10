@@ -439,6 +439,8 @@ fn DeviceItem(
                 div { class: "device-actions",
                     button {
                         class: "btn-disconnect",
+                        title: "{disconnect_label}",
+                        aria_label: "{disconnect_label}",
                         onclick: {
                             // Clone is required: same reason as the connect closure above.
                             let name = name.clone();
@@ -504,7 +506,7 @@ fn DeviceItem(
                                 });
                             }
                         },
-                        "{disconnect_label}"
+                        span { class: "btn-disconnect-icon", "⏻" }
                     }
                     button {
                         class: "btn-settings",
