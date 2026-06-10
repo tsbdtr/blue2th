@@ -146,6 +146,7 @@ fn Home() -> Element {
     let mut bt_enabled = use_context::<Signal<bool>>();
     let mut scanning = use_signal(|| false);
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);
+    let toast_error: Signal<Option<String>> = use_signal(|| None);
 
     // When BT is disabled, clear the device list.
     use_effect(move || {
@@ -265,13 +266,13 @@ fn Home() -> Element {
                                 if !connected.is_empty() {
                                     ul { class: "pinned-devices",
                                         for (name, status) in connected {
-                                            DeviceItem { key: "{name}", name, status, devices }
+                                            DeviceItem { key: "{name}", name, status, devices, toast_error }
                                         }
                                     }
                                 }
                                 ul { class: "device-list",
                                     for (name, status) in others {
-                                        DeviceItem { key: "{name}", name, status, devices }
+                                        DeviceItem { key: "{name}", name, status, devices, toast_error }
                                     }
                                 }
                             }
@@ -285,6 +286,9 @@ fn Home() -> Element {
                     }
                 }
             }
+            if let Some(err) = toast_error() {
+                div { class: "toast-error", "{err}" }
+            }
         }
     }
 }
@@ -294,6 +298,7 @@ fn DeviceItem(
     name: String,
     status: ConnectionStatus,
     devices: Signal<Vec<(String, ConnectionStatus)>>,
+    toast_error: Signal<Option<String>>,
 ) -> Element {
     use_locale();
 
@@ -302,8 +307,6 @@ fn DeviceItem(
     let is_connected = status == ConnectionStatus::Connected;
     let disconnect_label = rust_i18n::t!("device.disconnect");
 
-    // Ephemeral error notification: auto-clears after 3 s via a spawned task.
-    let mut connect_error: Signal<Option<String>> = use_signal(|| None);
     // Controls the ripple highlight via a Rust signal instead of CSS :active, which gets
     // stuck on Android WebView when the DOM is mutated during the touch event.
     let mut row_active = use_signal(|| false);
@@ -357,16 +360,19 @@ fn DeviceItem(
                                 }
                                 *row_active.write() = false;
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
                                 if let Some(i) = idx {
                                     devices.write()[i].1 = ConnectionStatus::Disconnected;
                                 }
-                                *connect_error.write() = Some(e.to_string());
-                                // Clear both the error and the ripple at the same moment.
+                                *toast_error.write() = Some(
+                                    rust_i18n::t!("device.connect_failed", name = name.as_str())
+                                        .into_owned(),
+                                );
+                                // Clear both the toast and the ripple at the same moment.
                                 spawn(async move {
-                                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                                    *connect_error.write() = None;
+                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                    *toast_error.write() = None;
                                     *row_active.write() = false;
                                 });
                             }
@@ -376,9 +382,6 @@ fn DeviceItem(
             },
             span { class: "{icon_class}", "{icon}" }
             span { class: "device-name", "{name}" }
-            if let Some(err) = connect_error() {
-                span { class: "device-connect-error", "{err}" }
-            }
             if is_connected {
                 div { class: "device-actions",
                     button {
@@ -421,7 +424,7 @@ fn DeviceItem(
                                             }
                                             *row_active.write() = false;
                                         }
-                                        Err(e) => {
+                                        Err(_e) => {
                                             let idx = devices
                                                 .read()
                                                 .iter()
@@ -430,14 +433,17 @@ fn DeviceItem(
                                                 devices.write()[i].1 =
                                                     ConnectionStatus::Connected;
                                             }
-                                            *connect_error.write() = Some(e.to_string());
-                                            // Clear both the error and the ripple at the same moment.
+                                            *toast_error.write() = Some(
+                                                rust_i18n::t!("device.disconnect_failed", name = name.as_str())
+                                                    .into_owned(),
+                                            );
+                                            // Clear both the toast and the ripple at the same moment.
                                             spawn(async move {
                                                 tokio::time::sleep(
-                                                    std::time::Duration::from_secs(3),
+                                                    std::time::Duration::from_secs(5),
                                                 )
                                                 .await;
-                                                *connect_error.write() = None;
+                                                *toast_error.write() = None;
                                                 *row_active.write() = false;
                                             });
                                         }

@@ -597,3 +597,29 @@ body {
 #echo>p {
     margin: 20px 0px 0px auto;
 }
+
+.toast-error {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #7f1d1d;
+    color: #ffffff;
+    border: 1px solid #b91c1c;
+    border-radius: 12px;
+    padding: 10px 20px;
+    font-size: 0.8rem;
+    font-family: monospace;
+    z-index: 200;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+    width: max-content;
+    max-width: 88%;
+    text-align: center;
+    word-break: break-word;
+    animation: toast-in 0.25s ease-out;
+}
+
+@keyframes toast-in {
+    from { transform: translateX(-50%) translateY(12px); opacity: 0; }
+    to   { transform: translateX(-50%) translateY(0);    opacity: 1; }
+}

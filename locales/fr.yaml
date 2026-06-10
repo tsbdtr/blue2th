@@ -16,6 +16,8 @@ device:
   disconnect: "Déconnecter"
   empty: "Aucun appareil trouvé"
   connected_count: "%{count}/2"
+  connect_failed: "Échec de connexion à %{name}"
+  disconnect_failed: "Échec de déconnexion de %{name}"
 
 settings:
   title: "⚙ %{name}"
