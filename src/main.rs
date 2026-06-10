@@ -309,38 +309,35 @@ fn DeviceItem(
         li {
             class: "device-row",
             onclick: {
-                // Clone is required: the closure must own `name` because it is moved into
-                // the async block which may outlive the current render frame.
+                // Clone is required: the closure must own `name` because it outlives the render frame.
                 let name = name.clone();
                 move |_| {
-                    // Clone is required: the async block is `'static` and needs its own copy.
+                    // Clone is required: `spawn` captures a `'static` async block.
                     let name = name.clone();
-                    async move {
-                        // Guard: only attempt connection when status is Disconnected.
-                        let current = devices
-                            .read()
-                            .iter()
-                            .find(|(n, _)| n == &name)
-                            .map(|(_, s)| s.clone());
-                        if !matches!(current, Some(ConnectionStatus::Disconnected)) {
-                            return;
-                        }
-
-                        // Guard: silently ignore when the 2-device limit is already reached.
-                        let connected_count = devices
-                            .read()
-                            .iter()
-                            .filter(|(_, s)| *s == ConnectionStatus::Connected)
-                            .count();
-                        if connected_count >= MAX_CONNECTIONS {
-                            return;
-                        }
-
-                        let idx = devices.read().iter().position(|(n, _)| n == &name);
-                        if let Some(i) = idx {
-                            devices.write()[i].1 = ConnectionStatus::Connecting;
-                        }
-
+                    // Guards run synchronously — no await, no UI blocking.
+                    let current = devices
+                        .read()
+                        .iter()
+                        .find(|(n, _)| n == &name)
+                        .map(|(_, s)| s.clone());
+                    if !matches!(current, Some(ConnectionStatus::Disconnected)) {
+                        return;
+                    }
+                    let connected_count = devices
+                        .read()
+                        .iter()
+                        .filter(|(_, s)| *s == ConnectionStatus::Connected)
+                        .count();
+                    if connected_count >= MAX_CONNECTIONS {
+                        return;
+                    }
+                    // Show the spinner immediately before handing off to the background task.
+                    let idx = devices.read().iter().position(|(n, _)| n == &name);
+                    if let Some(i) = idx {
+                        devices.write()[i].1 = ConnectionStatus::Connecting;
+                    }
+                    // BT operation runs on a background task — UI thread stays free.
+                    spawn(async move {
                         match connect_device(name.clone()).await {
                             Ok(true) => {
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
@@ -355,20 +352,18 @@ fn DeviceItem(
                                 }
                             }
                             Err(e) => {
-                                // Revert status and surface ephemeral notification.
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
                                 if let Some(i) = idx {
                                     devices.write()[i].1 = ConnectionStatus::Disconnected;
                                 }
                                 *connect_error.write() = Some(e.to_string());
-                                // Auto-dismiss after 3 s.
                                 spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                                     *connect_error.write() = None;
                                 });
                             }
                         }
-                    }
+                    });
                 }
             },
             span { class: "{icon_class}", "{icon}" }
@@ -385,13 +380,15 @@ fn DeviceItem(
                             let name = name.clone();
                             move |e: Event<MouseData>| {
                                 e.stop_propagation();
-                                // Clone is required: async block is 'static.
+                                // Clone is required: `spawn` captures a `'static` async block.
                                 let name = name.clone();
-                                async move {
-                                    let idx = devices.read().iter().position(|(n, _)| n == &name);
-                                    if let Some(i) = idx {
-                                        devices.write()[i].1 = ConnectionStatus::Connecting;
-                                    }
+                                // Show the spinner immediately before handing off to the background task.
+                                let idx = devices.read().iter().position(|(n, _)| n == &name);
+                                if let Some(i) = idx {
+                                    devices.write()[i].1 = ConnectionStatus::Connecting;
+                                }
+                                // BT operation runs on a background task — UI thread stays free.
+                                spawn(async move {
                                     match disconnect_device(name.clone()).await {
                                         Ok(true) => {
                                             let idx = devices
@@ -414,7 +411,6 @@ fn DeviceItem(
                                             }
                                         }
                                         Err(e) => {
-                                            // Revert to Connected and show ephemeral error.
                                             let idx = devices
                                                 .read()
                                                 .iter()
@@ -433,7 +429,7 @@ fn DeviceItem(
                                             });
                                         }
                                     }
-                                }
+                                });
                             }
                         },
                         "{disconnect_label}"
