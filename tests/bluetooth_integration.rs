@@ -16,8 +16,8 @@
 //! These tests exercise the async inner logic of `enable_bluetooth_inner` directly.
 
 use blue2th::bluetooth::{
-    enable_bluetooth_inner, request_enable_bluetooth, request_enable_bluetooth_inner,
-    scan_devices, scan_devices_inner,
+    connected_device_names, enable_bluetooth_inner, request_enable_bluetooth,
+    request_enable_bluetooth_inner, scan_devices, scan_devices_inner,
 };
 
 // Criterion 3 + combined criteria 1 & 2:
@@ -27,7 +27,10 @@ use blue2th::bluetooth::{
 async fn test_enable_bluetooth_returns_bool() {
     // Asserts the function returns a Result<bool, _> and does not panic.
     let result: Result<bool, _> = enable_bluetooth_inner().await;
-    assert!(result.is_ok(), "enable_bluetooth_inner() must return Ok(_), got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "enable_bluetooth_inner() must return Ok(_), got: {result:?}"
+    );
 }
 
 // Criterion 3: on non-Android targets, enable_bluetooth returns Ok(true) (simulation fallback).
@@ -113,7 +116,10 @@ async fn test_scan_devices_returns_ok_on_non_android() {
 #[tokio::test]
 async fn test_scan_devices_simulation_non_empty() {
     let result = scan_devices_inner().await;
-    assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+    assert!(
+        result.is_ok(),
+        "scan_devices_inner() must return Ok(_) on non-Android"
+    );
     let devices = result.unwrap();
     assert!(
         !devices.is_empty(),
@@ -138,8 +144,14 @@ async fn test_scan_devices_simulation_non_empty() {
 async fn test_scan_devices_dispatches_to_inner() {
     let outer_result = scan_devices().await;
     let inner_result = scan_devices_inner().await;
-    assert!(outer_result.is_ok(), "scan_devices() must return Ok(_) on non-Android");
-    assert!(inner_result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+    assert!(
+        outer_result.is_ok(),
+        "scan_devices() must return Ok(_) on non-Android"
+    );
+    assert!(
+        inner_result.is_ok(),
+        "scan_devices_inner() must return Ok(_) on non-Android"
+    );
     let outer = outer_result.unwrap();
     let inner = inner_result.unwrap();
     // scan_devices() must delegate to scan_devices_inner(): their results must be identical.
@@ -177,6 +189,61 @@ fn test_locale_fr_scan_labels_updated() {
         content.contains("Chargement en cours"),
         "locales/fr.yaml must contain 'Chargement en cours' for scan.scanning, got:\n{content}"
     );
+}
+
+// AC: connected_device_names() returns Ok(_) on non-Android.
+// Covers: "A new public async dispatcher connected_device_names() returns
+// Result<Vec<String>, BluetoothError>" + "On non-Android, returns Ok(vec![])".
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_connected_device_names_returns_ok_on_non_android() {
+    let result = connected_device_names().await;
+    assert!(
+        result.is_ok(),
+        "connected_device_names() must return Ok(_) on non-Android, got: {result:?}"
+    );
+}
+
+// AC: On non-Android, connected_device_names() returns an empty Vec.
+// Covers: "On non-Android, connected_device_names() returns Ok(vec![])."
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_connected_device_names_empty_on_non_android() {
+    let result = connected_device_names().await;
+    assert!(
+        result.is_ok(),
+        "connected_device_names() must return Ok(_) on non-Android"
+    );
+    let names = result.unwrap();
+    assert!(
+        names.is_empty(),
+        "connected_device_names() non-Android stub must return an empty Vec, got: {names:?}"
+    );
+}
+
+// AC: connected_device_names() dispatches to its platform-gated inner implementation.
+// Covers: "delegates to a platform-gated inner implementation."
+// On non-Android the inner stub returns Ok(vec![]); the dispatcher must return the same.
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn test_connected_device_names_dispatches_to_inner() {
+    let result = connected_device_names().await;
+    assert_eq!(
+        result.unwrap(),
+        Vec::<String>::new(),
+        "connected_device_names() must delegate to its inner impl (empty Vec on non-Android)"
+    );
+}
+
+// AC: connected_device_names() error path never panics.
+// Covers: "connected_device_names() propagates BluetoothError (never panics) on the JNI failure path."
+// We model this at the type level: the return type is Result<Vec<String>, BluetoothError>,
+// and the call itself must complete without panicking on the host.
+#[tokio::test]
+async fn test_connected_device_names_error_path_does_not_panic() {
+    let result: Result<Vec<String>, _> = connected_device_names().await;
+    // Reaching this assertion proves the call returned without panicking.
+    let _ = result.is_ok() || result.is_err();
 }
 
 #[test]

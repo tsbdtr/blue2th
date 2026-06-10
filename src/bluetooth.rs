@@ -44,13 +44,6 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
     disconnect_device_inner(name).await
 }
 
-// Used by the Android A2DP polling loop (cfg-gated); the non-Android path exists
-// only so the function is available when compiling tests and the host binary.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn is_device_connected(name: String) -> Result<bool, BluetoothError> {
-    is_device_connected_inner(name).await
-}
-
 // Used by the Android polling path (cfg-gated) and the integration-test suite.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
@@ -62,15 +55,52 @@ pub async fn request_enable_bluetooth() -> Result<(), BluetoothError> {
     request_enable_bluetooth_inner().await
 }
 
+/// Public dispatcher: returns the names of the bonded devices currently
+/// connected, determined per device via `BluetoothDevice.isConnected()`
+/// (reflection) — no A2DP profile proxy required.
+/// Delegates to the platform-gated inner implementation.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn connected_device_names() -> Result<Vec<String>, BluetoothError> {
+    connected_device_names_inner().await
+}
+
 // ── Android JNI helpers ──────────────────────────────────────────────────────
 
 #[cfg(target_os = "android")]
 fn bt_err_clear(env: &mut jni::JNIEnv<'_>, e: jni::errors::Error) -> BluetoothError {
-    // Clear any pending JNI exception before returning to the caller.
+    // Capture the pending Java exception's details BEFORE clearing it, so the
+    // returned error carries the real cause (class + message) instead of the
+    // jni crate's generic "Java exception was thrown".
+    let detail = match env.exception_occurred() {
+        Ok(throwable) if !throwable.is_null() => {
+            // Must clear before making further JNI calls on this thread.
+            let _ = env.exception_clear();
+            let d = env
+                .call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
+                .ok()
+                .and_then(|v| v.l().ok())
+                .and_then(|s| {
+                    env.get_string(&jni::objects::JString::from(s))
+                        .ok()
+                        .map(Into::<String>::into)
+                });
+            // Defensive: if the toString/get_string path itself raised (e.g. OOM),
+            // clear it so we never return with a pending exception on this thread.
+            let _ = env.exception_clear();
+            d
+        },
+        _ => {
+            // No retrievable throwable; still clear any pending exception.
+            let _ = env.exception_clear();
+            None
+        },
+    };
     // If the exception is not cleared, the next JNI call on the same thread (e.g.
     // FindClass from the Dioxus WebView handler) will cause an ART abort.
-    let _ = env.exception_clear();
-    BluetoothError::new(e.to_string())
+    match detail {
+        Some(d) => BluetoothError::new(d),
+        None => BluetoothError::new(e.to_string()),
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -93,15 +123,16 @@ fn android_jni_env(vm: &jni::JavaVM) -> Result<jni::JNIEnv<'_>, BluetoothError> 
 // Only one A2DP operation runs at a time (UI is single-threaded in Dioxus), so a
 // single global slot is sufficient.
 
+/// Shared rendezvous slot between the Rust caller and the JNI `onServiceConnected`
+/// callback: a mutex-guarded optional proxy plus a condvar to signal arrival.
 #[cfg(target_os = "android")]
-static A2DP_PROXY_SLOT: std::sync::Mutex<
-    Option<
-        std::sync::Arc<(
-            std::sync::Mutex<Option<jni::objects::GlobalRef>>,
-            std::sync::Condvar,
-        )>,
-    >,
-> = std::sync::Mutex::new(None);
+type A2dpProxySlot = std::sync::Arc<(
+    std::sync::Mutex<Option<jni::objects::GlobalRef>>,
+    std::sync::Condvar,
+)>;
+
+#[cfg(target_os = "android")]
+static A2DP_PROXY_SLOT: std::sync::Mutex<Option<A2dpProxySlot>> = std::sync::Mutex::new(None);
 
 // ── JNI export: called by the Java ServiceListener proxy ────────────────────
 //
@@ -128,7 +159,6 @@ pub extern "C" fn Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected(
         if let Ok(mut guard) = lock.lock() {
             // Create a GlobalRef so the proxy object survives the JNI frame.
             // SAFETY: JNIEnv is valid for the duration of this native call.
-            let env = env;
             if let Ok(global) = env.new_global_ref(proxy) {
                 *guard = Some(global);
             }
@@ -208,10 +238,8 @@ fn obtain_a2dp_proxy(
     use jni::objects::JValue;
 
     // Build the shared slot and register it globally.
-    let pair: std::sync::Arc<(
-        std::sync::Mutex<Option<jni::objects::GlobalRef>>,
-        std::sync::Condvar,
-    )> = std::sync::Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let pair: A2dpProxySlot =
+        std::sync::Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
 
     {
         let mut slot = A2DP_PROXY_SLOT
@@ -327,7 +355,7 @@ fn build_service_listener_proxy<'a>(
         .map_err(|e| bt_err_clear(env, e))?;
 
     // Obtain the class loader from the activity class.
-    let class_loader = env
+    let _class_loader = env
         .call_method(
             activity_class,
             "getClassLoader",
@@ -342,7 +370,7 @@ fn build_service_listener_proxy<'a>(
     let class_class = env
         .find_class("java/lang/Class")
         .map_err(|e| bt_err_clear(env, e))?;
-    let ifaces_array = env
+    let _ifaces_array = env
         .new_object_array(1, &class_class, &listener_iface)
         .map_err(|e| bt_err_clear(env, e))?;
 
@@ -363,7 +391,7 @@ fn build_service_listener_proxy<'a>(
     // A2dpServiceListener.class.
 
     // Reflect WryActivity.onA2dpServiceConnected(JObject) as a static Method.
-    let bt_device_class = env
+    let _bt_device_class = env
         .find_class("android/bluetooth/BluetoothProfile")
         .map_err(|e| bt_err_clear(env, e))?;
 
@@ -376,9 +404,10 @@ fn build_service_listener_proxy<'a>(
     // getProfileProxy may return false. The Condvar will time out, and the caller
     // will surface the error. This is the correct minimal implementation that
     // compiles for the Android target and propagates errors cleanly.
-    drop(bt_device_class);
-    drop(ifaces_array);
-    drop(class_loader);
+    //
+    // The JNI lookups above are kept (bound with `_` prefixes) because each is a
+    // fallible JNI call whose error must still propagate via `?`; their results
+    // are intentionally unused in this minimal stub.
 
     // Return null — getProfileProxy called with null listener returns false on
     // modern Android, which the caller propagates as an error. A production build
@@ -434,6 +463,84 @@ fn a2dp_invoke_hidden(
     .map_err(|e| bt_err_clear(env, e))?;
 
     Ok(())
+}
+
+/// Check whether a bonded device is currently connected, via the hidden
+/// `BluetoothDevice.isConnected()` method called reflectively.
+///
+/// This deliberately avoids the A2DP profile proxy / ServiceListener path: that
+/// path requires a callback delivered through the app class loader and does not
+/// work from the native (Tokio worker) threads our async tasks run on. Reflection
+/// on the device object's own runtime class works from any thread.
+#[cfg(target_os = "android")]
+fn device_is_connected_reflect(
+    env: &mut jni::JNIEnv<'_>,
+    device: &jni::objects::JObject<'_>,
+) -> Result<bool, BluetoothError> {
+    use jni::objects::{JObject, JValue};
+
+    let null_obj = JObject::null();
+    let device_class = env
+        .get_object_class(device)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let method_name = env
+        .new_string("isConnected")
+        .map_err(|e| bt_err_clear(env, e))?;
+    // isConnected() takes no parameters: empty Class[] for getMethod.
+    let no_params = env
+        .new_object_array(0, "java/lang/Class", &null_obj)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let method = env
+        .call_method(
+            &device_class,
+            "getMethod",
+            "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+            &[
+                JValue::Object(method_name.as_ref()),
+                JValue::Object(&no_params),
+            ],
+        )
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    // Empty Object[] for Method.invoke (no arguments).
+    let no_args = env
+        .new_object_array(0, "java/lang/Object", &null_obj)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let result = env
+        .call_method(
+            &method,
+            "invoke",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            &[JValue::Object(device), JValue::Object(&no_args)],
+        )
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    // Free the intermediate local references now: this helper is called once per
+    // bonded device in a loop, and JNI local references are not reclaimed until the
+    // enclosing native frame returns. Without this, a user with many bonded devices
+    // could overflow the default local-reference table. Errors are ignored: a failed
+    // delete is non-fatal and the refs are reclaimed when the frame eventually pops.
+    let _ = env.delete_local_ref(device_class);
+    let _ = env.delete_local_ref(method_name);
+    let _ = env.delete_local_ref(method);
+    let _ = env.delete_local_ref(no_params);
+    let _ = env.delete_local_ref(no_args);
+
+    if result.is_null() {
+        return Ok(false);
+    }
+    // Unbox the returned java.lang.Boolean.
+    let connected = env
+        .call_method(&result, "booleanValue", "()Z", &[])
+        .map_err(|e| bt_err_clear(env, e))?
+        .z()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let _ = env.delete_local_ref(result);
+    Ok(connected)
 }
 
 // ── Android inner implementations ────────────────────────────────────────────
@@ -578,12 +685,7 @@ pub async fn scan_devices_inner() -> Result<Vec<String>, BluetoothError> {
     }
 
     let bonded_set = env
-        .call_method(
-            &adapter,
-            "getBondedDevices",
-            "()Ljava/util/Set;",
-            &[],
-        )
+        .call_method(&adapter, "getBondedDevices", "()Ljava/util/Set;", &[])
         .map_err(|e| bt_err_clear(&mut env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
@@ -621,10 +723,17 @@ pub async fn scan_devices_inner() -> Result<Vec<String>, BluetoothError> {
         let name: String = if name_obj.is_null() {
             String::new()
         } else {
-            env.get_string(&jni::objects::JString::from(name_obj))
+            let name_jstr = jni::objects::JString::from(name_obj);
+            let s = env
+                .get_string(&name_jstr)
                 .map_err(|e| bt_err_clear(&mut env, e))?
-                .into()
+                .into();
+            let _ = env.delete_local_ref(name_jstr);
+            s
         };
+        // Free this device's local reference before the next iteration: the bonded
+        // set can be large and JNI local refs accumulate until the frame returns.
+        let _ = env.delete_local_ref(device);
         names.push(name);
     }
 
@@ -721,20 +830,16 @@ async fn disconnect_device_inner(name: String) -> Result<bool, BluetoothError> {
     Ok(true)
 }
 
-/// Android: check whether a device is currently connected via A2DP.
-/// `BluetoothA2dp.getConnectionState(device)` is public — no reflection needed.
-/// Returns `true` when the state is `BluetoothProfile.STATE_CONNECTED` (= 2).
+/// Android: return the names of all bonded devices currently connected.
+/// Uses the hidden `BluetoothDevice.isConnected()` method via reflection for each
+/// bonded device — no A2DP profile proxy is required.
 #[cfg(target_os = "android")]
-async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError> {
-    use jni::objects::JValue;
-
+async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
     let ctx = ndk_context::android_context();
     // SAFETY: valid for the process lifetime.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| BluetoothError::new(e.to_string()))?;
     let mut env = android_jni_env(&vm)?;
-    // SAFETY: valid for the process lifetime.
-    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
 
     let adapter = env
         .call_static_method(
@@ -755,32 +860,62 @@ async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError>
         .map_err(|e| bt_err_clear(&mut env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let device = match find_device_by_name(&mut env, &bonded_set, &name)? {
-        Some(d) => d,
-        None => return Ok(false),
-    };
+    if bonded_set.is_null() {
+        return Ok(vec![]);
+    }
 
-    let a2dp_ref = obtain_a2dp_proxy(
-        &mut env,
-        &vm,
-        &adapter,
-        &context,
-        std::time::Duration::from_secs(5),
-    )?;
-
-    // BluetoothProfile.STATE_CONNECTED = 2
-    let state = env
-        .call_method(
-            a2dp_ref.as_obj(),
-            "getConnectionState",
-            "(Landroid/bluetooth/BluetoothDevice;)I",
-            &[JValue::Object(&device)],
-        )
+    let iterator = env
+        .call_method(&bonded_set, "iterator", "()Ljava/util/Iterator;", &[])
         .map_err(|e| bt_err_clear(&mut env, e))?
-        .i()
+        .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
 
-    Ok(state == 2)
+    let mut names = Vec::new();
+    loop {
+        let has_next = env
+            .call_method(&iterator, "hasNext", "()Z", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .z()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        if !has_next {
+            break;
+        }
+        let device = env
+            .call_method(&iterator, "next", "()Ljava/lang/Object;", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .l()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+        let is_connected = device_is_connected_reflect(&mut env, &device)?;
+        if !is_connected {
+            // Free this device's local reference before moving to the next one:
+            // the bonded set can be large and JNI local refs accumulate until the
+            // native frame returns.
+            let _ = env.delete_local_ref(device);
+            continue;
+        }
+
+        let name_obj = env
+            .call_method(&device, "getName", "()Ljava/lang/String;", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .l()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        let name: String = if name_obj.is_null() {
+            String::new()
+        } else {
+            let name_jstr = jni::objects::JString::from(name_obj);
+            let s = env
+                .get_string(&name_jstr)
+                .map_err(|e| bt_err_clear(&mut env, e))?
+                .into();
+            let _ = env.delete_local_ref(name_jstr);
+            s
+        };
+        let _ = env.delete_local_ref(device);
+        names.push(name);
+    }
+
+    Ok(names)
 }
 
 // ── Non-Android stubs ────────────────────────────────────────────────────────
@@ -818,11 +953,11 @@ async fn disconnect_device_inner(_name: String) -> Result<bool, BluetoothError> 
     Ok(true)
 }
 
-/// Non-Android stub: always returns `Ok(false)` (simulation).
+/// Non-Android stub: no device reported connected (simulation).
 #[cfg(not(target_os = "android"))]
 #[allow(dead_code)]
-async fn is_device_connected_inner(_name: String) -> Result<bool, BluetoothError> {
-    Ok(false)
+async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
+    Ok(vec![])
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -859,21 +994,6 @@ mod tests {
         );
     }
 
-    // AC: is_device_connected(name) on non-Android returns Ok(false).
-    #[cfg(not(target_os = "android"))]
-    #[tokio::test]
-    async fn test_is_device_connected_returns_false_on_non_android() {
-        let result = super::is_device_connected("TestDevice".to_string()).await;
-        assert!(
-            result.is_ok(),
-            "is_device_connected() must return Ok(_) on non-Android, got: {result:?}"
-        );
-        assert!(
-            !result.unwrap(),
-            "is_device_connected() non-Android stub must return Ok(false)"
-        );
-    }
-
     // AC: Clicking any device when connected_count == 2 is silently ignored — no connect_device call.
     // Models the guard logic in the UI click handler as a pure function test.
     #[test]
@@ -903,7 +1023,7 @@ mod tests {
         let result: Result<bool, super::BluetoothError> = Err(err);
 
         match result {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) => notification = Some(e.to_string()),
         }
 
@@ -955,7 +1075,7 @@ mod tests {
         let err = super::BluetoothError::new("JNI failure");
         let result: Result<(), super::BluetoothError> = Err(err);
         match result {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(e) => bt_error = Some(e.to_string()),
         }
         assert_eq!(
@@ -989,7 +1109,10 @@ mod tests {
     #[tokio::test]
     async fn test_scan_devices_returns_non_empty_ok_on_non_android() {
         let result = super::scan_devices().await;
-        assert!(result.is_ok(), "scan_devices() must return Ok(_) on non-Android");
+        assert!(
+            result.is_ok(),
+            "scan_devices() must return Ok(_) on non-Android"
+        );
         let devices = result.unwrap();
         assert!(
             !devices.is_empty(),
@@ -1003,7 +1126,10 @@ mod tests {
     #[tokio::test]
     async fn test_scan_devices_inner_simulation_non_empty() {
         let result = super::scan_devices_inner().await;
-        assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+        assert!(
+            result.is_ok(),
+            "scan_devices_inner() must return Ok(_) on non-Android"
+        );
         let devices = result.unwrap();
         assert!(
             !devices.is_empty(),
@@ -1043,7 +1169,7 @@ mod tests {
         // that zero devices exist before any explicit invocation by confirming the function
         // is not called here — we only reference it, never await it.
         let _scan_fn = super::scan_devices; // reference only, not called
-        // Reaching this point without any device-list side-effect confirms the criterion.
+                                            // Reaching this point without any device-list side-effect confirms the criterion.
     }
 
     // Criterion 5: fr.yaml scan.button must be "Charger les appareils"
