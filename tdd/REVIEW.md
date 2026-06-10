@@ -1,22 +1,18 @@
 # Review Report — Reflect real connection status on scan
 
 ## Issues Found & Fixed
-- [clippy/android] src/bluetooth.rs:105 — `A2DP_PROXY_SLOT` used a deeply nested `Mutex<Option<Arc<(Mutex<Option<GlobalRef>>, Condvar)>>>` type that tripped `clippy::type_complexity` (error under `-D warnings` on the Android target) → extracted an `A2dpProxySlot` type alias and reused it in both the static and `obtain_a2dp_proxy`.
-- [clippy/android] src/bluetooth.rs:139 — `let env = env;` redundant rebinding inside the JNI `onA2dpServiceConnected` callback tripped `clippy::redundant_locals` → removed the rebinding (kept the SAFETY comment).
-- [clippy/android] src/bluetooth.rs:387-389 — three `drop()` calls on non-`Drop` JNI types (`JClass`, `JObjectArray`, `JObject`) in `build_service_listener_proxy` tripped `clippy::drop_non_drop` → removed the `drop()` calls and bound the unused-but-fallible JNI lookups with `_`-prefixed names so their `?` error propagation is preserved.
-- [style] tests/bluetooth_integration.rs — three `assert!` calls exceeded the line width and failed `cargo fmt --check` (pre-existing from an earlier phase) → applied `rustfmt`.
-
-## Review focus verification (no change needed)
-- `connected_device_names_inner()` (Android) acquires the A2DP proxy **once** via `obtain_a2dp_proxy`, then calls `getConnectionState` in a loop on that single `a2dp_ref` — the expensive proxy acquisition is not repeated per device.
-- The bonded-set iteration maps a null `getName()` to `String::new()`, consistent with `scan_devices_inner` — no panic path.
-- The `main.rs` scan handler uses `scan_devices().await.unwrap_or_default()` and `connected_device_names().await.unwrap_or_default()` inside an async `onclick` closure, so a JNI error degrades gracefully and the UI thread is not blocked.
-- `merge_connection_status` has no unnecessary clones/allocations (consumes `found` by value, borrows `connected` as `&[String]`); the O(n²) dedup lookup is acceptable for the small device lists involved.
-- Left `.tdd-base-sha` untouched and restored the dx-regenerated `assets/tailwind.css` (not committed).
+- [duplication/dead-code] src/main.rs — the post-scan background reconcile and the 2 s polling reconcile duplicated the same inline status-mapping logic, while `merge_connection_status` stayed test-only. Extracted a pure `reconcile_connection_status(&mut [(String, ConnectionStatus)], &[String])` helper that updates status in both directions and always preserves `Connecting`, and wired it into both Android reconcile sites so they cannot drift. `merge_connection_status` is left in place (still tested; serves a different shape) with its existing doc/allow attribute.
+- [edge-case / JNI hygiene] src/bluetooth.rs `connected_device_names_inner`, `scan_devices_inner`, `device_is_connected_reflect` — JNI local references created per bonded device (device, name string, plus ~6 reflection temporaries each) are not reclaimed until the native frame returns, so a user with many bonded devices could overflow the default local-reference table. Added explicit `delete_local_ref` for the per-iteration objects and for the reflection helper's intermediates. Errors are ignored intentionally (a failed delete is non-fatal).
+- [error handling / robustness] src/bluetooth.rs `bt_err_clear` — if the `toString`/`get_string` retrieval path itself raised (e.g. OOM) after the initial clear, a fresh pending exception could be left on the thread and abort the next JNI call. Added a defensive second `exception_clear()` so the function can never return with a pending exception. No `unwrap`/`expect`/`panic` introduced.
 
 ## New Tests Added
-- none (the existing 38 tests already cover the acceptance criteria; all fixes were behavior-preserving lint/format changes).
+- test_reconcile_connection_status_updates_both_directions: a listed device in the connected set becomes Connected, one absent becomes Disconnected.
+- test_reconcile_connection_status_preserves_connecting: an in-flight `Connecting` entry is never clobbered, while a non-connecting device absent from the set becomes Disconnected.
 
 ## Final Status
-- `cargo test`: ✅ 38 passed (22 lib + 16 integration)
-- `cargo clippy`: ✅ clean (host target and `aarch64-linux-android` target)
-- `dx build --platform android`: ✅ success (exit 0)
+- `cargo test`: ✅ 39 passed (17 + 6 unit + 16 integration; 0 doctests)
+- `cargo clippy` (host): ✅ clean
+- `cargo clippy` (aarch64-linux-android): ✅ clean
+- `cargo fmt --check`: ✅ clean (apart from the known nightly-only `imports_granularity`/`group_imports` warnings)
+
+Notes: `dx build --platform android` not run (out of scope / slow). `obtain_a2dp_proxy` / `build_service_listener_proxy` left untouched as instructed.
