@@ -838,9 +838,8 @@ mod tests {
             result.is_ok(),
             "connect_device() must return Ok(_) on non-Android, got: {result:?}"
         );
-        assert_eq!(
+        assert!(
             result.unwrap(),
-            true,
             "connect_device() non-Android stub must return Ok(true)"
         );
     }
@@ -854,9 +853,8 @@ mod tests {
             result.is_ok(),
             "disconnect_device() must return Ok(_) on non-Android, got: {result:?}"
         );
-        assert_eq!(
+        assert!(
             result.unwrap(),
-            true,
             "disconnect_device() non-Android stub must return Ok(true)"
         );
     }
@@ -870,9 +868,8 @@ mod tests {
             result.is_ok(),
             "is_device_connected() must return Ok(_) on non-Android, got: {result:?}"
         );
-        assert_eq!(
-            result.unwrap(),
-            false,
+        assert!(
+            !result.unwrap(),
             "is_device_connected() non-Android stub must return Ok(false)"
         );
     }
@@ -991,10 +988,9 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     #[tokio::test]
     async fn test_scan_devices_returns_non_empty_ok_on_non_android() {
-        let Ok(devices) = super::scan_devices().await else {
-            assert!(false, "scan_devices() must return Ok(_) on non-Android");
-            return;
-        };
+        let result = super::scan_devices().await;
+        assert!(result.is_ok(), "scan_devices() must return Ok(_) on non-Android");
+        let devices = result.unwrap();
         assert!(
             !devices.is_empty(),
             "scan_devices() must return at least one device name on non-Android simulation"
@@ -1006,10 +1002,9 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     #[tokio::test]
     async fn test_scan_devices_inner_simulation_non_empty() {
-        let Ok(devices) = super::scan_devices_inner().await else {
-            assert!(false, "scan_devices_inner() must return Ok(_) on non-Android");
-            return;
-        };
+        let result = super::scan_devices_inner().await;
+        assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+        let devices = result.unwrap();
         assert!(
             !devices.is_empty(),
             "scan_devices_inner() simulation must return at least one device name"
@@ -1055,10 +1050,9 @@ mod tests {
     // Covers: `locales/fr.yaml`: `scan.button` → "Charger les appareils"
     #[test]
     fn test_locale_fr_scan_button_is_charger_les_appareils() {
-        let Ok(content) = std::fs::read_to_string("locales/fr.yaml") else {
-            assert!(false, "locales/fr.yaml must exist");
-            return;
-        };
+        let fr_result = std::fs::read_to_string("locales/fr.yaml");
+        assert!(fr_result.is_ok(), "locales/fr.yaml must exist");
+        let content = fr_result.unwrap();
         // The YAML value must contain the new label.
         assert!(
             content.contains("Charger les appareils"),
@@ -1075,10 +1069,9 @@ mod tests {
     // Covers: `locales/fr.yaml`: `scan.scanning` → "Chargement en cours…"
     #[test]
     fn test_locale_fr_scan_scanning_is_chargement_en_cours() {
-        let Ok(content) = std::fs::read_to_string("locales/fr.yaml") else {
-            assert!(false, "locales/fr.yaml must exist");
-            return;
-        };
+        let fr_result = std::fs::read_to_string("locales/fr.yaml");
+        assert!(fr_result.is_ok(), "locales/fr.yaml must exist");
+        let content = fr_result.unwrap();
         assert!(
             content.contains("Chargement en cours"),
             "locales/fr.yaml scan.scanning must contain 'Chargement en cours', got:\n{content}"
@@ -1093,10 +1086,9 @@ mod tests {
     // Covers: `locales/en.yaml`: `scan.button` → "Load devices"
     #[test]
     fn test_locale_en_scan_button_is_load_devices() {
-        let Ok(content) = std::fs::read_to_string("locales/en.yaml") else {
-            assert!(false, "locales/en.yaml must exist");
-            return;
-        };
+        let en_result = std::fs::read_to_string("locales/en.yaml");
+        assert!(en_result.is_ok(), "locales/en.yaml must exist");
+        let content = en_result.unwrap();
         assert!(
             content.contains("Load devices"),
             "locales/en.yaml scan.button must be 'Load devices', got:\n{content}"
@@ -1111,10 +1103,9 @@ mod tests {
     // Covers: `locales/en.yaml`: `scan.scanning` → "Loading…"
     #[test]
     fn test_locale_en_scan_scanning_is_loading() {
-        let Ok(content) = std::fs::read_to_string("locales/en.yaml") else {
-            assert!(false, "locales/en.yaml must exist");
-            return;
-        };
+        let en_result = std::fs::read_to_string("locales/en.yaml");
+        assert!(en_result.is_ok(), "locales/en.yaml must exist");
+        let content = en_result.unwrap();
         assert!(
             content.contains("Loading"),
             "locales/en.yaml scan.scanning must contain 'Loading', got:\n{content}"

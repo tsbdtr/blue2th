@@ -110,6 +110,8 @@ fn App() -> Element {
                     .map(|(n, _)| n.clone())
                     .collect();
                 for name in connected_names {
+                    // Clone is required: is_device_connected takes String by value, and
+                    // `name` is still needed in the position() lookup after the await.
                     if let Ok(false) = is_device_connected(name.clone()).await {
                         // Device dropped — revert to Disconnected.
                         let idx = devices.read().iter().position(|(n, _)| n == &name);
@@ -534,7 +536,11 @@ fn DeviceSettings(name: String) -> Element {
                         min: "0",
                         max: "100",
                         value: "{volume}",
-                        oninput: move |e| *volume.write() = e.value().parse().unwrap_or(75),
+                        oninput: move |e| {
+                            if let Ok(v) = e.value().parse() {
+                                *volume.write() = v;
+                            }
+                        },
                     }
                 }
             }
