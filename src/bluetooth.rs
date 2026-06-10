@@ -44,13 +44,6 @@ pub async fn disconnect_device(name: String) -> Result<bool, BluetoothError> {
     disconnect_device_inner(name).await
 }
 
-// Used by the Android A2DP polling loop (cfg-gated); the non-Android path exists
-// only so the function is available when compiling tests and the host binary.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn is_device_connected(name: String) -> Result<bool, BluetoothError> {
-    is_device_connected_inner(name).await
-}
-
 // Used by the Android polling path (cfg-gated) and the integration-test suite.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn enable_bluetooth() -> Result<bool, BluetoothError> {
@@ -812,44 +805,6 @@ async fn disconnect_device_inner(name: String) -> Result<bool, BluetoothError> {
     Ok(true)
 }
 
-/// Android: check whether a bonded device is currently connected.
-/// Uses the hidden `BluetoothDevice.isConnected()` method via reflection — no
-/// A2DP profile proxy is required, so it works from any thread.
-#[cfg(target_os = "android")]
-async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError> {
-    let ctx = ndk_context::android_context();
-    // SAFETY: valid for the process lifetime.
-    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let mut env = android_jni_env(&vm)?;
-
-    let adapter = env
-        .call_static_method(
-            "android/bluetooth/BluetoothAdapter",
-            "getDefaultAdapter",
-            "()Landroid/bluetooth/BluetoothAdapter;",
-            &[],
-        )
-        .map_err(|e| bt_err_clear(&mut env, e))?
-        .l()
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-    if adapter.is_null() {
-        return Err(BluetoothError::new("BluetoothAdapter not available"));
-    }
-
-    let bonded_set = env
-        .call_method(&adapter, "getBondedDevices", "()Ljava/util/Set;", &[])
-        .map_err(|e| bt_err_clear(&mut env, e))?
-        .l()
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let device = match find_device_by_name(&mut env, &bonded_set, &name)? {
-        Some(d) => d,
-        None => return Ok(false),
-    };
-
-    device_is_connected_reflect(&mut env, &device)
-}
-
 /// Android: return the names of all bonded devices currently connected.
 /// Uses the hidden `BluetoothDevice.isConnected()` method via reflection for each
 /// bonded device — no A2DP profile proxy is required.
@@ -963,13 +918,6 @@ async fn disconnect_device_inner(_name: String) -> Result<bool, BluetoothError> 
     Ok(true)
 }
 
-/// Non-Android stub: always returns `Ok(false)` (simulation).
-#[cfg(not(target_os = "android"))]
-#[allow(dead_code)]
-async fn is_device_connected_inner(_name: String) -> Result<bool, BluetoothError> {
-    Ok(false)
-}
-
 /// Non-Android stub: no device reported connected (simulation).
 #[cfg(not(target_os = "android"))]
 #[allow(dead_code)]
@@ -1008,21 +956,6 @@ mod tests {
         assert!(
             result.unwrap(),
             "disconnect_device() non-Android stub must return Ok(true)"
-        );
-    }
-
-    // AC: is_device_connected(name) on non-Android returns Ok(false).
-    #[cfg(not(target_os = "android"))]
-    #[tokio::test]
-    async fn test_is_device_connected_returns_false_on_non_android() {
-        let result = super::is_device_connected("TestDevice".to_string()).await;
-        assert!(
-            result.is_ok(),
-            "is_device_connected() must return Ok(_) on non-Android, got: {result:?}"
-        );
-        assert!(
-            !result.unwrap(),
-            "is_device_connected() non-Android stub must return Ok(false)"
         );
     }
 

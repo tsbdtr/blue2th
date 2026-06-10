@@ -16,12 +16,12 @@ use dioxus::prelude::*;
 
 mod bluetooth;
 
+#[cfg(target_os = "android")]
+use bluetooth::enable_bluetooth;
 use bluetooth::{
     connect_device, connected_device_names, disconnect_device, request_enable_bluetooth,
     scan_devices,
 };
-#[cfg(target_os = "android")]
-use bluetooth::{enable_bluetooth, is_device_connected};
 
 rust_i18n::i18n!("locales", fallback = "fr");
 
@@ -41,7 +41,6 @@ enum ConnectionStatus {
 /// Pure helper: map found device names plus the set of currently-connected names
 /// into `(name, ConnectionStatus)` pairs. A name present in `connected` becomes
 /// `Connected`; otherwise `Disconnected`. Order follows `found`, with no duplicates.
-/// RED-phase stub — the implementer will replace this `todo!()`.
 #[cfg_attr(not(test), allow(dead_code))]
 fn merge_connection_status(
     found: Vec<String>,
@@ -120,9 +119,10 @@ fn App() -> Element {
         });
     });
 
-    // On Android, poll every 2 s to detect when a Connected device drops its A2DP link
-    // externally (e.g. device powered off). When is_device_connected returns Ok(false),
-    // revert the device status to Disconnected so the UI stays accurate.
+    // On Android, poll every 2 s to keep each device's status in sync with the
+    // real connection state in BOTH directions: a device connected externally
+    // (e.g. via Android settings) becomes Connected, and one that drops its link
+    // becomes Disconnected — all without requiring a manual re-scan.
     #[cfg(target_os = "android")]
     use_hook(|| {
         // Clone is required: the spawned async block needs its own Signal handle.
@@ -130,24 +130,22 @@ fn App() -> Element {
         spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                // Collect names of Connected devices (snapshot to avoid holding the lock
-                // across an await point).
-                let connected_names: Vec<String> = devices
-                    .read()
-                    .iter()
-                    .filter(|(_, s)| *s == ConnectionStatus::Connected)
-                    .map(|(n, _)| n.clone())
-                    .collect();
-                for name in connected_names {
-                    // Clone is required: is_device_connected takes String by value, and
-                    // `name` is still needed in the position() lookup after the await.
-                    if let Ok(false) = is_device_connected(name.clone()).await {
-                        // Device dropped — revert to Disconnected.
-                        let idx = devices.read().iter().position(|(n, _)| n == &name);
-                        if let Some(i) = idx {
-                            devices.write()[i].1 = ConnectionStatus::Disconnected;
-                        }
+                // Nothing to reconcile until devices have been loaded.
+                if devices.read().is_empty() {
+                    continue;
+                }
+                let connected = connected_device_names().await.unwrap_or_default();
+                let mut d = devices.write();
+                for (name, status) in d.iter_mut() {
+                    // Never override an in-flight connection attempt.
+                    if *status == ConnectionStatus::Connecting {
+                        continue;
                     }
+                    *status = if connected.contains(name) {
+                        ConnectionStatus::Connected
+                    } else {
+                        ConnectionStatus::Disconnected
+                    };
                 }
             }
         });
