@@ -27,7 +27,10 @@ use blue2th::bluetooth::{
 async fn test_enable_bluetooth_returns_bool() {
     // Asserts the function returns a Result<bool, _> and does not panic.
     let result: Result<bool, _> = enable_bluetooth_inner().await;
-    assert!(result.is_ok(), "enable_bluetooth_inner() must return Ok(_), got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "enable_bluetooth_inner() must return Ok(_), got: {result:?}"
+    );
 }
 
 // Criterion 3: on non-Android targets, enable_bluetooth returns Ok(true) (simulation fallback).
@@ -113,7 +116,10 @@ async fn test_scan_devices_returns_ok_on_non_android() {
 #[tokio::test]
 async fn test_scan_devices_simulation_non_empty() {
     let result = scan_devices_inner().await;
-    assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+    assert!(
+        result.is_ok(),
+        "scan_devices_inner() must return Ok(_) on non-Android"
+    );
     let devices = result.unwrap();
     assert!(
         !devices.is_empty(),
@@ -138,8 +144,14 @@ async fn test_scan_devices_simulation_non_empty() {
 async fn test_scan_devices_dispatches_to_inner() {
     let outer_result = scan_devices().await;
     let inner_result = scan_devices_inner().await;
-    assert!(outer_result.is_ok(), "scan_devices() must return Ok(_) on non-Android");
-    assert!(inner_result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+    assert!(
+        outer_result.is_ok(),
+        "scan_devices() must return Ok(_) on non-Android"
+    );
+    assert!(
+        inner_result.is_ok(),
+        "scan_devices_inner() must return Ok(_) on non-Android"
+    );
     let outer = outer_result.unwrap();
     let inner = inner_result.unwrap();
     // scan_devices() must delegate to scan_devices_inner(): their results must be identical.

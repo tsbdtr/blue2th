@@ -101,15 +101,16 @@ fn android_jni_env(vm: &jni::JavaVM) -> Result<jni::JNIEnv<'_>, BluetoothError> 
 // Only one A2DP operation runs at a time (UI is single-threaded in Dioxus), so a
 // single global slot is sufficient.
 
+/// Shared rendezvous slot between the Rust caller and the JNI `onServiceConnected`
+/// callback: a mutex-guarded optional proxy plus a condvar to signal arrival.
 #[cfg(target_os = "android")]
-static A2DP_PROXY_SLOT: std::sync::Mutex<
-    Option<
-        std::sync::Arc<(
-            std::sync::Mutex<Option<jni::objects::GlobalRef>>,
-            std::sync::Condvar,
-        )>,
-    >,
-> = std::sync::Mutex::new(None);
+type A2dpProxySlot = std::sync::Arc<(
+    std::sync::Mutex<Option<jni::objects::GlobalRef>>,
+    std::sync::Condvar,
+)>;
+
+#[cfg(target_os = "android")]
+static A2DP_PROXY_SLOT: std::sync::Mutex<Option<A2dpProxySlot>> = std::sync::Mutex::new(None);
 
 // ── JNI export: called by the Java ServiceListener proxy ────────────────────
 //
@@ -136,7 +137,6 @@ pub extern "C" fn Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected(
         if let Ok(mut guard) = lock.lock() {
             // Create a GlobalRef so the proxy object survives the JNI frame.
             // SAFETY: JNIEnv is valid for the duration of this native call.
-            let env = env;
             if let Ok(global) = env.new_global_ref(proxy) {
                 *guard = Some(global);
             }
@@ -216,10 +216,8 @@ fn obtain_a2dp_proxy(
     use jni::objects::JValue;
 
     // Build the shared slot and register it globally.
-    let pair: std::sync::Arc<(
-        std::sync::Mutex<Option<jni::objects::GlobalRef>>,
-        std::sync::Condvar,
-    )> = std::sync::Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let pair: A2dpProxySlot =
+        std::sync::Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
 
     {
         let mut slot = A2DP_PROXY_SLOT
@@ -335,7 +333,7 @@ fn build_service_listener_proxy<'a>(
         .map_err(|e| bt_err_clear(env, e))?;
 
     // Obtain the class loader from the activity class.
-    let class_loader = env
+    let _class_loader = env
         .call_method(
             activity_class,
             "getClassLoader",
@@ -350,7 +348,7 @@ fn build_service_listener_proxy<'a>(
     let class_class = env
         .find_class("java/lang/Class")
         .map_err(|e| bt_err_clear(env, e))?;
-    let ifaces_array = env
+    let _ifaces_array = env
         .new_object_array(1, &class_class, &listener_iface)
         .map_err(|e| bt_err_clear(env, e))?;
 
@@ -371,7 +369,7 @@ fn build_service_listener_proxy<'a>(
     // A2dpServiceListener.class.
 
     // Reflect WryActivity.onA2dpServiceConnected(JObject) as a static Method.
-    let bt_device_class = env
+    let _bt_device_class = env
         .find_class("android/bluetooth/BluetoothProfile")
         .map_err(|e| bt_err_clear(env, e))?;
 
@@ -384,9 +382,10 @@ fn build_service_listener_proxy<'a>(
     // getProfileProxy may return false. The Condvar will time out, and the caller
     // will surface the error. This is the correct minimal implementation that
     // compiles for the Android target and propagates errors cleanly.
-    drop(bt_device_class);
-    drop(ifaces_array);
-    drop(class_loader);
+    //
+    // The JNI lookups above are kept (bound with `_` prefixes) because each is a
+    // fallible JNI call whose error must still propagate via `?`; their results
+    // are intentionally unused in this minimal stub.
 
     // Return null — getProfileProxy called with null listener returns false on
     // modern Android, which the caller propagates as an error. A production build
