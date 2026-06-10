@@ -231,21 +231,36 @@ fn Home() -> Element {
                     onclick: move |_| async move {
                         *scanning.write() = true;
                         let found = scan_devices().await.unwrap_or_default();
-                        let connected = connected_device_names().await.unwrap_or_default();
-                        let mut d = devices.write();
-                        for name in found {
-                            let status = if connected.contains(&name) {
-                                ConnectionStatus::Connected
-                            } else {
-                                ConnectionStatus::Disconnected
-                            };
-                            if let Some(entry) = d.iter_mut().find(|(n, _)| n == &name) {
-                                entry.1 = status;
-                            } else {
-                                d.push((name, status));
+                        // Populate the list immediately. The real A2DP connection
+                        // status is reconciled in the background below, because
+                        // obtaining the A2DP proxy can block for several seconds
+                        // and must never gate the list from appearing.
+                        {
+                            let mut d = devices.write();
+                            for name in found {
+                                if !d.iter().any(|(n, _)| n == &name) {
+                                    d.push((name, ConnectionStatus::Disconnected));
+                                }
                             }
                         }
                         *scanning.write() = false;
+                        // Reflect the real A2DP state without blocking the UI thread.
+                        spawn(async move {
+                            let connected =
+                                connected_device_names().await.unwrap_or_default();
+                            let mut d = devices.write();
+                            for (name, status) in d.iter_mut() {
+                                // Never override an in-flight connection attempt.
+                                if *status == ConnectionStatus::Connecting {
+                                    continue;
+                                }
+                                *status = if connected.contains(name) {
+                                    ConnectionStatus::Connected
+                                } else {
+                                    ConnectionStatus::Disconnected
+                                };
+                            }
+                        });
                     },
                     span { class: "scan-icon", "{scan_icon}" }
                     "{scan_label}"
