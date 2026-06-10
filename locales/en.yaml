@@ -15,6 +15,7 @@ common:
 device:
   disconnect: "Disconnect"
   empty: "No devices found"
+  connected_count: "%{count}/2"
 
 settings:
   title: "⚙ %{name}"
