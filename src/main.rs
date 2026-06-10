@@ -63,6 +63,28 @@ fn merge_connection_status(
     result
 }
 
+/// Pure helper: reconcile each listed device's status against the set of names
+/// reported as currently connected, in place. A device whose name is in
+/// `connected` becomes `Connected`; otherwise `Disconnected`. An in-flight
+/// `Connecting` entry is always preserved so a background reconcile never clobbers
+/// a connection attempt the user just started.
+///
+/// Shared by both Android reconcile sites (the post-scan background task and the
+/// 2 s polling loop) so the two stay behaviorally identical.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn reconcile_connection_status(devices: &mut [(String, ConnectionStatus)], connected: &[String]) {
+    for (name, status) in devices.iter_mut() {
+        if *status == ConnectionStatus::Connecting {
+            continue;
+        }
+        *status = if connected.iter().any(|c| c == name) {
+            ConnectionStatus::Connected
+        } else {
+            ConnectionStatus::Disconnected
+        };
+    }
+}
+
 fn status_icon(status: &ConnectionStatus) -> (&'static str, &'static str) {
     match status {
         ConnectionStatus::Disconnected => ("○", "device-icon disconnected"),
@@ -136,17 +158,7 @@ fn App() -> Element {
                 }
                 let connected = connected_device_names().await.unwrap_or_default();
                 let mut d = devices.write();
-                for (name, status) in d.iter_mut() {
-                    // Never override an in-flight connection attempt.
-                    if *status == ConnectionStatus::Connecting {
-                        continue;
-                    }
-                    *status = if connected.contains(name) {
-                        ConnectionStatus::Connected
-                    } else {
-                        ConnectionStatus::Disconnected
-                    };
-                }
+                reconcile_connection_status(&mut d, &connected);
             }
         });
     });
@@ -248,17 +260,7 @@ fn Home() -> Element {
                             let connected =
                                 connected_device_names().await.unwrap_or_default();
                             let mut d = devices.write();
-                            for (name, status) in d.iter_mut() {
-                                // Never override an in-flight connection attempt.
-                                if *status == ConnectionStatus::Connecting {
-                                    continue;
-                                }
-                                *status = if connected.contains(name) {
-                                    ConnectionStatus::Connected
-                                } else {
-                                    ConnectionStatus::Disconnected
-                                };
-                            }
+                            reconcile_connection_status(&mut d, &connected);
                         });
                     },
                     span { class: "scan-icon", "{scan_icon}" }
@@ -630,7 +632,7 @@ fn DeviceSettings(name: String) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_connection_status, ConnectionStatus};
+    use super::{merge_connection_status, reconcile_connection_status, ConnectionStatus};
 
     // AC: A pure helper assigns `Connected` to names present in the connected set
     // and `Disconnected` otherwise.
@@ -722,6 +724,53 @@ mod tests {
         assert_eq!(
             connected_count, 2,
             "the connected counter must reflect the two pre-existing connections"
+        );
+    }
+
+    // Reconcile updates status in both directions: a device in the connected set
+    // becomes Connected, one absent from it becomes Disconnected.
+    #[test]
+    fn test_reconcile_connection_status_updates_both_directions() {
+        let mut devices = vec![
+            ("Blue Speaker".to_string(), ConnectionStatus::Disconnected),
+            ("HeadPhones Pro".to_string(), ConnectionStatus::Connected),
+        ];
+        let connected = vec!["Blue Speaker".to_string()];
+
+        reconcile_connection_status(&mut devices, &connected);
+
+        assert_eq!(
+            devices,
+            vec![
+                ("Blue Speaker".to_string(), ConnectionStatus::Connected),
+                ("HeadPhones Pro".to_string(), ConnectionStatus::Disconnected),
+            ],
+            "reconcile must connect listed devices and disconnect the rest"
+        );
+    }
+
+    // Reconcile must never clobber an in-flight Connecting entry, even when that
+    // device is absent from the connected set.
+    #[test]
+    fn test_reconcile_connection_status_preserves_connecting() {
+        let mut devices = vec![
+            ("Blue Speaker".to_string(), ConnectionStatus::Connecting),
+            ("HeadPhones Pro".to_string(), ConnectionStatus::Connected),
+        ];
+        // Connecting device not yet reported connected; the other dropped its link.
+        let connected: Vec<String> = Vec::new();
+
+        reconcile_connection_status(&mut devices, &connected);
+
+        assert_eq!(
+            devices[0].1,
+            ConnectionStatus::Connecting,
+            "an in-flight Connecting entry must be preserved"
+        );
+        assert_eq!(
+            devices[1].1,
+            ConnectionStatus::Disconnected,
+            "a non-connecting device absent from the set must become Disconnected"
         );
     }
 }

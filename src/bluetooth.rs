@@ -75,14 +75,19 @@ fn bt_err_clear(env: &mut jni::JNIEnv<'_>, e: jni::errors::Error) -> BluetoothEr
         Ok(throwable) if !throwable.is_null() => {
             // Must clear before making further JNI calls on this thread.
             let _ = env.exception_clear();
-            env.call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
+            let d = env
+                .call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
                 .ok()
                 .and_then(|v| v.l().ok())
                 .and_then(|s| {
                     env.get_string(&jni::objects::JString::from(s))
                         .ok()
                         .map(Into::<String>::into)
-                })
+                });
+            // Defensive: if the toString/get_string path itself raised (e.g. OOM),
+            // clear it so we never return with a pending exception on this thread.
+            let _ = env.exception_clear();
+            d
         },
         _ => {
             // No retrievable throwable; still clear any pending exception.
@@ -513,6 +518,18 @@ fn device_is_connected_reflect(
         .map_err(|e| bt_err_clear(env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    // Free the intermediate local references now: this helper is called once per
+    // bonded device in a loop, and JNI local references are not reclaimed until the
+    // enclosing native frame returns. Without this, a user with many bonded devices
+    // could overflow the default local-reference table. Errors are ignored: a failed
+    // delete is non-fatal and the refs are reclaimed when the frame eventually pops.
+    let _ = env.delete_local_ref(device_class);
+    let _ = env.delete_local_ref(method_name);
+    let _ = env.delete_local_ref(method);
+    let _ = env.delete_local_ref(no_params);
+    let _ = env.delete_local_ref(no_args);
+
     if result.is_null() {
         return Ok(false);
     }
@@ -522,6 +539,7 @@ fn device_is_connected_reflect(
         .map_err(|e| bt_err_clear(env, e))?
         .z()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let _ = env.delete_local_ref(result);
     Ok(connected)
 }
 
@@ -705,10 +723,17 @@ pub async fn scan_devices_inner() -> Result<Vec<String>, BluetoothError> {
         let name: String = if name_obj.is_null() {
             String::new()
         } else {
-            env.get_string(&jni::objects::JString::from(name_obj))
+            let name_jstr = jni::objects::JString::from(name_obj);
+            let s = env
+                .get_string(&name_jstr)
                 .map_err(|e| bt_err_clear(&mut env, e))?
-                .into()
+                .into();
+            let _ = env.delete_local_ref(name_jstr);
+            s
         };
+        // Free this device's local reference before the next iteration: the bonded
+        // set can be large and JNI local refs accumulate until the frame returns.
+        let _ = env.delete_local_ref(device);
         names.push(name);
     }
 
@@ -861,7 +886,12 @@ async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
             .l()
             .map_err(|e| BluetoothError::new(e.to_string()))?;
 
-        if !device_is_connected_reflect(&mut env, &device)? {
+        let is_connected = device_is_connected_reflect(&mut env, &device)?;
+        if !is_connected {
+            // Free this device's local reference before moving to the next one:
+            // the bonded set can be large and JNI local refs accumulate until the
+            // native frame returns.
+            let _ = env.delete_local_ref(device);
             continue;
         }
 
@@ -873,10 +903,15 @@ async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
         let name: String = if name_obj.is_null() {
             String::new()
         } else {
-            env.get_string(&jni::objects::JString::from(name_obj))
+            let name_jstr = jni::objects::JString::from(name_obj);
+            let s = env
+                .get_string(&name_jstr)
                 .map_err(|e| bt_err_clear(&mut env, e))?
-                .into()
+                .into();
+            let _ = env.delete_local_ref(name_jstr);
+            s
         };
+        let _ = env.delete_local_ref(device);
         names.push(name);
     }
 
