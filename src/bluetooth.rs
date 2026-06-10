@@ -62,6 +62,14 @@ pub async fn request_enable_bluetooth() -> Result<(), BluetoothError> {
     request_enable_bluetooth_inner().await
 }
 
+/// Public dispatcher: returns the names of the bonded devices currently
+/// A2DP-connected, obtained via a single shared A2DP profile proxy.
+/// Delegates to the platform-gated inner implementation.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn connected_device_names() -> Result<Vec<String>, BluetoothError> {
+    connected_device_names_inner().await
+}
+
 // ── Android JNI helpers ──────────────────────────────────────────────────────
 
 #[cfg(target_os = "android")]
@@ -783,6 +791,14 @@ async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError>
     Ok(state == 2)
 }
 
+/// Android: return the names of all bonded devices currently A2DP-connected,
+/// using a single shared A2DP profile proxy for the whole batch.
+/// RED-phase stub — the implementer will replace this `todo!()`.
+#[cfg(target_os = "android")]
+async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
+    todo!("Android implementation of connected_device_names_inner")
+}
+
 // ── Non-Android stubs ────────────────────────────────────────────────────────
 
 #[cfg(not(target_os = "android"))]
@@ -823,6 +839,13 @@ async fn disconnect_device_inner(_name: String) -> Result<bool, BluetoothError> 
 #[allow(dead_code)]
 async fn is_device_connected_inner(_name: String) -> Result<bool, BluetoothError> {
     Ok(false)
+}
+
+/// Non-Android stub: no device reported connected (simulation).
+#[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
+async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
+    Ok(vec![])
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

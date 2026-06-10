@@ -28,11 +28,24 @@ const BLUETOOTH_LOGO: Asset = asset!("/assets/bluetooth.svg");
 
 const MAX_CONNECTIONS: usize = 2;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected,
+}
+
+/// Pure helper: map found device names plus the set of currently-connected names
+/// into `(name, ConnectionStatus)` pairs. A name present in `connected` becomes
+/// `Connected`; otherwise `Disconnected`. Order follows `found`, with no duplicates.
+/// RED-phase stub — the implementer will replace this `todo!()`.
+#[cfg_attr(not(test), allow(dead_code))]
+fn merge_connection_status(
+    found: Vec<String>,
+    connected: &[String],
+) -> Vec<(String, ConnectionStatus)> {
+    let _ = (found, connected);
+    todo!("pure merge of found names + connected set into ConnectionStatus pairs")
 }
 
 fn status_icon(status: &ConnectionStatus) -> (&'static str, &'static str) {
@@ -574,5 +587,106 @@ fn DeviceSettings(name: String) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_connection_status, ConnectionStatus};
+
+    // AC: A pure helper assigns `Connected` to names present in the connected set
+    // and `Disconnected` otherwise.
+    #[test]
+    fn test_merge_connection_status_assigns_connected_and_disconnected() {
+        let found = vec![
+            "Blue Speaker".to_string(),
+            "HeadPhones Pro".to_string(),
+            "Old Earbuds".to_string(),
+        ];
+        let connected = vec!["Blue Speaker".to_string(), "Old Earbuds".to_string()];
+
+        let result = merge_connection_status(found, &connected);
+
+        assert_eq!(
+            result,
+            vec![
+                ("Blue Speaker".to_string(), ConnectionStatus::Connected),
+                ("HeadPhones Pro".to_string(), ConnectionStatus::Disconnected),
+                ("Old Earbuds".to_string(), ConnectionStatus::Connected),
+            ],
+            "names in the connected set must be Connected, others Disconnected"
+        );
+    }
+
+    // AC: empty connected set → every device is Disconnected.
+    #[test]
+    fn test_merge_connection_status_empty_connected_all_disconnected() {
+        let found = vec!["Blue Speaker".to_string(), "HeadPhones Pro".to_string()];
+        let connected: Vec<String> = Vec::new();
+
+        let result = merge_connection_status(found, &connected);
+
+        assert!(
+            result
+                .iter()
+                .all(|(_, s)| *s == ConnectionStatus::Disconnected),
+            "with an empty connected set, every device must be Disconnected, got: {result:?}"
+        );
+        assert_eq!(result.len(), 2, "all found devices must be present");
+    }
+
+    // AC: the merge helper does not duplicate a device already present in the list
+    // and refreshes its status from the connected set.
+    #[test]
+    fn test_merge_connection_status_no_duplicate_and_refreshes_status() {
+        // "Blue Speaker" appears twice in the found list (e.g. a re-scan).
+        let found = vec![
+            "Blue Speaker".to_string(),
+            "HeadPhones Pro".to_string(),
+            "Blue Speaker".to_string(),
+        ];
+        let connected = vec!["Blue Speaker".to_string()];
+
+        let result = merge_connection_status(found, &connected);
+
+        // No duplicate entry for "Blue Speaker".
+        let blue_count = result
+            .iter()
+            .filter(|(n, _)| n == "Blue Speaker")
+            .count();
+        assert_eq!(
+            blue_count, 1,
+            "a device must not be duplicated, got {blue_count} entries for 'Blue Speaker'"
+        );
+        // Its status is refreshed from the connected set.
+        assert!(
+            result
+                .iter()
+                .any(|(n, s)| n == "Blue Speaker" && *s == ConnectionStatus::Connected),
+            "'Blue Speaker' status must be refreshed to Connected from the connected set"
+        );
+    }
+
+    // AC: pre-existing connections detected at scan time count toward the x/2 counter.
+    // The number of Connected entries must equal the number of found names in the set.
+    #[test]
+    fn test_merge_connection_status_counter_reflects_connected() {
+        let found = vec![
+            "Blue Speaker".to_string(),
+            "HeadPhones Pro".to_string(),
+            "Soundbar".to_string(),
+        ];
+        let connected = vec!["Blue Speaker".to_string(), "Soundbar".to_string()];
+
+        let result = merge_connection_status(found, &connected);
+
+        let connected_count = result
+            .iter()
+            .filter(|(_, s)| *s == ConnectionStatus::Connected)
+            .count();
+        assert_eq!(
+            connected_count, 2,
+            "the connected counter must reflect the two pre-existing connections"
+        );
     }
 }
