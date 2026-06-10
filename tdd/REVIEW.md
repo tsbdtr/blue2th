@@ -1,21 +1,33 @@
-# Review Report — Load bonded Bluetooth devices
+# Review Report — Real Bluetooth A2DP Connection
 
 ## Issues Found & Fixed
 
-- [clippy] `src/bluetooth.rs:361,376` — two `result.expect("already checked is_ok")` calls in unit tests would trigger `clippy::expect_used` if linting is extended to `--tests`; similarly `result.expect_err(...)` at line 399 → replaced all three with `let Ok(...) else { assert!(false, ...) }` / `if let Err(e) = result` patterns.
+- [clippy] `src/main.rs:537` — `e.value().parse().unwrap_or(75)` in production code (volume range `oninput` handler) → replaced with `if let Ok(v) = e.value().parse() { *volume.write() = v; }` — parse failures are silently dropped (no state mutation), correct UX for a malformed slider value
 
-- [clippy] `src/bluetooth.rs:347` — a `match result { Ok(()) => bt_enabled = true, Err(_) => {} }` block was more verbose than necessary → replaced with `if let Ok(()) = result`.
+- [clippy] `src/bluetooth.rs:841-845` — `assert_eq!(result.unwrap(), true, ...)` in test → replaced with `assert!(result.unwrap(), ...)` to fix `clippy::bool_assert_comparison`
 
-- [clippy] `src/bluetooth.rs:425,441,457,473` — four `std::fs::read_to_string(...).expect(...)` calls in unit tests → replaced with `let Ok(content) = ... else { assert!(false, ...) }`.
+- [clippy] `src/bluetooth.rs:857-861` — same `assert_eq!(bool literal)` for disconnect test → `assert!(result.unwrap(), ...)`
 
-- [clippy] `tests/bluetooth_integration.rs:112,137,165,181` — same `expect()` pattern in integration tests for `scan_devices_inner()`, `scan_devices()`, and locale file reads → replaced with `let Ok(...) else` / `let (Ok(...), Ok(...)) else` patterns.
+- [clippy] `src/bluetooth.rs:873-877` — `assert_eq!(result.unwrap(), false, ...)` → `assert!(!result.unwrap(), ...)` to fix `clippy::bool_assert_comparison`
+
+- [clippy] `src/bluetooth.rs:993-996`, `1008-1011` — `let Ok(x) = ... else { panic!(...) }` in test async functions → replaced with `assert!(result.is_ok(), ...); let x = result.unwrap();` to avoid `clippy::panic` firing on test-compiled code
+
+- [clippy] `src/bluetooth.rs:1053-1056`, `1072-1075`, `1089-1092`, `1106-1109` — four locale-file `let Ok(content) = ... else { assert!(false, ...) }` patterns → replaced with assert + unwrap two-step to fix both `clippy::assertions_on_constants` (always-false assert) and `clippy::panic`
+
+- [clippy] `tests/bluetooth_integration.rs:115-118` — `let Ok(devices) = ... else { panic!(...) }` → assert + unwrap two-step
+
+- [clippy] `tests/bluetooth_integration.rs:140-143` — `let (Ok(outer), Ok(inner)) = ... else { panic!(...) }` → separate assert + unwrap calls for each result
+
+- [clippy] `tests/bluetooth_integration.rs:167-170`, `184-187` — locale file `let Ok(content) = ... else { panic!(...) }` → assert + unwrap two-step
+
+- [style] `src/main.rs:113` — `name.clone()` passed to `is_device_connected` lacked a justifying comment → added comment: clone is required because `name` must survive the await point for the subsequent `position()` lookup
 
 ## New Tests Added
 
-None — the existing 12 tests (lib unit) + 12 integration tests provide sufficient coverage for all acceptance criteria. The changes are purely stylistic refactoring of existing test assertions.
+none
 
 ## Final Status
 
-- `cargo test`: ✅ 38 passed (13 lib unit × 2 profiles + 12 integration)
-- `cargo clippy`: ✅ clean
+- `cargo test`: ✅ 48 passed (18 unit lib + 18 unit bin + 12 integration)
+- `cargo clippy`: ✅ clean (including `--tests`)
 - `dx build --platform android`: ✅ success
