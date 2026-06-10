@@ -244,7 +244,8 @@ fn Home() -> Element {
                             }
                         }
                         *scanning.write() = false;
-                        // Reflect the real A2DP state without blocking the UI thread.
+                        // Reflect the real connection state without blocking the
+                        // UI thread: querying it can take a moment on Android.
                         spawn(async move {
                             let connected =
                                 connected_device_names().await.unwrap_or_default();

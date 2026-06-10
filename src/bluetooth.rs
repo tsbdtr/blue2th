@@ -63,7 +63,8 @@ pub async fn request_enable_bluetooth() -> Result<(), BluetoothError> {
 }
 
 /// Public dispatcher: returns the names of the bonded devices currently
-/// A2DP-connected, obtained via a single shared A2DP profile proxy.
+/// connected, determined per device via `BluetoothDevice.isConnected()`
+/// (reflection) — no A2DP profile proxy required.
 /// Delegates to the platform-gated inner implementation.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn connected_device_names() -> Result<Vec<String>, BluetoothError> {
@@ -74,11 +75,34 @@ pub async fn connected_device_names() -> Result<Vec<String>, BluetoothError> {
 
 #[cfg(target_os = "android")]
 fn bt_err_clear(env: &mut jni::JNIEnv<'_>, e: jni::errors::Error) -> BluetoothError {
-    // Clear any pending JNI exception before returning to the caller.
+    // Capture the pending Java exception's details BEFORE clearing it, so the
+    // returned error carries the real cause (class + message) instead of the
+    // jni crate's generic "Java exception was thrown".
+    let detail = match env.exception_occurred() {
+        Ok(throwable) if !throwable.is_null() => {
+            // Must clear before making further JNI calls on this thread.
+            let _ = env.exception_clear();
+            env.call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
+                .ok()
+                .and_then(|v| v.l().ok())
+                .and_then(|s| {
+                    env.get_string(&jni::objects::JString::from(s))
+                        .ok()
+                        .map(Into::<String>::into)
+                })
+        },
+        _ => {
+            // No retrievable throwable; still clear any pending exception.
+            let _ = env.exception_clear();
+            None
+        },
+    };
     // If the exception is not cleared, the next JNI call on the same thread (e.g.
     // FindClass from the Dioxus WebView handler) will cause an ART abort.
-    let _ = env.exception_clear();
-    BluetoothError::new(e.to_string())
+    match detail {
+        Some(d) => BluetoothError::new(d),
+        None => BluetoothError::new(e.to_string()),
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -443,6 +467,71 @@ fn a2dp_invoke_hidden(
     Ok(())
 }
 
+/// Check whether a bonded device is currently connected, via the hidden
+/// `BluetoothDevice.isConnected()` method called reflectively.
+///
+/// This deliberately avoids the A2DP profile proxy / ServiceListener path: that
+/// path requires a callback delivered through the app class loader and does not
+/// work from the native (Tokio worker) threads our async tasks run on. Reflection
+/// on the device object's own runtime class works from any thread.
+#[cfg(target_os = "android")]
+fn device_is_connected_reflect(
+    env: &mut jni::JNIEnv<'_>,
+    device: &jni::objects::JObject<'_>,
+) -> Result<bool, BluetoothError> {
+    use jni::objects::{JObject, JValue};
+
+    let null_obj = JObject::null();
+    let device_class = env
+        .get_object_class(device)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let method_name = env
+        .new_string("isConnected")
+        .map_err(|e| bt_err_clear(env, e))?;
+    // isConnected() takes no parameters: empty Class[] for getMethod.
+    let no_params = env
+        .new_object_array(0, "java/lang/Class", &null_obj)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let method = env
+        .call_method(
+            &device_class,
+            "getMethod",
+            "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+            &[
+                JValue::Object(method_name.as_ref()),
+                JValue::Object(&no_params),
+            ],
+        )
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    // Empty Object[] for Method.invoke (no arguments).
+    let no_args = env
+        .new_object_array(0, "java/lang/Object", &null_obj)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let result = env
+        .call_method(
+            &method,
+            "invoke",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            &[JValue::Object(device), JValue::Object(&no_args)],
+        )
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    if result.is_null() {
+        return Ok(false);
+    }
+    // Unbox the returned java.lang.Boolean.
+    let connected = env
+        .call_method(&result, "booleanValue", "()Z", &[])
+        .map_err(|e| bt_err_clear(env, e))?
+        .z()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    Ok(connected)
+}
+
 // ── Android inner implementations ────────────────────────────────────────────
 
 #[cfg(target_os = "android")]
@@ -723,20 +812,16 @@ async fn disconnect_device_inner(name: String) -> Result<bool, BluetoothError> {
     Ok(true)
 }
 
-/// Android: check whether a device is currently connected via A2DP.
-/// `BluetoothA2dp.getConnectionState(device)` is public — no reflection needed.
-/// Returns `true` when the state is `BluetoothProfile.STATE_CONNECTED` (= 2).
+/// Android: check whether a bonded device is currently connected.
+/// Uses the hidden `BluetoothDevice.isConnected()` method via reflection — no
+/// A2DP profile proxy is required, so it works from any thread.
 #[cfg(target_os = "android")]
 async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError> {
-    use jni::objects::JValue;
-
     let ctx = ndk_context::android_context();
     // SAFETY: valid for the process lifetime.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| BluetoothError::new(e.to_string()))?;
     let mut env = android_jni_env(&vm)?;
-    // SAFETY: valid for the process lifetime.
-    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
 
     let adapter = env
         .call_static_method(
@@ -762,43 +847,19 @@ async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError>
         None => return Ok(false),
     };
 
-    let a2dp_ref = obtain_a2dp_proxy(
-        &mut env,
-        &vm,
-        &adapter,
-        &context,
-        std::time::Duration::from_secs(5),
-    )?;
-
-    // BluetoothProfile.STATE_CONNECTED = 2
-    let state = env
-        .call_method(
-            a2dp_ref.as_obj(),
-            "getConnectionState",
-            "(Landroid/bluetooth/BluetoothDevice;)I",
-            &[JValue::Object(&device)],
-        )
-        .map_err(|e| bt_err_clear(&mut env, e))?
-        .i()
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-
-    Ok(state == 2)
+    device_is_connected_reflect(&mut env, &device)
 }
 
-/// Android: return the names of all bonded devices currently A2DP-connected,
-/// using a single shared A2DP profile proxy for the whole batch.
-/// RED-phase stub — the implementer will replace this `todo!()`.
+/// Android: return the names of all bonded devices currently connected.
+/// Uses the hidden `BluetoothDevice.isConnected()` method via reflection for each
+/// bonded device — no A2DP profile proxy is required.
 #[cfg(target_os = "android")]
 async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
-    use jni::objects::JValue;
-
     let ctx = ndk_context::android_context();
     // SAFETY: valid for the process lifetime.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| BluetoothError::new(e.to_string()))?;
     let mut env = android_jni_env(&vm)?;
-    // SAFETY: valid for the process lifetime.
-    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
 
     let adapter = env
         .call_static_method(
@@ -823,15 +884,6 @@ async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
         return Ok(vec![]);
     }
 
-    // Obtain a single shared A2DP proxy and reuse it for every device in the set.
-    let a2dp_ref = obtain_a2dp_proxy(
-        &mut env,
-        &vm,
-        &adapter,
-        &context,
-        std::time::Duration::from_secs(5),
-    )?;
-
     let iterator = env
         .call_method(&bonded_set, "iterator", "()Ljava/util/Iterator;", &[])
         .map_err(|e| bt_err_clear(&mut env, e))?
@@ -854,18 +906,7 @@ async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
             .l()
             .map_err(|e| BluetoothError::new(e.to_string()))?;
 
-        // BluetoothProfile.STATE_CONNECTED = 2
-        let state = env
-            .call_method(
-                a2dp_ref.as_obj(),
-                "getConnectionState",
-                "(Landroid/bluetooth/BluetoothDevice;)I",
-                &[JValue::Object(&device)],
-            )
-            .map_err(|e| bt_err_clear(&mut env, e))?
-            .i()
-            .map_err(|e| BluetoothError::new(e.to_string()))?;
-        if state != 2 {
+        if !device_is_connected_reflect(&mut env, &device)? {
             continue;
         }
 
