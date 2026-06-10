@@ -339,6 +339,8 @@ body {
 }
 
 .device-row {
+    position: relative;
+    overflow: hidden;
     display: flex;
     align-items: center;
     min-height: 56px;
@@ -346,6 +348,28 @@ body {
     border-bottom: 1px solid #2c3040;
     cursor: pointer;
     transition: background 0.15s;
+}
+
+.device-row::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 100%;
+    padding-top: 100%;
+    translate: -50% -50%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(139, 156, 200, 0.22) 0%, transparent 65%);
+    transform: scale(0);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.45s ease-out, opacity 0.45s ease-out;
+}
+
+.device-row:active::after {
+    transform: scale(2.5);
+    opacity: 1;
+    transition: none;
 }
 
 .device-name {
