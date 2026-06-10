@@ -250,32 +250,36 @@ fn Home() -> Element {
                 let connected_count = connected.len();
                 let is_empty = connected.is_empty() && others.is_empty();
                 rsx! {
-                    div { class: "device-list-wrapper",
-                        if is_empty {
-                            div { class: "device-list-empty",
-                                img {
-                                    class: "device-list-empty-icon",
-                                    src: BLUETOOTH_LOGO,
-                                    alt: "",
+                    div { class: "device-list-container",
+                        div { class: "device-list-wrapper",
+                            if is_empty {
+                                div { class: "device-list-empty",
+                                    img {
+                                        class: "device-list-empty-icon",
+                                        src: BLUETOOTH_LOGO,
+                                        alt: "",
+                                    }
+                                    p { class: "device-list-empty-text", "{empty_label}" }
                                 }
-                                p { class: "device-list-empty-text", "{empty_label}" }
-                            }
-                        } else {
-                            // Connection counter: shown only when the device list is non-empty.
-                            div { class: "connected-counter",
-                                "{rust_i18n::t!(\"device.connected_count\", count = connected_count.to_string().as_str())}"
-                            }
-                            if !connected.is_empty() {
-                                ul { class: "pinned-devices",
-                                    for (name, status) in connected {
+                            } else {
+                                if !connected.is_empty() {
+                                    ul { class: "pinned-devices",
+                                        for (name, status) in connected {
+                                            DeviceItem { key: "{name}", name, status, devices }
+                                        }
+                                    }
+                                }
+                                ul { class: "device-list",
+                                    for (name, status) in others {
                                         DeviceItem { key: "{name}", name, status, devices }
                                     }
                                 }
                             }
-                            ul { class: "device-list",
-                                for (name, status) in others {
-                                    DeviceItem { key: "{name}", name, status, devices }
-                                }
+                        }
+                        // Connection counter: floating badge on the top-right border of the list.
+                        if !is_empty {
+                            div { class: "connected-counter",
+                                "{rust_i18n::t!(\"device.connected_count\", count = connected_count.to_string().as_str())}"
                             }
                         }
                     }
