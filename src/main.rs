@@ -16,7 +16,10 @@ use dioxus::prelude::*;
 
 mod bluetooth;
 
-use bluetooth::{connect_device, disconnect_device, request_enable_bluetooth, scan_devices};
+use bluetooth::{
+    connect_device, connected_device_names, disconnect_device, request_enable_bluetooth,
+    scan_devices,
+};
 #[cfg(target_os = "android")]
 use bluetooth::{enable_bluetooth, is_device_connected};
 
@@ -44,8 +47,21 @@ fn merge_connection_status(
     found: Vec<String>,
     connected: &[String],
 ) -> Vec<(String, ConnectionStatus)> {
-    let _ = (found, connected);
-    todo!("pure merge of found names + connected set into ConnectionStatus pairs")
+    let mut result: Vec<(String, ConnectionStatus)> = Vec::new();
+    for name in found {
+        let status = if connected.contains(&name) {
+            ConnectionStatus::Connected
+        } else {
+            ConnectionStatus::Disconnected
+        };
+        if let Some(entry) = result.iter_mut().find(|(n, _)| *n == name) {
+            // Refresh the status of an already-present device (no duplicate entry).
+            entry.1 = status;
+        } else {
+            result.push((name, status));
+        }
+    }
+    result
 }
 
 fn status_icon(status: &ConnectionStatus) -> (&'static str, &'static str) {
@@ -215,10 +231,18 @@ fn Home() -> Element {
                     onclick: move |_| async move {
                         *scanning.write() = true;
                         let found = scan_devices().await.unwrap_or_default();
+                        let connected = connected_device_names().await.unwrap_or_default();
                         let mut d = devices.write();
                         for name in found {
-                            if !d.iter().any(|(n, _)| n == &name) {
-                                d.push((name, ConnectionStatus::Disconnected));
+                            let status = if connected.contains(&name) {
+                                ConnectionStatus::Connected
+                            } else {
+                                ConnectionStatus::Disconnected
+                            };
+                            if let Some(entry) = d.iter_mut().find(|(n, _)| n == &name) {
+                                entry.1 = status;
+                            } else {
+                                d.push((name, status));
                             }
                         }
                         *scanning.write() = false;
@@ -650,10 +674,7 @@ mod tests {
         let result = merge_connection_status(found, &connected);
 
         // No duplicate entry for "Blue Speaker".
-        let blue_count = result
-            .iter()
-            .filter(|(n, _)| n == "Blue Speaker")
-            .count();
+        let blue_count = result.iter().filter(|(n, _)| n == "Blue Speaker").count();
         assert_eq!(
             blue_count, 1,
             "a device must not be duplicated, got {blue_count} entries for 'Blue Speaker'"

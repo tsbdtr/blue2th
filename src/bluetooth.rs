@@ -586,12 +586,7 @@ pub async fn scan_devices_inner() -> Result<Vec<String>, BluetoothError> {
     }
 
     let bonded_set = env
-        .call_method(
-            &adapter,
-            "getBondedDevices",
-            "()Ljava/util/Set;",
-            &[],
-        )
+        .call_method(&adapter, "getBondedDevices", "()Ljava/util/Set;", &[])
         .map_err(|e| bt_err_clear(&mut env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
@@ -796,7 +791,101 @@ async fn is_device_connected_inner(name: String) -> Result<bool, BluetoothError>
 /// RED-phase stub — the implementer will replace this `todo!()`.
 #[cfg(target_os = "android")]
 async fn connected_device_names_inner() -> Result<Vec<String>, BluetoothError> {
-    todo!("Android implementation of connected_device_names_inner")
+    use jni::objects::JValue;
+
+    let ctx = ndk_context::android_context();
+    // SAFETY: valid for the process lifetime.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let mut env = android_jni_env(&vm)?;
+    // SAFETY: valid for the process lifetime.
+    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+
+    let adapter = env
+        .call_static_method(
+            "android/bluetooth/BluetoothAdapter",
+            "getDefaultAdapter",
+            "()Landroid/bluetooth/BluetoothAdapter;",
+            &[],
+        )
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    if adapter.is_null() {
+        return Err(BluetoothError::new("BluetoothAdapter not available"));
+    }
+
+    let bonded_set = env
+        .call_method(&adapter, "getBondedDevices", "()Ljava/util/Set;", &[])
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    if bonded_set.is_null() {
+        return Ok(vec![]);
+    }
+
+    // Obtain a single shared A2DP proxy and reuse it for every device in the set.
+    let a2dp_ref = obtain_a2dp_proxy(
+        &mut env,
+        &vm,
+        &adapter,
+        &context,
+        std::time::Duration::from_secs(5),
+    )?;
+
+    let iterator = env
+        .call_method(&bonded_set, "iterator", "()Ljava/util/Iterator;", &[])
+        .map_err(|e| bt_err_clear(&mut env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    let mut names = Vec::new();
+    loop {
+        let has_next = env
+            .call_method(&iterator, "hasNext", "()Z", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .z()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        if !has_next {
+            break;
+        }
+        let device = env
+            .call_method(&iterator, "next", "()Ljava/lang/Object;", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .l()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+        // BluetoothProfile.STATE_CONNECTED = 2
+        let state = env
+            .call_method(
+                a2dp_ref.as_obj(),
+                "getConnectionState",
+                "(Landroid/bluetooth/BluetoothDevice;)I",
+                &[JValue::Object(&device)],
+            )
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .i()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        if state != 2 {
+            continue;
+        }
+
+        let name_obj = env
+            .call_method(&device, "getName", "()Ljava/lang/String;", &[])
+            .map_err(|e| bt_err_clear(&mut env, e))?
+            .l()
+            .map_err(|e| BluetoothError::new(e.to_string()))?;
+        let name: String = if name_obj.is_null() {
+            String::new()
+        } else {
+            env.get_string(&jni::objects::JString::from(name_obj))
+                .map_err(|e| bt_err_clear(&mut env, e))?
+                .into()
+        };
+        names.push(name);
+    }
+
+    Ok(names)
 }
 
 // ── Non-Android stubs ────────────────────────────────────────────────────────
@@ -926,7 +1015,7 @@ mod tests {
         let result: Result<bool, super::BluetoothError> = Err(err);
 
         match result {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) => notification = Some(e.to_string()),
         }
 
@@ -978,7 +1067,7 @@ mod tests {
         let err = super::BluetoothError::new("JNI failure");
         let result: Result<(), super::BluetoothError> = Err(err);
         match result {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(e) => bt_error = Some(e.to_string()),
         }
         assert_eq!(
@@ -1012,7 +1101,10 @@ mod tests {
     #[tokio::test]
     async fn test_scan_devices_returns_non_empty_ok_on_non_android() {
         let result = super::scan_devices().await;
-        assert!(result.is_ok(), "scan_devices() must return Ok(_) on non-Android");
+        assert!(
+            result.is_ok(),
+            "scan_devices() must return Ok(_) on non-Android"
+        );
         let devices = result.unwrap();
         assert!(
             !devices.is_empty(),
@@ -1026,7 +1118,10 @@ mod tests {
     #[tokio::test]
     async fn test_scan_devices_inner_simulation_non_empty() {
         let result = super::scan_devices_inner().await;
-        assert!(result.is_ok(), "scan_devices_inner() must return Ok(_) on non-Android");
+        assert!(
+            result.is_ok(),
+            "scan_devices_inner() must return Ok(_) on non-Android"
+        );
         let devices = result.unwrap();
         assert!(
             !devices.is_empty(),
@@ -1066,7 +1161,7 @@ mod tests {
         // that zero devices exist before any explicit invocation by confirming the function
         // is not called here — we only reference it, never await it.
         let _scan_fn = super::scan_devices; // reference only, not called
-        // Reaching this point without any device-list side-effect confirms the criterion.
+                                            // Reaching this point without any device-list side-effect confirms the criterion.
     }
 
     // Criterion 5: fr.yaml scan.button must be "Charger les appareils"
