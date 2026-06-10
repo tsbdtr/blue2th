@@ -15,6 +15,7 @@ common:
 device:
   disconnect: "Déconnecter"
   empty: "Aucun appareil trouvé"
+  connected_count: "%{count}/2"
 
 settings:
   title: "⚙ %{name}"

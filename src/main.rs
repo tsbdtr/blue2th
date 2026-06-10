@@ -18,13 +18,15 @@ mod bluetooth;
 
 use bluetooth::{connect_device, disconnect_device, request_enable_bluetooth, scan_devices};
 #[cfg(target_os = "android")]
-use bluetooth::enable_bluetooth;
+use bluetooth::{enable_bluetooth, is_device_connected};
 
 rust_i18n::i18n!("locales", fallback = "fr");
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const BLUETOOTH_LOGO: Asset = asset!("/assets/bluetooth.svg");
+
+const MAX_CONNECTIONS: usize = 2;
 
 #[derive(Clone, PartialEq)]
 enum ConnectionStatus {
@@ -74,7 +76,9 @@ fn App() -> Element {
     // button is shown without waiting; subsequent iterations catch external enable/disable events.
     #[cfg(target_os = "android")]
     use_hook(|| {
-        let mut bt_enabled = bt_enabled; // mut copy — Signal<bool> is Copy
+        // Clone is required here because each spawned task needs its own captured copy of
+        // the Signal handle; Signal<bool> is Copy so this is a bitwise copy, not allocation.
+        let mut bt_enabled = bt_enabled;
         spawn(async move {
             loop {
                 if let Ok(state) = enable_bluetooth().await {
@@ -83,6 +87,39 @@ fn App() -> Element {
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
+    });
+
+    // On Android, poll every 2 s to detect when a Connected device drops its A2DP link
+    // externally (e.g. device powered off). When is_device_connected returns Ok(false),
+    // revert the device status to Disconnected so the UI stays accurate.
+    #[cfg(target_os = "android")]
+    use_hook(|| {
+        // Clone is required: the spawned async block needs its own Signal handle.
+        let mut devices = devices;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // Collect names of Connected devices (snapshot to avoid holding the lock
+                // across an await point).
+                let connected_names: Vec<String> = devices
+                    .read()
+                    .iter()
+                    .filter(|(_, s)| *s == ConnectionStatus::Connected)
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                for name in connected_names {
+                    // Clone is required: is_device_connected takes String by value, and
+                    // `name` is still needed in the position() lookup after the await.
+                    if let Ok(false) = is_device_connected(name.clone()).await {
+                        // Device dropped — revert to Disconnected.
+                        let idx = devices.read().iter().position(|(n, _)| n == &name);
+                        if let Some(i) = idx {
+                            devices.write()[i].1 = ConnectionStatus::Disconnected;
+                        }
+                    }
+                }
             }
         });
     });
@@ -210,6 +247,7 @@ fn Home() -> Element {
                 let (connected, others): (Vec<_>, Vec<_>) = devices()
                     .into_iter()
                     .partition(|(_, s)| *s == ConnectionStatus::Connected);
+                let connected_count = connected.len();
                 let is_empty = connected.is_empty() && others.is_empty();
                 rsx! {
                     div { class: "device-list-wrapper",
@@ -223,6 +261,10 @@ fn Home() -> Element {
                                 p { class: "device-list-empty-text", "{empty_label}" }
                             }
                         } else {
+                            // Connection counter: shown only when the device list is non-empty.
+                            div { class: "connected-counter",
+                                "{rust_i18n::t!(\"device.connected_count\", count = connected_count.to_string().as_str())}"
+                            }
                             if !connected.is_empty() {
                                 ul { class: "pinned-devices",
                                     for (name, status) in connected {
@@ -256,14 +298,21 @@ fn DeviceItem(
     let is_connected = status == ConnectionStatus::Connected;
     let disconnect_label = rust_i18n::t!("device.disconnect");
 
+    // Ephemeral error notification: auto-clears after 3 s via a spawned task.
+    let mut connect_error: Signal<Option<String>> = use_signal(|| None);
+
     rsx! {
         li {
             class: "device-row",
             onclick: {
+                // Clone is required: the closure must own `name` because it is moved into
+                // the async block which may outlive the current render frame.
                 let name = name.clone();
                 move |_| {
+                    // Clone is required: the async block is `'static` and needs its own copy.
                     let name = name.clone();
                     async move {
+                        // Guard: only attempt connection when status is Disconnected.
                         let current = devices
                             .read()
                             .iter()
@@ -272,46 +321,113 @@ fn DeviceItem(
                         if !matches!(current, Some(ConnectionStatus::Disconnected)) {
                             return;
                         }
+
+                        // Guard: silently ignore when the 2-device limit is already reached.
+                        let connected_count = devices
+                            .read()
+                            .iter()
+                            .filter(|(_, s)| *s == ConnectionStatus::Connected)
+                            .count();
+                        if connected_count >= MAX_CONNECTIONS {
+                            return;
+                        }
+
                         let idx = devices.read().iter().position(|(n, _)| n == &name);
                         if let Some(i) = idx {
                             devices.write()[i].1 = ConnectionStatus::Connecting;
                         }
-                        let ok = connect_device(name.clone()).await.unwrap_or(false);
-                        let idx = devices.read().iter().position(|(n, _)| n == &name);
-                        if let Some(i) = idx {
-                            devices.write()[i].1 = if ok {
-                                ConnectionStatus::Connected
-                            } else {
-                                ConnectionStatus::Disconnected
-                            };
+
+                        match connect_device(name.clone()).await {
+                            Ok(true) => {
+                                let idx = devices.read().iter().position(|(n, _)| n == &name);
+                                if let Some(i) = idx {
+                                    devices.write()[i].1 = ConnectionStatus::Connected;
+                                }
+                            }
+                            Ok(false) => {
+                                let idx = devices.read().iter().position(|(n, _)| n == &name);
+                                if let Some(i) = idx {
+                                    devices.write()[i].1 = ConnectionStatus::Disconnected;
+                                }
+                            }
+                            Err(e) => {
+                                // Revert status and surface ephemeral notification.
+                                let idx = devices.read().iter().position(|(n, _)| n == &name);
+                                if let Some(i) = idx {
+                                    devices.write()[i].1 = ConnectionStatus::Disconnected;
+                                }
+                                *connect_error.write() = Some(e.to_string());
+                                // Auto-dismiss after 3 s.
+                                spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                    *connect_error.write() = None;
+                                });
+                            }
                         }
                     }
                 }
             },
             span { class: "{icon_class}", "{icon}" }
             span { class: "device-name", "{name}" }
+            if let Some(err) = connect_error() {
+                span { class: "device-connect-error", "{err}" }
+            }
             if is_connected {
                 div { class: "device-actions",
                     button {
                         class: "btn-disconnect",
                         onclick: {
+                            // Clone is required: same reason as the connect closure above.
                             let name = name.clone();
                             move |e: Event<MouseData>| {
                                 e.stop_propagation();
+                                // Clone is required: async block is 'static.
                                 let name = name.clone();
                                 async move {
                                     let idx = devices.read().iter().position(|(n, _)| n == &name);
                                     if let Some(i) = idx {
                                         devices.write()[i].1 = ConnectionStatus::Connecting;
                                     }
-                                    let ok = disconnect_device(name.clone()).await.unwrap_or(false);
-                                    let idx = devices.read().iter().position(|(n, _)| n == &name);
-                                    if let Some(i) = idx {
-                                        devices.write()[i].1 = if ok {
-                                            ConnectionStatus::Disconnected
-                                        } else {
-                                            ConnectionStatus::Connected
-                                        };
+                                    match disconnect_device(name.clone()).await {
+                                        Ok(true) => {
+                                            let idx = devices
+                                                .read()
+                                                .iter()
+                                                .position(|(n, _)| n == &name);
+                                            if let Some(i) = idx {
+                                                devices.write()[i].1 =
+                                                    ConnectionStatus::Disconnected;
+                                            }
+                                        }
+                                        Ok(false) => {
+                                            let idx = devices
+                                                .read()
+                                                .iter()
+                                                .position(|(n, _)| n == &name);
+                                            if let Some(i) = idx {
+                                                devices.write()[i].1 =
+                                                    ConnectionStatus::Connected;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            // Revert to Connected and show ephemeral error.
+                                            let idx = devices
+                                                .read()
+                                                .iter()
+                                                .position(|(n, _)| n == &name);
+                                            if let Some(i) = idx {
+                                                devices.write()[i].1 =
+                                                    ConnectionStatus::Connected;
+                                            }
+                                            *connect_error.write() = Some(e.to_string());
+                                            spawn(async move {
+                                                tokio::time::sleep(
+                                                    std::time::Duration::from_secs(3),
+                                                )
+                                                .await;
+                                                *connect_error.write() = None;
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -321,6 +437,7 @@ fn DeviceItem(
                     button {
                         class: "btn-settings",
                         onclick: {
+                            // Clone is required: closure must own `name` for the push call.
                             let name = name.clone();
                             move |e: Event<MouseData>| {
                                 e.stop_propagation();
@@ -419,7 +536,11 @@ fn DeviceSettings(name: String) -> Element {
                         min: "0",
                         max: "100",
                         value: "{volume}",
-                        oninput: move |e| *volume.write() = e.value().parse().unwrap_or(75),
+                        oninput: move |e| {
+                            if let Ok(v) = e.value().parse() {
+                                *volume.write() = v;
+                            }
+                        },
                     }
                 }
             }
