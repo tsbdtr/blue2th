@@ -134,17 +134,20 @@ type A2dpProxySlot = std::sync::Arc<(
 #[cfg(target_os = "android")]
 static A2DP_PROXY_SLOT: std::sync::Mutex<Option<A2dpProxySlot>> = std::sync::Mutex::new(None);
 
-// ── JNI export: called by the Java ServiceListener proxy ────────────────────
+// ── JNI export: called by the embedded A2dpServiceListener .dex ─────────────
 //
-// The Java side (created via java.lang.reflect.Proxy) calls this native method
-// when BluetoothAdapter.getProfileProxy delivers the A2DP proxy object.
-// The method signature must match what the InvocationHandler forwards.
+// The Java class `dev.dioxus.main.A2dpServiceListener` (loaded at runtime from
+// the embedded dex via DexClassLoader) implements
+// `BluetoothProfile.ServiceListener`. Its `onServiceConnected` callback calls
+// the `nativeOnServiceConnected` native method, whose JNI mangled name matches
+// the export below.
 
-/// Called by the Java-side InvocationHandler when `onServiceConnected` fires.
+/// Called by `A2dpServiceListener.onServiceConnected` when
+/// `BluetoothAdapter.getProfileProxy` delivers the A2DP proxy object.
 /// Stores the proxy in the global slot and signals the waiting Rust thread.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected(
+pub extern "C" fn Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceConnected(
     env: jni::JNIEnv,
     _class: jni::objects::JClass,
     proxy: jni::objects::JObject,
@@ -165,6 +168,17 @@ pub extern "C" fn Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected(
             cvar.notify_all();
         }
     }
+}
+
+/// Called by `A2dpServiceListener.onServiceDisconnected`. No-op: the A2DP
+/// operations are one-shot rendezvous and do not track proxy teardown.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceDisconnected(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    _profile: jni::sys::jint,
+) {
 }
 
 // ── Android A2DP helpers ─────────────────────────────────────────────────────
@@ -248,22 +262,10 @@ fn obtain_a2dp_proxy(
         *slot = Some(std::sync::Arc::clone(&pair));
     }
 
-    // Build a java.lang.reflect.Proxy that implements BluetoothProfile$ServiceListener.
-    // Its InvocationHandler forwards every call to our static native method via reflection.
-    //
-    // We create a minimal InvocationHandler using an anonymous inner approach:
-    // since we cannot compile a new Java class at runtime, we use the Dioxus activity class
-    // (dev.dioxus.main.WryActivity) which already has our native method registered.
-    // The InvocationHandler just calls WryActivity.onA2dpServiceConnected(proxy) for
-    // the onServiceConnected invocation and ignores onServiceDisconnected.
-
-    let activity_class = env
-        .find_class("dev/dioxus/main/WryActivity")
-        .map_err(|e| bt_err_clear(env, e))?;
-
-    // Wrap the static native method as an InvocationHandler using java.lang.reflect.Proxy.
-    // We construct a Proxy with our custom InvocationHandler via the helper below.
-    let listener = build_service_listener_proxy(env, vm, &activity_class)?;
+    // Build the ServiceListener: load the embedded A2dpServiceListener dex via
+    // DexClassLoader and instantiate it. Its onServiceConnected callback calls
+    // back into nativeOnServiceConnected, which stores the proxy in the slot above.
+    let listener = build_service_listener_proxy(env, vm)?;
 
     // Call getProfileProxy(context, listener, A2DP=2).
     env.call_method(
@@ -307,112 +309,136 @@ fn obtain_a2dp_proxy(
     proxy_ref.ok_or_else(|| BluetoothError::new("A2DP profile proxy unavailable"))
 }
 
-/// Build a `java.lang.reflect.Proxy` instance implementing
-/// `BluetoothProfile$ServiceListener`.  Its `InvocationHandler` calls the
-/// static native `WryActivity.onA2dpServiceConnected` when
-/// `onServiceConnected` is invoked, and is a no-op for `onServiceDisconnected`.
+/// Build a `dev.dioxus.main.A2dpServiceListener` instance by loading the
+/// embedded `.dex` (compiled from `java/A2dpServiceListener.java`) at runtime
+/// via `DexClassLoader`.
 ///
-/// This avoids the need for a pre-compiled Java helper class: the
-/// InvocationHandler is itself a Proxy whose invoke() method we redirect
-/// through a Method.invoke call on the already-registered native.
+/// Steps:
+/// 1. Obtain the Android `Context` and its `ClassLoader` (used as parent).
+/// 2. Write the embedded dex bytes to a file under the code-cache dir.
+/// 3. Construct `DexClassLoader(dexPath, optimizedDir, null, parent)`.
+/// 4. `loadClass("dev.dioxus.main.A2dpServiceListener")`, then `newInstance()`.
+///
+/// The returned object implements `BluetoothProfile.ServiceListener`; its
+/// `onServiceConnected` callback invokes the native
+/// `nativeOnServiceConnected`, which stores the proxy in `A2DP_PROXY_SLOT`.
 #[cfg(target_os = "android")]
 fn build_service_listener_proxy<'a>(
     env: &mut jni::JNIEnv<'a>,
     _vm: &jni::JavaVM,
-    activity_class: &jni::objects::JClass<'_>,
 ) -> Result<jni::objects::JObject<'a>, BluetoothError> {
-    // We use java.lang.reflect.Proxy.newProxyInstance to create a ServiceListener.
-    // The InvocationHandler we provide needs to call our native.
-    // Because we cannot implement InvocationHandler directly in Rust without a
-    // pre-compiled Java class, we use a two-level approach:
-    //
-    // - Create a Method reference to WryActivity.onA2dpServiceConnected.
-    // - Store it in A2DP_METHOD_STORE (a static GlobalRef slot).
-    // - Use the activity class itself as a stand-in; the Proxy is constructed
-    //   with an InvocationHandler that calls that Method via reflection.
-    //
-    // Since we still need *some* Java InvocationHandler object, and we cannot
-    // create one without a compiled class, the practical solution for this codebase
-    // is to use a polling approach instead of the callback approach for obtaining
-    // the proxy.  We call getProfileProxy and then spin-poll getConnectedDevices
-    // on a short interval until the proxy is available, using a background OS thread
-    // (std::thread) so we do not block the Tokio executor.
-    //
-    // The listener passed to getProfileProxy can be null on some Android versions
-    // (the proxy object is returned by the system regardless); on others we need a
-    // real listener.  We pass the activity object cast to the listener interface —
-    // this will fail at runtime if the activity does not implement the interface,
-    // but the exception will be caught by bt_err_clear and surfaced as an error.
-    //
-    // For a production implementation, a small Java helper class
-    // (A2dpServiceListener.java) should be compiled into the APK.  That is the
-    // correct long-term fix; the approach below is the minimal compilable stub
-    // that exercises the correct Android API path and propagates errors cleanly.
+    use jni::objects::{JObject, JValue};
 
-    // Load the BluetoothProfile$ServiceListener interface.
-    let listener_iface = env
-        .find_class("android/bluetooth/BluetoothProfile$ServiceListener")
-        .map_err(|e| bt_err_clear(env, e))?;
+    // Embedded dex bytes, produced by java/build-dex.sh.
+    const DEX_BYTES: &[u8] = include_bytes!("../assets/a2dp_listener.dex");
 
-    // Obtain the class loader from the activity class.
-    let _class_loader = env
+    let ctx = ndk_context::android_context();
+    // SAFETY: ndk-context stores the Context global ref set by the Android runtime
+    // before any Rust code runs; valid for the process lifetime.
+    let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    // 1. Parent class loader = the Context's class loader.
+    let parent_loader = env
+        .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+
+    // Code-cache dir used both as the dex output location and the optimized dir.
+    let code_cache_dir = env
+        .call_method(&context, "getCodeCacheDir", "()Ljava/io/File;", &[])
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let cache_path_jstr = env
         .call_method(
-            activity_class,
-            "getClassLoader",
-            "()Ljava/lang/ClassLoader;",
+            &code_cache_dir,
+            "getAbsolutePath",
+            "()Ljava/lang/String;",
             &[],
         )
         .map_err(|e| bt_err_clear(env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
+    let cache_path: String = env
+        .get_string(&jni::objects::JString::from(cache_path_jstr))
+        .map_err(|e| bt_err_clear(env, e))?
+        .into();
+    let dex_path = format!("{cache_path}/a2dp_listener.dex");
 
-    // Build the interfaces array: [BluetoothProfile$ServiceListener].
-    let class_class = env
-        .find_class("java/lang/Class")
+    // 2. Write the embedded dex bytes to disk via java.io.FileOutputStream.
+    let dex_path_jstr = env
+        .new_string(&dex_path)
         .map_err(|e| bt_err_clear(env, e))?;
-    let _ifaces_array = env
-        .new_object_array(1, &class_class, &listener_iface)
+    let out_stream = env
+        .new_object(
+            "java/io/FileOutputStream",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(dex_path_jstr.as_ref())],
+        )
+        .map_err(|e| bt_err_clear(env, e))?;
+    let dex_byte_array = env
+        .byte_array_from_slice(DEX_BYTES)
+        .map_err(|e| bt_err_clear(env, e))?;
+    env.call_method(
+        &out_stream,
+        "write",
+        "([B)V",
+        &[JValue::Object(&JObject::from(dex_byte_array))],
+    )
+    .map_err(|e| bt_err_clear(env, e))?;
+    env.call_method(&out_stream, "close", "()V", &[])
         .map_err(|e| bt_err_clear(env, e))?;
 
-    // Store the Arc slot reference so the native callback can find it.
-    // (Already done by obtain_a2dp_proxy before calling us.)
-
-    // Build a no-op InvocationHandler: we use java.lang.reflect.Proxy itself
-    // with a handler that ignores all calls.  Because we registered the native
-    // `onA2dpServiceConnected` on WryActivity, the real notification path goes
-    // through A2DP_PROXY_SLOT directly from that native method; we do not need
-    // the InvocationHandler to forward the call — instead we call the native
-    // method from `onServiceConnected` by looking it up via reflection inside
-    // the handler.
-    //
-    // Minimal compilable path: use the activity class's method handle as the
-    // handler object.  On Android this will throw ClassCastException at runtime,
-    // which bt_err_clear will surface.  A production APK would include a compiled
-    // A2dpServiceListener.class.
-
-    // Reflect WryActivity.onA2dpServiceConnected(JObject) as a static Method.
-    let _bt_device_class = env
-        .find_class("android/bluetooth/BluetoothProfile")
+    // 3. Construct dalvik.system.DexClassLoader(dexPath, optimizedDir, null, parent).
+    let optimized_dir_jstr = env
+        .new_string(&cache_path)
+        .map_err(|e| bt_err_clear(env, e))?;
+    let dex_loader = env
+        .new_object(
+            "dalvik/system/DexClassLoader",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V",
+            &[
+                JValue::Object(dex_path_jstr.as_ref()),
+                JValue::Object(optimized_dir_jstr.as_ref()),
+                JValue::Object(&JObject::null()),
+                JValue::Object(&parent_loader),
+            ],
+        )
         .map_err(|e| bt_err_clear(env, e))?;
 
-    // Build a dummy InvocationHandler using Proxy with a lambda-style handler.
-    // We use the anonymous-class trick: Proxy.newProxyInstance with a handler that
-    // calls WryActivity.onA2dpServiceConnected reflectively.
-    //
-    // Since Java lambdas / anonymous classes cannot be created purely via JNI
-    // without a compiled class, we pass a null handler and accept that
-    // getProfileProxy may return false. The Condvar will time out, and the caller
-    // will surface the error. This is the correct minimal implementation that
-    // compiles for the Android target and propagates errors cleanly.
-    //
-    // The JNI lookups above are kept (bound with `_` prefixes) because each is a
-    // fallible JNI call whose error must still propagate via `?`; their results
-    // are intentionally unused in this minimal stub.
+    // 4. loadClass("dev.dioxus.main.A2dpServiceListener") and instantiate it.
+    let class_name = env
+        .new_string("dev.dioxus.main.A2dpServiceListener")
+        .map_err(|e| bt_err_clear(env, e))?;
+    let listener_class = env
+        .call_method(
+            &dex_loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(class_name.as_ref())],
+        )
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    if listener_class.is_null() {
+        return Err(BluetoothError::new(
+            "Failed to load A2dpServiceListener class from dex",
+        ));
+    }
 
-    // Return null — getProfileProxy called with null listener returns false on
-    // modern Android, which the caller propagates as an error. A production build
-    // would supply a compiled Java ServiceListener implementation.
-    Ok(jni::objects::JObject::null())
+    let listener = env
+        .call_method(&listener_class, "newInstance", "()Ljava/lang/Object;", &[])
+        .map_err(|e| bt_err_clear(env, e))?
+        .l()
+        .map_err(|e| BluetoothError::new(e.to_string()))?;
+    if listener.is_null() {
+        return Err(BluetoothError::new(
+            "Failed to instantiate A2dpServiceListener",
+        ));
+    }
+
+    Ok(listener)
 }
 
 /// Invoke `BluetoothA2dp.connect(device)` via reflection (the method is `@hide`).
