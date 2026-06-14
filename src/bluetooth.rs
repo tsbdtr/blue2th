@@ -238,8 +238,10 @@ fn find_device_by_name<'a>(
 /// Strategy:
 /// 1. Register an `Arc<(Mutex<Option<GlobalRef>>, Condvar)>` in `A2DP_PROXY_SLOT`.
 /// 2. Call `BluetoothAdapter.getProfileProxy(context, listener, A2DP=2)`.
-///    The `listener` is a `java.lang.reflect.Proxy` whose `InvocationHandler`
-///    calls the registered native `onA2dpServiceConnected` for any invocation.
+///    The `listener` is a `dev.dioxus.main.A2dpServiceListener` instance loaded
+///    from the embedded dex (see `build_service_listener_proxy`); its
+///    `onServiceConnected` callback invokes the native `nativeOnServiceConnected`,
+///    which stores the proxy in the slot above.
 /// 3. Block on the Condvar until the proxy arrives or the timeout expires.
 #[cfg(target_os = "android")]
 fn obtain_a2dp_proxy(
