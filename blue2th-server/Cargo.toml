@@ -1,0 +1,20 @@
+[package]
+name = "blue2th-server"
+version = "0.1.0"
+edition = "2021"
+
+# PC-side backend for the blue2th audio engine (Axum/Tokio). It will drive BlueZ
+# (via `bluer`) and PipeWire in later phases; phase 0 only exposes /health.
+# See docs/ROADMAP.md.
+
+[dependencies]
+axum = "0.8"
+tokio = { workspace = true, features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["cors"] }
+blue2th-proto = { path = "../blue2th-proto" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+serde_json = "1"

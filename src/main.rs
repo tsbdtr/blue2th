@@ -14,6 +14,7 @@
 
 use dioxus::prelude::*;
 
+mod backend;
 mod bluetooth;
 
 #[cfg(target_os = "android")]
@@ -187,6 +188,21 @@ fn Home() -> Element {
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);
     let toast_error: Signal<Option<String>> = use_signal(|| None);
 
+    // Phase 0: ping the PC backend once on mount and surface its health, so the
+    // mobile<->backend link can be validated on-device. See docs/ROADMAP.md.
+    let backend_health: Signal<Option<String>> = use_signal(|| None);
+    use_hook(|| {
+        // Signal<_> is Copy; the spawned task captures its own handle.
+        let mut backend_health = backend_health;
+        spawn(async move {
+            let msg = match backend::ping_backend().await {
+                Ok(h) => format!("backend: {} v{}", h.status, h.version),
+                Err(e) => format!("backend: {e}"),
+            };
+            *backend_health.write() = Some(msg);
+        });
+    });
+
     // When BT is disabled, clear the device list.
     use_effect(move || {
         if !bt_enabled() {
@@ -222,6 +238,9 @@ fn Home() -> Element {
                     src: BLUETOOTH_LOGO,
                     alt: "Bluetooth",
                 }
+            }
+            if let Some(msg) = backend_health() {
+                div { class: "backend-status", "{msg}" }
             }
             if let Some(err) = bt_error() {
                 div {
