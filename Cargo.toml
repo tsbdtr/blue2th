@@ -21,3 +21,16 @@ tokio = { version = "1", features = ["full"] }
 [features]
 default = ["mobile"]
 mobile = ["dioxus/mobile"]
+
+# ── Workspace ────────────────────────────────────────────────────────────────
+# The root `blue2th` package (the Dioxus mobile app) is the workspace root and an
+# implicit member. Backend crates for the PC audio engine live alongside it; see
+# docs/ROADMAP.md. resolver = "2" preserves the single-crate feature unification
+# (notably the app's target-specific `cfg(target_os = "android")` deps).
+[workspace]
+members = ["blue2th-proto"]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1" }

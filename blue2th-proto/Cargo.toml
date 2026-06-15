@@ -1,0 +1,14 @@
+[package]
+name = "blue2th-proto"
+version = "0.1.0"
+edition = "2021"
+
+# Shared data-transfer types for the mobile app <-> PC backend contract.
+# Must stay target-agnostic: it compiles both for the Android app and the Linux
+# backend, so no platform-specific dependencies here.
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"
