@@ -1,7 +1,7 @@
 {
   "src/main.rs": {
-    "mtime": 1781132156.729798,
-    "ast_hash": "6f6533e2ed48c52d2463f83e7ca58f7d",
+    "mtime": 1781544389.701496,
+    "ast_hash": "f49f39152e7c3c1cdec0748d07e7775a",
     "semantic_hash": ""
   },
   "AGENTS.md": {
@@ -30,8 +30,8 @@
     "semantic_hash": "b35610af8edead13d61e289ba1e731bf"
   },
   "src/bluetooth.rs": {
-    "mtime": 1781132156.729798,
-    "ast_hash": "64967ab72cfd56fc5a4a209ce14dc5d3",
+    "mtime": 1781544389.701496,
+    "ast_hash": "8ebd2abab047c4a2c2df4855329e6b5b",
     "semantic_hash": ""
   },
   ".claude/agents/tdd-implementer.md": {
@@ -75,7 +75,7 @@
     "semantic_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346"
   },
   "tdd/feature.md": {
-    "mtime": 1781132156.7197983,
+    "mtime": 1781544389.69015,
     "ast_hash": "1237cbf6b4267bef726d6ce9acbbc51e",
     "semantic_hash": ""
   },
@@ -95,8 +95,23 @@
     "semantic_hash": ""
   },
   "tdd/REVIEW.md": {
-    "mtime": 1781132156.729798,
-    "ast_hash": "673bdab7194ecc2e5afad965236f1e06",
+    "mtime": 1781544389.701496,
+    "ast_hash": "9fa152e11431ec80ae0a2eedba175f57",
+    "semantic_hash": ""
+  },
+  "java/A2dpServiceListener.java": {
+    "mtime": 1781544389.70115,
+    "ast_hash": "84888ce9fa30680e62e6401a902978be",
+    "semantic_hash": ""
+  },
+  "java/build-dex.sh": {
+    "mtime": 1781544389.701496,
+    "ast_hash": "8a45abb3e394a613968c6e44e1c37c16",
+    "semantic_hash": ""
+  },
+  "tests/a2dp_dex_listener.rs": {
+    "mtime": 1781544389.701496,
+    "ast_hash": "2a85b929c3b8f687283271fb6177f2e8",
     "semantic_hash": ""
   }
 }
