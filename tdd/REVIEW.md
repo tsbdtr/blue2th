@@ -1,18 +1,21 @@
-# Review Report — Reflect real connection status on scan
+# Review Report — Real A2DP connect/disconnect via embedded ServiceListener `.dex`
 
 ## Issues Found & Fixed
-- [duplication/dead-code] src/main.rs — the post-scan background reconcile and the 2 s polling reconcile duplicated the same inline status-mapping logic, while `merge_connection_status` stayed test-only. Extracted a pure `reconcile_connection_status(&mut [(String, ConnectionStatus)], &[String])` helper that updates status in both directions and always preserves `Connecting`, and wired it into both Android reconcile sites so they cannot drift. `merge_connection_status` is left in place (still tested; serves a different shape) with its existing doc/allow attribute.
-- [edge-case / JNI hygiene] src/bluetooth.rs `connected_device_names_inner`, `scan_devices_inner`, `device_is_connected_reflect` — JNI local references created per bonded device (device, name string, plus ~6 reflection temporaries each) are not reclaimed until the native frame returns, so a user with many bonded devices could overflow the default local-reference table. Added explicit `delete_local_ref` for the per-iteration objects and for the reflection helper's intermediates. Errors are ignored intentionally (a failed delete is non-fatal).
-- [error handling / robustness] src/bluetooth.rs `bt_err_clear` — if the `toString`/`get_string` retrieval path itself raised (e.g. OOM) after the initial clear, a fresh pending exception could be left on the thread and abort the next JNI call. Added a defensive second `exception_clear()` so the function can never return with a pending exception. No `unwrap`/`expect`/`panic` introduced.
+- [naming/clarity] src/bluetooth.rs:222-229 — the `obtain_a2dp_proxy` doc comment still described the *old* mechanism (a `java.lang.reflect.Proxy` whose `InvocationHandler` calls a removed native `onA2dpServiceConnected`). → Rewrote it to describe the new DexClassLoader-loaded `dev.dioxus.main.A2dpServiceListener` whose `onServiceConnected` invokes `nativeOnServiceConnected`. No behavior change.
+- [spurious change] assets/tailwind.css — the diff added an unrelated generated `.inline` utility class (not referenced anywhere in `src/`). → Reverted to the base revision via `git checkout <base> -- assets/tailwind.css`, as permitted by the review instructions. This generated file was not regenerated.
+
+## Items Reviewed — No Change Needed
+- No `unwrap`/`expect`/`panic`/`todo`/`unreachable`/`unimplemented` outside `#[cfg(test)]`. All fallible JNI calls propagate via `?` and route exceptions through `bt_err_clear`.
+- `build_service_listener_proxy`: error propagation correct; `loadClass`/`newInstance` null results are checked and return `BluetoothError` (no more `null` return). The renamed JNI exports (`Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceConnected` / `_nativeOnServiceDisconnected`) store the proxy in `A2DP_PROXY_SLOT` and signal the condvar.
+- Dex write robustness: written to the app-private code-cache dir (`getCodeCacheDir()`); `FileOutputStream(String)` truncates+overwrites on every call, so a stale/partial prior write cannot poison a later load.
+- Local-reference hygiene: `build_service_listener_proxy` allocates ~12 local refs and runs once per connect/disconnect (not in a loop), well under the default JNI local-ref table; consistent with the existing convention of only deleting refs inside iteration loops (`scan_devices_inner`, `connected_device_names_inner`, `device_is_connected_reflect`). No leak risk.
+- `java/A2dpServiceListener.java`: package `dev.dioxus.main`, `implements BluetoothProfile.ServiceListener`, callbacks delegate to `private static native` methods with matching signatures. OK.
+- `java/build-dex.sh`: `set -euo pipefail`, overridable `JAVAC`/`D8`/`ANDROID_JAR`, script-relative path resolution, temp dir with `trap` cleanup. Robust. d8/javac NOT re-run (committed dex is the artifact).
 
 ## New Tests Added
-- test_reconcile_connection_status_updates_both_directions: a listed device in the connected set becomes Connected, one absent becomes Disconnected.
-- test_reconcile_connection_status_preserves_connecting: an in-flight `Connecting` entry is never clobbered, while a non-connecting device absent from the set becomes Disconnected.
+- none (artifact-contract + non-Android regression tests already cover the testable surface; the Android JNI path is validated on-device).
 
 ## Final Status
-- `cargo test`: ✅ 39 passed (17 + 6 unit + 16 integration; 0 doctests)
-- `cargo clippy` (host): ✅ clean
-- `cargo clippy` (aarch64-linux-android): ✅ clean
-- `cargo fmt --check`: ✅ clean (apart from the known nightly-only `imports_granularity`/`group_imports` warnings)
-
-Notes: `dx build --platform android` not run (out of scope / slow). `obtain_a2dp_proxy` / `build_service_listener_proxy` left untouched as instructed.
+- `cargo test`: ✅ all suites pass (17 + 23 + 10 + 16 + 0 doc)
+- `cargo clippy`: ✅ clean (host target and `aarch64-linux-android` target)
+- `dx build --platform android`: ✅ success (exit 0)
