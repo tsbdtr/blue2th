@@ -28,7 +28,7 @@ mobile = ["dioxus/mobile"]
 # docs/ROADMAP.md. resolver = "2" preserves the single-crate feature unification
 # (notably the app's target-specific `cfg(target_os = "android")` deps).
 [workspace]
-members = ["blue2th-proto"]
+members = ["blue2th-proto", "blue2th-server"]
 resolver = "2"
 
 [workspace.dependencies]
