@@ -134,6 +134,12 @@ type A2dpProxySlot = std::sync::Arc<(
 #[cfg(target_os = "android")]
 static A2DP_PROXY_SLOT: std::sync::Mutex<Option<A2dpProxySlot>> = std::sync::Mutex::new(None);
 
+// BluetoothProfile constants used with getProfileProxy / getProfileConnectionState.
+#[cfg(target_os = "android")]
+const PROFILE_HEADSET: i32 = 1; // BluetoothProfile.HEADSET (HFP)
+#[cfg(target_os = "android")]
+const PROFILE_A2DP: i32 = 2; // BluetoothProfile.A2DP
+
 // ── JNI export: called by the embedded A2dpServiceListener .dex ─────────────
 //
 // The Java class `dev.dioxus.main.A2dpServiceListener` (loaded at runtime from
@@ -233,22 +239,28 @@ fn find_device_by_name<'a>(
     Ok(None)
 }
 
-/// Obtain the BluetoothA2dp profile proxy synchronously (blocks up to `timeout`).
+/// Obtain a Bluetooth profile proxy synchronously (blocks up to `timeout`).
+///
+/// `profile` is a `BluetoothProfile` constant (e.g. `PROFILE_A2DP`,
+/// `PROFILE_HEADSET`). The returned proxy is a `BluetoothA2dp` /
+/// `BluetoothHeadset` instance whose hidden `connect`/`disconnect(device)`
+/// methods we invoke via reflection (see `a2dp_invoke_hidden`).
 ///
 /// Strategy:
 /// 1. Register an `Arc<(Mutex<Option<GlobalRef>>, Condvar)>` in `A2DP_PROXY_SLOT`.
-/// 2. Call `BluetoothAdapter.getProfileProxy(context, listener, A2DP=2)`.
+/// 2. Call `BluetoothAdapter.getProfileProxy(context, listener, profile)`.
 ///    The `listener` is a `dev.dioxus.main.A2dpServiceListener` instance loaded
 ///    from the embedded dex (see `build_service_listener_proxy`); its
 ///    `onServiceConnected` callback invokes the native `nativeOnServiceConnected`,
 ///    which stores the proxy in the slot above.
 /// 3. Block on the Condvar until the proxy arrives or the timeout expires.
 #[cfg(target_os = "android")]
-fn obtain_a2dp_proxy(
+fn obtain_profile_proxy(
     env: &mut jni::JNIEnv<'_>,
     vm: &jni::JavaVM,
     adapter: &jni::objects::JObject<'_>,
     context: &jni::objects::JObject<'_>,
+    profile: i32,
     timeout: std::time::Duration,
 ) -> Result<jni::objects::GlobalRef, BluetoothError> {
     use jni::objects::JValue;
@@ -269,7 +281,7 @@ fn obtain_a2dp_proxy(
     // back into nativeOnServiceConnected, which stores the proxy in the slot above.
     let listener = build_service_listener_proxy(env, vm)?;
 
-    // Call getProfileProxy(context, listener, A2DP=2).
+    // Call getProfileProxy(context, listener, profile).
     env.call_method(
         adapter,
         "getProfileProxy",
@@ -277,7 +289,7 @@ fn obtain_a2dp_proxy(
         &[
             JValue::Object(context),
             JValue::Object(&listener),
-            JValue::Int(2), // BluetoothProfile.A2DP
+            JValue::Int(profile),
         ],
     )
     .map_err(|e| bt_err_clear(env, e))?;
@@ -296,9 +308,9 @@ fn obtain_a2dp_proxy(
             if let Ok(mut slot) = A2DP_PROXY_SLOT.lock() {
                 *slot = None;
             }
-            return Err(BluetoothError::new(
-                "Timeout waiting for A2DP profile proxy",
-            ));
+            return Err(BluetoothError::new(format!(
+                "Timeout waiting for profile proxy (profile={profile})"
+            )));
         }
         guard.clone()
     };
@@ -308,18 +320,25 @@ fn obtain_a2dp_proxy(
         *slot = None;
     }
 
-    proxy_ref.ok_or_else(|| BluetoothError::new("A2DP profile proxy unavailable"))
+    proxy_ref.ok_or_else(|| {
+        BluetoothError::new(format!("Profile proxy unavailable (profile={profile})"))
+    })
 }
 
 /// Build a `dev.dioxus.main.A2dpServiceListener` instance by loading the
 /// embedded `.dex` (compiled from `java/A2dpServiceListener.java`) at runtime
-/// via `DexClassLoader`.
+/// via `InMemoryDexClassLoader`.
 ///
 /// Steps:
 /// 1. Obtain the Android `Context` and its `ClassLoader` (used as parent).
-/// 2. Write the embedded dex bytes to a file under the code-cache dir.
-/// 3. Construct `DexClassLoader(dexPath, optimizedDir, null, parent)`.
+/// 2. Wrap the embedded dex bytes in a direct `ByteBuffer`.
+/// 3. Construct `InMemoryDexClassLoader(buffer, parent)`.
 /// 4. `loadClass("dev.dioxus.main.A2dpServiceListener")`, then `newInstance()`.
+///
+/// We load from memory rather than from a file because Android (API 26+) refuses
+/// to load a dex from any directory the app can write to ("Attempt to load
+/// writable dex file"). `InMemoryDexClassLoader` (API 26+) sidesteps this: no
+/// file is ever written.
 ///
 /// The returned object implements `BluetoothProfile.ServiceListener`; its
 /// `onServiceConnected` callback invokes the native
@@ -329,7 +348,7 @@ fn build_service_listener_proxy<'a>(
     env: &mut jni::JNIEnv<'a>,
     _vm: &jni::JavaVM,
 ) -> Result<jni::objects::JObject<'a>, BluetoothError> {
-    use jni::objects::{JObject, JValue};
+    use jni::objects::{JClass, JObject, JValue};
 
     // Embedded dex bytes, produced by java/build-dex.sh.
     const DEX_BYTES: &[u8] = include_bytes!("../assets/a2dp_listener.dex");
@@ -346,74 +365,32 @@ fn build_service_listener_proxy<'a>(
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
 
-    // Code-cache dir used both as the dex output location and the optimized dir.
-    let code_cache_dir = env
-        .call_method(&context, "getCodeCacheDir", "()Ljava/io/File;", &[])
-        .map_err(|e| bt_err_clear(env, e))?
-        .l()
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let cache_path_jstr = env
-        .call_method(
-            &code_cache_dir,
-            "getAbsolutePath",
-            "()Ljava/lang/String;",
-            &[],
-        )
-        .map_err(|e| bt_err_clear(env, e))?
-        .l()
-        .map_err(|e| BluetoothError::new(e.to_string()))?;
-    let cache_path: String = env
-        .get_string(&jni::objects::JString::from(cache_path_jstr))
-        .map_err(|e| bt_err_clear(env, e))?
-        .into();
-    let dex_path = format!("{cache_path}/a2dp_listener.dex");
+    // 2. Wrap the embedded dex bytes in a direct ByteBuffer.
+    // SAFETY: DEX_BYTES is a 'static slice embedded in the binary, so its pointer
+    // stays valid for the entire process lifetime — outliving any use the JVM
+    // makes of the buffer. The cast to `*mut u8` is sound because
+    // InMemoryDexClassLoader only reads the buffer; it never writes to it.
+    let dex_buffer =
+        unsafe { env.new_direct_byte_buffer(DEX_BYTES.as_ptr() as *mut u8, DEX_BYTES.len()) }
+            .map_err(|e| bt_err_clear(env, e))?;
 
-    // 2. Write the embedded dex bytes to disk via java.io.FileOutputStream.
-    let dex_path_jstr = env
-        .new_string(&dex_path)
-        .map_err(|e| bt_err_clear(env, e))?;
-    let out_stream = env
-        .new_object(
-            "java/io/FileOutputStream",
-            "(Ljava/lang/String;)V",
-            &[JValue::Object(dex_path_jstr.as_ref())],
-        )
-        .map_err(|e| bt_err_clear(env, e))?;
-    let dex_byte_array = env
-        .byte_array_from_slice(DEX_BYTES)
-        .map_err(|e| bt_err_clear(env, e))?;
-    env.call_method(
-        &out_stream,
-        "write",
-        "([B)V",
-        &[JValue::Object(&JObject::from(dex_byte_array))],
-    )
-    .map_err(|e| bt_err_clear(env, e))?;
-    env.call_method(&out_stream, "close", "()V", &[])
-        .map_err(|e| bt_err_clear(env, e))?;
-
-    // 3. Construct dalvik.system.DexClassLoader(dexPath, optimizedDir, null, parent).
-    let optimized_dir_jstr = env
-        .new_string(&cache_path)
-        .map_err(|e| bt_err_clear(env, e))?;
+    // 3. Construct dalvik.system.InMemoryDexClassLoader(buffer, parent).
     let dex_loader = env
         .new_object(
-            "dalvik/system/DexClassLoader",
-            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V",
+            "dalvik/system/InMemoryDexClassLoader",
+            "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V",
             &[
-                JValue::Object(dex_path_jstr.as_ref()),
-                JValue::Object(optimized_dir_jstr.as_ref()),
-                JValue::Object(&JObject::null()),
+                JValue::Object(dex_buffer.as_ref()),
                 JValue::Object(&parent_loader),
             ],
         )
         .map_err(|e| bt_err_clear(env, e))?;
 
-    // 4. loadClass("dev.dioxus.main.A2dpServiceListener") and instantiate it.
+    // 4. loadClass("dev.dioxus.main.A2dpServiceListener").
     let class_name = env
         .new_string("dev.dioxus.main.A2dpServiceListener")
         .map_err(|e| bt_err_clear(env, e))?;
-    let listener_class = env
+    let listener_class_obj = env
         .call_method(
             &dex_loader,
             "loadClass",
@@ -423,12 +400,38 @@ fn build_service_listener_proxy<'a>(
         .map_err(|e| bt_err_clear(env, e))?
         .l()
         .map_err(|e| BluetoothError::new(e.to_string()))?;
-    if listener_class.is_null() {
+    if listener_class_obj.is_null() {
         return Err(BluetoothError::new(
             "Failed to load A2dpServiceListener class from dex",
         ));
     }
+    let listener_class = JClass::from(listener_class_obj);
 
+    // 5. Bind the native callbacks to our Rust functions via RegisterNatives.
+    // Name-based JNI resolution only searches native libraries associated with
+    // the declaring class's own class loader. A2dpServiceListener is loaded by a
+    // fresh InMemoryDexClassLoader that has no native library of its own, so the
+    // `nativeOnServiceConnected` symbol would never be found by name (yielding
+    // UnsatisfiedLinkError). Registering the methods explicitly binds them to the
+    // function pointers in the already-loaded Rust .so regardless of class loader.
+    let native_methods = [
+        jni::NativeMethod {
+            name: "nativeOnServiceConnected".into(),
+            sig: "(Landroid/bluetooth/BluetoothProfile;)V".into(),
+            fn_ptr: Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceConnected
+                as *mut std::ffi::c_void,
+        },
+        jni::NativeMethod {
+            name: "nativeOnServiceDisconnected".into(),
+            sig: "(I)V".into(),
+            fn_ptr: Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceDisconnected
+                as *mut std::ffi::c_void,
+        },
+    ];
+    env.register_native_methods(&listener_class, &native_methods)
+        .map_err(|e| bt_err_clear(env, e))?;
+
+    // 6. Instantiate the listener.
     let listener = env
         .call_method(&listener_class, "newInstance", "()Ljava/lang/Object;", &[])
         .map_err(|e| bt_err_clear(env, e))?
@@ -802,19 +805,21 @@ async fn connect_device_inner(name: String) -> Result<bool, BluetoothError> {
     let device = find_device_by_name(&mut env, &bonded_set, &name)?
         .ok_or_else(|| BluetoothError::new(format!("Device '{name}' not found")))?;
 
-    let a2dp_ref = obtain_a2dp_proxy(
+    let a2dp_ref = obtain_profile_proxy(
         &mut env,
         &vm,
         &adapter,
         &context,
+        PROFILE_A2DP,
         std::time::Duration::from_secs(5),
     )?;
     a2dp_invoke_hidden(&mut env, a2dp_ref.as_obj(), "connect", &device)?;
     Ok(true)
 }
 
-/// Android: disconnect a bonded device via A2DP profile proxy + reflection.
-/// `BluetoothA2dp.disconnect(device)` is `@hide`; we call it via `Method.invoke`.
+/// Android: disconnect a bonded device from every audio profile (A2DP + HFP).
+/// `BluetoothA2dp.disconnect(device)` / `BluetoothHeadset.disconnect(device)` are
+/// `@hide`; we call them via `Method.invoke` on each profile proxy.
 #[cfg(target_os = "android")]
 async fn disconnect_device_inner(name: String) -> Result<bool, BluetoothError> {
     let ctx = ndk_context::android_context();
@@ -847,14 +852,22 @@ async fn disconnect_device_inner(name: String) -> Result<bool, BluetoothError> {
     let device = find_device_by_name(&mut env, &bonded_set, &name)?
         .ok_or_else(|| BluetoothError::new(format!("Device '{name}' not found")))?;
 
-    let a2dp_ref = obtain_a2dp_proxy(
-        &mut env,
-        &vm,
-        &adapter,
-        &context,
-        std::time::Duration::from_secs(5),
-    )?;
-    a2dp_invoke_hidden(&mut env, a2dp_ref.as_obj(), "disconnect", &device)?;
+    // A device is typically connected on several profiles at once (A2DP for media
+    // and HEADSET/HFP for calls). Disconnecting only A2DP leaves HFP up, so
+    // BluetoothDevice.isConnected() stays true and the poll re-marks the device as
+    // connected. Disconnect every audio profile so the device truly drops.
+    for profile in [PROFILE_A2DP, PROFILE_HEADSET] {
+        let proxy = obtain_profile_proxy(
+            &mut env,
+            &vm,
+            &adapter,
+            &context,
+            profile,
+            std::time::Duration::from_secs(5),
+        )?;
+        a2dp_invoke_hidden(&mut env, proxy.as_obj(), "disconnect", &device)?;
+    }
+
     Ok(true)
 }
 

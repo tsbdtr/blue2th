@@ -446,16 +446,22 @@ fn DeviceItem(
                             let name = name.clone();
                             move |e: Event<MouseData>| {
                                 e.stop_propagation();
-                                // Clone is required: `spawn` captures a `'static` async block.
+                                // Clone is required: the async block captures a `'static` copy.
                                 let name = name.clone();
-                                // Show the spinner and ripple immediately before handing off to the background task.
-                                *row_active.write() = true;
+                                // Setting Connecting moves this device out of the "connected"
+                                // (pinned) list into the main list, which UNMOUNTS this
+                                // DeviceItem and recreates it under the other `<ul>`. A task
+                                // spawned with `spawn` is tied to this scope and would be
+                                // cancelled by that unmount before it ever ran. `spawn_forever`
+                                // attaches the task to the root scope so it survives, and the
+                                // task only touches `devices`/`toast_error` (owned by an
+                                // ancestor) — never this component's local `row_active`, whose
+                                // signal dies with the unmounted scope.
                                 let idx = devices.read().iter().position(|(n, _)| n == &name);
                                 if let Some(i) = idx {
                                     devices.write()[i].1 = ConnectionStatus::Connecting;
                                 }
-                                // BT operation runs on a background task — UI thread stays free.
-                                spawn(async move {
+                                dioxus::core::spawn_forever(async move {
                                     match disconnect_device(name.clone()).await {
                                         Ok(true) => {
                                             let idx = devices
@@ -466,7 +472,6 @@ fn DeviceItem(
                                                 devices.write()[i].1 =
                                                     ConnectionStatus::Disconnected;
                                             }
-                                            *row_active.write() = false;
                                         }
                                         Ok(false) => {
                                             let idx = devices
@@ -477,7 +482,6 @@ fn DeviceItem(
                                                 devices.write()[i].1 =
                                                     ConnectionStatus::Connected;
                                             }
-                                            *row_active.write() = false;
                                         }
                                         Err(_e) => {
                                             let idx = devices
@@ -492,14 +496,13 @@ fn DeviceItem(
                                                 rust_i18n::t!("device.disconnect_failed", name = name.as_str())
                                                     .into_owned(),
                                             );
-                                            // Clear both the toast and the ripple at the same moment.
-                                            spawn(async move {
+                                            // Auto-dismiss the toast after 5 s.
+                                            dioxus::core::spawn_forever(async move {
                                                 tokio::time::sleep(
                                                     std::time::Duration::from_secs(5),
                                                 )
                                                 .await;
                                                 *toast_error.write() = None;
-                                                *row_active.write() = false;
                                             });
                                         }
                                     }

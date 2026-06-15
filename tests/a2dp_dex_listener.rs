@@ -73,15 +73,17 @@ fn test_java_source_and_build_script_exist() {
 #[test]
 fn test_java_source_implements_service_listener_with_native_callbacks() {
     let src = std::fs::read_to_string("java/A2dpServiceListener.java");
-    assert!(src.is_ok(), "java/A2dpServiceListener.java must be readable");
+    assert!(
+        src.is_ok(),
+        "java/A2dpServiceListener.java must be readable"
+    );
     let content = src.unwrap_or_default();
     assert!(
         content.contains("class A2dpServiceListener"),
         "java source must declare class A2dpServiceListener"
     );
     assert!(
-        content.contains("implements")
-            && content.contains("BluetoothProfile.ServiceListener"),
+        content.contains("implements") && content.contains("BluetoothProfile.ServiceListener"),
         "A2dpServiceListener must implement BluetoothProfile.ServiceListener"
     );
     assert!(
@@ -125,7 +127,8 @@ fn test_jni_export_renamed_to_listener_native_method() {
     assert!(src.is_ok(), "src/bluetooth.rs must be readable");
     let content = src.unwrap_or_default();
     assert!(
-        content.contains("Java_") && content.contains("A2dpServiceListener_nativeOnServiceConnected"),
+        content.contains("Java_")
+            && content.contains("A2dpServiceListener_nativeOnServiceConnected"),
         "the JNI export must be named Java_..._A2dpServiceListener_nativeOnServiceConnected"
     );
     // The old export name must be gone.
