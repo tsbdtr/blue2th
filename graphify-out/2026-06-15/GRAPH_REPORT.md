@@ -1,16 +1,16 @@
-# Graph Report - blue2th  (2026-06-15)
+# Graph Report - blue2th  (2026-06-11)
 
 ## Corpus Check
-- 19 files · ~17,756 words
+- 16 files · ~16,566 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 260 nodes · 466 edges · 21 communities (16 shown, 5 thin omitted)
-- Extraction: 94% EXTRACTED · 6% INFERRED · 0% AMBIGUOUS · INFERRED: 30 edges (avg confidence: 0.82)
+- 233 nodes · 414 edges · 18 communities (14 shown, 4 thin omitted)
+- Extraction: 94% EXTRACTED · 6% INFERRED · 0% AMBIGUOUS · INFERRED: 26 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `0bcac0a8`
+- Built from commit: `6a9d01a9`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -32,21 +32,18 @@
 - [[_COMMUNITY_Community 15|Community 15]]
 - [[_COMMUNITY_Community 16|Community 16]]
 - [[_COMMUNITY_Community 17|Community 17]]
-- [[_COMMUNITY_Community 18|Community 18]]
-- [[_COMMUNITY_Community 19|Community 19]]
-- [[_COMMUNITY_Community 20|Community 20]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `BluetoothError` - 27 edges
-2. `Result` - 22 edges
-3. `bt_err_clear()` - 18 edges
-4. `enable_bluetooth_inner()` - 14 edges
-5. `obtain_a2dp_proxy()` - 14 edges
+1. `BluetoothError` - 26 edges
+2. `Result` - 21 edges
+3. `bt_err_clear()` - 17 edges
+4. `obtain_a2dp_proxy()` - 14 edges
+5. `enable_bluetooth_inner()` - 14 edges
 6. `android_jni_env()` - 13 edges
-7. `obtain_profile_proxy()` - 13 edges
-8. `DeviceItem()` - 13 edges
-9. `scan_devices()` - 12 edges
-10. `find_device_by_name()` - 12 edges
+7. `DeviceItem()` - 13 edges
+8. `scan_devices()` - 12 edges
+9. `find_device_by_name()` - 12 edges
+10. `scan_devices_inner()` - 12 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `test_bt_enabled_stays_false_when_enable_bluetooth_returns_false` --semantically_similar_to--> `ConfirmModal()`  [INFERRED] [semantically similar]
@@ -71,11 +68,11 @@
 - **Android Bluetooth JNI Detection Flow** — src_bluetooth_enable_bluetooth, src_bluetooth_enable_bluetooth_inner, concept_jni_android_bluetooth, concept_platform_conditional_compilation [EXTRACTED 0.95]
 - **UI Bluetooth Enable Confirmation Flow** — src_main_home, src_main_confirmmodal, src_bluetooth_enable_bluetooth, src_main_connectionstatus [EXTRACTED 0.95]
 
-## Communities (21 total, 5 thin omitted)
+## Communities (18 total, 4 thin omitted)
 
 ### Community 0 - "Android BT JNI & Errors"
 Cohesion: 0.12
-Nodes (44): Display, Duration, Error, Formatter, GlobalRef, Into, JavaVM, JClass (+36 more)
+Nodes (42): Display, Duration, Error, Formatter, GlobalRef, Into, JavaVM, JClass (+34 more)
 
 ### Community 1 - "Dioxus Framework Concepts"
 Cohesion: 0.08
@@ -91,7 +88,7 @@ Nodes (17): Project context, Rules, What you must NOT do, Your role (GREEN phase
 
 ### Community 4 - "BT Integration Tests & UI Flows"
 Cohesion: 0.10
-Nodes (23): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), connected_device_names(), enable_bluetooth_inner(), Vec, scan_devices(), test_enable_bluetooth_inner_returns_ok_on_non_android(), test_scan_devices_returns_non_empty_ok_on_non_android() (+15 more)
+Nodes (25): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), connected_device_names(), enable_bluetooth_inner(), Vec, scan_devices(), scan_devices_inner(), test_enable_bluetooth_inner_returns_ok_on_non_android() (+17 more)
 
 ### Community 5 - "Header SVG Assets"
 Cohesion: 0.40
@@ -122,35 +119,27 @@ Cohesion: 0.40
 Nodes (4): Project context, Rules, What you must NOT do, Your role (RED phase)
 
 ### Community 16 - "Community 16"
-Cohesion: 0.40
-Nodes (10): Final Status, Issues Found & Fixed, Items Reviewed — No Change Needed, New Tests Added, Review focus verification (no change needed), Review Report — Load bonded Bluetooth devices, Review Report — Real A2DP connect/disconnect via embedded ServiceListener `.dex`, Review Report — Real Bluetooth A2DP Connection (+2 more)
-
-### Community 18 - "Community 18"
-Cohesion: 0.15
-Nodes (7): connect_device(), disconnect_device(), test_connect_device_returns_ok_on_non_android(), test_disconnect_device_returns_ok_on_non_android(), test_connect_device_simulated_ok_on_non_android(), test_connect_disconnect_do_not_panic(), test_disconnect_device_simulated_ok_on_non_android()
-
-### Community 19 - "Community 19"
-Cohesion: 0.39
-Nodes (3): BluetoothProfile, A2dpServiceListener, Override
+Cohesion: 0.47
+Nodes (8): Final Status, Issues Found & Fixed, New Tests Added, Review focus verification (no change needed), Review Report — Load bonded Bluetooth devices, Review Report — Real Bluetooth A2DP Connection, Review Report — Reflect real connection status on scan, Review Report — Replace confirm modal with Android Bluetooth enable dialog
 
 ## Knowledge Gaps
-- **88 isolated node(s):** `build-dex.sh script`, `Display`, `Formatter`, `Into`, `Self` (+83 more)
+- **87 isolated node(s):** `Display`, `Formatter`, `Into`, `Self`, `Option` (+82 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `scan_devices()` connect `BT Integration Tests & UI Flows` to `Android BT JNI & Errors`, `UI App & State`, `TDD Workflow & Dev Standards`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._
 - **Why does `tdd-test-writer Agent (RED phase)` connect `TDD Workflow & Dev Standards` to `BT Integration Tests & UI Flows`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
+  _High betweenness centrality (0.046) - this node is a cross-community bridge._
 - **Why does `enable_bluetooth_inner()` connect `BT Integration Tests & UI Flows` to `Android BT JNI & Errors`, `UI App & State`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
-- **What connects `build-dex.sh script`, `Display`, `Formatter` to the rest of the system?**
-  _90 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _High betweenness centrality (0.045) - this node is a cross-community bridge._
+- **What connects `Display`, `Formatter`, `Into` to the rest of the system?**
+  _89 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Android BT JNI & Errors` be split into smaller, more focused modules?**
-  _Cohesion score 0.1187980433263452 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.11613876319758673 - nodes in this community are weakly interconnected._
 - **Should `Dioxus Framework Concepts` be split into smaller, more focused modules?**
   _Cohesion score 0.08262108262108261 - nodes in this community are weakly interconnected._
 - **Should `TDD Workflow & Dev Standards` be split into smaller, more focused modules?**

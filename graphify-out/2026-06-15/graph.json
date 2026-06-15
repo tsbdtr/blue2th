@@ -94,104 +94,6 @@
   },
   "nodes": [
     {
-      "label": "A2dpServiceListener.java",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L1",
-      "id": "java_a2dpservicelistener",
-      "community": 19,
-      "norm_label": "a2dpservicelistener.java"
-    },
-    {
-      "label": "A2dpServiceListener",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L29",
-      "id": "java_a2dpservicelistener_a2dpservicelistener",
-      "community": 19,
-      "norm_label": "a2dpservicelistener"
-    },
-    {
-      "label": ".onServiceConnected()",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L32",
-      "id": "java_a2dpservicelistener_a2dpservicelistener_onserviceconnected",
-      "community": 19,
-      "norm_label": ".onserviceconnected()"
-    },
-    {
-      "label": "BluetoothProfile",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L32",
-      "id": "bluetoothprofile",
-      "community": 19,
-      "norm_label": "bluetoothprofile"
-    },
-    {
-      "label": "Override",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L32",
-      "id": "override",
-      "community": 19,
-      "norm_label": "override"
-    },
-    {
-      "label": ".onServiceDisconnected()",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L37",
-      "id": "java_a2dpservicelistener_a2dpservicelistener_onservicedisconnected",
-      "community": 19,
-      "norm_label": ".onservicedisconnected()"
-    },
-    {
-      "label": ".nativeOnServiceConnected()",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L42",
-      "id": "java_a2dpservicelistener_a2dpservicelistener_nativeonserviceconnected",
-      "community": 19,
-      "norm_label": ".nativeonserviceconnected()"
-    },
-    {
-      "label": ".nativeOnServiceDisconnected()",
-      "file_type": "code",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L44",
-      "id": "java_a2dpservicelistener_a2dpservicelistener_nativeonservicedisconnected",
-      "community": 19,
-      "norm_label": ".nativeonservicedisconnected()"
-    },
-    {
-      "label": "build-dex.sh",
-      "file_type": "code",
-      "source_file": "java/build-dex.sh",
-      "source_location": "L1",
-      "metadata": {
-        "language": "bash",
-        "kind": "file"
-      },
-      "id": "java_build_dex",
-      "community": 20,
-      "norm_label": "build-dex.sh"
-    },
-    {
-      "label": "build-dex.sh script",
-      "file_type": "code",
-      "source_file": "java/build-dex.sh",
-      "source_location": "L1",
-      "metadata": {
-        "language": "bash",
-        "kind": "bash_entrypoint"
-      },
-      "id": "home_orel_workspace_blue2th_java_build_dex_sh__entry",
-      "community": 20,
-      "norm_label": "build-dex.sh script"
-    },
-    {
       "label": "bluetooth.rs",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
@@ -314,7 +216,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L39",
       "id": "src_bluetooth_connect_device",
-      "community": 18,
+      "community": 0,
       "norm_label": "connect_device()"
     },
     {
@@ -323,7 +225,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L43",
       "id": "src_bluetooth_disconnect_device",
-      "community": 18,
+      "community": 0,
       "norm_label": "disconnect_device()"
     },
     {
@@ -390,19 +292,19 @@
       "norm_label": "javavm"
     },
     {
-      "label": "Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceConnected()",
+      "label": "Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
-      "id": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected",
+      "source_location": "L147",
+      "id": "src_bluetooth_java_dev_dioxus_main_wryactivity_ona2dpserviceconnected",
       "community": 0,
-      "norm_label": "java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected()"
+      "norm_label": "java_dev_dioxus_main_wryactivity_ona2dpserviceconnected()"
     },
     {
       "label": "JClass",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
+      "source_location": "L147",
       "id": "jclass",
       "community": 0,
       "norm_label": "jclass"
@@ -411,34 +313,16 @@
       "label": "JObject",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
+      "source_location": "L147",
       "id": "jobject",
       "community": 0,
       "norm_label": "jobject"
     },
     {
-      "label": "Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceDisconnected()",
-      "file_type": "code",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "id": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected",
-      "community": 0,
-      "norm_label": "java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected()"
-    },
-    {
-      "label": "jint",
-      "file_type": "code",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "id": "jint",
-      "community": 0,
-      "norm_label": "jint"
-    },
-    {
       "label": "find_device_by_name()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L195",
+      "source_location": "L175",
       "id": "src_bluetooth_find_device_by_name",
       "community": 0,
       "norm_label": "find_device_by_name()"
@@ -447,25 +331,25 @@
       "label": "Option",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L195",
+      "source_location": "L175",
       "id": "src_bluetooth_rs_option",
       "community": 0,
       "norm_label": "option"
     },
     {
-      "label": "obtain_profile_proxy()",
+      "label": "obtain_a2dp_proxy()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "id": "src_bluetooth_obtain_profile_proxy",
+      "source_location": "L231",
+      "id": "src_bluetooth_obtain_a2dp_proxy",
       "community": 0,
-      "norm_label": "obtain_profile_proxy()"
+      "norm_label": "obtain_a2dp_proxy()"
     },
     {
       "label": "Duration",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
+      "source_location": "L231",
       "id": "duration",
       "community": 0,
       "norm_label": "duration"
@@ -474,7 +358,7 @@
       "label": "GlobalRef",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
+      "source_location": "L231",
       "id": "globalref",
       "community": 0,
       "norm_label": "globalref"
@@ -483,7 +367,7 @@
       "label": "build_service_listener_proxy()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L347",
+      "source_location": "L319",
       "id": "src_bluetooth_build_service_listener_proxy",
       "community": 0,
       "norm_label": "build_service_listener_proxy()"
@@ -492,7 +376,7 @@
       "label": "a2dp_invoke_hidden()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L451",
+      "source_location": "L420",
       "id": "src_bluetooth_a2dp_invoke_hidden",
       "community": 0,
       "norm_label": "a2dp_invoke_hidden()"
@@ -501,7 +385,7 @@
       "label": "device_is_connected_reflect()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L507",
+      "source_location": "L476",
       "id": "src_bluetooth_device_is_connected_reflect",
       "community": 0,
       "norm_label": "device_is_connected_reflect()"
@@ -510,7 +394,7 @@
       "label": "enable_bluetooth_inner()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L580",
+      "source_location": "L549",
       "id": "src_bluetooth_enable_bluetooth_inner",
       "community": 4,
       "norm_label": "enable_bluetooth_inner()"
@@ -519,7 +403,7 @@
       "label": "request_enable_bluetooth_inner()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L617",
+      "source_location": "L586",
       "id": "src_bluetooth_request_enable_bluetooth_inner",
       "community": 0,
       "norm_label": "request_enable_bluetooth_inner()"
@@ -528,16 +412,16 @@
       "label": "scan_devices_inner()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L695",
+      "source_location": "L664",
       "id": "src_bluetooth_scan_devices_inner",
-      "community": 0,
+      "community": 4,
       "norm_label": "scan_devices_inner()"
     },
     {
       "label": "connect_device_inner()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L777",
+      "source_location": "L746",
       "id": "src_bluetooth_connect_device_inner",
       "community": 0,
       "norm_label": "connect_device_inner()"
@@ -546,7 +430,7 @@
       "label": "disconnect_device_inner()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L824",
+      "source_location": "L791",
       "id": "src_bluetooth_disconnect_device_inner",
       "community": 0,
       "norm_label": "disconnect_device_inner()"
@@ -555,7 +439,7 @@
       "label": "connected_device_names_inner()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L878",
+      "source_location": "L837",
       "id": "src_bluetooth_connected_device_names_inner",
       "community": 0,
       "norm_label": "connected_device_names_inner()"
@@ -564,25 +448,25 @@
       "label": "test_connect_device_returns_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1011",
+      "source_location": "L970",
       "id": "src_bluetooth_test_connect_device_returns_ok_on_non_android",
-      "community": 18,
+      "community": 0,
       "norm_label": "test_connect_device_returns_ok_on_non_android()"
     },
     {
       "label": "test_disconnect_device_returns_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1026",
+      "source_location": "L985",
       "id": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android",
-      "community": 18,
+      "community": 0,
       "norm_label": "test_disconnect_device_returns_ok_on_non_android()"
     },
     {
       "label": "test_connect_limit_two_devices_silently_ignored()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1041",
+      "source_location": "L1000",
       "id": "src_bluetooth_test_connect_limit_two_devices_silently_ignored",
       "community": 0,
       "norm_label": "test_connect_limit_two_devices_silently_ignored()"
@@ -591,7 +475,7 @@
       "label": "test_connection_error_sets_ephemeral_notification()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1061",
+      "source_location": "L1020",
       "id": "src_bluetooth_test_connection_error_sets_ephemeral_notification",
       "community": 0,
       "norm_label": "test_connection_error_sets_ephemeral_notification()"
@@ -600,7 +484,7 @@
       "label": "test_enable_bluetooth_inner_returns_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1084",
+      "source_location": "L1043",
       "id": "src_bluetooth_test_enable_bluetooth_inner_returns_ok_on_non_android",
       "community": 4,
       "norm_label": "test_enable_bluetooth_inner_returns_ok_on_non_android()"
@@ -609,7 +493,7 @@
       "label": "test_request_enable_bluetooth_inner_returns_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1092",
+      "source_location": "L1051",
       "id": "src_bluetooth_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
       "community": 0,
       "norm_label": "test_request_enable_bluetooth_inner_returns_ok_on_non_android()"
@@ -618,7 +502,7 @@
       "label": "test_request_enable_bluetooth_returns_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1103",
+      "source_location": "L1062",
       "id": "src_bluetooth_test_request_enable_bluetooth_returns_ok_on_non_android",
       "community": 0,
       "norm_label": "test_request_enable_bluetooth_returns_ok_on_non_android()"
@@ -627,7 +511,7 @@
       "label": "test_bt_error_set_on_request_error()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1114",
+      "source_location": "L1073",
       "id": "src_bluetooth_test_bt_error_set_on_request_error",
       "community": 0,
       "norm_label": "test_bt_error_set_on_request_error()"
@@ -636,7 +520,7 @@
       "label": "test_bt_enabled_true_on_non_android_ok()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1133",
+      "source_location": "L1092",
       "id": "src_bluetooth_test_bt_enabled_true_on_non_android_ok",
       "community": 0,
       "norm_label": "test_bt_enabled_true_on_non_android_ok()"
@@ -645,7 +529,7 @@
       "label": "test_scan_devices_returns_non_empty_ok_on_non_android()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1151",
+      "source_location": "L1110",
       "id": "src_bluetooth_test_scan_devices_returns_non_empty_ok_on_non_android",
       "community": 4,
       "norm_label": "test_scan_devices_returns_non_empty_ok_on_non_android()"
@@ -654,16 +538,16 @@
       "label": "test_scan_devices_inner_simulation_non_empty()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1168",
+      "source_location": "L1127",
       "id": "src_bluetooth_test_scan_devices_inner_simulation_non_empty",
-      "community": 0,
+      "community": 4,
       "norm_label": "test_scan_devices_inner_simulation_non_empty()"
     },
     {
       "label": "test_scan_devices_returns_bluetooth_error_on_failure()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1185",
+      "source_location": "L1144",
       "id": "src_bluetooth_test_scan_devices_returns_bluetooth_error_on_failure",
       "community": 0,
       "norm_label": "test_scan_devices_returns_bluetooth_error_on_failure()"
@@ -672,7 +556,7 @@
       "label": "test_scan_not_triggered_at_module_load()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1207",
+      "source_location": "L1166",
       "id": "src_bluetooth_test_scan_not_triggered_at_module_load",
       "community": 0,
       "norm_label": "test_scan_not_triggered_at_module_load()"
@@ -681,7 +565,7 @@
       "label": "test_locale_fr_scan_button_is_charger_les_appareils()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1219",
+      "source_location": "L1178",
       "id": "src_bluetooth_test_locale_fr_scan_button_is_charger_les_appareils",
       "community": 0,
       "norm_label": "test_locale_fr_scan_button_is_charger_les_appareils()"
@@ -690,7 +574,7 @@
       "label": "test_locale_fr_scan_scanning_is_chargement_en_cours()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1238",
+      "source_location": "L1197",
       "id": "src_bluetooth_test_locale_fr_scan_scanning_is_chargement_en_cours",
       "community": 0,
       "norm_label": "test_locale_fr_scan_scanning_is_chargement_en_cours()"
@@ -699,7 +583,7 @@
       "label": "test_locale_en_scan_button_is_load_devices()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1255",
+      "source_location": "L1214",
       "id": "src_bluetooth_test_locale_en_scan_button_is_load_devices",
       "community": 0,
       "norm_label": "test_locale_en_scan_button_is_load_devices()"
@@ -708,7 +592,7 @@
       "label": "test_locale_en_scan_scanning_is_loading()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1272",
+      "source_location": "L1231",
       "id": "src_bluetooth_test_locale_en_scan_scanning_is_loading",
       "community": 0,
       "norm_label": "test_locale_en_scan_scanning_is_loading()"
@@ -870,7 +754,7 @@
       "label": "DeviceSettings()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L533",
+      "source_location": "L528",
       "id": "src_main_devicesettings",
       "community": 2,
       "norm_label": "devicesettings()"
@@ -879,7 +763,7 @@
       "label": "test_merge_connection_status_assigns_connected_and_disconnected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L645",
+      "source_location": "L640",
       "id": "src_main_test_merge_connection_status_assigns_connected_and_disconnected",
       "community": 2,
       "norm_label": "test_merge_connection_status_assigns_connected_and_disconnected()"
@@ -888,7 +772,7 @@
       "label": "test_merge_connection_status_empty_connected_all_disconnected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L668",
+      "source_location": "L663",
       "id": "src_main_test_merge_connection_status_empty_connected_all_disconnected",
       "community": 2,
       "norm_label": "test_merge_connection_status_empty_connected_all_disconnected()"
@@ -897,7 +781,7 @@
       "label": "test_merge_connection_status_no_duplicate_and_refreshes_status()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L686",
+      "source_location": "L681",
       "id": "src_main_test_merge_connection_status_no_duplicate_and_refreshes_status",
       "community": 2,
       "norm_label": "test_merge_connection_status_no_duplicate_and_refreshes_status()"
@@ -906,7 +790,7 @@
       "label": "test_merge_connection_status_counter_reflects_connected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L715",
+      "source_location": "L710",
       "id": "src_main_test_merge_connection_status_counter_reflects_connected",
       "community": 2,
       "norm_label": "test_merge_connection_status_counter_reflects_connected()"
@@ -915,7 +799,7 @@
       "label": "test_reconcile_connection_status_updates_both_directions()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L738",
+      "source_location": "L733",
       "id": "src_main_test_reconcile_connection_status_updates_both_directions",
       "community": 2,
       "norm_label": "test_reconcile_connection_status_updates_both_directions()"
@@ -924,109 +808,10 @@
       "label": "test_reconcile_connection_status_preserves_connecting()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L760",
+      "source_location": "L755",
       "id": "src_main_test_reconcile_connection_status_preserves_connecting",
       "community": 2,
       "norm_label": "test_reconcile_connection_status_preserves_connecting()"
-    },
-    {
-      "label": "a2dp_dex_listener.rs",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L1",
-      "id": "tests_a2dp_dex_listener",
-      "community": 18,
-      "norm_label": "a2dp_dex_listener.rs"
-    },
-    {
-      "label": "test_a2dp_listener_dex_exists()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L34",
-      "id": "tests_a2dp_dex_listener_test_a2dp_listener_dex_exists",
-      "community": 18,
-      "norm_label": "test_a2dp_listener_dex_exists()"
-    },
-    {
-      "label": "test_a2dp_listener_dex_non_empty()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L44",
-      "id": "tests_a2dp_dex_listener_test_a2dp_listener_dex_non_empty",
-      "community": 18,
-      "norm_label": "test_a2dp_listener_dex_non_empty()"
-    },
-    {
-      "label": "test_java_source_and_build_script_exist()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L60",
-      "id": "tests_a2dp_dex_listener_test_java_source_and_build_script_exist",
-      "community": 18,
-      "norm_label": "test_java_source_and_build_script_exist()"
-    },
-    {
-      "label": "test_java_source_implements_service_listener_with_native_callbacks()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L74",
-      "id": "tests_a2dp_dex_listener_test_java_source_implements_service_listener_with_native_callbacks",
-      "community": 18,
-      "norm_label": "test_java_source_implements_service_listener_with_native_callbacks()"
-    },
-    {
-      "label": "test_build_dex_script_outputs_to_asset_path()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L105",
-      "id": "tests_a2dp_dex_listener_test_build_dex_script_outputs_to_asset_path",
-      "community": 18,
-      "norm_label": "test_build_dex_script_outputs_to_asset_path()"
-    },
-    {
-      "label": "test_jni_export_renamed_to_listener_native_method()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L125",
-      "id": "tests_a2dp_dex_listener_test_jni_export_renamed_to_listener_native_method",
-      "community": 18,
-      "norm_label": "test_jni_export_renamed_to_listener_native_method()"
-    },
-    {
-      "label": "test_build_service_listener_proxy_uses_dex_class_loader()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L153",
-      "id": "tests_a2dp_dex_listener_test_build_service_listener_proxy_uses_dex_class_loader",
-      "community": 18,
-      "norm_label": "test_build_service_listener_proxy_uses_dex_class_loader()"
-    },
-    {
-      "label": "test_connect_device_simulated_ok_on_non_android()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L176",
-      "id": "tests_a2dp_dex_listener_test_connect_device_simulated_ok_on_non_android",
-      "community": 18,
-      "norm_label": "test_connect_device_simulated_ok_on_non_android()"
-    },
-    {
-      "label": "test_disconnect_device_simulated_ok_on_non_android()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L191",
-      "id": "tests_a2dp_dex_listener_test_disconnect_device_simulated_ok_on_non_android",
-      "community": 18,
-      "norm_label": "test_disconnect_device_simulated_ok_on_non_android()"
-    },
-    {
-      "label": "test_connect_disconnect_do_not_panic()",
-      "file_type": "code",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L206",
-      "id": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "community": 18,
-      "norm_label": "test_connect_disconnect_do_not_panic()"
     },
     {
       "label": "bluetooth_integration.rs",
@@ -1767,13 +1552,13 @@
       "norm_label": "review.md"
     },
     {
-      "label": "Review Report \u2014 Real A2DP connect/disconnect via embedded ServiceListener `.dex`",
+      "label": "Review Report \u2014 Reflect real connection status on scan",
       "file_type": "document",
       "source_file": "tdd/REVIEW.md",
       "source_location": "L1",
-      "id": "tdd_review_review_report_real_a2dp_connect_disconnect_via_embedded_servicelistener_dex",
+      "id": "tdd_review_review_report_reflect_real_connection_status_on_scan",
       "community": 16,
-      "norm_label": "review report \u2014 real a2dp connect/disconnect via embedded servicelistener `.dex`"
+      "norm_label": "review report \u2014 reflect real connection status on scan"
     },
     {
       "label": "Issues Found & Fixed",
@@ -1785,19 +1570,10 @@
       "norm_label": "issues found & fixed"
     },
     {
-      "label": "Items Reviewed \u2014 No Change Needed",
-      "file_type": "document",
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "L7",
-      "id": "tdd_review_items_reviewed_no_change_needed",
-      "community": 16,
-      "norm_label": "items reviewed \u2014 no change needed"
-    },
-    {
       "label": "New Tests Added",
       "file_type": "document",
       "source_file": "tdd/REVIEW.md",
-      "source_location": "L15",
+      "source_location": "L8",
       "id": "tdd_review_new_tests_added",
       "community": 16,
       "norm_label": "new tests added"
@@ -1806,7 +1582,7 @@
       "label": "Final Status",
       "file_type": "document",
       "source_file": "tdd/REVIEW.md",
-      "source_location": "L18",
+      "source_location": "L12",
       "id": "tdd_review_final_status",
       "community": 16,
       "norm_label": "final status"
@@ -1945,33 +1721,6 @@
       "id": "tdd_feature_constraints_notes",
       "community": 12,
       "norm_label": "constraints & notes"
-    },
-    {
-      "label": "Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected()",
-      "file_type": "code",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L147",
-      "community": 0,
-      "norm_label": "java_dev_dioxus_main_wryactivity_ona2dpserviceconnected()",
-      "id": "src_bluetooth_java_dev_dioxus_main_wryactivity_ona2dpserviceconnected"
-    },
-    {
-      "label": "obtain_a2dp_proxy()",
-      "file_type": "code",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L231",
-      "community": 0,
-      "norm_label": "obtain_a2dp_proxy()",
-      "id": "src_bluetooth_obtain_a2dp_proxy"
-    },
-    {
-      "label": "Review Report \u2014 Reflect real connection status on scan",
-      "file_type": "document",
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "L1",
-      "community": 16,
-      "norm_label": "review report \u2014 reflect real connection status on scan",
-      "id": "tdd_review_review_report_reflect_real_connection_status_on_scan"
     },
     {
       "label": "Review focus verification (no change needed)",
@@ -2607,132 +2356,6 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L29",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener",
-      "target": "java_a2dpservicelistener_a2dpservicelistener",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L42",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener_a2dpservicelistener",
-      "target": "java_a2dpservicelistener_a2dpservicelistener_nativeonserviceconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L44",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener_a2dpservicelistener",
-      "target": "java_a2dpservicelistener_a2dpservicelistener_nativeonservicedisconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L32",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener_a2dpservicelistener",
-      "target": "java_a2dpservicelistener_a2dpservicelistener_onserviceconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L37",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener_a2dpservicelistener",
-      "target": "java_a2dpservicelistener_a2dpservicelistener_onservicedisconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L32",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "java_a2dpservicelistener_a2dpservicelistener_onserviceconnected",
-      "target": "bluetoothprofile",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L34",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener_a2dpservicelistener_onserviceconnected",
-      "target": "java_a2dpservicelistener_a2dpservicelistener_nativeonserviceconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L32",
-      "weight": 1.0,
-      "context": "attribute",
-      "source": "java_a2dpservicelistener_a2dpservicelistener_onserviceconnected",
-      "target": "override",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L42",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "java_a2dpservicelistener_a2dpservicelistener_nativeonserviceconnected",
-      "target": "bluetoothprofile",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L37",
-      "weight": 1.0,
-      "context": "attribute",
-      "source": "java_a2dpservicelistener_a2dpservicelistener_onservicedisconnected",
-      "target": "override",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "java/A2dpServiceListener.java",
-      "source_location": "L39",
-      "weight": 1.0,
-      "source": "java_a2dpservicelistener_a2dpservicelistener_onservicedisconnected",
-      "target": "java_a2dpservicelistener_a2dpservicelistener_nativeonservicedisconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "java/build-dex.sh",
-      "source_location": "L1",
-      "weight": 1.0,
-      "source": "java_build_dex",
-      "target": "home_orel_workspace_blue2th_java_build_dex_sh__entry",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
       "source_location": "L391",
       "weight": 1.0,
@@ -2904,26 +2527,6 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
-      "weight": 1.0,
-      "source": "src_bluetooth",
-      "target": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "weight": 1.0,
-      "source": "src_bluetooth",
-      "target": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L116",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -2939,16 +2542,6 @@
       "confidence_score": 1.0,
       "source": "src_bluetooth",
       "target": "src_bluetooth_obtain_a2dp_proxy"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "source": "src_bluetooth",
-      "target": "src_bluetooth_obtain_profile_proxy",
-      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -3401,17 +2994,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "src_bluetooth_bluetootherror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L214",
       "weight": 1.0,
       "context": "generic_arg",
@@ -3654,17 +3236,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L214",
       "weight": 1.0,
       "context": "return_type",
@@ -3880,17 +3451,6 @@
       "confidence_score": 1.0,
       "source": "src_bluetooth_obtain_a2dp_proxy",
       "target": "src_bluetooth_bluetootherror_new"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L270",
-      "weight": 1.0,
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "src_bluetooth_bluetootherror_new",
-      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -4211,28 +3771,6 @@
     {
       "relation": "calls",
       "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L177",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_connect_device_simulated_ok_on_non_android",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L207",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
       "source_location": "L44",
@@ -4260,28 +3798,6 @@
       "source_location": "306",
       "weight": 1.0,
       "source": "src_main_deviceitem",
-      "target": "src_bluetooth_disconnect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L208",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "target": "src_bluetooth_disconnect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L192",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_disconnect_device_simulated_ok_on_non_android",
       "target": "src_bluetooth_disconnect_device"
     },
     {
@@ -4541,17 +4057,6 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L295",
-      "weight": 1.0,
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "src_bluetooth_bt_err_clear",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L151",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -4628,28 +4133,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected",
-      "target": "jnienv",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected",
-      "target": "jnienv",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L116",
       "weight": 1.0,
       "context": "parameter_type",
@@ -4667,17 +4150,6 @@
       "confidence_score": 1.0,
       "source": "src_bluetooth_obtain_a2dp_proxy",
       "target": "jnienv"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "jnienv",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4793,56 +4265,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "javavm",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected",
-      "target": "jclass",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected",
-      "target": "jobject",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L291",
+      "source_location": "L116",
       "weight": 1.0,
       "context": "parameter_type",
       "confidence_score": 1.0,
-      "source": "src_bluetooth_build_service_listener_proxy",
+      "source": "src_bluetooth_java_dev_dioxus_main_wryactivity_ona2dpserviceconnected",
       "target": "jclass"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected",
-      "target": "jclass",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4853,6 +4281,17 @@
       "context": "parameter_type",
       "confidence_score": 1.0,
       "source": "src_bluetooth_java_dev_dioxus_main_wryactivity_ona2dpserviceconnected",
+      "target": "jobject"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L291",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_build_service_listener_proxy",
       "target": "jclass"
     },
     {
@@ -4903,45 +4342,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L116",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_java_dev_dioxus_main_wryactivity_ona2dpserviceconnected",
-      "target": "jobject"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L201",
       "weight": 1.0,
       "context": "parameter_type",
       "confidence_score": 1.0,
       "source": "src_bluetooth_obtain_a2dp_proxy",
       "target": "jobject"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "jobject",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected",
-      "target": "jint",
-      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -5003,55 +4409,33 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L808",
+      "source_location": "L668",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_connect_device_inner",
-      "target": "src_bluetooth_obtain_profile_proxy",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_obtain_a2dp_proxy"
     },
     {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L860",
+      "source_location": "L713",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_disconnect_device_inner",
-      "target": "src_bluetooth_obtain_profile_proxy",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "duration",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "globalref",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_obtain_a2dp_proxy"
     },
     {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L282",
+      "source_location": "L763",
       "weight": 1.0,
-      "source": "src_bluetooth_obtain_profile_proxy",
-      "target": "src_bluetooth_build_service_listener_proxy",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_is_device_connected_inner",
+      "target": "src_bluetooth_obtain_a2dp_proxy"
     },
     {
       "relation": "references",
@@ -5246,28 +4630,6 @@
       "weight": 1.0,
       "source": "tests_bluetooth_integration_test_scan_devices_simulation_non_empty",
       "target": "src_bluetooth_scan_devices_inner"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L668",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_connect_device_inner",
-      "target": "src_bluetooth_obtain_a2dp_proxy"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L713",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_disconnect_device_inner",
-      "target": "src_bluetooth_obtain_a2dp_proxy"
     },
     {
       "relation": "contains",
@@ -5828,106 +5190,6 @@
       "confidence_score": 1.0,
       "source": "src_main_deviceitem",
       "target": "src_main_rs_option"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L34",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_a2dp_listener_dex_exists",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L44",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_a2dp_listener_dex_non_empty",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L105",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_build_dex_script_outputs_to_asset_path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L153",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_build_service_listener_proxy_uses_dex_class_loader",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L176",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_connect_device_simulated_ok_on_non_android",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L206",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L191",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_disconnect_device_simulated_ok_on_non_android",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L60",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_java_source_and_build_script_exist",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L74",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_java_source_implements_service_listener_with_native_callbacks",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L125",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "tests_a2dp_dex_listener_test_jni_export_renamed_to_listener_native_method",
-      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6795,16 +6057,6 @@
       "source_file": "tdd/REVIEW.md",
       "source_location": "L1",
       "weight": 1.0,
-      "source": "tdd_review",
-      "target": "tdd_review_review_report_real_a2dp_connect_disconnect_via_embedded_servicelistener_dex",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "L1",
-      "weight": 1.0,
       "confidence_score": 1.0,
       "source": "tdd_review",
       "target": "tdd_review_review_report_real_bluetooth_a2dp_connection"
@@ -6833,11 +6085,11 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "tdd/REVIEW.md",
-      "source_location": "L18",
+      "source_location": "L19",
       "weight": 1.0,
-      "source": "tdd_review_review_report_real_a2dp_connect_disconnect_via_embedded_servicelistener_dex",
-      "target": "tdd_review_final_status",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
+      "target": "tdd_review_final_status"
     },
     {
       "relation": "contains",
@@ -6845,29 +6097,29 @@
       "source_file": "tdd/REVIEW.md",
       "source_location": "L3",
       "weight": 1.0,
-      "source": "tdd_review_review_report_real_a2dp_connect_disconnect_via_embedded_servicelistener_dex",
-      "target": "tdd_review_issues_found_fixed",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
+      "target": "tdd_review_issues_found_fixed"
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "tdd/REVIEW.md",
-      "source_location": "L7",
+      "source_location": "L16",
       "weight": 1.0,
-      "source": "tdd_review_review_report_real_a2dp_connect_disconnect_via_embedded_servicelistener_dex",
-      "target": "tdd_review_items_reviewed_no_change_needed",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
+      "target": "tdd_review_new_tests_added"
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "tdd/REVIEW.md",
-      "source_location": "L15",
+      "source_location": "L9",
       "weight": 1.0,
-      "source": "tdd_review_review_report_real_a2dp_connect_disconnect_via_embedded_servicelistener_dex",
-      "target": "tdd_review_new_tests_added",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
+      "target": "tdd_review_review_focus_verification_no_change_needed"
     },
     {
       "relation": "contains",
@@ -6887,16 +6139,6 @@
       "weight": 1.0,
       "confidence_score": 1.0,
       "source": "tdd_review_review_report_real_bluetooth_a2dp_connection",
-      "target": "tdd_review_issues_found_fixed"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "L3",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
       "target": "tdd_review_issues_found_fixed"
     },
     {
@@ -6933,16 +6175,6 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "tdd/REVIEW.md",
-      "source_location": "L16",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
-      "target": "tdd_review_new_tests_added"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tdd/REVIEW.md",
       "source_location": "L9",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -6967,16 +6199,6 @@
       "weight": 1.0,
       "confidence_score": 1.0,
       "source": "tdd_review_review_report_real_bluetooth_a2dp_connection",
-      "target": "tdd_review_final_status"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "L19",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
       "target": "tdd_review_final_status"
     },
     {
@@ -7128,27 +6350,6 @@
       "confidence_score": 1.0,
       "source": "tdd_feature_test_strategy",
       "target": "tdd_feature_unit_tests_synchronous_pure_logic"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L763",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_is_device_connected_inner",
-      "target": "src_bluetooth_obtain_a2dp_proxy"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "tdd/REVIEW.md",
-      "source_location": "L9",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "tdd_review_review_report_reflect_real_connection_status_on_scan",
-      "target": "tdd_review_review_focus_verification_no_change_needed"
     },
     {
       "relation": "calls",
@@ -7573,5 +6774,5 @@
       "source_file": "src/main.rs"
     }
   ],
-  "built_at_commit": "0bcac0a8f078242a14d9eef1f2f4055d05d07b02"
+  "built_at_commit": "6a9d01a9b84c7ef2e39466a2117777d6daeb6cc0"
 }
