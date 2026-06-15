@@ -10,6 +10,10 @@ edition = "2021"
 dioxus = { version = "0.7.1", features = ["mobile", "router"] }
 rust-i18n = "3"
 tokio = { version = "1", features = ["time"] }
+blue2th-proto = { path = "blue2th-proto" }
+# No TLS backend: the backend is reached over plain HTTP on the LAN (a TLS option
+# can be added later). `json` pulls in serde_json for response decoding.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
