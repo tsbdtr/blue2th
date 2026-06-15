@@ -47,19 +47,34 @@ fn health_url(base: &str) -> String {
     format!("{}/health", base.trim_end_matches('/'))
 }
 
+/// Flatten a `reqwest::Error` and its source chain into one string, so the
+/// on-device UI shows the *underlying* cause (e.g. "Connection refused" vs
+/// "CLEARTEXT communication not permitted") instead of just "error sending request".
+fn describe(err: &reqwest::Error) -> String {
+    use std::error::Error as _;
+    let mut msg = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        msg.push_str(" -> ");
+        msg.push_str(&e.to_string());
+        source = e.source();
+    }
+    msg
+}
+
 /// `GET {base}/health` and decode the backend's `HealthStatus`.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
     let url = health_url(backend_base_url());
     let response = reqwest::get(&url)
         .await
-        .map_err(|e| BackendError::new(e.to_string()))?;
+        .map_err(|e| BackendError::new(describe(&e)))?;
     response
         .error_for_status()
-        .map_err(|e| BackendError::new(e.to_string()))?
+        .map_err(|e| BackendError::new(describe(&e)))?
         .json::<HealthStatus>()
         .await
-        .map_err(|e| BackendError::new(e.to_string()))
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 #[cfg(test)]
