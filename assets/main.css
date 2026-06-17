@@ -105,6 +105,31 @@ body {
     height: 72px;
 }
 
+/* Backend status indicator (label + green/red dot) */
+.backend-status {
+    display: flex;
+    width: fit-content;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 6px 12px;
+    background: #1e222d;
+    border: 1px solid #374151;
+    border-radius: 8px;
+}
+
+.backend-status-label {
+    font-size: 0.85rem;
+    color: #9ca3af;
+}
+
+/* Light divider splitting the encart into a label zone and a status zone. */
+.backend-status-sep {
+    align-self: stretch;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.12);
+}
+
 /* Enable bluetooth button */
 .btn-enable-bt {
     display: flex;
@@ -379,6 +404,28 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* Signal-strength bars (network-gauge style). Filled bar colours are set inline
+   by the SignalBars component; empty bars stay dimmed. */
+.signal-bars {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 16px;
+    flex-shrink: 0;
+    margin-left: 12px;
+}
+
+.signal-bar {
+    width: 3px;
+    background: #374151;
+    border-radius: 1px;
+}
+
+.signal-bar:nth-child(1) { height: 5px; }
+.signal-bar:nth-child(2) { height: 9px; }
+.signal-bar:nth-child(3) { height: 12px; }
+.signal-bar:nth-child(4) { height: 16px; }
 
 .device-actions {
     display: flex;

@@ -2,6 +2,11 @@ scan:
   button: "Load devices"
   scanning: "Loading…"
 
+server:
+  status: "Server status"
+  online: "Backend connected"
+  offline: "Backend unreachable"
+
 bt:
   enable: "Enable Bluetooth"
   confirm_title: "Enable Bluetooth?"
