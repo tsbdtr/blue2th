@@ -2,8 +2,10 @@
 //! running on the host. Phase 1 only reads adapters and paired devices; scanning
 //! and connect/disconnect land in later phases (see `docs/ROADMAP.md`).
 
+use async_stream::try_stream;
 use blue2th_proto::{AdapterInfo, DeviceInfo};
-use bluer::{Device, Session};
+use bluer::{AdapterEvent, Device, Session};
+use futures::{Stream, StreamExt};
 
 /// List every Bluetooth adapter present on the host.
 pub async fn list_adapters() -> bluer::Result<Vec<AdapterInfo>> {
@@ -36,6 +38,27 @@ pub async fn list_paired_devices() -> bluer::Result<Vec<DeviceInfo>> {
         devices.push(device_info(&device).await?);
     }
     Ok(devices)
+}
+
+/// Stream devices discovered by an active scan on the default adapter.
+///
+/// Powers the adapter on, starts discovery, and yields a `DeviceInfo` for every
+/// `DeviceAdded` event. Discovery stops when the returned stream is dropped (the
+/// caller, e.g. the SSE handler, drops it on client disconnect or after a cap).
+pub fn scan_events() -> impl Stream<Item = bluer::Result<DeviceInfo>> {
+    try_stream! {
+        let session = Session::new().await?;
+        let adapter = session.default_adapter().await?;
+        adapter.set_powered(true).await?;
+
+        let mut events = adapter.discover_devices().await?;
+        while let Some(event) = events.next().await {
+            if let AdapterEvent::DeviceAdded(addr) = event {
+                let device = adapter.device(addr)?;
+                yield device_info(&device).await?;
+            }
+        }
+    }
 }
 
 /// Map a `bluer::Device` to the wire `DeviceInfo`. Optional properties (name,

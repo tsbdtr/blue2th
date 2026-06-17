@@ -17,6 +17,8 @@ blue2th-proto = { path = "../blue2th-proto" }
 # BlueZ over D-Bus (requires libdbus dev headers at build time and bluetoothd at
 # runtime). The `bluetoothd` feature enables the high-level Adapter/Device API.
 bluer = { version = "0.17", features = ["bluetoothd"] }
+futures = "0.3"
+async-stream = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
