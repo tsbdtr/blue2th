@@ -32,6 +32,11 @@ const BLUETOOTH_LOGO: Asset = asset!("/assets/bluetooth.svg");
 
 const MAX_CONNECTIONS: usize = 2;
 
+/// Temporarily hide the legacy on-phone Bluetooth UI (scan button + device list)
+/// while the app transitions to driving the PC backend. The code path is kept
+/// intact for the future on-phone LE Audio feature (see docs/ROADMAP.md).
+const SHOW_LEGACY_BT_UI: bool = false;
+
 #[derive(Clone, Debug, PartialEq)]
 enum ConnectionStatus {
     Disconnected,
@@ -243,6 +248,7 @@ fn Home() -> Element {
                 div { class: "backend-status", "{msg}" }
             }
             BackendScan {}
+            if SHOW_LEGACY_BT_UI {
             if let Some(err) = bt_error() {
                 div {
                     class: "bt-error-banner",
@@ -362,47 +368,91 @@ fn Home() -> Element {
             if let Some(err) = toast_error() {
                 div { class: "toast-error", "{err}" }
             }
+            }
         }
     }
 }
 
-/// Phase 1: trigger a scan on the PC backend and list the devices it discovers
-/// (name + RSSI). Self-contained so it does not disturb the legacy Android path.
+/// Phase 1: trigger a scan on the PC backend and list the devices it discovers,
+/// reusing the app's scan button + device-list styling. Self-contained so it does
+/// not disturb the legacy Android path.
 #[component]
 fn BackendScan() -> Element {
+    use_locale();
+
     let mut scanning = use_signal(|| false);
     let mut found: Signal<Vec<blue2th_proto::DeviceInfo>> = use_signal(Vec::new);
     let mut error: Signal<Option<String>> = use_signal(|| None);
 
+    let btn_class = if scanning() {
+        "btn-scan scanning"
+    } else {
+        "btn-scan"
+    };
+    let scan_icon = if scanning() { "⟳" } else { "⊙" };
+    let scan_label = if scanning() {
+        rust_i18n::t!("scan.scanning")
+    } else {
+        rust_i18n::t!("scan.button")
+    };
+    let empty_label = rust_i18n::t!("device.empty");
+
     rsx! {
-        div { class: "backend-scan",
-            button {
-                class: "btn-scan",
-                disabled: scanning(),
-                onclick: move |_| async move {
-                    *error.write() = None;
-                    found.write().clear();
-                    *scanning.write() = true;
-                    match backend::scan_devices().await {
-                        Ok(devices) => *found.write() = devices,
-                        Err(e) => *error.write() = Some(e.to_string()),
+        button {
+            class: "{btn_class}",
+            disabled: scanning(),
+            onclick: move |_| async move {
+                *error.write() = None;
+                found.write().clear();
+                *scanning.write() = true;
+                match backend::scan_devices().await {
+                    Ok(devices) => *found.write() = devices,
+                    Err(e) => *error.write() = Some(e.to_string()),
+                }
+                *scanning.write() = false;
+            },
+            span { class: "scan-icon", "{scan_icon}" }
+            "{scan_label}"
+        }
+        if let Some(e) = error() {
+            div { class: "bt-error-banner",
+                span { "{e}" }
+            }
+        }
+        {
+            let devices = found();
+            let count = devices.len();
+            let is_empty = devices.is_empty();
+            rsx! {
+                div { class: "device-list-container",
+                    div { class: "device-list-wrapper",
+                        if is_empty {
+                            div { class: "device-list-empty",
+                                img {
+                                    class: "device-list-empty-icon",
+                                    src: BLUETOOTH_LOGO,
+                                    alt: "",
+                                }
+                                p { class: "device-list-empty-text", "{empty_label}" }
+                            }
+                        } else {
+                            ul { class: "device-list",
+                                for device in devices {
+                                    li { key: "{device.address}", class: "device-row",
+                                        span { class: "device-icon disconnected", "○" }
+                                        span { class: "device-name",
+                                            "{device.name.clone().unwrap_or_else(|| device.address.clone())}"
+                                        }
+                                        if let Some(rssi) = device.rssi {
+                                            span { class: "device-rssi", "{rssi} dBm" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    *scanning.write() = false;
-                },
-                if scanning() { "Scanning PC…" } else { "Scan (PC backend)" }
-            }
-            if let Some(e) = error() {
-                div { class: "bt-error-banner", "{e}" }
-            }
-            ul { class: "backend-device-list",
-                for device in found() {
-                    li { key: "{device.address}",
-                        span { class: "dev-name",
-                            "{device.name.clone().unwrap_or_else(|| device.address.clone())}"
-                        }
-                        span { class: "dev-rssi",
-                            {device.rssi.map(|r| format!(" {r} dBm")).unwrap_or_default()}
-                        }
+                    if !is_empty {
+                        div { class: "connected-counter", "{count}" }
                     }
                 }
             }
