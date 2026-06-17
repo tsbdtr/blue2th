@@ -3,10 +3,17 @@
 //! Phase 0: an Axum service exposing `GET /health`. Later phases add Bluetooth
 //! (`bluer`) and audio (PipeWire) routes — see `docs/ROADMAP.md`.
 
-use axum::{routing::get, Json, Router};
-use blue2th_proto::HealthStatus;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use blue2th_proto::{AdapterInfo, DeviceInfo, HealthStatus};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
+
+mod bluetooth;
 
 /// Default bind address. `0.0.0.0` so the phone can reach the backend over the LAN.
 const DEFAULT_BIND: &str = "0.0.0.0:4000";
@@ -28,6 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn app() -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/adapters", get(adapters))
+        .route("/devices", get(devices))
         // Permissive CORS for LAN development; tightened in a later phase.
         .layer(CorsLayer::permissive())
 }
@@ -35,6 +44,33 @@ fn app() -> Router {
 /// `GET /health` — liveness probe carrying the backend version.
 async fn health() -> Json<HealthStatus> {
     Json(HealthStatus::ok(env!("CARGO_PKG_VERSION")))
+}
+
+/// `GET /adapters` — Bluetooth adapters present on the host.
+async fn adapters() -> Result<Json<Vec<AdapterInfo>>, AppError> {
+    Ok(Json(bluetooth::list_adapters().await?))
+}
+
+/// `GET /devices` — paired devices on the default adapter.
+async fn devices() -> Result<Json<Vec<DeviceInfo>>, AppError> {
+    Ok(Json(bluetooth::list_paired_devices().await?))
+}
+
+/// Error type for handlers: renders a 500 with the message. BlueZ failures
+/// (no adapter, bluetoothd down) convert into it via `From<bluer::Error>`.
+struct AppError(String);
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        tracing::warn!("request failed: {}", self.0);
+        (StatusCode::INTERNAL_SERVER_ERROR, self.0).into_response()
+    }
+}
+
+impl From<bluer::Error> for AppError {
+    fn from(err: bluer::Error) -> Self {
+        AppError(err.to_string())
+    }
 }
 
 /// Initialise tracing from `RUST_LOG`, defaulting to `info`.
