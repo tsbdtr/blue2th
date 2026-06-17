@@ -4,7 +4,7 @@
 
 use async_stream::try_stream;
 use blue2th_proto::{AdapterInfo, DeviceInfo};
-use bluer::{AdapterEvent, Device, Session};
+use bluer::{AdapterEvent, Address, Device, Session};
 use futures::{Stream, StreamExt};
 
 /// List every Bluetooth adapter present on the host.
@@ -38,6 +38,31 @@ pub async fn list_paired_devices() -> bluer::Result<Vec<DeviceInfo>> {
         devices.push(device_info(&device).await?);
     }
     Ok(devices)
+}
+
+/// Pair (if needed), trust, and connect a device on the default adapter.
+/// Trusting lets BlueZ reconnect its audio profiles without re-confirmation.
+pub async fn connect_device(addr: Address) -> bluer::Result<DeviceInfo> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    let device = adapter.device(addr)?;
+
+    if !device.is_paired().await.unwrap_or(false) {
+        device.pair().await?;
+    }
+    device.set_trusted(true).await?;
+    device.connect().await?;
+    device_info(&device).await
+}
+
+/// Disconnect a device on the default adapter.
+pub async fn disconnect_device(addr: Address) -> bluer::Result<DeviceInfo> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    let device = adapter.device(addr)?;
+
+    device.disconnect().await?;
+    device_info(&device).await
 }
 
 /// Stream devices discovered by an active scan on the default adapter.
