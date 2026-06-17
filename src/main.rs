@@ -442,6 +442,102 @@ fn SignalBars(rssi: Option<i16>) -> Element {
     }
 }
 
+/// Replace the device with `info`'s address in `found` with its updated state.
+fn replace_device(found: &mut Signal<Vec<blue2th_proto::DeviceInfo>>, info: blue2th_proto::DeviceInfo) {
+    let idx = found.read().iter().position(|d| d.address == info.address);
+    if let Some(i) = idx {
+        found.write()[i] = info;
+    }
+}
+
+/// One row of the backend scan list: tap a disconnected device to connect it
+/// (pair/trust/connect on the PC), or use the button to disconnect. `busy` holds
+/// the address currently being acted on, so only one action runs at a time and
+/// the active row shows a spinner.
+#[component]
+fn BackendDeviceItem(
+    device: blue2th_proto::DeviceInfo,
+    found: Signal<Vec<blue2th_proto::DeviceInfo>>,
+    busy: Signal<Option<String>>,
+    error: Signal<Option<String>>,
+) -> Element {
+    let addr = device.address.clone();
+    let connected = device.connected;
+    let rssi = device.rssi;
+    let label = device.name.clone().unwrap_or_else(|| device.address.clone());
+
+    let in_flight = busy().as_deref() == Some(addr.as_str());
+    let (icon, icon_class) = if in_flight {
+        ("⟳", "device-icon connecting")
+    } else if connected {
+        ("●", "device-icon connected")
+    } else {
+        ("○", "device-icon disconnected")
+    };
+    let disconnect_label = rust_i18n::t!("device.disconnect");
+
+    rsx! {
+        li {
+            class: if in_flight { "device-row active" } else { "device-row" },
+            onclick: {
+                let addr = addr.clone();
+                move |_| {
+                    // Only connect an idle, disconnected device.
+                    if connected || busy().is_some() {
+                        return;
+                    }
+                    let addr = addr.clone();
+                    let mut busy = busy;
+                    let mut found = found;
+                    let mut error = error;
+                    *busy.write() = Some(addr.clone());
+                    spawn(async move {
+                        match backend::connect_device(&addr).await {
+                            Ok(info) => replace_device(&mut found, info),
+                            Err(e) => *error.write() = Some(e.to_string()),
+                        }
+                        *busy.write() = None;
+                    });
+                }
+            },
+            span { class: "{icon_class}", "{icon}" }
+            span { class: "device-name", "{label}" }
+            SignalBars { rssi }
+            if connected {
+                div { class: "device-actions",
+                    button {
+                        class: "btn-disconnect",
+                        title: "{disconnect_label}",
+                        aria_label: "{disconnect_label}",
+                        onclick: {
+                            let addr = addr.clone();
+                            move |e: Event<MouseData>| {
+                                e.stop_propagation();
+                                if busy().is_some() {
+                                    return;
+                                }
+                                let addr = addr.clone();
+                                let mut busy = busy;
+                                let mut found = found;
+                                let mut error = error;
+                                *busy.write() = Some(addr.clone());
+                                spawn(async move {
+                                    match backend::disconnect_device(&addr).await {
+                                        Ok(info) => replace_device(&mut found, info),
+                                        Err(e) => *error.write() = Some(e.to_string()),
+                                    }
+                                    *busy.write() = None;
+                                });
+                            }
+                        },
+                        span { class: "btn-disconnect-icon", "⏻" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Phase 1: trigger a scan on the PC backend and list the devices it discovers,
 /// reusing the app's scan button + device-list styling. Self-contained so it does
 /// not disturb the legacy Android path.
@@ -452,6 +548,8 @@ fn BackendScan() -> Element {
     let mut scanning = use_signal(|| false);
     let mut found: Signal<Vec<blue2th_proto::DeviceInfo>> = use_signal(Vec::new);
     let mut error: Signal<Option<String>> = use_signal(|| None);
+    // Address of the device currently connecting/disconnecting (one at a time).
+    let busy: Signal<Option<String>> = use_signal(|| None);
 
     let backend_online = use_context::<BackendOnline>().0;
     // Drop stale scan results as soon as the backend becomes unreachable.
@@ -500,6 +598,12 @@ fn BackendScan() -> Element {
         {
             let devices = found();
             let is_empty = devices.is_empty();
+            // Connected devices are pinned in an always-visible section at the top.
+            let (connected, mut others): (Vec<_>, Vec<_>) =
+                devices.into_iter().partition(|d| d.connected);
+            // Sort the rest by signal strength: strongest (greenest) first, with
+            // unknown RSSI last (Reverse(None) sorts after Reverse(Some(_))).
+            others.sort_by_key(|d| std::cmp::Reverse(d.rssi));
             rsx! {
                 div { class: "device-list-container",
                     div { class: "device-list-wrapper",
@@ -513,14 +617,27 @@ fn BackendScan() -> Element {
                                 p { class: "device-list-empty-text", "{empty_label}" }
                             }
                         } else {
-                            ul { class: "device-list",
-                                for device in devices {
-                                    li { key: "{device.address}", class: "device-row",
-                                        span { class: "device-icon disconnected", "○" }
-                                        span { class: "device-name",
-                                            "{device.name.clone().unwrap_or_else(|| device.address.clone())}"
+                            if !connected.is_empty() {
+                                ul { class: "pinned-devices",
+                                    for device in connected {
+                                        BackendDeviceItem {
+                                            key: "{device.address}",
+                                            device: device.clone(),
+                                            found,
+                                            busy,
+                                            error,
                                         }
-                                        SignalBars { rssi: device.rssi }
+                                    }
+                                }
+                            }
+                            ul { class: "device-list",
+                                for device in others {
+                                    BackendDeviceItem {
+                                        key: "{device.address}",
+                                        device: device.clone(),
+                                        found,
+                                        busy,
+                                        error,
                                     }
                                 }
                             }

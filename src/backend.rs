@@ -123,6 +123,38 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     Ok(found)
 }
 
+/// `POST {base}/devices/{address}/connect` — pair/trust/connect on the backend,
+/// returning the device's updated state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn connect_device(address: &str) -> Result<DeviceInfo, BackendError> {
+    post_device_action(address, "connect").await
+}
+
+/// `POST {base}/devices/{address}/disconnect` — disconnect on the backend,
+/// returning the device's updated state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn disconnect_device(address: &str) -> Result<DeviceInfo, BackendError> {
+    post_device_action(address, "disconnect").await
+}
+
+/// POST `{base}/devices/{address}/{action}` and decode the updated `DeviceInfo`.
+async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, BackendError> {
+    let url = format!(
+        "{}/devices/{address}/{action}",
+        backend_base_url().trim_end_matches('/')
+    );
+    reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<DeviceInfo>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive
 /// comments and non-device events.
 fn sse_device_payload(block: &str) -> Option<String> {
