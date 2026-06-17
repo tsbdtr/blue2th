@@ -273,9 +273,12 @@ fn Home() -> Element {
             div {
                 class: "app-header",
                 h1 { class: "app-title",
-                    span { class: "app-title-text", "Blue" }
+                    span { class: "app-title-text tl tl-1", "B" }
+                    span { class: "app-title-text tl tl-2", "l" }
+                    span { class: "app-title-text tl tl-3", "u" }
+                    span { class: "app-title-text tl tl-4", "e" }
                     span { class: "app-title-num", "2" }
-                    span { class: "app-title-text", "th" }
+                    span { class: "app-title-text app-title-suffix", "th" }
                 }
                 img {
                     class: "app-logo",

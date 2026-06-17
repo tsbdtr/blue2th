@@ -62,47 +62,119 @@ body {
 
 /* App header */
 .app-header {
+    position: relative;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     align-items: center;
-    background: #1e222d;
+    /* Subtle vertical gradient + soft elevation to set the header apart from the
+       cards below without drawing attention. */
+    background: linear-gradient(180deg, #242937 0%, #1e222d 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.25);
     border: 1px solid #2c3040;
     border-radius: 16px;
-    padding: 28px 32px;
+    padding: 34px 32px;
     margin-bottom: 56px;
 }
 
+/* Thin decorative arcs cresting just above and below the logo watermark,
+   mirrored about the logo centre (52% / 48%) for symmetry. */
+.app-header::before,
+.app-header::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    width: 116px;
+    height: 116px;
+    transform: translate(-50%, -50%);
+    border: 1.5px solid transparent;
+    border-radius: 50%;
+    z-index: 0;
+    pointer-events: none;
+}
+
+.app-header::before {
+    top: 52%;
+    border-top-color: rgba(147, 197, 253, 0.4);
+    /* Fade the arc from its crest (top centre) outward toward the ends. */
+    -webkit-mask-image: radial-gradient(circle at 50% 0%, #000 0%, transparent 62%);
+    mask-image: radial-gradient(circle at 50% 0%, #000 0%, transparent 62%);
+}
+
+.app-header::after {
+    top: 48%;
+    border-bottom-color: rgba(147, 197, 253, 0.4);
+    /* Fade the arc from its crest (bottom centre) outward toward the ends. */
+    -webkit-mask-image: radial-gradient(circle at 50% 100%, #000 0%, transparent 62%);
+    mask-image: radial-gradient(circle at 50% 100%, #000 0%, transparent 62%);
+}
+
 .app-title {
+    position: relative;
+    z-index: 1;
     font-size: 2.8em;
     font-weight: 700;
-    margin: 0 0 16px 0;
+    margin: 0;
     letter-spacing: 0.02em;
     line-height: 1.3;
+    /* Shadow under the letters so they stay legible over the logo. */
+    filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.75));
 }
 
 .app-title-text {
-    background: linear-gradient(135deg, #93c5fd 0%, #ffffff 50%, #a5f3fc 100%);
+    background: linear-gradient(135deg, #2563eb 0%, #ffffff 50%, #06b6d4 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
 }
 
-.app-title-num {
+/* "Blue" letters stepped progressively lower for a very light diagonal. */
+.tl {
+    display: inline-block;
     position: relative;
-    top: 0.18em;
+}
+.tl-1 { top: 0; }
+.tl-2 { top: 0.03em; }
+.tl-3 { top: 0.06em; }
+.tl-4 { top: 0.09em; }
+
+/* The "th" suffix: slightly smaller and nudged up. */
+.app-title-suffix {
+    display: inline-block;
+    position: relative;
+    top: -0.06em;
+    font-size: 0.82em;
+}
+
+.app-title-num {
+    display: inline-block;
+    position: relative;
+    /* Intentionally sits lower than the rest of the title; the perspective
+       translateZ pops it toward the viewer (depth), not upward. */
+    top: 0.26em;
     font-size: 0.78em;
     font-weight: 800;
     background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
-    filter: drop-shadow(0 0 10px rgba(37, 99, 235, 0.65));
+    transform: perspective(230px) translateZ(34px);
+    filter: drop-shadow(0 6px 6px rgba(0, 0, 0, 0.65)) drop-shadow(0 0 12px rgba(37, 99, 235, 0.7));
     letter-spacing: 0;
 }
 
 .app-logo {
-    width: 72px;
-    height: 72px;
+    /* Watermark behind the app name: centred, faded, and non-interactive so it
+       never hides the title text. */
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 104px;
+    height: 104px;
+    opacity: 0.2;
+    z-index: 0;
+    pointer-events: none;
 }
 
 /* Backend status indicator (label + green/red dot) */
