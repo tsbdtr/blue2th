@@ -7,12 +7,13 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
+    extract::Path,
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use blue2th_proto::{AdapterInfo, DeviceInfo, HealthStatus};
@@ -47,6 +48,8 @@ fn app() -> Router {
         .route("/health", get(health))
         .route("/adapters", get(adapters))
         .route("/devices", get(devices))
+        .route("/devices/{addr}/connect", post(connect))
+        .route("/devices/{addr}/disconnect", post(disconnect))
         .route("/scan", get(scan))
         // Permissive CORS for LAN development; tightened in a later phase.
         .layer(CorsLayer::permissive())
@@ -65,6 +68,24 @@ async fn adapters() -> Result<Json<Vec<AdapterInfo>>, AppError> {
 /// `GET /devices` — paired devices on the default adapter.
 async fn devices() -> Result<Json<Vec<DeviceInfo>>, AppError> {
     Ok(Json(bluetooth::list_paired_devices().await?))
+}
+
+/// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its
+/// updated state.
+async fn connect(Path(addr): Path<String>) -> Result<Json<DeviceInfo>, AppError> {
+    Ok(Json(bluetooth::connect_device(parse_addr(&addr)?).await?))
+}
+
+/// `POST /devices/{addr}/disconnect` — disconnect a device, returning its
+/// updated state.
+async fn disconnect(Path(addr): Path<String>) -> Result<Json<DeviceInfo>, AppError> {
+    Ok(Json(bluetooth::disconnect_device(parse_addr(&addr)?).await?))
+}
+
+/// Parse a path MAC address, returning a 400-style error on malformed input.
+fn parse_addr(addr: &str) -> Result<bluer::Address, AppError> {
+    addr.parse::<bluer::Address>()
+        .map_err(|e| AppError(format!("invalid address '{addr}': {e}")))
 }
 
 /// `GET /scan` — Server-Sent Events stream of devices discovered by an active
