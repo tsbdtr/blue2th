@@ -431,11 +431,13 @@ fn SignalBars(rssi: Option<i16>) -> Element {
         None => (0, ""),
     };
     rsx! {
-        span { class: "signal-bars",
-            for i in 1..=SIGNAL_BARS {
-                span {
-                    class: "signal-bar",
-                    style: if i <= filled { format!("background:{color};") } else { String::new() },
+        span { class: "signal-badge",
+            span { class: "signal-bars",
+                for i in 1..=SIGNAL_BARS {
+                    span {
+                        class: "signal-bar",
+                        style: if i <= filled { format!("background:{color};") } else { String::new() },
+                    }
                 }
             }
         }
@@ -504,6 +506,7 @@ fn BackendDeviceItem(
             span { class: "device-name", "{label}" }
             SignalBars { rssi }
             if connected {
+                span { class: "row-sep" }
                 div { class: "device-actions",
                     button {
                         class: "btn-disconnect",
@@ -530,7 +533,21 @@ fn BackendDeviceItem(
                                 });
                             }
                         },
-                        span { class: "btn-disconnect-icon", "⏻" }
+                        // Feather "log-out" icon: a door with an arrow exiting it.
+                        svg {
+                            class: "btn-disconnect-icon",
+                            view_box: "0 0 24 24",
+                            width: "18",
+                            height: "18",
+                            fill: "none",
+                            stroke: "currentColor",
+                            stroke_width: "2",
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            path { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }
+                            polyline { points: "16 17 21 12 16 7" }
+                            line { x1: "21", y1: "12", x2: "9", y2: "12" }
+                        }
                     }
                 }
             }
