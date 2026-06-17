@@ -242,6 +242,7 @@ fn Home() -> Element {
             if let Some(msg) = backend_health() {
                 div { class: "backend-status", "{msg}" }
             }
+            BackendScan {}
             if let Some(err) = bt_error() {
                 div {
                     class: "bt-error-banner",
@@ -360,6 +361,50 @@ fn Home() -> Element {
             }
             if let Some(err) = toast_error() {
                 div { class: "toast-error", "{err}" }
+            }
+        }
+    }
+}
+
+/// Phase 1: trigger a scan on the PC backend and list the devices it discovers
+/// (name + RSSI). Self-contained so it does not disturb the legacy Android path.
+#[component]
+fn BackendScan() -> Element {
+    let mut scanning = use_signal(|| false);
+    let mut found: Signal<Vec<blue2th_proto::DeviceInfo>> = use_signal(Vec::new);
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+
+    rsx! {
+        div { class: "backend-scan",
+            button {
+                class: "btn-scan",
+                disabled: scanning(),
+                onclick: move |_| async move {
+                    *error.write() = None;
+                    found.write().clear();
+                    *scanning.write() = true;
+                    match backend::scan_devices().await {
+                        Ok(devices) => *found.write() = devices,
+                        Err(e) => *error.write() = Some(e.to_string()),
+                    }
+                    *scanning.write() = false;
+                },
+                if scanning() { "Scanning PC…" } else { "Scan (PC backend)" }
+            }
+            if let Some(e) = error() {
+                div { class: "bt-error-banner", "{e}" }
+            }
+            ul { class: "backend-device-list",
+                for device in found() {
+                    li { key: "{device.address}",
+                        span { class: "dev-name",
+                            "{device.name.clone().unwrap_or_else(|| device.address.clone())}"
+                        }
+                        span { class: "dev-rssi",
+                            {device.rssi.map(|r| format!(" {r} dBm")).unwrap_or_default()}
+                        }
+                    }
+                }
             }
         }
     }
