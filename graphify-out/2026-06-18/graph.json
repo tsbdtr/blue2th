@@ -274,37 +274,10 @@
       "norm_label": "deviceinfo"
     },
     {
-      "label": "connect_device()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L45",
-      "id": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "community": 26,
-      "norm_label": "connect_device()"
-    },
-    {
-      "label": "Address",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L45",
-      "id": "blue2th_server_src_bluetooth_rs_address",
-      "community": 26,
-      "norm_label": "address"
-    },
-    {
-      "label": "disconnect_device()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L59",
-      "id": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "community": 26,
-      "norm_label": "disconnect_device()"
-    },
-    {
       "label": "scan_events()",
       "file_type": "code",
       "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L73",
+      "source_location": "L48",
       "id": "src_bluetooth_scan_events",
       "community": 26,
       "norm_label": "scan_events()"
@@ -313,7 +286,7 @@
       "label": "Stream",
       "file_type": "code",
       "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L73",
+      "source_location": "L48",
       "id": "blue2th_server_src_bluetooth_rs_stream",
       "community": 26,
       "norm_label": "stream"
@@ -322,7 +295,7 @@
       "label": "Item",
       "file_type": "code",
       "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L73",
+      "source_location": "L48",
       "id": "blue2th_server_src_bluetooth_rs_item",
       "community": 26,
       "norm_label": "item"
@@ -331,7 +304,7 @@
       "label": "device_info()",
       "file_type": "code",
       "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L92",
+      "source_location": "L67",
       "id": "src_bluetooth_device_info",
       "community": 26,
       "norm_label": "device_info()"
@@ -340,7 +313,7 @@
       "label": "Device",
       "file_type": "code",
       "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L92",
+      "source_location": "L67",
       "id": "device",
       "community": 26,
       "norm_label": "device"
@@ -358,7 +331,7 @@
       "label": "main()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L33",
+      "source_location": "L32",
       "id": "blue2th_server_src_main_rs_src_main_main",
       "community": 23,
       "norm_label": "main()"
@@ -367,7 +340,7 @@
       "label": "Result",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L33",
+      "source_location": "L32",
       "id": "blue2th_server_src_main_rs_result",
       "community": 23,
       "norm_label": "result"
@@ -376,7 +349,7 @@
       "label": "Box",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L33",
+      "source_location": "L32",
       "id": "box",
       "community": 23,
       "norm_label": "box"
@@ -385,7 +358,7 @@
       "label": "Error",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L33",
+      "source_location": "L32",
       "id": "blue2th_server_src_main_rs_error",
       "community": 23,
       "norm_label": "error"
@@ -394,7 +367,7 @@
       "label": "app()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L46",
+      "source_location": "L45",
       "id": "blue2th_server_src_main_rs_src_main_app",
       "community": 23,
       "norm_label": "app()"
@@ -403,7 +376,7 @@
       "label": "Router",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L46",
+      "source_location": "L45",
       "id": "router",
       "community": 23,
       "norm_label": "router"
@@ -412,7 +385,7 @@
       "label": "health()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L59",
+      "source_location": "L56",
       "id": "src_main_health",
       "community": 23,
       "norm_label": "health()"
@@ -421,7 +394,7 @@
       "label": "Json",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L59",
+      "source_location": "L56",
       "id": "json",
       "community": 23,
       "norm_label": "json"
@@ -430,7 +403,7 @@
       "label": "HealthStatus",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L59",
+      "source_location": "L56",
       "id": "blue2th_server_src_main_rs_healthstatus",
       "community": 23,
       "norm_label": "healthstatus"
@@ -439,7 +412,7 @@
       "label": "adapters()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
+      "source_location": "L61",
       "id": "src_main_adapters",
       "community": 23,
       "norm_label": "adapters()"
@@ -448,7 +421,7 @@
       "label": "Vec",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
+      "source_location": "L61",
       "id": "blue2th_server_src_main_rs_vec",
       "community": 23,
       "norm_label": "vec"
@@ -457,7 +430,7 @@
       "label": "AdapterInfo",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
+      "source_location": "L61",
       "id": "blue2th_server_src_main_rs_adapterinfo",
       "community": 23,
       "norm_label": "adapterinfo"
@@ -466,7 +439,7 @@
       "label": "AppError",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
+      "source_location": "L61",
       "id": "apperror",
       "community": 23,
       "norm_label": "apperror"
@@ -475,7 +448,7 @@
       "label": "devices()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L69",
+      "source_location": "L66",
       "id": "src_main_devices",
       "community": 23,
       "norm_label": "devices()"
@@ -484,70 +457,16 @@
       "label": "DeviceInfo",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L69",
+      "source_location": "L66",
       "id": "blue2th_server_src_main_rs_deviceinfo",
       "community": 23,
       "norm_label": "deviceinfo"
     },
     {
-      "label": "connect()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "id": "src_main_connect",
-      "community": 23,
-      "norm_label": "connect()"
-    },
-    {
-      "label": "Path",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "id": "path",
-      "community": 23,
-      "norm_label": "path"
-    },
-    {
-      "label": "String",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "id": "blue2th_server_src_main_rs_string",
-      "community": 23,
-      "norm_label": "string"
-    },
-    {
-      "label": "disconnect()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "id": "src_main_disconnect",
-      "community": 23,
-      "norm_label": "disconnect()"
-    },
-    {
-      "label": "parse_addr()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "id": "src_main_parse_addr",
-      "community": 23,
-      "norm_label": "parse_addr()"
-    },
-    {
-      "label": "Address",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "id": "blue2th_server_src_main_rs_address",
-      "community": 23,
-      "norm_label": "address"
-    },
-    {
       "label": "scan()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
+      "source_location": "L73",
       "id": "src_main_scan",
       "community": 23,
       "norm_label": "scan()"
@@ -556,7 +475,7 @@
       "label": "Sse",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
+      "source_location": "L73",
       "id": "sse",
       "community": 23,
       "norm_label": "sse"
@@ -565,7 +484,7 @@
       "label": "Stream",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
+      "source_location": "L73",
       "id": "blue2th_server_src_main_rs_stream",
       "community": 23,
       "norm_label": "stream"
@@ -574,7 +493,7 @@
       "label": "Item",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
+      "source_location": "L73",
       "id": "blue2th_server_src_main_rs_item",
       "community": 23,
       "norm_label": "item"
@@ -583,7 +502,7 @@
       "label": "Event",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
+      "source_location": "L73",
       "id": "event",
       "community": 23,
       "norm_label": "event"
@@ -592,7 +511,7 @@
       "label": "Infallible",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
+      "source_location": "L73",
       "id": "infallible",
       "community": 23,
       "norm_label": "infallible"
@@ -601,7 +520,7 @@
       "label": "AppError",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L114",
+      "source_location": "L93",
       "id": "src_main_apperror",
       "community": 23,
       "norm_label": "apperror"
@@ -610,7 +529,7 @@
       "label": "IntoResponse",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L116",
+      "source_location": "L95",
       "id": "intoresponse",
       "community": 23,
       "norm_label": "intoresponse"
@@ -619,7 +538,7 @@
       "label": ".into_response()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L117",
+      "source_location": "L96",
       "id": "src_main_apperror_into_response",
       "community": 23,
       "norm_label": ".into_response()"
@@ -628,7 +547,7 @@
       "label": "Response",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L117",
+      "source_location": "L96",
       "id": "response",
       "community": 23,
       "norm_label": "response"
@@ -637,7 +556,7 @@
       "label": "From",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L123",
+      "source_location": "L102",
       "id": "from",
       "community": 23,
       "norm_label": "from"
@@ -646,7 +565,7 @@
       "label": ".from()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L124",
+      "source_location": "L103",
       "id": "src_main_apperror_from",
       "community": 23,
       "norm_label": ".from()"
@@ -655,7 +574,7 @@
       "label": "Self",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L124",
+      "source_location": "L103",
       "id": "blue2th_server_src_main_rs_self",
       "community": 23,
       "norm_label": "self"
@@ -664,7 +583,7 @@
       "label": "init_tracing()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L130",
+      "source_location": "L109",
       "id": "src_main_init_tracing",
       "community": 23,
       "norm_label": "init_tracing()"
@@ -673,7 +592,7 @@
       "label": "test_health_endpoint_returns_ok_status_and_version()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L143",
+      "source_location": "L122",
       "id": "src_main_test_health_endpoint_returns_ok_status_and_version",
       "community": 23,
       "norm_label": "test_health_endpoint_returns_ok_status_and_version()"
@@ -948,37 +867,10 @@
       "norm_label": "deviceinfo"
     },
     {
-      "label": "connect_device()",
-      "file_type": "code",
-      "source_file": "src/backend.rs",
-      "source_location": "L129",
-      "id": "src_backend_connect_device",
-      "community": 21,
-      "norm_label": "connect_device()"
-    },
-    {
-      "label": "disconnect_device()",
-      "file_type": "code",
-      "source_file": "src/backend.rs",
-      "source_location": "L136",
-      "id": "src_backend_disconnect_device",
-      "community": 21,
-      "norm_label": "disconnect_device()"
-    },
-    {
-      "label": "post_device_action()",
-      "file_type": "code",
-      "source_file": "src/backend.rs",
-      "source_location": "L141",
-      "id": "src_backend_post_device_action",
-      "community": 21,
-      "norm_label": "post_device_action()"
-    },
-    {
       "label": "sse_device_payload()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L160",
+      "source_location": "L128",
       "id": "src_backend_sse_device_payload",
       "community": 21,
       "norm_label": "sse_device_payload()"
@@ -987,7 +879,7 @@
       "label": "Option",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L160",
+      "source_location": "L128",
       "id": "src_backend_rs_option",
       "community": 21,
       "norm_label": "option"
@@ -996,7 +888,7 @@
       "label": "test_health_url_appends_path()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L182",
+      "source_location": "L150",
       "id": "src_backend_test_health_url_appends_path",
       "community": 21,
       "norm_label": "test_health_url_appends_path()"
@@ -1005,7 +897,7 @@
       "label": "test_health_url_tolerates_trailing_slash()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L190",
+      "source_location": "L158",
       "id": "src_backend_test_health_url_tolerates_trailing_slash",
       "community": 21,
       "norm_label": "test_health_url_tolerates_trailing_slash()"
@@ -1014,7 +906,7 @@
       "label": "test_backend_base_url_defaults_to_http()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L198",
+      "source_location": "L166",
       "id": "src_backend_test_backend_base_url_defaults_to_http",
       "community": 21,
       "norm_label": "test_backend_base_url_defaults_to_http()"
@@ -1023,7 +915,7 @@
       "label": "test_sse_device_payload_extracts_device_json()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L203",
+      "source_location": "L171",
       "id": "src_backend_test_sse_device_payload_extracts_device_json",
       "community": 21,
       "norm_label": "test_sse_device_payload_extracts_device_json()"
@@ -1032,7 +924,7 @@
       "label": "test_sse_device_payload_ignores_non_device_and_comments()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L212",
+      "source_location": "L180",
       "id": "src_backend_test_sse_device_payload_ignores_non_device_and_comments",
       "community": 21,
       "norm_label": "test_sse_device_payload_ignores_non_device_and_comments()"
@@ -1142,7 +1034,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L35",
       "id": "src_bluetooth_scan_devices",
-      "community": 4,
+      "community": 0,
       "norm_label": "scan_devices()"
     },
     {
@@ -1151,7 +1043,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L35",
       "id": "src_bluetooth_rs_vec",
-      "community": 4,
+      "community": 0,
       "norm_label": "vec"
     },
     {
@@ -1159,7 +1051,7 @@
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
       "source_location": "L39",
-      "id": "src_bluetooth_rs_src_bluetooth_connect_device",
+      "id": "src_bluetooth_connect_device",
       "community": 0,
       "norm_label": "connect_device()"
     },
@@ -1168,7 +1060,7 @@
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
       "source_location": "L43",
-      "id": "src_bluetooth_rs_src_bluetooth_disconnect_device",
+      "id": "src_bluetooth_disconnect_device",
       "community": 0,
       "norm_label": "disconnect_device()"
     },
@@ -1178,7 +1070,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L49",
       "id": "src_bluetooth_enable_bluetooth",
-      "community": 0,
+      "community": 2,
       "norm_label": "enable_bluetooth()"
     },
     {
@@ -1313,7 +1205,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L258",
       "id": "duration",
-      "community": 21,
+      "community": 0,
       "norm_label": "duration"
     },
     {
@@ -1358,7 +1250,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L580",
       "id": "src_bluetooth_enable_bluetooth_inner",
-      "community": 0,
+      "community": 4,
       "norm_label": "enable_bluetooth_inner()"
     },
     {
@@ -1493,7 +1385,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1151",
       "id": "src_bluetooth_test_scan_devices_returns_non_empty_ok_on_non_android",
-      "community": 4,
+      "community": 0,
       "norm_label": "test_scan_devices_returns_non_empty_ok_on_non_android()"
     },
     {
@@ -1707,7 +1599,7 @@
       "label": "SignalBars()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L431",
+      "source_location": "L428",
       "id": "src_main_signalbars",
       "community": 2,
       "norm_label": "signalbars()"
@@ -1716,52 +1608,16 @@
       "label": "Option",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L431",
+      "source_location": "L428",
       "id": "src_main_rs_option",
       "community": 2,
       "norm_label": "option"
     },
     {
-      "label": "replace_device()",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L451",
-      "id": "src_main_replace_device",
-      "community": 2,
-      "norm_label": "replace_device()"
-    },
-    {
-      "label": "Signal",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L451",
-      "id": "signal",
-      "community": 2,
-      "norm_label": "signal"
-    },
-    {
-      "label": "DeviceInfo",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L451",
-      "id": "src_main_rs_deviceinfo",
-      "community": 2,
-      "norm_label": "deviceinfo"
-    },
-    {
-      "label": "BackendDeviceItem()",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L463",
-      "id": "src_main_backenddeviceitem",
-      "community": 2,
-      "norm_label": "backenddeviceitem()"
-    },
-    {
       "label": "BackendScan()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L565",
+      "source_location": "L449",
       "id": "src_main_backendscan",
       "community": 2,
       "norm_label": "backendscan()"
@@ -1770,16 +1626,25 @@
       "label": "DeviceItem()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L673",
+      "source_location": "L536",
       "id": "src_main_deviceitem",
       "community": 2,
       "norm_label": "deviceitem()"
     },
     {
+      "label": "Signal",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L536",
+      "id": "signal",
+      "community": 2,
+      "norm_label": "signal"
+    },
+    {
       "label": "DeviceSettings()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L856",
+      "source_location": "L719",
       "id": "src_main_devicesettings",
       "community": 2,
       "norm_label": "devicesettings()"
@@ -1788,7 +1653,7 @@
       "label": "test_signal_bars_strong_signal_is_full_and_green()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L967",
+      "source_location": "L830",
       "id": "src_main_test_signal_bars_strong_signal_is_full_and_green",
       "community": 2,
       "norm_label": "test_signal_bars_strong_signal_is_full_and_green()"
@@ -1797,7 +1662,7 @@
       "label": "test_signal_bars_medium_signal_is_orange()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L972",
+      "source_location": "L835",
       "id": "src_main_test_signal_bars_medium_signal_is_orange",
       "community": 2,
       "norm_label": "test_signal_bars_medium_signal_is_orange()"
@@ -1806,7 +1671,7 @@
       "label": "test_signal_bars_weak_signal_is_one_bar_and_red()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L979",
+      "source_location": "L842",
       "id": "src_main_test_signal_bars_weak_signal_is_one_bar_and_red",
       "community": 2,
       "norm_label": "test_signal_bars_weak_signal_is_one_bar_and_red()"
@@ -1815,7 +1680,7 @@
       "label": "test_signal_bars_is_monotonic_in_strength()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L984",
+      "source_location": "L847",
       "id": "src_main_test_signal_bars_is_monotonic_in_strength",
       "community": 2,
       "norm_label": "test_signal_bars_is_monotonic_in_strength()"
@@ -1824,7 +1689,7 @@
       "label": "test_merge_connection_status_assigns_connected_and_disconnected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L992",
+      "source_location": "L855",
       "id": "src_main_test_merge_connection_status_assigns_connected_and_disconnected",
       "community": 2,
       "norm_label": "test_merge_connection_status_assigns_connected_and_disconnected()"
@@ -1833,7 +1698,7 @@
       "label": "test_merge_connection_status_empty_connected_all_disconnected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1015",
+      "source_location": "L878",
       "id": "src_main_test_merge_connection_status_empty_connected_all_disconnected",
       "community": 2,
       "norm_label": "test_merge_connection_status_empty_connected_all_disconnected()"
@@ -1842,7 +1707,7 @@
       "label": "test_merge_connection_status_no_duplicate_and_refreshes_status()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1033",
+      "source_location": "L896",
       "id": "src_main_test_merge_connection_status_no_duplicate_and_refreshes_status",
       "community": 2,
       "norm_label": "test_merge_connection_status_no_duplicate_and_refreshes_status()"
@@ -1851,7 +1716,7 @@
       "label": "test_merge_connection_status_counter_reflects_connected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1062",
+      "source_location": "L925",
       "id": "src_main_test_merge_connection_status_counter_reflects_connected",
       "community": 2,
       "norm_label": "test_merge_connection_status_counter_reflects_connected()"
@@ -1860,7 +1725,7 @@
       "label": "test_reconcile_connection_status_updates_both_directions()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1085",
+      "source_location": "L948",
       "id": "src_main_test_reconcile_connection_status_updates_both_directions",
       "community": 2,
       "norm_label": "test_reconcile_connection_status_updates_both_directions()"
@@ -1869,7 +1734,7 @@
       "label": "test_reconcile_connection_status_preserves_connecting()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1107",
+      "source_location": "L970",
       "id": "src_main_test_reconcile_connection_status_preserves_connecting",
       "community": 2,
       "norm_label": "test_reconcile_connection_status_preserves_connecting()"
@@ -1970,7 +1835,7 @@
       "source_file": "tests/a2dp_dex_listener.rs",
       "source_location": "L206",
       "id": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "community": 18,
+      "community": 0,
       "norm_label": "test_connect_disconnect_do_not_panic()"
     },
     {
@@ -1988,7 +1853,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L27",
       "id": "tests_bluetooth_integration_test_enable_bluetooth_returns_bool",
-      "community": 0,
+      "community": 4,
       "norm_label": "test_enable_bluetooth_returns_bool()"
     },
     {
@@ -1997,7 +1862,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L39",
       "id": "tests_bluetooth_integration_test_enable_bluetooth_simulation_fallback",
-      "community": 0,
+      "community": 4,
       "norm_label": "test_enable_bluetooth_simulation_fallback()"
     },
     {
@@ -2015,7 +1880,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L65",
       "id": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error",
-      "community": 3,
+      "community": 4,
       "norm_label": "test_no_fake_activation_when_bt_returns_error()"
     },
     {
@@ -2042,7 +1907,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L105",
       "id": "tests_bluetooth_integration_test_scan_devices_returns_ok_on_non_android",
-      "community": 4,
+      "community": 0,
       "norm_label": "test_scan_devices_returns_ok_on_non_android()"
     },
     {
@@ -2060,7 +1925,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L144",
       "id": "tests_bluetooth_integration_test_scan_devices_dispatches_to_inner",
-      "community": 4,
+      "community": 0,
       "norm_label": "test_scan_devices_dispatches_to_inner()"
     },
     {
@@ -2069,7 +1934,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L169",
       "id": "tests_bluetooth_integration_test_scan_devices_error_path_does_not_panic",
-      "community": 4,
+      "community": 0,
       "norm_label": "test_scan_devices_error_path_does_not_panic()"
     },
     {
@@ -3036,24 +2901,6 @@
       "norm_label": "constraints & notes"
     },
     {
-      "label": "connect_device()",
-      "file_type": "code",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L39",
-      "community": 0,
-      "norm_label": "connect_device()",
-      "id": "src_bluetooth_connect_device"
-    },
-    {
-      "label": "disconnect_device()",
-      "file_type": "code",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L43",
-      "community": 0,
-      "norm_label": "disconnect_device()",
-      "id": "src_bluetooth_disconnect_device"
-    },
-    {
       "label": "bluetooth.rs",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
@@ -3725,7 +3572,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 0,
+      "community": 4,
       "norm_label": "bluetooth module (lib re-export)",
       "id": "src_lib_bluetooth_mod"
     },
@@ -3738,7 +3585,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 3,
+      "community": 4,
       "norm_label": "test_bt_enabled_stays_false_when_enable_bluetooth_returns_false",
       "id": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false"
     },
@@ -3764,7 +3611,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 3,
+      "community": 4,
       "norm_label": "review report \u2014 real bt adapter state detection",
       "id": "tdd_review_report"
     },
@@ -3778,7 +3625,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Uses ndk-context to obtain the JavaVM pointer, then calls BluetoothAdapter.getDefaultAdapter() and isEnabled() via JNI to detect real adapter state on Android. The SAFETY invariant is that ndk-context stores the pointer set by the Android runtime before any Rust code runs.",
-      "community": 0,
+      "community": 4,
       "norm_label": "jni android bluetooth detection",
       "id": "concept_jni_android_bluetooth"
     },
@@ -3804,7 +3651,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 0,
+      "community": 4,
       "norm_label": "platform-conditional compilation (#[cfg(target_os)])",
       "id": "concept_platform_conditional_compilation"
     }
@@ -3816,9 +3663,9 @@
       "source_file": "blue2th-proto/src/lib.rs",
       "source_location": "L30",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_adapterinfo"
+      "target": "src_lib_adapterinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -3826,9 +3673,9 @@
       "source_file": "blue2th-proto/src/lib.rs",
       "source_location": "L43",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_deviceinfo"
+      "target": "src_lib_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -3846,9 +3693,9 @@
       "source_file": "blue2th-proto/src/lib.rs",
       "source_location": "L76",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_test_adapter_info_round_trips_through_json"
+      "target": "src_lib_test_adapter_info_round_trips_through_json",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -3856,9 +3703,9 @@
       "source_file": "blue2th-proto/src/lib.rs",
       "source_location": "L89",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_test_device_info_round_trips_with_optional_fields"
+      "target": "src_lib_test_device_info_round_trips_with_optional_fields",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -3908,9 +3755,9 @@
       "source_location": "L34",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "src_lib_adapterinfo",
-      "target": "blue2th_proto_src_lib_rs_string"
+      "target": "blue2th_proto_src_lib_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -3919,9 +3766,9 @@
       "source_location": "L47",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_lib_deviceinfo",
-      "target": "blue2th_proto_src_lib_rs_string"
+      "target": "blue2th_proto_src_lib_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -3985,28 +3832,8 @@
       "source_location": "L53",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "src_lib_deviceinfo",
-      "target": "blue2th_proto_src_lib_rs_option"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L45",
-      "weight": 1.0,
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L59",
-      "weight": 1.0,
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
+      "target": "blue2th_proto_src_lib_rs_option",
       "confidence_score": 1.0
     },
     {
@@ -4015,9 +3842,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L67",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_device_info"
+      "target": "src_bluetooth_device_info",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -4025,9 +3852,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L11",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_list_adapters"
+      "target": "src_bluetooth_list_adapters",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -4035,9 +3862,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L27",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_list_paired_devices"
+      "target": "src_bluetooth_list_paired_devices",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -4045,9 +3872,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L48",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_scan_events"
+      "target": "src_bluetooth_scan_events",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4056,9 +3883,9 @@
       "source_location": "L11",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_list_adapters",
-      "target": "blue2th_server_src_bluetooth_rs_adapterinfo"
+      "target": "blue2th_server_src_bluetooth_rs_adapterinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4067,29 +3894,7 @@
       "source_location": "L11",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_list_adapters",
-      "target": "blue2th_server_src_bluetooth_rs_result"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L11",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_list_adapters",
-      "target": "blue2th_server_src_bluetooth_rs_vec"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L45",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
       "target": "blue2th_server_src_bluetooth_rs_result",
       "confidence_score": 1.0
     },
@@ -4097,11 +3902,11 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L59",
+      "source_location": "L11",
       "weight": 1.0,
-      "context": "return_type",
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "blue2th_server_src_bluetooth_rs_result",
+      "context": "generic_arg",
+      "source": "src_bluetooth_list_adapters",
+      "target": "blue2th_server_src_bluetooth_rs_vec",
       "confidence_score": 1.0
     },
     {
@@ -4111,9 +3916,9 @@
       "source_location": "L67",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_device_info",
-      "target": "blue2th_server_src_bluetooth_rs_result"
+      "target": "blue2th_server_src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4122,9 +3927,9 @@
       "source_location": "L27",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_list_paired_devices",
-      "target": "blue2th_server_src_bluetooth_rs_result"
+      "target": "blue2th_server_src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4133,9 +3938,9 @@
       "source_location": "L48",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_scan_events",
-      "target": "blue2th_server_src_bluetooth_rs_result"
+      "target": "blue2th_server_src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4144,9 +3949,9 @@
       "source_location": "L27",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_list_paired_devices",
-      "target": "blue2th_server_src_bluetooth_rs_vec"
+      "target": "blue2th_server_src_bluetooth_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4155,9 +3960,9 @@
       "source_location": "L27",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_list_paired_devices",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo"
+      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -4166,30 +3971,8 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L38",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_list_paired_devices",
-      "target": "src_bluetooth_device_info"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L45",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L59",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
+      "target": "src_bluetooth_device_info",
       "confidence_score": 1.0
     },
     {
@@ -4199,63 +3982,8 @@
       "source_location": "L67",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_device_info",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L48",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_scan_events",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L45",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "blue2th_server_src_bluetooth_rs_address",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L55",
-      "weight": 1.0,
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_device_info",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L59",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "blue2th_server_src_bluetooth_rs_address",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/bluetooth.rs",
-      "source_location": "L65",
-      "weight": 1.0,
-      "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_device_info",
+      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
       "confidence_score": 1.0
     },
     {
@@ -4265,9 +3993,20 @@
       "source_location": "L48",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_scan_events",
-      "target": "blue2th_server_src_bluetooth_rs_item"
+      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/bluetooth.rs",
+      "source_location": "L48",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_bluetooth_scan_events",
+      "target": "blue2th_server_src_bluetooth_rs_item",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4276,9 +4015,9 @@
       "source_location": "L48",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_scan_events",
-      "target": "blue2th_server_src_bluetooth_rs_stream"
+      "target": "blue2th_server_src_bluetooth_rs_stream",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4287,9 +4026,9 @@
       "source_location": "L67",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_device_info",
-      "target": "device"
+      "target": "device",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -4329,9 +4068,9 @@
       "source_location": "L7",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "duration"
+      "target": "duration",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -4340,9 +4079,9 @@
       "source_location": "L6",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "infallible"
+      "target": "infallible",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -4350,9 +4089,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L61",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_adapters"
+      "target": "src_main_adapters",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -4360,18 +4099,8 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L93",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_apperror"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_connect",
+      "target": "src_main_apperror",
       "confidence_score": 1.0
     },
     {
@@ -4380,18 +4109,8 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L66",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_devices"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_disconnect",
+      "target": "src_main_devices",
       "confidence_score": 1.0
     },
     {
@@ -4418,21 +4137,11 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "weight": 1.0,
-      "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_parse_addr",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
       "source_location": "L73",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_scan"
+      "target": "src_main_scan",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -4506,18 +4215,7 @@
       "source_location": "L61",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_adapters",
-      "target": "blue2th_server_src_main_rs_result"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_main_connect",
       "target": "blue2th_server_src_main_rs_result",
       "confidence_score": 1.0
     },
@@ -4528,29 +4226,7 @@
       "source_location": "L66",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_devices",
-      "target": "blue2th_server_src_main_rs_result"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_main_disconnect",
-      "target": "blue2th_server_src_main_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_main_parse_addr",
       "target": "blue2th_server_src_main_rs_result",
       "confidence_score": 1.0
     },
@@ -4561,9 +4237,9 @@
       "source_location": "L73",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_scan",
-      "target": "blue2th_server_src_main_rs_result"
+      "target": "blue2th_server_src_main_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4572,9 +4248,9 @@
       "source_location": "L102",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_apperror",
-      "target": "blue2th_server_src_main_rs_error"
+      "target": "blue2th_server_src_main_rs_error",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4583,9 +4259,9 @@
       "source_location": "L103",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_main_apperror_from",
-      "target": "blue2th_server_src_main_rs_error"
+      "target": "blue2th_server_src_main_rs_error",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4638,18 +4314,7 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L61",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_adapters",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "source": "src_main_connect",
       "target": "json",
       "confidence_score": 1.0
     },
@@ -4660,18 +4325,7 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L66",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_devices",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "source": "src_main_disconnect",
       "target": "json",
       "confidence_score": 1.0
     },
@@ -4682,9 +4336,9 @@
       "source_location": "L61",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_adapters",
-      "target": "apperror"
+      "target": "apperror",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4693,9 +4347,9 @@
       "source_location": "L61",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_adapters",
-      "target": "blue2th_server_src_main_rs_adapterinfo"
+      "target": "blue2th_server_src_main_rs_adapterinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4704,9 +4358,9 @@
       "source_location": "L61",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_adapters",
-      "target": "blue2th_server_src_main_rs_vec"
+      "target": "blue2th_server_src_main_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4715,18 +4369,18 @@
       "source_location": "L66",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_devices",
-      "target": "blue2th_server_src_main_rs_vec"
+      "target": "blue2th_server_src_main_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
+      "source_location": "L66",
       "weight": 1.0,
       "context": "generic_arg",
-      "source": "src_main_connect",
+      "source": "src_main_devices",
       "target": "apperror",
       "confidence_score": 1.0
     },
@@ -4737,51 +4391,7 @@
       "source_location": "L66",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_devices",
-      "target": "apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_disconnect",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_parse_addr",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L66",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_devices",
-      "target": "blue2th_server_src_main_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_connect",
       "target": "blue2th_server_src_main_rs_deviceinfo",
       "confidence_score": 1.0
     },
@@ -4789,110 +4399,11 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
+      "source_location": "L73",
       "weight": 1.0,
       "context": "generic_arg",
-      "source": "src_main_disconnect",
-      "target": "blue2th_server_src_main_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_connect",
-      "target": "blue2th_server_src_main_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_main_connect",
-      "target": "path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L76",
-      "weight": 1.0,
-      "source": "src_main_connect",
-      "target": "src_main_parse_addr",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_main_disconnect",
-      "target": "path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L24",
-      "weight": 1.0,
-      "context": "import",
-      "source": "tests_a2dp_dex_listener",
-      "target": "path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_disconnect",
-      "target": "blue2th_server_src_main_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L82",
-      "weight": 1.0,
-      "source": "src_main_disconnect",
-      "target": "src_main_parse_addr",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_parse_addr",
-      "target": "blue2th_server_src_main_rs_address",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L88",
-      "weight": 1.0,
-      "source": "src_main_parse_addr",
-      "target": "src_main_apperror",
+      "source": "src_main_scan",
+      "target": "blue2th_server_src_main_rs_item",
       "confidence_score": 1.0
     },
     {
@@ -4902,9 +4413,9 @@
       "source_location": "L73",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_scan",
-      "target": "blue2th_server_src_main_rs_item"
+      "target": "blue2th_server_src_main_rs_stream",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4913,9 +4424,9 @@
       "source_location": "L73",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_scan",
-      "target": "blue2th_server_src_main_rs_stream"
+      "target": "event",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4924,20 +4435,9 @@
       "source_location": "L73",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_scan",
-      "target": "event"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L73",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_scan",
-      "target": "infallible"
+      "target": "infallible",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4946,9 +4446,9 @@
       "source_location": "L73",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_scan",
-      "target": "sse"
+      "target": "sse",
+      "confidence_score": 1.0
     },
     {
       "relation": "implements",
@@ -4956,9 +4456,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L102",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_apperror",
-      "target": "from"
+      "target": "from",
+      "confidence_score": 1.0
     },
     {
       "relation": "implements",
@@ -4966,9 +4466,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L95",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_apperror",
-      "target": "intoresponse"
+      "target": "intoresponse",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -4977,9 +4477,9 @@
       "source_location": "L104",
       "weight": 1.0,
       "context": "call",
-      "confidence_score": 1.0,
       "source": "src_main_apperror_from",
-      "target": "src_main_apperror"
+      "target": "src_main_apperror",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -4987,9 +4487,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L96",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_apperror",
-      "target": "src_main_apperror_into_response"
+      "target": "src_main_apperror_into_response",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4998,9 +4498,9 @@
       "source_location": "L96",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_apperror_into_response",
-      "target": "response"
+      "target": "response",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5009,9 +4509,9 @@
       "source_location": "L103",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_apperror_from",
-      "target": "blue2th_server_src_main_rs_self"
+      "target": "blue2th_server_src_main_rs_self",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5146,9 +4646,9 @@
       "source_location": "L20",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "duration"
+      "target": "duration",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5174,31 +4674,11 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L129",
-      "weight": 1.0,
-      "source": "src_backend",
-      "target": "src_backend_connect_device",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L53",
       "weight": 1.0,
       "confidence_score": 1.0,
       "source": "src_backend",
       "target": "src_backend_describe"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L136",
-      "weight": 1.0,
-      "source": "src_backend",
-      "target": "src_backend_disconnect_device",
-      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5221,16 +4701,6 @@
       "target": "src_backend_ping_backend"
     },
     {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "source": "src_backend",
-      "target": "src_backend_post_device_action",
-      "confidence_score": 1.0
-    },
-    {
       "relation": "imports_from",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
@@ -5247,9 +4717,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L90",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_scan_devices"
+      "target": "src_backend_scan_devices",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5257,9 +4727,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L128",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_sse_device_payload"
+      "target": "src_backend_sse_device_payload",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5297,9 +4767,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L171",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_test_sse_device_payload_extracts_device_json"
+      "target": "src_backend_test_sse_device_payload_extracts_device_json",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5307,9 +4777,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L180",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_test_sse_device_payload_ignores_non_device_and_comments"
+      "target": "src_backend_test_sse_device_payload_ignores_non_device_and_comments",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -5345,28 +4815,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L129",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_connect_device",
-      "target": "src_backend_backenderror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L136",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_disconnect_device",
-      "target": "src_backend_backenderror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L67",
       "weight": 1.0,
       "context": "generic_arg",
@@ -5378,23 +4826,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_post_device_action",
-      "target": "src_backend_backenderror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L90",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_backenderror"
+      "target": "src_backend_backenderror",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5445,22 +4882,11 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L146",
-      "weight": 1.0,
-      "source": "src_backend_post_device_action",
-      "target": "src_backend_backenderror_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L94",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_backenderror_new"
+      "target": "src_backend_backenderror_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5491,9 +4917,9 @@
       "source_location": "L128",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_sse_device_payload",
-      "target": "src_backend_rs_string"
+      "target": "src_backend_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5521,28 +4947,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L129",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_backend_connect_device",
-      "target": "src_backend_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L136",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_backend_disconnect_device",
-      "target": "src_backend_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L67",
       "weight": 1.0,
       "context": "return_type",
@@ -5554,23 +4958,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_backend_post_device_action",
-      "target": "src_backend_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L90",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_rs_result"
+      "target": "src_backend_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -5621,22 +5014,11 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L150",
-      "weight": 1.0,
-      "source": "src_backend_post_device_action",
-      "target": "src_backend_describe",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L94",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_describe"
+      "target": "src_backend_describe",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5656,9 +5038,9 @@
       "source_location": "L90",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_rs_deviceinfo"
+      "target": "src_backend_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5667,9 +5049,9 @@
       "source_location": "L90",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_rs_vec"
+      "target": "src_backend_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -5678,63 +5060,8 @@
       "source_file": "src/backend.rs",
       "source_location": "L109",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_scan_devices",
-      "target": "src_backend_sse_device_payload"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L129",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_connect_device",
-      "target": "src_backend_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L136",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_disconnect_device",
-      "target": "src_backend_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_post_device_action",
-      "target": "src_backend_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "source": "src_backend_connect_device",
-      "target": "src_backend_post_device_action",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L137",
-      "weight": 1.0,
-      "source": "src_backend_disconnect_device",
-      "target": "src_backend_post_device_action",
+      "target": "src_backend_sse_device_payload",
       "confidence_score": 1.0
     },
     {
@@ -5744,9 +5071,9 @@
       "source_location": "L128",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_backend_sse_device_payload",
-      "target": "src_backend_rs_option"
+      "target": "src_backend_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5754,9 +5081,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L451",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_a2dp_invoke_hidden"
+      "target": "src_bluetooth_a2dp_invoke_hidden",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5764,9 +5091,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L107",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_android_jni_env"
+      "target": "src_bluetooth_android_jni_env",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5774,9 +5101,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L16",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_bluetootherror"
+      "target": "src_bluetooth_bluetootherror",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5784,9 +5111,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L70",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_bt_err_clear"
+      "target": "src_bluetooth_bt_err_clear",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5794,9 +5121,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L347",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_build_service_listener_proxy"
+      "target": "src_bluetooth_build_service_listener_proxy",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5804,9 +5131,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L39",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_connect_device"
+      "target": "src_bluetooth_connect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5814,9 +5141,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L987",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_connect_device_inner"
+      "target": "src_bluetooth_connect_device_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5824,9 +5151,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L63",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_connected_device_names"
+      "target": "src_bluetooth_connected_device_names",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5834,9 +5161,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1000",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_connected_device_names_inner"
+      "target": "src_bluetooth_connected_device_names_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5844,118 +5171,8 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L507",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_device_is_connected_reflect"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L43",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_disconnect_device"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L993",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_disconnect_device_inner"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L49",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_enable_bluetooth"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L967",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_enable_bluetooth_inner"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L195",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_find_device_by_name"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L156",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L183",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L258",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_obtain_profile_proxy"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L54",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_request_enable_bluetooth"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L972",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_request_enable_bluetooth_inner"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L39",
-      "weight": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_rs_src_bluetooth_connect_device",
+      "target": "src_bluetooth_device_is_connected_reflect",
       "confidence_score": 1.0
     },
     {
@@ -5965,7 +5182,97 @@
       "source_location": "L43",
       "weight": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_rs_src_bluetooth_disconnect_device",
+      "target": "src_bluetooth_disconnect_device",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L993",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_disconnect_device_inner",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L49",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_enable_bluetooth",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L967",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_enable_bluetooth_inner",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L195",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_find_device_by_name",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L156",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonserviceconnected",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L183",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_java_dev_dioxus_main_a2dpservicelistener_nativeonservicedisconnected",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L258",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_obtain_profile_proxy",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L54",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_request_enable_bluetooth",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L972",
+      "weight": 1.0,
+      "source": "src_bluetooth_rs_src_bluetooth",
+      "target": "src_bluetooth_request_enable_bluetooth_inner",
       "confidence_score": 1.0
     },
     {
@@ -5974,9 +5281,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L35",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_scan_devices"
+      "target": "src_bluetooth_scan_devices",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5984,9 +5291,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L977",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_scan_devices_inner"
+      "target": "src_bluetooth_scan_devices_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5994,9 +5301,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1133",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_bt_enabled_true_on_non_android_ok"
+      "target": "src_bluetooth_test_bt_enabled_true_on_non_android_ok",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6004,9 +5311,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1114",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_bt_error_set_on_request_error"
+      "target": "src_bluetooth_test_bt_error_set_on_request_error",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6014,9 +5321,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1011",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_connect_device_returns_ok_on_non_android"
+      "target": "src_bluetooth_test_connect_device_returns_ok_on_non_android",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6024,9 +5331,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1041",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_connect_limit_two_devices_silently_ignored"
+      "target": "src_bluetooth_test_connect_limit_two_devices_silently_ignored",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6034,9 +5341,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1061",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_connection_error_sets_ephemeral_notification"
+      "target": "src_bluetooth_test_connection_error_sets_ephemeral_notification",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6044,9 +5351,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1026",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android"
+      "target": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6054,9 +5361,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1084",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_enable_bluetooth_inner_returns_ok_on_non_android"
+      "target": "src_bluetooth_test_enable_bluetooth_inner_returns_ok_on_non_android",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6064,9 +5371,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1255",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_locale_en_scan_button_is_load_devices"
+      "target": "src_bluetooth_test_locale_en_scan_button_is_load_devices",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6074,9 +5381,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1272",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_locale_en_scan_scanning_is_loading"
+      "target": "src_bluetooth_test_locale_en_scan_scanning_is_loading",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6084,9 +5391,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1219",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_locale_fr_scan_button_is_charger_les_appareils"
+      "target": "src_bluetooth_test_locale_fr_scan_button_is_charger_les_appareils",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6094,9 +5401,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1238",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_locale_fr_scan_scanning_is_chargement_en_cours"
+      "target": "src_bluetooth_test_locale_fr_scan_scanning_is_chargement_en_cours",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6104,9 +5411,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1092",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_request_enable_bluetooth_inner_returns_ok_on_non_android"
+      "target": "src_bluetooth_test_request_enable_bluetooth_inner_returns_ok_on_non_android",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6114,9 +5421,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1103",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_request_enable_bluetooth_returns_ok_on_non_android"
+      "target": "src_bluetooth_test_request_enable_bluetooth_returns_ok_on_non_android",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6124,9 +5431,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1168",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_scan_devices_inner_simulation_non_empty"
+      "target": "src_bluetooth_test_scan_devices_inner_simulation_non_empty",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6134,9 +5441,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1185",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_scan_devices_returns_bluetooth_error_on_failure"
+      "target": "src_bluetooth_test_scan_devices_returns_bluetooth_error_on_failure",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6144,9 +5451,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1151",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_scan_devices_returns_non_empty_ok_on_non_android"
+      "target": "src_bluetooth_test_scan_devices_returns_non_empty_ok_on_non_android",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6154,9 +5461,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1207",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_test_scan_not_triggered_at_module_load"
+      "target": "src_bluetooth_test_scan_not_triggered_at_module_load",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -6452,28 +5759,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L39",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_bluetootherror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L43",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_bluetootherror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L33",
       "weight": 1.0,
       "context": "generic_arg",
@@ -6711,28 +5996,6 @@
       "confidence_score": 1.0,
       "source": "src_bluetooth_request_enable_bluetooth_inner",
       "target": "src_bluetooth_rs_result"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L39",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L43",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_rs_result",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -7112,28 +6375,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L39",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L43",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L33",
       "weight": 1.0,
       "context": "generic_arg",
@@ -7293,26 +6534,100 @@
       "target": "src_bluetooth_rs_vec"
     },
     {
-      "relation": "calls",
-      "context": "call",
+      "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L40",
+      "source_location": "L53",
       "weight": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_connect_device_inner",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_connect_device"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L53",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_connect_device",
+      "target": "result"
     },
     {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1012",
+      "source_location": "L40",
       "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_connect_device",
+      "target": "src_bluetooth_connect_device_inner"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L836",
+      "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_test_connect_device_returns_ok_on_non_android",
-      "target": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_connect_device"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/main.rs",
+      "source_location": "278",
+      "weight": 1.0,
+      "source": "src_main_deviceitem",
+      "target": "src_bluetooth_connect_device"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "tests/a2dp_dex_listener.rs",
+      "source_location": "L177",
+      "weight": 1.0,
+      "source": "tests_a2dp_dex_listener_test_connect_device_simulated_ok_on_non_android",
+      "target": "src_bluetooth_connect_device"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "tests/a2dp_dex_listener.rs",
+      "source_location": "L207",
+      "weight": 1.0,
+      "source": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
+      "target": "src_bluetooth_connect_device"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L58",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_bluetooth",
+      "target": "src_bluetooth_disconnect_device"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "src/bluetooth.rs",
+      "source_location": "L58",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_disconnect_device",
+      "target": "result"
     },
     {
       "relation": "calls",
@@ -7321,20 +6636,52 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L44",
       "weight": 1.0,
-      "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_disconnect_device_inner",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "src_bluetooth_disconnect_device",
+      "target": "src_bluetooth_disconnect_device_inner"
     },
     {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L1027",
+      "source_location": "L851",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android",
-      "target": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "confidence_score": 1.0
+      "target": "src_bluetooth_disconnect_device"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/main.rs",
+      "source_location": "306",
+      "weight": 1.0,
+      "source": "src_main_deviceitem",
+      "target": "src_bluetooth_disconnect_device"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "tests/a2dp_dex_listener.rs",
+      "source_location": "L208",
+      "weight": 1.0,
+      "source": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
+      "target": "src_bluetooth_disconnect_device"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "tests/a2dp_dex_listener.rs",
+      "source_location": "L192",
+      "weight": 1.0,
+      "source": "tests_a2dp_dex_listener_test_disconnect_device_simulated_ok_on_non_android",
+      "target": "src_bluetooth_disconnect_device"
     },
     {
       "relation": "contains",
@@ -8625,17 +7972,6 @@
       "target": "src_bluetooth_connect_device_inner"
     },
     {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L40",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_connect_device",
-      "target": "src_bluetooth_connect_device_inner"
-    },
-    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
@@ -8665,17 +8001,6 @@
       "weight": 1.0,
       "confidence_score": 1.0,
       "source": "src_bluetooth",
-      "target": "src_bluetooth_disconnect_device_inner"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L44",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_disconnect_device",
       "target": "src_bluetooth_disconnect_device_inner"
     },
     {
@@ -8732,17 +8057,6 @@
       "target": "src_bluetooth_test_connect_device_returns_ok_on_non_android"
     },
     {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L836",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_test_connect_device_returns_ok_on_non_android",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
@@ -8751,17 +8065,6 @@
       "confidence_score": 1.0,
       "source": "src_bluetooth",
       "target": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L851",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android",
-      "target": "src_bluetooth_disconnect_device"
     },
     {
       "relation": "contains",
@@ -8917,21 +8220,11 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "source": "src_main_rs_src_main",
-      "target": "src_main_backenddeviceitem",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
       "source_location": "L47",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_backendonline"
+      "target": "src_main_backendonline",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -8939,9 +8232,9 @@
       "source_file": "src/main.rs",
       "source_location": "L449",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_backendscan"
+      "target": "src_main_backendscan",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9007,16 +8300,6 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L451",
-      "weight": 1.0,
-      "source": "src_main_rs_src_main",
-      "target": "src_main_replace_device",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
       "source_location": "L105",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -9049,9 +8332,9 @@
       "source_file": "src/main.rs",
       "source_location": "L116",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_signal_bars"
+      "target": "src_main_signal_bars",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9059,9 +8342,9 @@
       "source_file": "src/main.rs",
       "source_location": "L428",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_signalbars"
+      "target": "src_main_signalbars",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9139,9 +8422,9 @@
       "source_file": "src/main.rs",
       "source_location": "L847",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_test_signal_bars_is_monotonic_in_strength"
+      "target": "src_main_test_signal_bars_is_monotonic_in_strength",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9149,9 +8432,9 @@
       "source_file": "src/main.rs",
       "source_location": "L835",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_test_signal_bars_medium_signal_is_orange"
+      "target": "src_main_test_signal_bars_medium_signal_is_orange",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9159,9 +8442,9 @@
       "source_file": "src/main.rs",
       "source_location": "L830",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_test_signal_bars_strong_signal_is_full_and_green"
+      "target": "src_main_test_signal_bars_strong_signal_is_full_and_green",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9169,9 +8452,9 @@
       "source_file": "src/main.rs",
       "source_location": "L842",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_test_signal_bars_weak_signal_is_one_bar_and_red"
+      "target": "src_main_test_signal_bars_weak_signal_is_one_bar_and_red",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9190,9 +8473,9 @@
       "source_file": "src/main.rs",
       "source_location": "L160",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main_app",
-      "target": "src_main_backendonline"
+      "target": "src_main_backendonline",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9328,45 +8611,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_vec",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
       "source_location": "L246",
       "weight": 1.0,
       "context": "generic_arg",
       "confidence_score": 1.0,
       "source": "src_main_deviceitem",
       "target": "src_main_rs_vec"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L451",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_replace_device",
-      "target": "src_main_rs_vec",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_string",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -9483,9 +8733,9 @@
       "source_file": "src/main.rs",
       "source_location": "L430",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_signalbars",
-      "target": "src_main_signal_bars"
+      "target": "src_main_signal_bars",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -9494,9 +8744,9 @@
       "source_file": "src/main.rs",
       "source_location": "L836",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_test_signal_bars_medium_signal_is_orange",
-      "target": "src_main_signal_bars"
+      "target": "src_main_signal_bars",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9515,9 +8765,9 @@
       "source_file": "src/main.rs",
       "source_location": "L450",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_backendscan",
-      "target": "src_main_use_locale"
+      "target": "src_main_use_locale",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -9619,23 +8869,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_main_backenddeviceitem",
-      "target": "element",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
       "source_location": "L449",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_backendscan",
-      "target": "element"
+      "target": "element",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -9688,9 +8927,9 @@
       "source_location": "L428",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_signalbars",
-      "target": "element"
+      "target": "element",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9729,18 +8968,7 @@
       "source_location": "L428",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_main_signalbars",
-      "target": "src_main_rs_option"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_backenddeviceitem",
       "target": "src_main_rs_option",
       "confidence_score": 1.0
     },
@@ -9756,37 +8984,14 @@
       "target": "src_main_rs_option"
     },
     {
-      "relation": "references",
+      "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L451",
+      "source_location": "L246",
       "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_main_replace_device",
-      "target": "signal",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L451",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_main_replace_device",
-      "target": "src_main_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_main_backenddeviceitem",
-      "target": "signal",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "src_main",
+      "target": "src_main_deviceitem"
     },
     {
       "relation": "references",
@@ -9798,47 +9003,6 @@
       "confidence_score": 1.0,
       "source": "src_main_deviceitem",
       "target": "signal"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L463",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L246",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main",
-      "target": "src_main_deviceitem"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/main.rs",
-      "source_location": "278",
-      "weight": 1.0,
-      "source": "src_main_deviceitem",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/main.rs",
-      "source_location": "306",
-      "weight": 1.0,
-      "source": "src_main_deviceitem",
-      "target": "src_bluetooth_disconnect_device"
     },
     {
       "relation": "contains",
@@ -10009,50 +9173,6 @@
       "confidence_score": 1.0,
       "source": "tests_a2dp_dex_listener",
       "target": "tests_a2dp_dex_listener_test_jni_export_renamed_to_listener_native_method"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L177",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_connect_device_simulated_ok_on_non_android",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L192",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_disconnect_device_simulated_ok_on_non_android",
-      "target": "src_bluetooth_disconnect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L207",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L208",
-      "weight": 1.0,
-      "source": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "target": "src_bluetooth_disconnect_device"
     },
     {
       "relation": "contains",
@@ -11408,48 +10528,6 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
-      "source_location": "L53",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth",
-      "target": "src_bluetooth_connect_device"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L53",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_connect_device",
-      "target": "result"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L58",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_bluetooth",
-      "target": "src_bluetooth_disconnect_device"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
-      "source_location": "L58",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "src_bluetooth_disconnect_device",
-      "target": "result"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/bluetooth.rs",
       "source_location": "L50",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -12024,5 +11102,5 @@
       "source_file": "src/main.rs"
     }
   ],
-  "built_at_commit": "506f66ff6561d69c3d823ce46670e5c7cd11f932"
+  "built_at_commit": "3d72a99abd9ed59d535dd2c0d1324d32977f119c"
 }
