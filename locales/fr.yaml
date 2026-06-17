@@ -2,6 +2,11 @@ scan:
   button: "Charger les appareils"
   scanning: "Chargement en cours…"
 
+server:
+  status: "État serveur"
+  online: "Backend connecté"
+  offline: "Backend injoignable"
+
 bt:
   enable: "Activer Bluetooth"
   confirm_title: "Activer le Bluetooth ?"

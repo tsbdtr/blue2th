@@ -37,6 +37,15 @@ const MAX_CONNECTIONS: usize = 2;
 /// intact for the future on-phone LE Audio feature (see docs/ROADMAP.md).
 const SHOW_LEGACY_BT_UI: bool = false;
 
+/// How often the app re-checks the PC backend's reachability.
+const BACKEND_HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the PC backend is currently reachable, shared via context. A newtype
+/// (not a bare `Signal<bool>`) so it does not collide with `bt_enabled`, which is
+/// also a `Signal<bool>` in context.
+#[derive(Clone, Copy)]
+struct BackendOnline(Signal<bool>);
+
 #[derive(Clone, Debug, PartialEq)]
 enum ConnectionStatus {
     Disconnected,
@@ -99,6 +108,23 @@ fn status_icon(status: &ConnectionStatus) -> (&'static str, &'static str) {
     }
 }
 
+/// Total number of bars drawn in the signal-strength icon.
+const SIGNAL_BARS: u8 = 4;
+
+/// Map an RSSI (dBm) to `(filled bars out of SIGNAL_BARS, colour)`. Stronger
+/// signals fill more bars and trend green; weaker ones fewer bars and red.
+fn signal_bars(rssi: i16) -> (u8, &'static str) {
+    const GREEN: &str = "#22c55e";
+    const ORANGE: &str = "#f59e0b";
+    const RED: &str = "#ef4444";
+    match rssi {
+        r if r >= -55 => (4, GREEN),
+        r if r >= -67 => (3, GREEN),
+        r if r >= -78 => (2, ORANGE),
+        _ => (1, RED),
+    }
+}
+
 // Reads the locale from context, sets the global rust-i18n locale, and subscribes
 // the calling component to locale changes so it re-renders when the locale changes.
 fn use_locale() {
@@ -126,6 +152,25 @@ fn App() -> Element {
     // bt_enabled is global so it survives navigation between Home and DeviceSettings.
     let bt_enabled: Signal<bool> = use_signal(|| false);
     use_context_provider(|| bt_enabled);
+
+    // Periodically probe the PC backend so the whole app knows whether it is
+    // reachable. Shared via context: Home shows a status dot, BackendScan gates
+    // its scan button and clears its list when the backend goes down.
+    let backend_online: Signal<bool> = use_signal(|| false);
+    use_context_provider(|| BackendOnline(backend_online));
+    use_hook(|| {
+        // Signal<bool> is Copy; the spawned task captures its own handle.
+        let mut backend_online = backend_online;
+        spawn(async move {
+            loop {
+                let reachable = backend::ping_backend().await.is_ok();
+                if *backend_online.peek() != reachable {
+                    *backend_online.write() = reachable;
+                }
+                tokio::time::sleep(BACKEND_HEALTH_INTERVAL).await;
+            }
+        });
+    });
 
     // On Android, keep bt_enabled in sync with the real adapter state.
     // The first iteration runs immediately (startup check, no initial sleep) so the correct
@@ -193,20 +238,14 @@ fn Home() -> Element {
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);
     let toast_error: Signal<Option<String>> = use_signal(|| None);
 
-    // Phase 0: ping the PC backend once on mount and surface its health, so the
-    // mobile<->backend link can be validated on-device. See docs/ROADMAP.md.
-    let backend_health: Signal<Option<String>> = use_signal(|| None);
-    use_hook(|| {
-        // Signal<_> is Copy; the spawned task captures its own handle.
-        let mut backend_health = backend_health;
-        spawn(async move {
-            let msg = match backend::ping_backend().await {
-                Ok(h) => format!("backend: {} v{}", h.status, h.version),
-                Err(e) => format!("backend: {e}"),
-            };
-            *backend_health.write() = Some(msg);
-        });
-    });
+    // Backend reachability (probed in App), shown as a status dot in the header.
+    let backend_online = use_context::<BackendOnline>().0;
+    let server_label = rust_i18n::t!("server.status");
+    let server_tooltip = if backend_online() {
+        rust_i18n::t!("server.online")
+    } else {
+        rust_i18n::t!("server.offline")
+    };
 
     // When BT is disabled, clear the device list.
     use_effect(move || {
@@ -244,8 +283,17 @@ fn Home() -> Element {
                     alt: "Bluetooth",
                 }
             }
-            if let Some(msg) = backend_health() {
-                div { class: "backend-status", "{msg}" }
+            div { class: "backend-status",
+                span { class: "backend-status-label", "{server_label}" }
+                span { class: "backend-status-sep" }
+                span {
+                    class: "backend-status-dot",
+                    title: "{server_tooltip}",
+                    style: format!(
+                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
+                        if backend_online() { "#22c55e" } else { "#ef4444" },
+                    ),
+                }
             }
             BackendScan {}
             if SHOW_LEGACY_BT_UI {
@@ -373,6 +421,27 @@ fn Home() -> Element {
     }
 }
 
+/// Signal-strength icon (like a Wi-Fi/network gauge): `SIGNAL_BARS` bars of
+/// increasing height, the strongest `filled` of them coloured by intensity
+/// (green → orange → red), the rest dimmed. `None` RSSI renders all bars dimmed.
+#[component]
+fn SignalBars(rssi: Option<i16>) -> Element {
+    let (filled, color) = match rssi {
+        Some(r) => signal_bars(r),
+        None => (0, ""),
+    };
+    rsx! {
+        span { class: "signal-bars",
+            for i in 1..=SIGNAL_BARS {
+                span {
+                    class: "signal-bar",
+                    style: if i <= filled { format!("background:{color};") } else { String::new() },
+                }
+            }
+        }
+    }
+}
+
 /// Phase 1: trigger a scan on the PC backend and list the devices it discovers,
 /// reusing the app's scan button + device-list styling. Self-contained so it does
 /// not disturb the legacy Android path.
@@ -383,6 +452,15 @@ fn BackendScan() -> Element {
     let mut scanning = use_signal(|| false);
     let mut found: Signal<Vec<blue2th_proto::DeviceInfo>> = use_signal(Vec::new);
     let mut error: Signal<Option<String>> = use_signal(|| None);
+
+    let backend_online = use_context::<BackendOnline>().0;
+    // Drop stale scan results as soon as the backend becomes unreachable.
+    use_effect(move || {
+        let mut found = found;
+        if !backend_online() {
+            found.write().clear();
+        }
+    });
 
     let btn_class = if scanning() {
         "btn-scan scanning"
@@ -400,7 +478,7 @@ fn BackendScan() -> Element {
     rsx! {
         button {
             class: "{btn_class}",
-            disabled: scanning(),
+            disabled: scanning() || !backend_online(),
             onclick: move |_| async move {
                 *error.write() = None;
                 found.write().clear();
@@ -421,7 +499,6 @@ fn BackendScan() -> Element {
         }
         {
             let devices = found();
-            let count = devices.len();
             let is_empty = devices.is_empty();
             rsx! {
                 div { class: "device-list-container",
@@ -443,16 +520,11 @@ fn BackendScan() -> Element {
                                         span { class: "device-name",
                                             "{device.name.clone().unwrap_or_else(|| device.address.clone())}"
                                         }
-                                        if let Some(rssi) = device.rssi {
-                                            span { class: "device-rssi", "{rssi} dBm" }
-                                        }
+                                        SignalBars { rssi: device.rssi }
                                     }
                                 }
                             }
                         }
-                    }
-                    if !is_empty {
-                        div { class: "connected-counter", "{count}" }
                     }
                 }
             }
@@ -751,7 +823,31 @@ fn DeviceSettings(name: String) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_connection_status, reconcile_connection_status, ConnectionStatus};
+    use super::{merge_connection_status, reconcile_connection_status, signal_bars, ConnectionStatus};
+
+    // AC: RSSI maps to a bar count (1..=4) and a colour, stronger = more bars/greener.
+    #[test]
+    fn test_signal_bars_strong_signal_is_full_and_green() {
+        assert_eq!(signal_bars(-40), (4, "#22c55e"));
+    }
+
+    #[test]
+    fn test_signal_bars_medium_signal_is_orange() {
+        let (bars, color) = signal_bars(-72);
+        assert_eq!(bars, 2);
+        assert_eq!(color, "#f59e0b");
+    }
+
+    #[test]
+    fn test_signal_bars_weak_signal_is_one_bar_and_red() {
+        assert_eq!(signal_bars(-95), (1, "#ef4444"));
+    }
+
+    #[test]
+    fn test_signal_bars_is_monotonic_in_strength() {
+        // Weaker signal never yields more bars than a stronger one.
+        assert!(signal_bars(-90).0 <= signal_bars(-50).0);
+    }
 
     // AC: A pure helper assigns `Connected` to names present in the connected set
     // and `Disconnected` otherwise.
