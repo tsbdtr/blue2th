@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
+
 use dioxus::prelude::*;
 
 mod backend;
@@ -428,13 +430,18 @@ fn Home() -> Element {
 /// increasing height, the strongest `filled` of them coloured by intensity
 /// (green → orange → red), the rest dimmed. `None` RSSI renders all bars dimmed.
 #[component]
-fn SignalBars(rssi: Option<i16>) -> Element {
+fn SignalBars(rssi: Option<i16>, #[props(default = false)] struck: bool) -> Element {
     let (filled, color) = match rssi {
         Some(r) => signal_bars(r),
         None => (0, ""),
     };
+    let badge_class = if struck {
+        "signal-badge struck"
+    } else {
+        "signal-badge"
+    };
     rsx! {
-        span { class: "signal-badge",
+        span { class: "{badge_class}",
             span { class: "signal-bars",
                 for i in 1..=SIGNAL_BARS {
                     span {
@@ -465,6 +472,7 @@ fn BackendDeviceItem(
     found: Signal<Vec<blue2th_proto::DeviceInfo>>,
     busy: Signal<Option<String>>,
     error: Signal<Option<String>>,
+    unavailable: Signal<HashSet<String>>,
 ) -> Element {
     let addr = device.address.clone();
     let connected = device.connected;
@@ -472,6 +480,8 @@ fn BackendDeviceItem(
     let label = device.name.clone().unwrap_or_else(|| device.address.clone());
 
     let in_flight = busy().as_deref() == Some(addr.as_str());
+    // A connected device is reachable by definition, so it is never "unavailable".
+    let is_unavailable = !connected && unavailable.read().contains(addr.as_str());
     let (icon, icon_class) = if in_flight {
         ("⟳", "device-icon connecting")
     } else if connected {
@@ -479,27 +489,43 @@ fn BackendDeviceItem(
     } else {
         ("○", "device-icon disconnected")
     };
+    let row_class = if in_flight {
+        "device-row active"
+    } else if is_unavailable {
+        "device-row unavailable"
+    } else {
+        "device-row"
+    };
     let disconnect_label = rust_i18n::t!("device.disconnect");
 
     rsx! {
         li {
-            class: if in_flight { "device-row active" } else { "device-row" },
+            class: "{row_class}",
             onclick: {
                 let addr = addr.clone();
                 move |_| {
-                    // Only connect an idle, disconnected device.
-                    if connected || busy().is_some() {
+                    // Only connect an idle, available, disconnected device.
+                    if connected || is_unavailable || busy().is_some() {
                         return;
                     }
                     let addr = addr.clone();
                     let mut busy = busy;
                     let mut found = found;
                     let mut error = error;
+                    let mut unavailable = unavailable;
                     *busy.write() = Some(addr.clone());
                     spawn(async move {
                         match backend::connect_device(&addr).await {
-                            Ok(info) => replace_device(&mut found, info),
-                            Err(e) => *error.write() = Some(e.to_string()),
+                            Ok(info) => {
+                                unavailable.write().remove(&addr);
+                                replace_device(&mut found, info);
+                            }
+                            Err(e) => {
+                                // A failed connect is the only reliable signal that a
+                                // paired device is unreachable (powered off).
+                                unavailable.write().insert(addr.clone());
+                                *error.write() = Some(e.to_string());
+                            }
                         }
                         *busy.write() = None;
                     });
@@ -507,7 +533,7 @@ fn BackendDeviceItem(
             },
             span { class: "{icon_class}", "{icon}" }
             span { class: "device-name", "{label}" }
-            SignalBars { rssi }
+            SignalBars { rssi, struck: is_unavailable }
             if connected {
                 span { class: "row-sep" }
                 div { class: "device-actions",
@@ -570,6 +596,8 @@ fn BackendScan() -> Element {
     let mut error: Signal<Option<String>> = use_signal(|| None);
     // Address of the device currently connecting/disconnecting (one at a time).
     let busy: Signal<Option<String>> = use_signal(|| None);
+    // Addresses found unreachable (a connect failed); cleared on a new scan.
+    let mut unavailable: Signal<HashSet<String>> = use_signal(HashSet::new);
 
     let backend_online = use_context::<BackendOnline>().0;
     // Drop stale scan results as soon as the backend becomes unreachable.
@@ -578,6 +606,71 @@ fn BackendScan() -> Element {
         if !backend_online() {
             found.write().clear();
         }
+    });
+
+    // Auto-dismiss errors as a transient toast (legacy toast UX). This runs in the
+    // stable BackendScan scope, so the timer is never cancelled by a row unmount.
+    use_effect(move || {
+        let mut error = error;
+        if error.read().is_some() {
+            spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                *error.write() = None;
+            });
+        }
+    });
+
+    // Periodically refresh connected/rssi from the backend so a device that was
+    // connected and powers off flips to disconnected on its own (no re-scan).
+    use_hook(|| {
+        let mut found = found;
+        let mut unavailable = unavailable;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if found.peek().is_empty() {
+                    continue;
+                }
+                let fetched = match backend::fetch_devices().await {
+                    Ok(devices) => devices,
+                    Err(_) => continue,
+                };
+                // Only write when something actually changed, to avoid needless renders.
+                let changed = {
+                    let current = found.peek();
+                    fetched.iter().any(|d| {
+                        current
+                            .iter()
+                            .find(|x| x.address == d.address)
+                            .is_some_and(|x| x.connected != d.connected || x.rssi != d.rssi)
+                    })
+                };
+                if changed {
+                    let mut list = found.write();
+                    for d in &fetched {
+                        if let Some(entry) = list.iter_mut().find(|x| x.address == d.address) {
+                            entry.connected = d.connected;
+                            entry.rssi = d.rssi;
+                        }
+                    }
+                }
+                // A device that is now connected is reachable: drop any stale
+                // unavailable mark so its row leaves the disabled state.
+                let reconnected: Vec<&str> = fetched
+                    .iter()
+                    .filter(|d| d.connected)
+                    .map(|d| d.address.as_str())
+                    .collect();
+                if !reconnected.is_empty()
+                    && reconnected.iter().any(|a| unavailable.peek().contains(*a))
+                {
+                    let mut marks = unavailable.write();
+                    for a in reconnected {
+                        marks.remove(a);
+                    }
+                }
+            }
+        });
     });
 
     let btn_class = if scanning() {
@@ -600,6 +693,7 @@ fn BackendScan() -> Element {
             onclick: move |_| async move {
                 *error.write() = None;
                 found.write().clear();
+                unavailable.write().clear();
                 *scanning.write() = true;
                 match backend::scan_devices().await {
                     Ok(devices) => *found.write() = devices,
@@ -611,9 +705,7 @@ fn BackendScan() -> Element {
             "{scan_label}"
         }
         if let Some(e) = error() {
-            div { class: "bt-error-banner",
-                span { "{e}" }
-            }
+            div { class: "toast-error", "{e}" }
         }
         {
             let devices = found();
@@ -646,6 +738,7 @@ fn BackendScan() -> Element {
                                             found,
                                             busy,
                                             error,
+                                            unavailable,
                                         }
                                     }
                                 }
@@ -658,6 +751,7 @@ fn BackendScan() -> Element {
                                         found,
                                         busy,
                                         error,
+                                        unavailable,
                                     }
                                 }
                             }

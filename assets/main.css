@@ -479,6 +479,7 @@ body {
 
 /* Circular backdrop holding the signal bars. */
 .signal-badge {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -488,6 +489,26 @@ body {
     background: #1a1f2b;
     flex-shrink: 0;
     margin-left: 12px;
+}
+
+/* Unavailable device: strike the signal badge with a red diagonal line. */
+.signal-badge.struck::after {
+    content: '';
+    position: absolute;
+    left: 3px;
+    right: 3px;
+    top: 50%;
+    height: 2px;
+    border-radius: 1px;
+    background: #ef4444;
+    transform: rotate(-45deg);
+    transform-origin: center;
+}
+
+/* Unavailable row: dimmed and non-interactive. */
+.device-row.unavailable {
+    opacity: 0.55;
+    cursor: default;
 }
 
 /* Pinned rows have a lighter (#1a2035) background, so the badge needs a darker

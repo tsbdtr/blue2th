@@ -155,6 +155,21 @@ async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, B
         .map_err(|e| BackendError::new(describe(&e)))
 }
 
+/// `GET {base}/devices` — the backend's paired devices and their current state.
+/// Used by the periodic poll to refresh `connected`/`rssi` without re-scanning.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
+    let url = format!("{}/devices", backend_base_url().trim_end_matches('/'));
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<Vec<DeviceInfo>>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive
 /// comments and non-device events.
 fn sse_device_payload(block: &str) -> Option<String> {
