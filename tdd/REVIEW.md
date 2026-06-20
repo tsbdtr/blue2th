@@ -1,21 +1,20 @@
-# Review Report — Real A2DP connect/disconnect via embedded ServiceListener `.dex`
+# Review Report — Play a local audio file to one connected speaker (Phase 3 — PipeWire transport)
 
 ## Issues Found & Fixed
-- [naming/clarity] src/bluetooth.rs:222-229 — the `obtain_a2dp_proxy` doc comment still described the *old* mechanism (a `java.lang.reflect.Proxy` whose `InvocationHandler` calls a removed native `onA2dpServiceConnected`). → Rewrote it to describe the new DexClassLoader-loaded `dev.dioxus.main.A2dpServiceListener` whose `onServiceConnected` invokes `nativeOnServiceConnected`. No behavior change.
-- [spurious change] assets/tailwind.css — the diff added an unrelated generated `.inline` utility class (not referenced anywhere in `src/`). → Reverted to the base revision via `git checkout <base> -- assets/tailwind.css`, as permitted by the review instructions. This generated file was not regenerated.
+- [edge case] blue2th-server/src/audio.rs:20 — `clamp_volume` used `f32::clamp`, which propagates `NaN` unchanged (documented semantics). A `NaN` `level` from `POST /volume` would be stored as the sink volume and then serialized by `serde_json` as JSON `null`, breaking the `PlaybackState` round-trip contract and producing an invalid response body. Fixed by treating `NaN` as `0.0` (silence) before clamping, so the `0.0..=1.0` guarantee always holds.
 
 ## Items Reviewed — No Change Needed
-- No `unwrap`/`expect`/`panic`/`todo`/`unreachable`/`unimplemented` outside `#[cfg(test)]`. All fallible JNI calls propagate via `?` and route exceptions through `bt_err_clear`.
-- `build_service_listener_proxy`: error propagation correct; `loadClass`/`newInstance` null results are checked and return `BluetoothError` (no more `null` return). The renamed JNI exports (`Java_dev_dioxus_main_A2dpServiceListener_nativeOnServiceConnected` / `_nativeOnServiceDisconnected`) store the proxy in `A2DP_PROXY_SLOT` and signal the condvar.
-- Dex write robustness: written to the app-private code-cache dir (`getCodeCacheDir()`); `FileOutputStream(String)` truncates+overwrites on every call, so a stale/partial prior write cannot poison a later load.
-- Local-reference hygiene: `build_service_listener_proxy` allocates ~12 local refs and runs once per connect/disconnect (not in a loop), well under the default JNI local-ref table; consistent with the existing convention of only deleting refs inside iteration loops (`scan_devices_inner`, `connected_device_names_inner`, `device_is_connected_reflect`). No leak risk.
-- `java/A2dpServiceListener.java`: package `dev.dioxus.main`, `implements BluetoothProfile.ServiceListener`, callbacks delegate to `private static native` methods with matching signatures. OK.
-- `java/build-dex.sh`: `set -euo pipefail`, overridable `JAVAC`/`D8`/`ANDROID_JAR`, script-relative path resolution, temp dir with `trap` cleanup. Robust. d8/javac NOT re-run (committed dex is the artifact).
+- Error handling: no `unwrap`/`expect`/`panic` outside `#[cfg(test)]`. `run()` uses `unwrap_or_else` (not `unwrap`); the SSE handler degrades a serialization failure into a comment event instead of panicking. Clean.
+- `AppError` correctly maps `AudioError::NoSpeakerConnected` -> 400 and decode/PipeWire -> 500; `/play` rejects with 4xx when no speaker is connected, satisfying that acceptance criterion without panicking.
+- Host-gated audio seams (`start_output`/`resume_output`/`pause_output`/`stop_output`/`apply_sink_volume`) are side-effect-free no-ops as required; the gated `#[ignore]` PipeWire hardware test was left untouched.
+- `/volume` behaviour intentionally left as clamp + state only (no connected-speaker precondition): matches the existing tests, and adding a precondition would be an unmotivated behaviour change (rule 9).
+- State-machine transitions (`play`/`pause`/`stop`) are idempotent as specified; pause/stop while stopped return 200 with unchanged state.
+- Cargo.toml: `rodio` correctly `default-features = false, features = ["wav"]` to avoid the cpal/ALSA build dependency on this host.
 
 ## New Tests Added
-- none (artifact-contract + non-Android regression tests already cover the testable surface; the Android JNI path is validated on-device).
+- `test_clamp_volume_nan_saturates_to_zero` (blue2th-server/src/audio.rs): asserts a `NaN` level clamps to `0.0` rather than propagating, covering the round-trip/serialization regression.
 
 ## Final Status
-- `cargo test`: ✅ all suites pass (17 + 23 + 10 + 16 + 0 doc)
-- `cargo clippy`: ✅ clean (host target and `aarch64-linux-android` target)
-- `dx build --platform android`: ✅ success (exit 0)
+- `cargo test`: ✅ all passed (1 gated hardware test still `#[ignore]`)
+- `cargo clippy`: ✅ clean (project command, workspace)
+- `dx build --platform android`: N/A (backend-only phase)
