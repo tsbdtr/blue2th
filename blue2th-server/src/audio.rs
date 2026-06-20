@@ -17,7 +17,14 @@ use blue2th_proto::{PlaybackState, PlaybackStatus};
 pub const TEST_TONE_WAV: &[u8] = include_bytes!("../assets/test-tone.wav");
 
 /// Clamp a requested volume into the valid `0.0..=1.0` range.
+///
+/// `f32::clamp` propagates `NaN` unchanged, which would store a `NaN` volume and
+/// serialize as JSON `null` (breaking the `PlaybackState` round-trip), so a
+/// `NaN` input is treated as silence.
 pub fn clamp_volume(level: f32) -> f32 {
+    if level.is_nan() {
+        return 0.0;
+    }
     level.clamp(0.0, 1.0)
 }
 
@@ -171,6 +178,14 @@ mod tests {
     fn test_clamp_volume_above_range_saturates_to_one() {
         assert_eq!(clamp_volume(1.5), 1.0);
         assert_eq!(clamp_volume(1000.0), 1.0);
+    }
+
+    // Criterion: `POST /volume` clamps to `0.0..=1.0` — a NaN level (which
+    // `f32::clamp` would otherwise propagate, serializing as JSON `null`) is
+    // treated as silence rather than stored.
+    #[test]
+    fn test_clamp_volume_nan_saturates_to_zero() {
+        assert_eq!(clamp_volume(f32::NAN), 0.0);
     }
 
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — in-range values are kept
