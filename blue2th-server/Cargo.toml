@@ -19,6 +19,12 @@ blue2th-proto = { path = "../blue2th-proto" }
 bluer = { version = "0.17", features = ["bluetoothd"] }
 futures = "0.3"
 async-stream = "0.3"
+# Audio decoding (uses `symphonia`). Disposable phase 3-4 test source, kept
+# behind `audio.rs` so librespot can replace it in phase 5. Default features are
+# disabled to avoid the `cpal`/ALSA build dependency: phase 3 output is routed
+# through PipeWire, and only WAV decoding is needed here. The GREEN-phase
+# implementer enables whatever playback feature the chosen output path requires.
+rodio = { version = "0.22", default-features = false, features = ["wav"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
