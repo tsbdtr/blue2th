@@ -36,6 +36,10 @@ use audio::{AudioEngine, AudioError};
 #[derive(Clone)]
 struct AppState {
     engine: Arc<Mutex<AudioEngine>>,
+    /// The speaker playback is routed to, if any. `None` until a Bluetooth
+    /// speaker is connected; `/play` is rejected with a 4xx while empty so we
+    /// never start a stream with nowhere to send it.
+    connected_speaker: Arc<Mutex<Option<String>>>,
 }
 
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
@@ -61,6 +65,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 pub fn app() -> Router {
     let state = AppState {
         engine: Arc::new(Mutex::new(AudioEngine::new())),
+        connected_speaker: Arc::new(Mutex::new(None)),
     };
 
     Router::new()
@@ -82,6 +87,9 @@ pub fn app() -> Router {
 
 /// `POST /play` — start (or resume) playback of the embedded test file.
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    if state.connected_speaker.lock().await.is_none() {
+        return Err(AudioError::NoSpeakerConnected.into());
+    }
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
 }

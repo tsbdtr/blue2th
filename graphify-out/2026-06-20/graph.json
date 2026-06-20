@@ -175,37 +175,10 @@
       "norm_label": "option"
     },
     {
-      "label": "PlaybackStatus",
-      "file_type": "code",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L59",
-      "id": "src_lib_playbackstatus",
-      "community": 24,
-      "norm_label": "playbackstatus"
-    },
-    {
-      "label": "PlaybackState",
-      "file_type": "code",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L70",
-      "id": "src_lib_playbackstate",
-      "community": 24,
-      "norm_label": "playbackstate"
-    },
-    {
-      "label": "VolumeRequest",
-      "file_type": "code",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L79",
-      "id": "src_lib_volumerequest",
-      "community": 24,
-      "norm_label": "volumerequest"
-    },
-    {
       "label": "test_health_status_round_trips_through_json()",
       "file_type": "code",
       "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L89",
+      "source_location": "L61",
       "id": "src_lib_test_health_status_round_trips_through_json",
       "community": 24,
       "norm_label": "test_health_status_round_trips_through_json()"
@@ -214,7 +187,7 @@
       "label": "test_health_status_ok_sets_status_field()",
       "file_type": "code",
       "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L97",
+      "source_location": "L69",
       "id": "src_lib_test_health_status_ok_sets_status_field",
       "community": 24,
       "norm_label": "test_health_status_ok_sets_status_field()"
@@ -223,7 +196,7 @@
       "label": "test_adapter_info_round_trips_through_json()",
       "file_type": "code",
       "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L104",
+      "source_location": "L76",
       "id": "src_lib_test_adapter_info_round_trips_through_json",
       "community": 24,
       "norm_label": "test_adapter_info_round_trips_through_json()"
@@ -232,343 +205,10 @@
       "label": "test_device_info_round_trips_with_optional_fields()",
       "file_type": "code",
       "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L117",
+      "source_location": "L89",
       "id": "src_lib_test_device_info_round_trips_with_optional_fields",
       "community": 24,
       "norm_label": "test_device_info_round_trips_with_optional_fields()"
-    },
-    {
-      "label": "test_playback_status_round_trips_through_json()",
-      "file_type": "code",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L143",
-      "id": "src_lib_test_playback_status_round_trips_through_json",
-      "community": 24,
-      "norm_label": "test_playback_status_round_trips_through_json()"
-    },
-    {
-      "label": "test_playback_state_round_trips_through_json()",
-      "file_type": "code",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L158",
-      "id": "src_lib_test_playback_state_round_trips_through_json",
-      "community": 24,
-      "norm_label": "test_playback_state_round_trips_through_json()"
-    },
-    {
-      "label": "test_volume_request_round_trips_through_json()",
-      "file_type": "code",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L172",
-      "id": "src_lib_test_volume_request_round_trips_through_json",
-      "community": 24,
-      "norm_label": "test_volume_request_round_trips_through_json()"
-    },
-    {
-      "label": "audio.rs",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L1",
-      "id": "src_audio",
-      "community": 27,
-      "norm_label": "audio.rs"
-    },
-    {
-      "label": "clamp_volume()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L20",
-      "id": "src_audio_clamp_volume",
-      "community": 27,
-      "norm_label": "clamp_volume()"
-    },
-    {
-      "label": "AudioEngine",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L27",
-      "id": "src_audio_audioengine",
-      "community": 27,
-      "norm_label": "audioengine"
-    },
-    {
-      "label": "PlaybackStatus",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L28",
-      "id": "playbackstatus",
-      "community": 27,
-      "norm_label": "playbackstatus"
-    },
-    {
-      "label": ".new()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L37",
-      "id": "src_audio_audioengine_new",
-      "community": 27,
-      "norm_label": ".new()"
-    },
-    {
-      "label": "Self",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L37",
-      "id": "blue2th_server_src_audio_rs_self",
-      "community": 27,
-      "norm_label": "self"
-    },
-    {
-      "label": ".play()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "id": "src_audio_audioengine_play",
-      "community": 27,
-      "norm_label": ".play()"
-    },
-    {
-      "label": "Result",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "id": "blue2th_server_src_audio_rs_result",
-      "community": 27,
-      "norm_label": "result"
-    },
-    {
-      "label": "PlaybackState",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "id": "blue2th_server_src_audio_rs_playbackstate",
-      "community": 27,
-      "norm_label": "playbackstate"
-    },
-    {
-      "label": "AudioError",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "id": "blue2th_server_src_audio_rs_audioerror",
-      "community": 27,
-      "norm_label": "audioerror"
-    },
-    {
-      "label": ".pause()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L61",
-      "id": "src_audio_audioengine_pause",
-      "community": 27,
-      "norm_label": ".pause()"
-    },
-    {
-      "label": ".stop()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L70",
-      "id": "src_audio_audioengine_stop",
-      "community": 27,
-      "norm_label": ".stop()"
-    },
-    {
-      "label": ".set_volume()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L79",
-      "id": "src_audio_audioengine_set_volume",
-      "community": 27,
-      "norm_label": ".set_volume()"
-    },
-    {
-      "label": ".playback_state()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L87",
-      "id": "src_audio_audioengine_playback_state",
-      "community": 27,
-      "norm_label": ".playback_state()"
-    },
-    {
-      "label": ".start_output()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L105",
-      "id": "src_audio_audioengine_start_output",
-      "community": 27,
-      "norm_label": ".start_output()"
-    },
-    {
-      "label": ".resume_output()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L110",
-      "id": "src_audio_audioengine_resume_output",
-      "community": 27,
-      "norm_label": ".resume_output()"
-    },
-    {
-      "label": ".pause_output()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L115",
-      "id": "src_audio_audioengine_pause_output",
-      "community": 27,
-      "norm_label": ".pause_output()"
-    },
-    {
-      "label": ".stop_output()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L118",
-      "id": "src_audio_audioengine_stop_output",
-      "community": 27,
-      "norm_label": ".stop_output()"
-    },
-    {
-      "label": ".apply_sink_volume()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L121",
-      "id": "src_audio_audioengine_apply_sink_volume",
-      "community": 27,
-      "norm_label": ".apply_sink_volume()"
-    },
-    {
-      "label": "Default",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L127",
-      "id": "default",
-      "community": 27,
-      "norm_label": "default"
-    },
-    {
-      "label": ".default()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L128",
-      "id": "src_audio_audioengine_default",
-      "community": 27,
-      "norm_label": ".default()"
-    },
-    {
-      "label": "AudioError",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L135",
-      "id": "src_audio_audioerror",
-      "community": 27,
-      "norm_label": "audioerror"
-    },
-    {
-      "label": "Display",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L144",
-      "id": "blue2th_server_src_audio_rs_display",
-      "community": 27,
-      "norm_label": "display"
-    },
-    {
-      "label": ".fmt()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L145",
-      "id": "src_audio_audioerror_fmt",
-      "community": 27,
-      "norm_label": ".fmt()"
-    },
-    {
-      "label": "Formatter",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L145",
-      "id": "blue2th_server_src_audio_rs_formatter",
-      "community": 27,
-      "norm_label": "formatter"
-    },
-    {
-      "label": "Error",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L154",
-      "id": "blue2th_server_src_audio_rs_error",
-      "community": 27,
-      "norm_label": "error"
-    },
-    {
-      "label": "test_clamp_volume_below_range_saturates_to_zero()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L163",
-      "id": "src_audio_test_clamp_volume_below_range_saturates_to_zero",
-      "community": 27,
-      "norm_label": "test_clamp_volume_below_range_saturates_to_zero()"
-    },
-    {
-      "label": "test_clamp_volume_above_range_saturates_to_one()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L171",
-      "id": "src_audio_test_clamp_volume_above_range_saturates_to_one",
-      "community": 27,
-      "norm_label": "test_clamp_volume_above_range_saturates_to_one()"
-    },
-    {
-      "label": "test_clamp_volume_in_range_is_unchanged()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L179",
-      "id": "src_audio_test_clamp_volume_in_range_is_unchanged",
-      "community": 27,
-      "norm_label": "test_clamp_volume_in_range_is_unchanged()"
-    },
-    {
-      "label": "test_new_engine_starts_stopped()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L188",
-      "id": "src_audio_test_new_engine_starts_stopped",
-      "community": 27,
-      "norm_label": "test_new_engine_starts_stopped()"
-    },
-    {
-      "label": "test_playback_state_machine_full_cycle()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L196",
-      "id": "src_audio_test_playback_state_machine_full_cycle",
-      "community": 27,
-      "norm_label": "test_playback_state_machine_full_cycle()"
-    },
-    {
-      "label": "test_pause_while_stopped_is_idempotent()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L214",
-      "id": "src_audio_test_pause_while_stopped_is_idempotent",
-      "community": 27,
-      "norm_label": "test_pause_while_stopped_is_idempotent()"
-    },
-    {
-      "label": "test_stop_while_stopped_is_idempotent()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L222",
-      "id": "src_audio_test_stop_while_stopped_is_idempotent",
-      "community": 27,
-      "norm_label": "test_stop_while_stopped_is_idempotent()"
-    },
-    {
-      "label": "test_set_volume_clamps_and_updates_state()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L231",
-      "id": "src_audio_test_set_volume_clamps_and_updates_state",
-      "community": 27,
-      "norm_label": "test_set_volume_clamps_and_updates_state()"
     },
     {
       "label": "bluetooth.rs",
@@ -706,501 +346,6 @@
       "norm_label": "device"
     },
     {
-      "label": "lib.rs",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L1",
-      "id": "blue2th_server_src_lib_rs_src_lib",
-      "community": 23,
-      "norm_label": "lib.rs"
-    },
-    {
-      "label": "AppState",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L37",
-      "id": "src_lib_appstate",
-      "community": 23,
-      "norm_label": "appstate"
-    },
-    {
-      "label": "Arc",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L38",
-      "id": "arc",
-      "community": 23,
-      "norm_label": "arc"
-    },
-    {
-      "label": "Mutex",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L38",
-      "id": "mutex",
-      "community": 23,
-      "norm_label": "mutex"
-    },
-    {
-      "label": "AudioEngine",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L38",
-      "id": "audioengine",
-      "community": 23,
-      "norm_label": "audioengine"
-    },
-    {
-      "label": "Option",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L42",
-      "id": "blue2th_server_src_lib_rs_option",
-      "community": 23,
-      "norm_label": "option"
-    },
-    {
-      "label": "String",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L42",
-      "id": "blue2th_server_src_lib_rs_string",
-      "community": 28,
-      "norm_label": "string"
-    },
-    {
-      "label": "run()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "id": "src_lib_run",
-      "community": 23,
-      "norm_label": "run()"
-    },
-    {
-      "label": "Result",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "id": "blue2th_server_src_lib_rs_result",
-      "community": 23,
-      "norm_label": "result"
-    },
-    {
-      "label": "Box",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "id": "blue2th_server_src_lib_rs_box",
-      "community": 23,
-      "norm_label": "box"
-    },
-    {
-      "label": "Error",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "id": "blue2th_server_src_lib_rs_error",
-      "community": 28,
-      "norm_label": "error"
-    },
-    {
-      "label": "app()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L65",
-      "id": "src_lib_app",
-      "community": 23,
-      "norm_label": "app()"
-    },
-    {
-      "label": "Router",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L65",
-      "id": "blue2th_server_src_lib_rs_router",
-      "community": 23,
-      "norm_label": "router"
-    },
-    {
-      "label": "play()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "id": "src_lib_play",
-      "community": 23,
-      "norm_label": "play()"
-    },
-    {
-      "label": "State",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "id": "state",
-      "community": 23,
-      "norm_label": "state"
-    },
-    {
-      "label": "Json",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "id": "json",
-      "community": 23,
-      "norm_label": "json"
-    },
-    {
-      "label": "PlaybackState",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "id": "blue2th_server_src_lib_rs_playbackstate",
-      "community": 23,
-      "norm_label": "playbackstate"
-    },
-    {
-      "label": "AppError",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "id": "apperror",
-      "community": 23,
-      "norm_label": "apperror"
-    },
-    {
-      "label": "pause()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "id": "src_lib_pause",
-      "community": 23,
-      "norm_label": "pause()"
-    },
-    {
-      "label": "stop()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "id": "src_lib_stop",
-      "community": 23,
-      "norm_label": "stop()"
-    },
-    {
-      "label": "volume()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "id": "src_lib_volume",
-      "community": 23,
-      "norm_label": "volume()"
-    },
-    {
-      "label": "VolumeRequest",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "id": "volumerequest",
-      "community": 23,
-      "norm_label": "volumerequest"
-    },
-    {
-      "label": "playback()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L119",
-      "id": "src_lib_playback",
-      "community": 23,
-      "norm_label": "playback()"
-    },
-    {
-      "label": "health()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L125",
-      "id": "src_lib_health",
-      "community": 23,
-      "norm_label": "health()"
-    },
-    {
-      "label": "HealthStatus",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L125",
-      "id": "blue2th_server_src_lib_rs_healthstatus",
-      "community": 23,
-      "norm_label": "healthstatus"
-    },
-    {
-      "label": "adapters()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "id": "src_lib_adapters",
-      "community": 23,
-      "norm_label": "adapters()"
-    },
-    {
-      "label": "Vec",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "id": "blue2th_server_src_lib_rs_vec",
-      "community": 23,
-      "norm_label": "vec"
-    },
-    {
-      "label": "AdapterInfo",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "id": "blue2th_server_src_lib_rs_adapterinfo",
-      "community": 23,
-      "norm_label": "adapterinfo"
-    },
-    {
-      "label": "devices()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "id": "src_lib_devices",
-      "community": 23,
-      "norm_label": "devices()"
-    },
-    {
-      "label": "DeviceInfo",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "id": "blue2th_server_src_lib_rs_deviceinfo",
-      "community": 23,
-      "norm_label": "deviceinfo"
-    },
-    {
-      "label": "connect()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "id": "src_lib_connect",
-      "community": 23,
-      "norm_label": "connect()"
-    },
-    {
-      "label": "Path",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "id": "path",
-      "community": 23,
-      "norm_label": "path"
-    },
-    {
-      "label": "disconnect()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "id": "src_lib_disconnect",
-      "community": 23,
-      "norm_label": "disconnect()"
-    },
-    {
-      "label": "parse_addr()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L152",
-      "id": "src_lib_parse_addr",
-      "community": 23,
-      "norm_label": "parse_addr()"
-    },
-    {
-      "label": "Address",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L152",
-      "id": "blue2th_server_src_lib_rs_address",
-      "community": 23,
-      "norm_label": "address"
-    },
-    {
-      "label": "scan()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "id": "src_lib_scan",
-      "community": 23,
-      "norm_label": "scan()"
-    },
-    {
-      "label": "Sse",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "id": "sse",
-      "community": 23,
-      "norm_label": "sse"
-    },
-    {
-      "label": "Stream",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "id": "blue2th_server_src_lib_rs_stream",
-      "community": 23,
-      "norm_label": "stream"
-    },
-    {
-      "label": "Item",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "id": "blue2th_server_src_lib_rs_item",
-      "community": 23,
-      "norm_label": "item"
-    },
-    {
-      "label": "Event",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "id": "event",
-      "community": 23,
-      "norm_label": "event"
-    },
-    {
-      "label": "Infallible",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "id": "infallible",
-      "community": 23,
-      "norm_label": "infallible"
-    },
-    {
-      "label": "AppError",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L181",
-      "id": "src_lib_apperror",
-      "community": 28,
-      "norm_label": "apperror"
-    },
-    {
-      "label": "StatusCode",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L182",
-      "id": "statuscode",
-      "community": 28,
-      "norm_label": "statuscode"
-    },
-    {
-      "label": ".internal()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "id": "src_lib_apperror_internal",
-      "community": 28,
-      "norm_label": ".internal()"
-    },
-    {
-      "label": "Into",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "id": "blue2th_server_src_lib_rs_into",
-      "community": 28,
-      "norm_label": "into"
-    },
-    {
-      "label": "Self",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "id": "blue2th_server_src_lib_rs_self",
-      "community": 28,
-      "norm_label": "self"
-    },
-    {
-      "label": ".bad_request()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L196",
-      "id": "src_lib_apperror_bad_request",
-      "community": 28,
-      "norm_label": ".bad_request()"
-    },
-    {
-      "label": "IntoResponse",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L204",
-      "id": "intoresponse",
-      "community": 28,
-      "norm_label": "intoresponse"
-    },
-    {
-      "label": ".into_response()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L205",
-      "id": "src_lib_apperror_into_response",
-      "community": 28,
-      "norm_label": ".into_response()"
-    },
-    {
-      "label": "Response",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L205",
-      "id": "response",
-      "community": 28,
-      "norm_label": "response"
-    },
-    {
-      "label": "From",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L211",
-      "id": "from",
-      "community": 28,
-      "norm_label": "from"
-    },
-    {
-      "label": ".from()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L212",
-      "id": "src_lib_apperror_from",
-      "community": 28,
-      "norm_label": ".from()"
-    },
-    {
-      "label": "AudioError",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L217",
-      "id": "blue2th_server_src_lib_rs_audioerror",
-      "community": 28,
-      "norm_label": "audioerror"
-    },
-    {
-      "label": "init_tracing()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L228",
-      "id": "src_lib_init_tracing",
-      "community": 23,
-      "norm_label": "init_tracing()"
-    },
-    {
-      "label": "test_health_endpoint_returns_ok_status_and_version()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L241",
-      "id": "src_lib_test_health_endpoint_returns_ok_status_and_version",
-      "community": 23,
-      "norm_label": "test_health_endpoint_returns_ok_status_and_version()"
-    },
-    {
       "label": "main.rs",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
@@ -1213,7 +358,7 @@
       "label": "main()",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L7",
+      "source_location": "L33",
       "id": "blue2th_server_src_main_rs_src_main_main",
       "community": 23,
       "norm_label": "main()"
@@ -1222,7 +367,7 @@
       "label": "Result",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L7",
+      "source_location": "L33",
       "id": "blue2th_server_src_main_rs_result",
       "community": 23,
       "norm_label": "result"
@@ -1231,8 +376,8 @@
       "label": "Box",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L7",
-      "id": "blue2th_server_src_main_rs_box",
+      "source_location": "L33",
+      "id": "box",
       "community": 23,
       "norm_label": "box"
     },
@@ -1240,82 +385,298 @@
       "label": "Error",
       "file_type": "code",
       "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L7",
+      "source_location": "L33",
       "id": "blue2th_server_src_main_rs_error",
-      "community": 28,
+      "community": 23,
       "norm_label": "error"
     },
     {
-      "label": "transport.rs",
+      "label": "app()",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L1",
-      "id": "tests_transport",
-      "community": 29,
-      "norm_label": "transport.rs"
-    },
-    {
-      "label": "build_app()",
-      "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L23",
-      "id": "tests_transport_build_app",
-      "community": 29,
-      "norm_label": "build_app()"
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L46",
+      "id": "blue2th_server_src_main_rs_src_main_app",
+      "community": 23,
+      "norm_label": "app()"
     },
     {
       "label": "Router",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L23",
-      "id": "blue2th_server_tests_transport_rs_router",
-      "community": 29,
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L46",
+      "id": "router",
+      "community": 23,
       "norm_label": "router"
     },
     {
-      "label": "test_playback_endpoint_returns_state()",
+      "label": "health()",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L32",
-      "id": "tests_transport_test_playback_endpoint_returns_state",
-      "community": 29,
-      "norm_label": "test_playback_endpoint_returns_state()"
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L59",
+      "id": "src_main_health",
+      "community": 23,
+      "norm_label": "health()"
     },
     {
-      "label": "test_volume_endpoint_rejects_malformed_body()",
+      "label": "Json",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L50",
-      "id": "tests_transport_test_volume_endpoint_rejects_malformed_body",
-      "community": 29,
-      "norm_label": "test_volume_endpoint_rejects_malformed_body()"
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L59",
+      "id": "json",
+      "community": 23,
+      "norm_label": "json"
     },
     {
-      "label": "test_play_without_connected_speaker_returns_client_error()",
+      "label": "HealthStatus",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L68",
-      "id": "tests_transport_test_play_without_connected_speaker_returns_client_error",
-      "community": 29,
-      "norm_label": "test_play_without_connected_speaker_returns_client_error()"
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L59",
+      "id": "blue2th_server_src_main_rs_healthstatus",
+      "community": 23,
+      "norm_label": "healthstatus"
     },
     {
-      "label": "test_embedded_tone_decodes_to_non_silent_stereo_pcm()",
+      "label": "adapters()",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L64",
+      "id": "src_main_adapters",
+      "community": 23,
+      "norm_label": "adapters()"
+    },
+    {
+      "label": "Vec",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L64",
+      "id": "blue2th_server_src_main_rs_vec",
+      "community": 23,
+      "norm_label": "vec"
+    },
+    {
+      "label": "AdapterInfo",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L64",
+      "id": "blue2th_server_src_main_rs_adapterinfo",
+      "community": 23,
+      "norm_label": "adapterinfo"
+    },
+    {
+      "label": "AppError",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L64",
+      "id": "apperror",
+      "community": 23,
+      "norm_label": "apperror"
+    },
+    {
+      "label": "devices()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L69",
+      "id": "src_main_devices",
+      "community": 23,
+      "norm_label": "devices()"
+    },
+    {
+      "label": "DeviceInfo",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L69",
+      "id": "blue2th_server_src_main_rs_deviceinfo",
+      "community": 23,
+      "norm_label": "deviceinfo"
+    },
+    {
+      "label": "connect()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "id": "src_main_connect",
+      "community": 23,
+      "norm_label": "connect()"
+    },
+    {
+      "label": "Path",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "id": "path",
+      "community": 23,
+      "norm_label": "path"
+    },
+    {
+      "label": "String",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "id": "blue2th_server_src_main_rs_string",
+      "community": 23,
+      "norm_label": "string"
+    },
+    {
+      "label": "disconnect()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L81",
+      "id": "src_main_disconnect",
+      "community": 23,
+      "norm_label": "disconnect()"
+    },
+    {
+      "label": "parse_addr()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
       "source_location": "L86",
-      "id": "tests_transport_test_embedded_tone_decodes_to_non_silent_stereo_pcm",
-      "community": 29,
-      "norm_label": "test_embedded_tone_decodes_to_non_silent_stereo_pcm()"
+      "id": "src_main_parse_addr",
+      "community": 23,
+      "norm_label": "parse_addr()"
     },
     {
-      "label": "test_play_links_running_output_node_to_pipewire_sink()",
+      "label": "Address",
       "file_type": "code",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L120",
-      "id": "tests_transport_test_play_links_running_output_node_to_pipewire_sink",
-      "community": 29,
-      "norm_label": "test_play_links_running_output_node_to_pipewire_sink()"
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L86",
+      "id": "blue2th_server_src_main_rs_address",
+      "community": 23,
+      "norm_label": "address"
+    },
+    {
+      "label": "scan()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L94",
+      "id": "src_main_scan",
+      "community": 23,
+      "norm_label": "scan()"
+    },
+    {
+      "label": "Sse",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L94",
+      "id": "sse",
+      "community": 23,
+      "norm_label": "sse"
+    },
+    {
+      "label": "Stream",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L94",
+      "id": "blue2th_server_src_main_rs_stream",
+      "community": 23,
+      "norm_label": "stream"
+    },
+    {
+      "label": "Item",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L94",
+      "id": "blue2th_server_src_main_rs_item",
+      "community": 23,
+      "norm_label": "item"
+    },
+    {
+      "label": "Event",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L94",
+      "id": "event",
+      "community": 23,
+      "norm_label": "event"
+    },
+    {
+      "label": "Infallible",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L94",
+      "id": "infallible",
+      "community": 23,
+      "norm_label": "infallible"
+    },
+    {
+      "label": "AppError",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L114",
+      "id": "src_main_apperror",
+      "community": 23,
+      "norm_label": "apperror"
+    },
+    {
+      "label": "IntoResponse",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L116",
+      "id": "intoresponse",
+      "community": 23,
+      "norm_label": "intoresponse"
+    },
+    {
+      "label": ".into_response()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L117",
+      "id": "src_main_apperror_into_response",
+      "community": 23,
+      "norm_label": ".into_response()"
+    },
+    {
+      "label": "Response",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L117",
+      "id": "response",
+      "community": 23,
+      "norm_label": "response"
+    },
+    {
+      "label": "From",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L123",
+      "id": "from",
+      "community": 23,
+      "norm_label": "from"
+    },
+    {
+      "label": ".from()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L124",
+      "id": "src_main_apperror_from",
+      "community": 23,
+      "norm_label": ".from()"
+    },
+    {
+      "label": "Self",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L124",
+      "id": "blue2th_server_src_main_rs_self",
+      "community": 23,
+      "norm_label": "self"
+    },
+    {
+      "label": "init_tracing()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L130",
+      "id": "src_main_init_tracing",
+      "community": 23,
+      "norm_label": "init_tracing()"
+    },
+    {
+      "label": "test_health_endpoint_returns_ok_status_and_version()",
+      "file_type": "code",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L143",
+      "id": "src_main_test_health_endpoint_returns_ok_status_and_version",
+      "community": 23,
+      "norm_label": "test_health_endpoint_returns_ok_status_and_version()"
     },
     {
       "label": "A2dpServiceListener.java",
@@ -1411,7 +772,7 @@
         "language": "bash",
         "kind": "bash_entrypoint"
       },
-      "id": "home_orel_workspace_blue2th_play_a_local_audio_file_to_one_connected_speaker_phase_3_pipewire_transport_java_build_dex_sh__entry",
+      "id": "home_orel_workspace_blue2th_java_build_dex_sh__entry",
       "community": 20,
       "norm_label": "build-dex.sh script"
     },
@@ -1614,19 +975,10 @@
       "norm_label": "post_device_action()"
     },
     {
-      "label": "fetch_devices()",
-      "file_type": "code",
-      "source_file": "src/backend.rs",
-      "source_location": "L161",
-      "id": "src_backend_fetch_devices",
-      "community": 21,
-      "norm_label": "fetch_devices()"
-    },
-    {
       "label": "sse_device_payload()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L175",
+      "source_location": "L160",
       "id": "src_backend_sse_device_payload",
       "community": 21,
       "norm_label": "sse_device_payload()"
@@ -1635,7 +987,7 @@
       "label": "Option",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L175",
+      "source_location": "L160",
       "id": "src_backend_rs_option",
       "community": 21,
       "norm_label": "option"
@@ -1644,7 +996,7 @@
       "label": "test_health_url_appends_path()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L197",
+      "source_location": "L182",
       "id": "src_backend_test_health_url_appends_path",
       "community": 21,
       "norm_label": "test_health_url_appends_path()"
@@ -1653,7 +1005,7 @@
       "label": "test_health_url_tolerates_trailing_slash()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L205",
+      "source_location": "L190",
       "id": "src_backend_test_health_url_tolerates_trailing_slash",
       "community": 21,
       "norm_label": "test_health_url_tolerates_trailing_slash()"
@@ -1662,7 +1014,7 @@
       "label": "test_backend_base_url_defaults_to_http()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L213",
+      "source_location": "L198",
       "id": "src_backend_test_backend_base_url_defaults_to_http",
       "community": 21,
       "norm_label": "test_backend_base_url_defaults_to_http()"
@@ -1671,7 +1023,7 @@
       "label": "test_sse_device_payload_extracts_device_json()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L218",
+      "source_location": "L203",
       "id": "src_backend_test_sse_device_payload_extracts_device_json",
       "community": 21,
       "norm_label": "test_sse_device_payload_extracts_device_json()"
@@ -1680,7 +1032,7 @@
       "label": "test_sse_device_payload_ignores_non_device_and_comments()",
       "file_type": "code",
       "source_file": "src/backend.rs",
-      "source_location": "L227",
+      "source_location": "L212",
       "id": "src_backend_test_sse_device_payload_ignores_non_device_and_comments",
       "community": 21,
       "norm_label": "test_sse_device_payload_ignores_non_device_and_comments()"
@@ -1790,7 +1142,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L35",
       "id": "src_bluetooth_scan_devices",
-      "community": 0,
+      "community": 4,
       "norm_label": "scan_devices()"
     },
     {
@@ -1799,7 +1151,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L35",
       "id": "src_bluetooth_rs_vec",
-      "community": 0,
+      "community": 4,
       "norm_label": "vec"
     },
     {
@@ -1844,7 +1196,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L63",
       "id": "src_bluetooth_connected_device_names",
-      "community": 0,
+      "community": 4,
       "norm_label": "connected_device_names()"
     },
     {
@@ -1961,7 +1313,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L258",
       "id": "duration",
-      "community": 0,
+      "community": 21,
       "norm_label": "duration"
     },
     {
@@ -2141,7 +1493,7 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1151",
       "id": "src_bluetooth_test_scan_devices_returns_non_empty_ok_on_non_android",
-      "community": 0,
+      "community": 4,
       "norm_label": "test_scan_devices_returns_non_empty_ok_on_non_android()"
     },
     {
@@ -2229,7 +1581,7 @@
       "label": "BackendOnline",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L49",
+      "source_location": "L47",
       "id": "src_main_backendonline",
       "community": 2,
       "norm_label": "backendonline"
@@ -2238,7 +1590,7 @@
       "label": "ConnectionStatus",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L52",
+      "source_location": "L50",
       "id": "src_main_connectionstatus",
       "community": 2,
       "norm_label": "connectionstatus"
@@ -2247,7 +1599,7 @@
       "label": "merge_connection_status()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L62",
+      "source_location": "L60",
       "id": "src_main_merge_connection_status",
       "community": 2,
       "norm_label": "merge_connection_status()"
@@ -2256,7 +1608,7 @@
       "label": "Vec",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L62",
+      "source_location": "L60",
       "id": "src_main_rs_vec",
       "community": 2,
       "norm_label": "vec"
@@ -2265,7 +1617,7 @@
       "label": "String",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L62",
+      "source_location": "L60",
       "id": "src_main_rs_string",
       "community": 2,
       "norm_label": "string"
@@ -2274,7 +1626,7 @@
       "label": "reconcile_connection_status()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L92",
+      "source_location": "L90",
       "id": "src_main_reconcile_connection_status",
       "community": 2,
       "norm_label": "reconcile_connection_status()"
@@ -2283,7 +1635,7 @@
       "label": "status_icon()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L105",
+      "source_location": "L103",
       "id": "src_main_status_icon",
       "community": 2,
       "norm_label": "status_icon()"
@@ -2292,7 +1644,7 @@
       "label": "signal_bars()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L118",
+      "source_location": "L116",
       "id": "src_main_signal_bars",
       "community": 2,
       "norm_label": "signal_bars()"
@@ -2301,7 +1653,7 @@
       "label": "use_locale()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L132",
+      "source_location": "L130",
       "id": "src_main_use_locale",
       "community": 2,
       "norm_label": "use_locale()"
@@ -2310,7 +1662,7 @@
       "label": "Route",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L138",
+      "source_location": "L136",
       "id": "src_main_route",
       "community": 2,
       "norm_label": "route"
@@ -2319,7 +1671,7 @@
       "label": "main()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L145",
+      "source_location": "L143",
       "id": "src_main_rs_src_main_main",
       "community": 2,
       "norm_label": "main()"
@@ -2328,8 +1680,8 @@
       "label": "App()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L150",
-      "id": "src_main_app",
+      "source_location": "L148",
+      "id": "src_main_rs_src_main_app",
       "community": 2,
       "norm_label": "app()"
     },
@@ -2337,7 +1689,7 @@
       "label": "Element",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L150",
+      "source_location": "L148",
       "id": "element",
       "community": 2,
       "norm_label": "element"
@@ -2346,7 +1698,7 @@
       "label": "Home()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L231",
+      "source_location": "L229",
       "id": "src_main_home",
       "community": 2,
       "norm_label": "home()"
@@ -2355,7 +1707,7 @@
       "label": "SignalBars()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L433",
+      "source_location": "L431",
       "id": "src_main_signalbars",
       "community": 2,
       "norm_label": "signalbars()"
@@ -2364,7 +1716,7 @@
       "label": "Option",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L433",
+      "source_location": "L431",
       "id": "src_main_rs_option",
       "community": 2,
       "norm_label": "option"
@@ -2373,7 +1725,7 @@
       "label": "replace_device()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L458",
+      "source_location": "L451",
       "id": "src_main_replace_device",
       "community": 2,
       "norm_label": "replace_device()"
@@ -2382,7 +1734,7 @@
       "label": "Signal",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L458",
+      "source_location": "L451",
       "id": "signal",
       "community": 2,
       "norm_label": "signal"
@@ -2391,7 +1743,7 @@
       "label": "DeviceInfo",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L458",
+      "source_location": "L451",
       "id": "src_main_rs_deviceinfo",
       "community": 2,
       "norm_label": "deviceinfo"
@@ -2400,25 +1752,16 @@
       "label": "BackendDeviceItem()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L470",
+      "source_location": "L463",
       "id": "src_main_backenddeviceitem",
       "community": 2,
       "norm_label": "backenddeviceitem()"
     },
     {
-      "label": "HashSet",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L470",
-      "id": "hashset",
-      "community": 2,
-      "norm_label": "hashset"
-    },
-    {
       "label": "BackendScan()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L591",
+      "source_location": "L565",
       "id": "src_main_backendscan",
       "community": 2,
       "norm_label": "backendscan()"
@@ -2427,7 +1770,7 @@
       "label": "DeviceItem()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L767",
+      "source_location": "L673",
       "id": "src_main_deviceitem",
       "community": 2,
       "norm_label": "deviceitem()"
@@ -2436,7 +1779,7 @@
       "label": "DeviceSettings()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L950",
+      "source_location": "L856",
       "id": "src_main_devicesettings",
       "community": 2,
       "norm_label": "devicesettings()"
@@ -2445,7 +1788,7 @@
       "label": "test_signal_bars_strong_signal_is_full_and_green()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1061",
+      "source_location": "L967",
       "id": "src_main_test_signal_bars_strong_signal_is_full_and_green",
       "community": 2,
       "norm_label": "test_signal_bars_strong_signal_is_full_and_green()"
@@ -2454,7 +1797,7 @@
       "label": "test_signal_bars_medium_signal_is_orange()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1066",
+      "source_location": "L972",
       "id": "src_main_test_signal_bars_medium_signal_is_orange",
       "community": 2,
       "norm_label": "test_signal_bars_medium_signal_is_orange()"
@@ -2463,7 +1806,7 @@
       "label": "test_signal_bars_weak_signal_is_one_bar_and_red()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1073",
+      "source_location": "L979",
       "id": "src_main_test_signal_bars_weak_signal_is_one_bar_and_red",
       "community": 2,
       "norm_label": "test_signal_bars_weak_signal_is_one_bar_and_red()"
@@ -2472,7 +1815,7 @@
       "label": "test_signal_bars_is_monotonic_in_strength()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1078",
+      "source_location": "L984",
       "id": "src_main_test_signal_bars_is_monotonic_in_strength",
       "community": 2,
       "norm_label": "test_signal_bars_is_monotonic_in_strength()"
@@ -2481,7 +1824,7 @@
       "label": "test_merge_connection_status_assigns_connected_and_disconnected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1086",
+      "source_location": "L992",
       "id": "src_main_test_merge_connection_status_assigns_connected_and_disconnected",
       "community": 2,
       "norm_label": "test_merge_connection_status_assigns_connected_and_disconnected()"
@@ -2490,7 +1833,7 @@
       "label": "test_merge_connection_status_empty_connected_all_disconnected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1109",
+      "source_location": "L1015",
       "id": "src_main_test_merge_connection_status_empty_connected_all_disconnected",
       "community": 2,
       "norm_label": "test_merge_connection_status_empty_connected_all_disconnected()"
@@ -2499,7 +1842,7 @@
       "label": "test_merge_connection_status_no_duplicate_and_refreshes_status()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1127",
+      "source_location": "L1033",
       "id": "src_main_test_merge_connection_status_no_duplicate_and_refreshes_status",
       "community": 2,
       "norm_label": "test_merge_connection_status_no_duplicate_and_refreshes_status()"
@@ -2508,7 +1851,7 @@
       "label": "test_merge_connection_status_counter_reflects_connected()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1156",
+      "source_location": "L1062",
       "id": "src_main_test_merge_connection_status_counter_reflects_connected",
       "community": 2,
       "norm_label": "test_merge_connection_status_counter_reflects_connected()"
@@ -2517,7 +1860,7 @@
       "label": "test_reconcile_connection_status_updates_both_directions()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1179",
+      "source_location": "L1085",
       "id": "src_main_test_reconcile_connection_status_updates_both_directions",
       "community": 2,
       "norm_label": "test_reconcile_connection_status_updates_both_directions()"
@@ -2526,7 +1869,7 @@
       "label": "test_reconcile_connection_status_preserves_connecting()",
       "file_type": "code",
       "source_file": "src/main.rs",
-      "source_location": "L1201",
+      "source_location": "L1107",
       "id": "src_main_test_reconcile_connection_status_preserves_connecting",
       "community": 2,
       "norm_label": "test_reconcile_connection_status_preserves_connecting()"
@@ -2627,7 +1970,7 @@
       "source_file": "tests/a2dp_dex_listener.rs",
       "source_location": "L206",
       "id": "tests_a2dp_dex_listener_test_connect_disconnect_do_not_panic",
-      "community": 0,
+      "community": 18,
       "norm_label": "test_connect_disconnect_do_not_panic()"
     },
     {
@@ -2645,7 +1988,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L27",
       "id": "tests_bluetooth_integration_test_enable_bluetooth_returns_bool",
-      "community": 4,
+      "community": 0,
       "norm_label": "test_enable_bluetooth_returns_bool()"
     },
     {
@@ -2654,7 +1997,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L39",
       "id": "tests_bluetooth_integration_test_enable_bluetooth_simulation_fallback",
-      "community": 4,
+      "community": 0,
       "norm_label": "test_enable_bluetooth_simulation_fallback()"
     },
     {
@@ -2672,7 +2015,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L65",
       "id": "tests_bluetooth_integration_test_no_fake_activation_when_bt_returns_error",
-      "community": 2,
+      "community": 3,
       "norm_label": "test_no_fake_activation_when_bt_returns_error()"
     },
     {
@@ -2717,7 +2060,7 @@
       "source_file": "tests/bluetooth_integration.rs",
       "source_location": "L144",
       "id": "tests_bluetooth_integration_test_scan_devices_dispatches_to_inner",
-      "community": 0,
+      "community": 4,
       "norm_label": "test_scan_devices_dispatches_to_inner()"
     },
     {
@@ -3693,244 +3036,6 @@
       "norm_label": "constraints & notes"
     },
     {
-      "label": "Box",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L33",
-      "community": 23,
-      "norm_label": "box",
-      "id": "box"
-    },
-    {
-      "label": "app()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L46",
-      "community": 23,
-      "norm_label": "app()",
-      "id": "blue2th_server_src_main_rs_src_main_app"
-    },
-    {
-      "label": "Router",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L46",
-      "community": 23,
-      "norm_label": "router",
-      "id": "router"
-    },
-    {
-      "label": "health()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L59",
-      "community": 23,
-      "norm_label": "health()",
-      "id": "src_main_health"
-    },
-    {
-      "label": "HealthStatus",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L59",
-      "community": 23,
-      "norm_label": "healthstatus",
-      "id": "blue2th_server_src_main_rs_healthstatus"
-    },
-    {
-      "label": "adapters()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
-      "community": 23,
-      "norm_label": "adapters()",
-      "id": "src_main_adapters"
-    },
-    {
-      "label": "Vec",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
-      "community": 23,
-      "norm_label": "vec",
-      "id": "blue2th_server_src_main_rs_vec"
-    },
-    {
-      "label": "AdapterInfo",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L64",
-      "community": 23,
-      "norm_label": "adapterinfo",
-      "id": "blue2th_server_src_main_rs_adapterinfo"
-    },
-    {
-      "label": "devices()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L69",
-      "community": 23,
-      "norm_label": "devices()",
-      "id": "src_main_devices"
-    },
-    {
-      "label": "DeviceInfo",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L69",
-      "community": 23,
-      "norm_label": "deviceinfo",
-      "id": "blue2th_server_src_main_rs_deviceinfo"
-    },
-    {
-      "label": "connect()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "community": 23,
-      "norm_label": "connect()",
-      "id": "src_main_connect"
-    },
-    {
-      "label": "String",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "community": 23,
-      "norm_label": "string",
-      "id": "blue2th_server_src_main_rs_string"
-    },
-    {
-      "label": "disconnect()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "community": 23,
-      "norm_label": "disconnect()",
-      "id": "src_main_disconnect"
-    },
-    {
-      "label": "parse_addr()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "community": 23,
-      "norm_label": "parse_addr()",
-      "id": "src_main_parse_addr"
-    },
-    {
-      "label": "Address",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "community": 23,
-      "norm_label": "address",
-      "id": "blue2th_server_src_main_rs_address"
-    },
-    {
-      "label": "scan()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
-      "community": 23,
-      "norm_label": "scan()",
-      "id": "src_main_scan"
-    },
-    {
-      "label": "Stream",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
-      "community": 23,
-      "norm_label": "stream",
-      "id": "blue2th_server_src_main_rs_stream"
-    },
-    {
-      "label": "Item",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L94",
-      "community": 23,
-      "norm_label": "item",
-      "id": "blue2th_server_src_main_rs_item"
-    },
-    {
-      "label": "AppError",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L114",
-      "community": 28,
-      "norm_label": "apperror",
-      "id": "src_main_apperror"
-    },
-    {
-      "label": ".into_response()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L117",
-      "community": 28,
-      "norm_label": ".into_response()",
-      "id": "src_main_apperror_into_response"
-    },
-    {
-      "label": ".from()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L124",
-      "community": 28,
-      "norm_label": ".from()",
-      "id": "src_main_apperror_from"
-    },
-    {
-      "label": "Self",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L124",
-      "community": 28,
-      "norm_label": "self",
-      "id": "blue2th_server_src_main_rs_self"
-    },
-    {
-      "label": "init_tracing()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L130",
-      "community": 23,
-      "norm_label": "init_tracing()",
-      "id": "src_main_init_tracing"
-    },
-    {
-      "label": "test_health_endpoint_returns_ok_status_and_version()",
-      "file_type": "code",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L143",
-      "community": 23,
-      "norm_label": "test_health_endpoint_returns_ok_status_and_version()",
-      "id": "src_main_test_health_endpoint_returns_ok_status_and_version"
-    },
-    {
-      "label": "build-dex.sh script",
-      "file_type": "code",
-      "source_file": "java/build-dex.sh",
-      "source_location": "L1",
-      "metadata": {
-        "language": "bash",
-        "kind": "bash_entrypoint"
-      },
-      "community": 20,
-      "norm_label": "build-dex.sh script",
-      "id": "home_orel_workspace_blue2th_java_build_dex_sh__entry"
-    },
-    {
-      "label": "App()",
-      "file_type": "code",
-      "source_file": "src/main.rs",
-      "source_location": "L148",
-      "community": 2,
-      "norm_label": "app()",
-      "id": "src_main_rs_src_main_app"
-    },
-    {
       "label": "connect_device()",
       "file_type": "code",
       "source_file": "src/bluetooth.rs",
@@ -4037,6 +3142,15 @@
       "community": 2,
       "norm_label": "main()",
       "id": "src_main_main"
+    },
+    {
+      "label": "App()",
+      "file_type": "code",
+      "source_file": "src/main.rs",
+      "source_location": "L116",
+      "community": 2,
+      "norm_label": "app()",
+      "id": "src_main_app"
     },
     {
       "label": "Java_dev_dioxus_main_WryActivity_onA2dpServiceConnected()",
@@ -4624,7 +3738,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 2,
+      "community": 3,
       "norm_label": "test_bt_enabled_stays_false_when_enable_bluetooth_returns_false",
       "id": "tests_bluetooth_integration_test_bt_enabled_stays_false_when_false"
     },
@@ -4650,7 +3764,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 2,
+      "community": 3,
       "norm_label": "review report \u2014 real bt adapter state detection",
       "id": "tdd_review_report"
     },
@@ -4730,26 +3844,6 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L70",
-      "weight": 1.0,
-      "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L59",
-      "weight": 1.0,
-      "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_playbackstatus",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
       "source_location": "L76",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -4785,46 +3879,6 @@
       "confidence_score": 1.0,
       "source": "blue2th_proto_src_lib_rs_src_lib",
       "target": "src_lib_test_health_status_round_trips_through_json"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L158",
-      "weight": 1.0,
-      "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_test_playback_state_round_trips_through_json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L143",
-      "weight": 1.0,
-      "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_test_playback_status_round_trips_through_json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L172",
-      "weight": 1.0,
-      "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_test_volume_request_round_trips_through_json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L79",
-      "weight": 1.0,
-      "source": "blue2th_proto_src_lib_rs_src_lib",
-      "target": "src_lib_volumerequest",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -4936,801 +3990,14 @@
       "target": "blue2th_proto_src_lib_rs_option"
     },
     {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-proto/src/lib.rs",
-      "source_location": "L72",
-      "weight": 1.0,
-      "context": "field",
-      "source": "src_lib_playbackstate",
-      "target": "src_lib_playbackstatus",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L27",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_audioengine",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L20",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_clamp_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L171",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_clamp_volume_above_range_saturates_to_one",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L163",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_clamp_volume_below_range_saturates_to_zero",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L179",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_clamp_volume_in_range_is_unchanged",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L188",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_new_engine_starts_stopped",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L214",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_pause_while_stopped_is_idempotent",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L196",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_playback_state_machine_full_cycle",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L231",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_set_volume_clamps_and_updates_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L222",
-      "weight": 1.0,
-      "source": "src_audio",
-      "target": "src_audio_test_stop_while_stopped_is_idempotent",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L80",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_set_volume",
-      "target": "src_audio_clamp_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L127",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "default",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L28",
-      "weight": 1.0,
-      "context": "field",
-      "source": "src_audio_audioengine",
-      "target": "playbackstatus",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L121",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_apply_sink_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L128",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_default",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L37",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_pause",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L115",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_pause_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_play",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L87",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_playback_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_resume_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L79",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_set_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L105",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_start_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L70",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_stop",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L118",
-      "weight": 1.0,
-      "source": "src_audio_audioengine",
-      "target": "src_audio_audioengine_stop_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L129",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_default",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L37",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_new",
-      "target": "blue2th_server_src_audio_rs_self",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L189",
-      "weight": 1.0,
-      "source": "src_audio_test_new_engine_starts_stopped",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L215",
-      "weight": 1.0,
-      "source": "src_audio_test_pause_while_stopped_is_idempotent",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L197",
-      "weight": 1.0,
-      "source": "src_audio_test_playback_state_machine_full_cycle",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L232",
-      "weight": 1.0,
-      "source": "src_audio_test_set_volume_clamps_and_updates_state",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L223",
-      "weight": 1.0,
-      "source": "src_audio_test_stop_while_stopped_is_idempotent",
-      "target": "src_audio_audioengine_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L128",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_default",
-      "target": "blue2th_server_src_audio_rs_self",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_play",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_play",
-      "target": "blue2th_server_src_audio_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L50",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_play",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L57",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_play",
-      "target": "src_audio_audioengine_playback_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L54",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_play",
-      "target": "src_audio_audioengine_resume_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L53",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_play",
-      "target": "src_audio_audioengine_start_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L199",
-      "weight": 1.0,
-      "source": "src_audio_test_playback_state_machine_full_cycle",
-      "target": "src_audio_audioengine_play",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L121",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_apply_sink_volume",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_pause",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_resume_output",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L79",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_set_volume",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L105",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_start_output",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L70",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_stop",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L145",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioerror_fmt",
-      "target": "blue2th_server_src_audio_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_pause",
-      "target": "blue2th_server_src_audio_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L87",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_audio_audioengine_playback_state",
-      "target": "blue2th_server_src_audio_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L79",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_set_volume",
-      "target": "blue2th_server_src_audio_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L70",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_stop",
-      "target": "blue2th_server_src_audio_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L121",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_apply_sink_volume",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_pause",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_resume_output",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L79",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_set_volume",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L105",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_start_output",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L70",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_audio_audioengine_stop",
-      "target": "blue2th_server_src_audio_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L63",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_pause",
-      "target": "src_audio_audioengine_pause_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L66",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_pause",
-      "target": "src_audio_audioengine_playback_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L216",
-      "weight": 1.0,
-      "source": "src_audio_test_pause_while_stopped_is_idempotent",
-      "target": "src_audio_audioengine_pause",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L202",
-      "weight": 1.0,
-      "source": "src_audio_test_playback_state_machine_full_cycle",
-      "target": "src_audio_audioengine_pause",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_stop",
-      "target": "src_audio_audioengine_playback_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L72",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_stop",
-      "target": "src_audio_audioengine_stop_output",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L208",
-      "weight": 1.0,
-      "source": "src_audio_test_playback_state_machine_full_cycle",
-      "target": "src_audio_audioengine_stop",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L224",
-      "weight": 1.0,
-      "source": "src_audio_test_stop_while_stopped_is_idempotent",
-      "target": "src_audio_audioengine_stop",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_set_volume",
-      "target": "src_audio_audioengine_apply_sink_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L83",
-      "weight": 1.0,
-      "source": "src_audio_audioengine_set_volume",
-      "target": "src_audio_audioengine_playback_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L234",
-      "weight": 1.0,
-      "source": "src_audio_test_set_volume_clamps_and_updates_state",
-      "target": "src_audio_audioengine_set_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L144",
-      "weight": 1.0,
-      "source": "src_audio_audioerror",
-      "target": "blue2th_server_src_audio_rs_display",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L154",
-      "weight": 1.0,
-      "source": "src_audio_audioerror",
-      "target": "blue2th_server_src_audio_rs_error",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L145",
-      "weight": 1.0,
-      "source": "src_audio_audioerror",
-      "target": "src_audio_audioerror_fmt",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/audio.rs",
-      "source_location": "L145",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_audio_audioerror_fmt",
-      "target": "blue2th_server_src_audio_rs_formatter",
-      "confidence_score": 1.0
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L45",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device"
+      "target": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5738,9 +4005,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L59",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth",
-      "target": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device"
+      "target": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -5822,9 +4089,9 @@
       "source_location": "L45",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "blue2th_server_src_bluetooth_rs_result"
+      "target": "blue2th_server_src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5833,9 +4100,9 @@
       "source_location": "L59",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "blue2th_server_src_bluetooth_rs_result"
+      "target": "blue2th_server_src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5910,9 +4177,9 @@
       "source_location": "L45",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo"
+      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5921,9 +4188,9 @@
       "source_location": "L59",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "blue2th_server_src_bluetooth_rs_deviceinfo"
+      "target": "blue2th_server_src_bluetooth_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5954,9 +4221,9 @@
       "source_location": "L45",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "blue2th_server_src_bluetooth_rs_address"
+      "target": "blue2th_server_src_bluetooth_rs_address",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -5965,9 +4232,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L55",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_device_info"
+      "target": "src_bluetooth_device_info",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -5976,9 +4243,9 @@
       "source_location": "L59",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "blue2th_server_src_bluetooth_rs_address"
+      "target": "blue2th_server_src_bluetooth_rs_address",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -5987,9 +4254,9 @@
       "source_file": "blue2th-server/src/bluetooth.rs",
       "source_location": "L65",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_device_info"
+      "target": "src_bluetooth_device_info",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -6023,1531 +4290,6 @@
       "confidence_score": 1.0,
       "source": "src_bluetooth_device_info",
       "target": "device"
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L9",
-      "weight": 1.0,
-      "context": "import",
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "arc",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L10",
-      "weight": 1.0,
-      "context": "import",
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "duration",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L8",
-      "weight": 1.0,
-      "context": "import",
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "infallible",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L24",
-      "weight": 1.0,
-      "context": "import",
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "mutex",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_adapters",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L65",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_app",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L181",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L37",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_appstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_connect",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_devices",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_disconnect",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L125",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_health",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L228",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_init_tracing",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L152",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_parse_addr",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_pause",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_play",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L119",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_playback",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_run",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_scan",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_stop",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L241",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_test_health_endpoint_returns_ok_status_and_version",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "source": "blue2th_server_src_lib_rs_src_lib",
-      "target": "src_lib_volume",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L42",
-      "weight": 1.0,
-      "context": "field",
-      "source": "src_lib_appstate",
-      "target": "arc",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L38",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_appstate",
-      "target": "audioengine",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L42",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_appstate",
-      "target": "blue2th_server_src_lib_rs_option",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L42",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_appstate",
-      "target": "blue2th_server_src_lib_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L42",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_appstate",
-      "target": "mutex",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_pause",
-      "target": "src_lib_appstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_play",
-      "target": "src_lib_appstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L119",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_playback",
-      "target": "src_lib_appstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_stop",
-      "target": "src_lib_appstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_volume",
-      "target": "src_lib_appstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L183",
-      "weight": 1.0,
-      "context": "field",
-      "source": "src_lib_apperror",
-      "target": "blue2th_server_src_lib_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L196",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_apperror_bad_request",
-      "target": "blue2th_server_src_lib_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_apperror_internal",
-      "target": "blue2th_server_src_lib_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_connect",
-      "target": "blue2th_server_src_lib_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_disconnect",
-      "target": "blue2th_server_src_lib_rs_string",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_run",
-      "target": "blue2th_server_src_lib_rs_box",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_run",
-      "target": "blue2th_server_src_lib_rs_error",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L52",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_run",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L59",
-      "weight": 1.0,
-      "source": "src_lib_run",
-      "target": "src_lib_app",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L53",
-      "weight": 1.0,
-      "source": "src_lib_run",
-      "target": "src_lib_init_tracing",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_adapters",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_connect",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_devices",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_disconnect",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L152",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_parse_addr",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_pause",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_play",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_scan",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_stop",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_volume",
-      "target": "blue2th_server_src_lib_rs_result",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L211",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_apperror",
-      "target": "blue2th_server_src_lib_rs_error",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L212",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_apperror_from",
-      "target": "blue2th_server_src_lib_rs_error",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L65",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_app",
-      "target": "blue2th_server_src_lib_rs_router",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L247",
-      "weight": 1.0,
-      "source": "src_lib_test_health_endpoint_returns_ok_status_and_version",
-      "target": "src_lib_app",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_play",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_play",
-      "target": "blue2th_server_src_lib_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "source": "src_lib_play",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L89",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_play",
-      "target": "state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_pause",
-      "target": "state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L119",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_playback",
-      "target": "state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_stop",
-      "target": "state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_volume",
-      "target": "state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "source": "src_lib_adapters",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "source": "src_lib_connect",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "source": "src_lib_devices",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "source": "src_lib_disconnect",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "return_type",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L125",
-      "weight": 1.0,
-      "source": "src_lib_health",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "source": "src_lib_pause",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "return_type",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L119",
-      "weight": 1.0,
-      "source": "src_lib_playback",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "source": "src_lib_stop",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "source": "src_lib_volume",
-      "target": "json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_adapters",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_connect",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L66",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_devices",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "context": "generic_arg",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_disconnect",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "context": "return_type",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L36",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_health",
-      "target": "json"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_pause",
-      "target": "blue2th_server_src_lib_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L119",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_playback",
-      "target": "blue2th_server_src_lib_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_stop",
-      "target": "blue2th_server_src_lib_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_volume",
-      "target": "blue2th_server_src_lib_rs_playbackstate",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_adapters",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_connect",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_devices",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_disconnect",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L152",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_parse_addr",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L98",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_pause",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_stop",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_volume",
-      "target": "apperror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_adapters",
-      "target": "apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_connect",
-      "target": "apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L66",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_devices",
-      "target": "apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_disconnect",
-      "target": "apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_parse_addr",
-      "target": "apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L110",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_volume",
-      "target": "volumerequest",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L125",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_health",
-      "target": "blue2th_server_src_lib_rs_healthstatus",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_adapters",
-      "target": "blue2th_server_src_lib_rs_adapterinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L130",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_adapters",
-      "target": "blue2th_server_src_lib_rs_vec",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_devices",
-      "target": "blue2th_server_src_lib_rs_vec",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L135",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_devices",
-      "target": "blue2th_server_src_lib_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_connect",
-      "target": "blue2th_server_src_lib_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_disconnect",
-      "target": "blue2th_server_src_lib_rs_deviceinfo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L141",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_connect",
-      "target": "path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L142",
-      "weight": 1.0,
-      "source": "src_lib_connect",
-      "target": "src_lib_parse_addr",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L147",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_disconnect",
-      "target": "path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "confidence_score": 1.0,
-      "source": "src_main_connect",
-      "target": "path"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "confidence_score": 1.0,
-      "source": "src_main_disconnect",
-      "target": "path"
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "tests/a2dp_dex_listener.rs",
-      "source_location": "L24",
-      "weight": 1.0,
-      "context": "import",
-      "confidence_score": 1.0,
-      "source": "tests_a2dp_dex_listener",
-      "target": "path"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L148",
-      "weight": 1.0,
-      "source": "src_lib_disconnect",
-      "target": "src_lib_parse_addr",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L152",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_parse_addr",
-      "target": "blue2th_server_src_lib_rs_address",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L154",
-      "weight": 1.0,
-      "source": "src_lib_parse_addr",
-      "target": "src_lib_apperror_bad_request",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_scan",
-      "target": "blue2th_server_src_lib_rs_item",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_scan",
-      "target": "blue2th_server_src_lib_rs_stream",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_scan",
-      "target": "event",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_scan",
-      "target": "infallible",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_scan",
-      "target": "sse",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L73",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "src_main_scan",
-      "target": "sse"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L73",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_scan",
-      "target": "event"
-    },
-    {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L6",
-      "weight": 1.0,
-      "context": "import",
-      "confidence_score": 1.0,
-      "source": "blue2th_server_src_main_rs_src_main",
-      "target": "infallible"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L73",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_scan",
-      "target": "infallible"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L217",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_lib_apperror",
-      "target": "blue2th_server_src_lib_rs_audioerror",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L217",
-      "weight": 1.0,
-      "source": "src_lib_apperror",
-      "target": "from",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L204",
-      "weight": 1.0,
-      "source": "src_lib_apperror",
-      "target": "intoresponse",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L196",
-      "weight": 1.0,
-      "source": "src_lib_apperror",
-      "target": "src_lib_apperror_bad_request",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L218",
-      "weight": 1.0,
-      "source": "src_lib_apperror",
-      "target": "src_lib_apperror_from",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "weight": 1.0,
-      "source": "src_lib_apperror",
-      "target": "src_lib_apperror_internal",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L205",
-      "weight": 1.0,
-      "source": "src_lib_apperror",
-      "target": "src_lib_apperror_into_response",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L182",
-      "weight": 1.0,
-      "context": "field",
-      "source": "src_lib_apperror",
-      "target": "statuscode",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L213",
-      "weight": 1.0,
-      "source": "src_lib_apperror_from",
-      "target": "src_lib_apperror_internal",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_apperror_internal",
-      "target": "blue2th_server_src_lib_rs_into",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L188",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_apperror_internal",
-      "target": "blue2th_server_src_lib_rs_self",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L196",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_apperror_bad_request",
-      "target": "blue2th_server_src_lib_rs_into",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L196",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_apperror_bad_request",
-      "target": "blue2th_server_src_lib_rs_self",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L218",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_apperror_from",
-      "target": "blue2th_server_src_lib_rs_self",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L221",
-      "weight": 1.0,
-      "source": "src_lib_apperror_from",
-      "target": "src_lib_apperror_bad_request",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L95",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_apperror",
-      "target": "intoresponse"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L205",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_lib_apperror_into_response",
-      "target": "response",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L96",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "src_main_apperror_into_response",
-      "target": "response"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L102",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_apperror",
-      "target": "from"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/lib.rs",
-      "source_location": "L218",
-      "weight": 1.0,
-      "context": "parameter_type",
-      "source": "src_lib_apperror_from",
-      "target": "blue2th_server_src_lib_rs_audioerror",
-      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -7592,6 +4334,17 @@
       "target": "duration"
     },
     {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L6",
+      "weight": 1.0,
+      "context": "import",
+      "confidence_score": 1.0,
+      "source": "blue2th_server_src_main_rs_src_main",
+      "target": "infallible"
+    },
+    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "blue2th-server/src/main.rs",
@@ -7617,9 +4370,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L75",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_connect"
+      "target": "src_main_connect",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -7637,9 +4390,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L81",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_disconnect"
+      "target": "src_main_disconnect",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -7667,9 +4420,9 @@
       "source_file": "blue2th-server/src/main.rs",
       "source_location": "L86",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
-      "target": "src_main_parse_addr"
+      "target": "src_main_parse_addr",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -7690,17 +4443,6 @@
       "confidence_score": 1.0,
       "source": "blue2th_server_src_main_rs_src_main",
       "target": "src_main_test_health_endpoint_returns_ok_status_and_version"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L7",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "blue2th_server_src_main_rs_src_main_main",
-      "target": "blue2th_server_src_main_rs_box",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -7775,9 +4517,9 @@
       "source_location": "L75",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_connect",
-      "target": "blue2th_server_src_main_rs_result"
+      "target": "blue2th_server_src_main_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -7797,9 +4539,9 @@
       "source_location": "L81",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_disconnect",
-      "target": "blue2th_server_src_main_rs_result"
+      "target": "blue2th_server_src_main_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -7808,9 +4550,9 @@
       "source_location": "L86",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_parse_addr",
-      "target": "blue2th_server_src_main_rs_result"
+      "target": "blue2th_server_src_main_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -7846,119 +4588,430 @@
       "target": "blue2th_server_src_main_rs_error"
     },
     {
-      "relation": "contains",
+      "relation": "references",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L23",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L28",
       "weight": 1.0,
-      "source": "tests_transport",
-      "target": "tests_transport_build_app",
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "blue2th_server_src_main_rs_src_main_app",
+      "target": "router"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L60",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main_test_health_endpoint_returns_ok_status_and_version",
+      "target": "blue2th_server_src_main_rs_src_main_app"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L36",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_health",
+      "target": "blue2th_server_src_main_rs_healthstatus"
+    },
+    {
+      "relation": "references",
+      "context": "return_type",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L36",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main_health",
+      "target": "json"
+    },
+    {
+      "relation": "references",
+      "context": "generic_arg",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L61",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main_adapters",
+      "target": "json"
+    },
+    {
+      "relation": "references",
+      "context": "generic_arg",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "weight": 1.0,
+      "source": "src_main_connect",
+      "target": "json",
       "confidence_score": 1.0
     },
     {
-      "relation": "contains",
+      "relation": "references",
+      "context": "generic_arg",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L86",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L66",
       "weight": 1.0,
-      "source": "tests_transport",
-      "target": "tests_transport_test_embedded_tone_decodes_to_non_silent_stereo_pcm",
-      "confidence_score": 1.0
+      "confidence_score": 1.0,
+      "source": "src_main_devices",
+      "target": "json"
     },
     {
-      "relation": "contains",
+      "relation": "references",
+      "context": "generic_arg",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L120",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L81",
       "weight": 1.0,
-      "source": "tests_transport",
-      "target": "tests_transport_test_play_links_running_output_node_to_pipewire_sink",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L68",
-      "weight": 1.0,
-      "source": "tests_transport",
-      "target": "tests_transport_test_play_without_connected_speaker_returns_client_error",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L32",
-      "weight": 1.0,
-      "source": "tests_transport",
-      "target": "tests_transport_test_playback_endpoint_returns_state",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L50",
-      "weight": 1.0,
-      "source": "tests_transport",
-      "target": "tests_transport_test_volume_endpoint_rejects_malformed_body",
+      "source": "src_main_disconnect",
+      "target": "json",
       "confidence_score": 1.0
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L23",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L61",
       "weight": 1.0,
-      "context": "return_type",
-      "source": "tests_transport_build_app",
-      "target": "blue2th_server_tests_transport_rs_router",
-      "confidence_score": 1.0
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_adapters",
+      "target": "apperror"
     },
     {
-      "relation": "calls",
-      "context": "call",
+      "relation": "references",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L145",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L61",
       "weight": 1.0,
-      "source": "tests_transport_test_play_links_running_output_node_to_pipewire_sink",
-      "target": "tests_transport_build_app",
-      "confidence_score": 1.0
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_adapters",
+      "target": "blue2th_server_src_main_rs_adapterinfo"
     },
     {
-      "relation": "calls",
-      "context": "call",
+      "relation": "references",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L61",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_adapters",
+      "target": "blue2th_server_src_main_rs_vec"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L66",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_devices",
+      "target": "blue2th_server_src_main_rs_vec"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
       "source_location": "L75",
       "weight": 1.0,
-      "source": "tests_transport_test_play_without_connected_speaker_returns_client_error",
-      "target": "tests_transport_build_app",
+      "context": "generic_arg",
+      "source": "src_main_connect",
+      "target": "apperror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L66",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_devices",
+      "target": "apperror"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L81",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_disconnect",
+      "target": "apperror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L86",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_parse_addr",
+      "target": "apperror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L66",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_devices",
+      "target": "blue2th_server_src_main_rs_deviceinfo"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_connect",
+      "target": "blue2th_server_src_main_rs_deviceinfo",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L81",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_disconnect",
+      "target": "blue2th_server_src_main_rs_deviceinfo",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_connect",
+      "target": "blue2th_server_src_main_rs_string",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L75",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "src_main_connect",
+      "target": "path",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L38",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L76",
       "weight": 1.0,
-      "source": "tests_transport_test_playback_endpoint_returns_state",
-      "target": "tests_transport_build_app",
+      "source": "src_main_connect",
+      "target": "src_main_parse_addr",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L81",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "src_main_disconnect",
+      "target": "path",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "confidence": "EXTRACTED",
+      "source_file": "tests/a2dp_dex_listener.rs",
+      "source_location": "L24",
+      "weight": 1.0,
+      "context": "import",
+      "source": "tests_a2dp_dex_listener",
+      "target": "path",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L81",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_disconnect",
+      "target": "blue2th_server_src_main_rs_string",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/tests/transport.rs",
-      "source_location": "L58",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L82",
       "weight": 1.0,
-      "source": "tests_transport_test_volume_endpoint_rejects_malformed_body",
-      "target": "tests_transport_build_app",
+      "source": "src_main_disconnect",
+      "target": "src_main_parse_addr",
       "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L86",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "src_main_parse_addr",
+      "target": "blue2th_server_src_main_rs_address",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L88",
+      "weight": 1.0,
+      "source": "src_main_parse_addr",
+      "target": "src_main_apperror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_scan",
+      "target": "blue2th_server_src_main_rs_item"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_scan",
+      "target": "blue2th_server_src_main_rs_stream"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_scan",
+      "target": "event"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "confidence_score": 1.0,
+      "source": "src_main_scan",
+      "target": "infallible"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L73",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_main_scan",
+      "target": "sse"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L102",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main_apperror",
+      "target": "from"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L95",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main_apperror",
+      "target": "intoresponse"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L104",
+      "weight": 1.0,
+      "context": "call",
+      "confidence_score": 1.0,
+      "source": "src_main_apperror_from",
+      "target": "src_main_apperror"
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L96",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main_apperror",
+      "target": "src_main_apperror_into_response"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L96",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_main_apperror_into_response",
+      "target": "response"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "blue2th-server/src/main.rs",
+      "source_location": "L103",
+      "weight": 1.0,
+      "context": "return_type",
+      "confidence_score": 1.0,
+      "source": "src_main_apperror_from",
+      "target": "blue2th_server_src_main_rs_self"
     },
     {
       "relation": "contains",
@@ -8087,16 +5140,6 @@
       "target": "home_orel_workspace_blue2th_java_build_dex_sh__entry"
     },
     {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "java/build-dex.sh",
-      "source_location": "L1",
-      "weight": 1.0,
-      "source": "java_build_dex",
-      "target": "home_orel_workspace_blue2th_play_a_local_audio_file_to_one_connected_speaker_phase_3_pipewire_transport_java_build_dex_sh__entry",
-      "confidence_score": 1.0
-    },
-    {
       "relation": "imports_from",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
@@ -8133,9 +5176,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L129",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_connect_device"
+      "target": "src_backend_connect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -8153,18 +5196,8 @@
       "source_file": "src/backend.rs",
       "source_location": "L136",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_disconnect_device"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L161",
-      "weight": 1.0,
-      "source": "src_backend",
-      "target": "src_backend_fetch_devices",
+      "target": "src_backend_disconnect_device",
       "confidence_score": 1.0
     },
     {
@@ -8193,9 +5226,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L141",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend",
-      "target": "src_backend_post_device_action"
+      "target": "src_backend_post_device_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -8315,9 +5348,9 @@
       "source_location": "L129",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_connect_device",
-      "target": "src_backend_backenderror"
+      "target": "src_backend_backenderror",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -8326,18 +5359,7 @@
       "source_location": "L136",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_disconnect_device",
-      "target": "src_backend_backenderror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L161",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_fetch_devices",
       "target": "src_backend_backenderror",
       "confidence_score": 1.0
     },
@@ -8359,9 +5381,9 @@
       "source_location": "L141",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_post_device_action",
-      "target": "src_backend_backenderror"
+      "target": "src_backend_backenderror",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -8412,17 +5434,6 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L165",
-      "weight": 1.0,
-      "source": "src_backend_fetch_devices",
-      "target": "src_backend_backenderror_new",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L71",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -8436,9 +5447,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L146",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_post_device_action",
-      "target": "src_backend_backenderror_new"
+      "target": "src_backend_backenderror_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -8513,9 +5524,9 @@
       "source_location": "L129",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_backend_connect_device",
-      "target": "src_backend_rs_result"
+      "target": "src_backend_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -8524,18 +5535,7 @@
       "source_location": "L136",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_backend_disconnect_device",
-      "target": "src_backend_rs_result"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L161",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "src_backend_fetch_devices",
       "target": "src_backend_rs_result",
       "confidence_score": 1.0
     },
@@ -8557,9 +5557,9 @@
       "source_location": "L141",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_backend_post_device_action",
-      "target": "src_backend_rs_result"
+      "target": "src_backend_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -8610,17 +5610,6 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L165",
-      "weight": 1.0,
-      "source": "src_backend_fetch_devices",
-      "target": "src_backend_describe",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L71",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -8634,9 +5623,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L150",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_post_device_action",
-      "target": "src_backend_describe"
+      "target": "src_backend_describe",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -8697,23 +5686,12 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/backend.rs",
-      "source_location": "L161",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_fetch_devices",
-      "target": "src_backend_rs_vec",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
       "source_location": "L129",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_connect_device",
-      "target": "src_backend_rs_deviceinfo"
+      "target": "src_backend_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -8722,18 +5700,7 @@
       "source_location": "L136",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_disconnect_device",
-      "target": "src_backend_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/backend.rs",
-      "source_location": "L161",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_backend_fetch_devices",
       "target": "src_backend_rs_deviceinfo",
       "confidence_score": 1.0
     },
@@ -8744,9 +5711,9 @@
       "source_location": "L141",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_backend_post_device_action",
-      "target": "src_backend_rs_deviceinfo"
+      "target": "src_backend_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -8755,9 +5722,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L130",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_connect_device",
-      "target": "src_backend_post_device_action"
+      "target": "src_backend_post_device_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -8766,9 +5733,9 @@
       "source_file": "src/backend.rs",
       "source_location": "L137",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_backend_disconnect_device",
-      "target": "src_backend_post_device_action"
+      "target": "src_backend_post_device_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -8987,9 +5954,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L39",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_rs_src_bluetooth_connect_device"
+      "target": "src_bluetooth_rs_src_bluetooth_connect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -8997,9 +5964,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L43",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth",
-      "target": "src_bluetooth_rs_src_bluetooth_disconnect_device"
+      "target": "src_bluetooth_rs_src_bluetooth_disconnect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -9488,9 +6455,9 @@
       "source_location": "L39",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_bluetootherror"
+      "target": "src_bluetooth_bluetootherror",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -9499,9 +6466,9 @@
       "source_location": "L43",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_bluetootherror"
+      "target": "src_bluetooth_bluetootherror",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -9752,9 +6719,9 @@
       "source_location": "L39",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_rs_result"
+      "target": "src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -9763,9 +6730,9 @@
       "source_location": "L43",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_rs_result"
+      "target": "src_bluetooth_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -10148,9 +7115,9 @@
       "source_location": "L39",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_rs_string"
+      "target": "src_bluetooth_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -10159,9 +7126,9 @@
       "source_location": "L43",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_rs_string"
+      "target": "src_bluetooth_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -10332,9 +7299,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L40",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_connect_device",
-      "target": "src_bluetooth_connect_device_inner"
+      "target": "src_bluetooth_connect_device_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -10343,9 +7310,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1012",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_test_connect_device_returns_ok_on_non_android",
-      "target": "src_bluetooth_rs_src_bluetooth_connect_device"
+      "target": "src_bluetooth_rs_src_bluetooth_connect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -10354,9 +7321,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L44",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_rs_src_bluetooth_disconnect_device",
-      "target": "src_bluetooth_disconnect_device_inner"
+      "target": "src_bluetooth_disconnect_device_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -10365,9 +7332,9 @@
       "source_file": "src/bluetooth.rs",
       "source_location": "L1027",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_bluetooth_test_disconnect_device_returns_ok_on_non_android",
-      "target": "src_bluetooth_rs_src_bluetooth_disconnect_device"
+      "target": "src_bluetooth_rs_src_bluetooth_disconnect_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -11947,35 +8914,14 @@
       "target": "src_bluetooth_test_locale_en_scan_scanning_is_loading"
     },
     {
-      "relation": "imports_from",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L15",
-      "weight": 1.0,
-      "context": "import",
-      "source": "src_main_rs_src_main",
-      "target": "hashset",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L150",
-      "weight": 1.0,
-      "source": "src_main_rs_src_main",
-      "target": "src_main_app",
-      "confidence_score": 1.0
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
       "source_location": "L463",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_backenddeviceitem"
+      "target": "src_main_backenddeviceitem",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -12063,9 +9009,9 @@
       "source_file": "src/main.rs",
       "source_location": "L451",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_main_rs_src_main",
-      "target": "src_main_replace_device"
+      "target": "src_main_replace_device",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -12242,17 +9188,6 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L162",
-      "weight": 1.0,
-      "source": "src_main_app",
-      "target": "src_main_backendonline",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
       "source_location": "L160",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -12396,9 +9331,9 @@
       "source_location": "L463",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_vec"
+      "target": "src_main_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12418,9 +9353,9 @@
       "source_location": "L451",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_replace_device",
-      "target": "src_main_rs_vec"
+      "target": "src_main_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12429,9 +9364,9 @@
       "source_location": "L463",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_string"
+      "target": "src_main_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12660,23 +9595,14 @@
     },
     {
       "relation": "references",
-      "confidence": "INFERRED",
-      "confidence_score": 0.75,
-      "source_file": "README.md",
-      "source_location": null,
-      "weight": 0.75,
-      "source": "readme_project_overview",
-      "target": "src_main_app"
-    },
-    {
-      "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
-      "source_location": "L62",
+      "source_location": "L117",
       "weight": 1.0,
+      "context": "return_type",
       "confidence_score": 1.0,
-      "source": "src_main",
-      "target": "src_main_app"
+      "source": "src_main_rs_src_main_app",
+      "target": "element"
     },
     {
       "relation": "references",
@@ -12688,17 +9614,6 @@
       "confidence_score": 1.0,
       "source": "src_main_app",
       "target": "element"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "src/main.rs",
-      "source_location": "L115",
-      "weight": 1.0,
-      "source": "src_main_app",
-      "target": "src_bluetooth_is_device_connected"
     },
     {
       "relation": "references",
@@ -12707,9 +9622,9 @@
       "source_location": "L463",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_main_backenddeviceitem",
-      "target": "element"
+      "target": "element",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12764,17 +9679,6 @@
       "context": "return_type",
       "confidence_score": 1.0,
       "source": "src_main_home",
-      "target": "element"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L117",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "src_main_rs_src_main_app",
       "target": "element"
     },
     {
@@ -12836,9 +9740,9 @@
       "source_location": "L463",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_option"
+      "target": "src_main_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12858,9 +9762,9 @@
       "source_location": "L451",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_main_replace_device",
-      "target": "signal"
+      "target": "signal",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12869,9 +9773,9 @@
       "source_location": "L451",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_main_replace_device",
-      "target": "src_main_rs_deviceinfo"
+      "target": "src_main_rs_deviceinfo",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12880,9 +9784,9 @@
       "source_location": "L463",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_main_backenddeviceitem",
-      "target": "signal"
+      "target": "signal",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -12902,19 +9806,8 @@
       "source_location": "L463",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_main_backenddeviceitem",
-      "target": "src_main_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "src/main.rs",
-      "source_location": "L470",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "source": "src_main_backenddeviceitem",
-      "target": "hashset",
+      "target": "src_main_rs_deviceinfo",
       "confidence_score": 1.0
     },
     {
@@ -14512,225 +11405,6 @@
       "target": "tdd_feature_unit_tests_synchronous_pure_logic"
     },
     {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L28",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "blue2th_server_src_main_rs_src_main_app",
-      "target": "router"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L60",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_test_health_endpoint_returns_ok_status_and_version",
-      "target": "blue2th_server_src_main_rs_src_main_app"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L36",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_health",
-      "target": "blue2th_server_src_main_rs_healthstatus"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_adapters",
-      "target": "blue2th_server_src_main_rs_adapterinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L61",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_adapters",
-      "target": "blue2th_server_src_main_rs_vec"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L66",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_devices",
-      "target": "blue2th_server_src_main_rs_vec"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L66",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_devices",
-      "target": "blue2th_server_src_main_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_connect",
-      "target": "blue2th_server_src_main_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_disconnect",
-      "target": "blue2th_server_src_main_rs_deviceinfo"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L75",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_connect",
-      "target": "blue2th_server_src_main_rs_string"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L76",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_connect",
-      "target": "src_main_parse_addr"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L81",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_disconnect",
-      "target": "blue2th_server_src_main_rs_string"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L82",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_disconnect",
-      "target": "src_main_parse_addr"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L86",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_parse_addr",
-      "target": "blue2th_server_src_main_rs_address"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L88",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_parse_addr",
-      "target": "src_main_apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L73",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_scan",
-      "target": "blue2th_server_src_main_rs_item"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L73",
-      "weight": 1.0,
-      "context": "generic_arg",
-      "confidence_score": 1.0,
-      "source": "src_main_scan",
-      "target": "blue2th_server_src_main_rs_stream"
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L96",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_main_apperror",
-      "target": "src_main_apperror_into_response"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L104",
-      "weight": 1.0,
-      "context": "call",
-      "confidence_score": 1.0,
-      "source": "src_main_apperror_from",
-      "target": "src_main_apperror"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "blue2th-server/src/main.rs",
-      "source_location": "L103",
-      "weight": 1.0,
-      "context": "return_type",
-      "confidence_score": 1.0,
-      "source": "src_main_apperror_from",
-      "target": "blue2th_server_src_main_rs_self"
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/bluetooth.rs",
@@ -14859,6 +11533,16 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/main.rs",
+      "source_location": "L62",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "src_main",
+      "target": "src_main_app"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main.rs",
       "source_location": "L215",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -14874,6 +11558,27 @@
       "confidence_score": 1.0,
       "source": "src_main",
       "target": "src_main_main"
+    },
+    {
+      "relation": "references",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 0.75,
+      "source": "readme_project_overview",
+      "target": "src_main_app"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/main.rs",
+      "source_location": "L115",
+      "weight": 1.0,
+      "source": "src_main_app",
+      "target": "src_bluetooth_is_device_connected"
     },
     {
       "relation": "calls",
@@ -15319,5 +12024,5 @@
       "source_file": "src/main.rs"
     }
   ],
-  "built_at_commit": "07e0c23f69e2aba7da2c6de201189e39690bcf9c"
+  "built_at_commit": "506f66ff6561d69c3d823ce46670e5c7cd11f932"
 }
