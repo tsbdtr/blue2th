@@ -24,6 +24,20 @@ device:
   connect_failed: "Échec de connexion à %{name}"
   disconnect_failed: "Échec de déconnexion de %{name}"
 
+transport:
+  title: "Lecture"
+  track: "Tonalité de test"
+  play: "Lire"
+  pause: "Pause"
+  stop: "Stop"
+  volume: "Volume"
+  no_speaker: "Aucune enceinte connectée"
+  status_playing: "En lecture"
+  status_paused: "En pause"
+  status_stopped: "Arrêté"
+  expand: "Agrandir le lecteur"
+  collapse: "Réduire le lecteur"
+
 settings:
   title: "⚙ %{name}"
   section_general: "Général"

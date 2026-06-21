@@ -346,6 +346,9 @@ body {
     width: 100%;
     box-sizing: border-box;
     padding: 0 16px;
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
 }
 
 .device-list-container {
@@ -479,6 +482,7 @@ body {
 
 /* Circular backdrop holding the signal bars. */
 .signal-badge {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -488,6 +492,26 @@ body {
     background: #1a1f2b;
     flex-shrink: 0;
     margin-left: 12px;
+}
+
+/* Unavailable device: strike the signal badge with a red diagonal line. */
+.signal-badge.struck::after {
+    content: '';
+    position: absolute;
+    left: 3px;
+    right: 3px;
+    top: 50%;
+    height: 2px;
+    border-radius: 1px;
+    background: #ef4444;
+    transform: rotate(-45deg);
+    transform-origin: center;
+}
+
+/* Unavailable row: dimmed and non-interactive. */
+.device-row.unavailable {
+    opacity: 0.55;
+    cursor: default;
 }
 
 /* Pinned rows have a lighter (#1a2035) background, so the badge needs a darker
@@ -792,4 +816,188 @@ body {
 @keyframes toast-in {
     from { transform: translateX(-50%) translateY(12px); opacity: 0; }
     to   { transform: translateX(-50%) translateY(0);    opacity: 1; }
+}
+
+/* ---- Phase 3: transport / player ------------------------------------------ */
+
+/* Pinned speakers card — always visible above the player stage. */
+.pinned-card {
+    border: 1px solid #2c3040;
+    border-radius: 10px;
+    background: #1e222d;
+    overflow: hidden;
+    margin-top: 12px;
+    flex: 0 0 auto;
+}
+
+/* Stage holding the scrollable device list and the bottom transport bar. The
+   transport bar is absolutely positioned within this stage, so expanding it
+   covers the device list but never the pinned card above. */
+.player-stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 160px;
+    margin: 12px 0;
+}
+
+.device-scroll {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    border: 1px solid #2c3040;
+    border-radius: 10px;
+    background: #1e222d;
+    scrollbar-width: thin;
+    scrollbar-color: #3b4258 transparent;
+}
+
+/* Keep the last rows clear of the collapsed transport bar when it is shown. */
+.device-scroll.has-player {
+    padding-bottom: 88px;
+}
+
+/* Inside the stage the scroll container owns the overflow, not the list. */
+.device-scroll .device-list {
+    max-height: none;
+    overflow: visible;
+}
+
+.transport-bar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    box-sizing: border-box;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 14px 14px;
+    background: #171b26;
+    border: 1px solid #2c3040;
+    border-radius: 12px;
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.55);
+    transition: top 0.22s ease;
+    z-index: 10;
+    /* Vertical drags on the bar expand/collapse it instead of scrolling. */
+    touch-action: none;
+}
+
+/* Expanded: fill the stage (covers the device list, never the pinned card). */
+.transport-bar.expanded {
+    top: 0;
+    overflow-y: auto;
+    justify-content: space-between;
+}
+
+.transport-handle {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Cancel the bar's top + side padding so the handle is flush at the top and
+       spans the full width. */
+    margin: -10px -14px 0;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 12px 12px 0 0;
+    background: #2a3142;
+    color: #8b9cc8;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+    /* Let the vertical drag gesture work instead of scrolling the page. */
+    touch-action: none;
+}
+.transport-handle:hover { background: #343d52; }
+.transport-handle .transport-handle-icon {
+    position: relative;
+    z-index: 1;
+}
+
+/* Press ripple, expanding from the centre (toggled via the `active` signal). */
+.transport-handle.active::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 120%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: rgba(139, 156, 200, 0.35);
+    transform: translate(-50%, -50%) scale(0);
+    animation: handle-ripple 0.45s ease-out;
+    pointer-events: none;
+}
+
+@keyframes handle-ripple {
+    from { transform: translate(-50%, -50%) scale(0); opacity: 0.6; }
+    to   { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+}
+
+.transport-meta { text-align: center; }
+.transport-title { font-size: 0.95rem; color: #e6ebf5; font-weight: 600; }
+.transport-track { font-size: 0.85rem; color: #8b9cc8; margin-top: 2px; }
+.transport-status { font-size: 0.8rem; color: #5a6480; margin-top: 6px; }
+
+.transport-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    /* Allow the volume slider to shrink instead of overflowing the bar. */
+    min-width: 0;
+}
+
+.transport-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border: none;
+    border-radius: 50%;
+    background: #2a3142;
+    color: #e6ebf5;
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.transport-btn:hover:not(:disabled) { background: #343d52; }
+.transport-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.transport-play { background: #2563eb; }
+.transport-play:hover:not(:disabled) { background: #3b76f0; }
+
+.transport-volume {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.transport-volume-icon { font-size: 0.95rem; }
+.transport-volume-slider {
+    flex: 1 1 auto;
+    min-width: 0;
+    accent-color: #2563eb;
+    cursor: pointer;
+    /* Keep horizontal dragging on the slider despite the bar's touch-action:none
+       (a non-auto value is not overridden by the ancestor). */
+    touch-action: pan-x;
+}
+.transport-volume-slider:disabled { opacity: 0.4; cursor: not-allowed; }
+.transport-volume-pct {
+    flex: 0 0 auto;
+    min-width: 40px;
+    text-align: right;
+    font-size: 0.8rem;
+    color: #8b9cc8;
+}
+
+.transport-hint {
+    text-align: center;
+    font-size: 0.78rem;
+    color: #5a6480;
 }

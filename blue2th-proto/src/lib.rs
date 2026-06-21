@@ -53,6 +53,34 @@ pub struct DeviceInfo {
     pub rssi: Option<i16>,
 }
 
+/// High-level playback status of the backend audio engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackStatus {
+    /// Nothing is playing.
+    Stopped,
+    /// Audio is actively playing.
+    Playing,
+    /// Playback is paused and can be resumed.
+    Paused,
+}
+
+/// Current playback state returned by the transport endpoints.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaybackState {
+    /// Whether the engine is stopped, playing or paused.
+    pub status: PlaybackStatus,
+    /// Current sink volume in `0.0..=1.0`.
+    pub volume: f32,
+}
+
+/// Body of `POST /volume` — the desired sink volume level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VolumeRequest {
+    /// Desired volume; the backend clamps it to `0.0..=1.0`.
+    pub level: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +135,43 @@ mod tests {
         let json = serde_json::to_string(&nameless).expect("serialize nameless DeviceInfo");
         let parsed: DeviceInfo = serde_json::from_str(&json).expect("deserialize nameless");
         assert_eq!(nameless, parsed);
+    }
+
+    // Criterion: `GET /playback` returns the current `PlaybackState` —
+    // PlaybackStatus must round-trip through JSON for every variant.
+    #[test]
+    fn test_playback_status_round_trips_through_json() {
+        for status in [
+            PlaybackStatus::Stopped,
+            PlaybackStatus::Playing,
+            PlaybackStatus::Paused,
+        ] {
+            let json = serde_json::to_string(&status).expect("serialize PlaybackStatus");
+            let parsed: PlaybackStatus =
+                serde_json::from_str(&json).expect("deserialize PlaybackStatus");
+            assert_eq!(status, parsed);
+        }
+    }
+
+    // Criterion: `GET /playback` returns the current `PlaybackState`.
+    #[test]
+    fn test_playback_state_round_trips_through_json() {
+        let original = PlaybackState {
+            status: PlaybackStatus::Playing,
+            volume: 0.5,
+        };
+        let json = serde_json::to_string(&original).expect("serialize PlaybackState");
+        let parsed: PlaybackState = serde_json::from_str(&json).expect("deserialize PlaybackState");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion: `POST /volume` body carries the desired level — VolumeRequest
+    // must round-trip through JSON.
+    #[test]
+    fn test_volume_request_round_trips_through_json() {
+        let original = VolumeRequest { level: 0.75 };
+        let json = serde_json::to_string(&original).expect("serialize VolumeRequest");
+        let parsed: VolumeRequest = serde_json::from_str(&json).expect("deserialize VolumeRequest");
+        assert_eq!(original, parsed);
     }
 }
