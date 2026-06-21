@@ -161,8 +161,7 @@ mod tests {
             volume: 0.5,
         };
         let json = serde_json::to_string(&original).expect("serialize PlaybackState");
-        let parsed: PlaybackState =
-            serde_json::from_str(&json).expect("deserialize PlaybackState");
+        let parsed: PlaybackState = serde_json::from_str(&json).expect("deserialize PlaybackState");
         assert_eq!(original, parsed);
     }
 
@@ -172,8 +171,7 @@ mod tests {
     fn test_volume_request_round_trips_through_json() {
         let original = VolumeRequest { level: 0.75 };
         let json = serde_json::to_string(&original).expect("serialize VolumeRequest");
-        let parsed: VolumeRequest =
-            serde_json::from_str(&json).expect("deserialize VolumeRequest");
+        let parsed: VolumeRequest = serde_json::from_str(&json).expect("deserialize VolumeRequest");
         assert_eq!(original, parsed);
     }
 }

@@ -5,8 +5,10 @@
 //! the existing `test_health_endpoint_*` style. They are expected to FAIL until
 //! the audio engine is implemented (red phase).
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use blue2th_proto::PlaybackState;
 use tower::ServiceExt; // for `oneshot`
 
@@ -113,14 +115,28 @@ fn test_embedded_tone_decodes_to_non_silent_stereo_pcm() {
 }
 
 // Criterion (gated hardware): with a PipeWire `module-null-sink` set as default,
-// `audio::play` must produce a running `Stream/Output/Audio` node linked to the
-// sink. Requires a live PipeWire daemon, so it is ignored in CI / normal runs.
-#[tokio::test]
+// `AudioEngine::play` (with the real `RodioOutput`) must produce a running
+// `Stream/Output/Audio` node in the PipeWire graph. Requires a live PipeWire
+// daemon + ALSA backend, so it is ignored in CI / normal runs. Drives the engine
+// directly (not the router) to exercise the real output seam without needing a
+// connected Bluetooth speaker.
+#[test]
 #[ignore = "requires a live PipeWire daemon; run manually with --ignored"]
-async fn test_play_links_running_output_node_to_pipewire_sink() {
-    use std::process::Command;
+fn test_play_streams_running_output_node_to_pipewire() {
+    use std::{process::Command, time::Duration};
 
-    // Load a null sink and set it as the default so playback has a target.
+    use blue2th_proto::PlaybackStatus;
+    use blue2th_server::audio::{AudioEngine, RodioOutput};
+
+    // Remember the current default sink so we can restore it afterwards.
+    let previous_default = Command::new("pactl")
+        .args(["get-default-sink"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Load an in-memory null sink and make it the default playback target.
     let load = Command::new("pactl")
         .args([
             "load-module",
@@ -131,34 +147,37 @@ async fn test_play_links_running_output_node_to_pipewire_sink() {
         .expect("load module-null-sink");
     let module_id = String::from_utf8_lossy(&load.stdout).trim().to_string();
     assert!(!module_id.is_empty(), "module-null-sink failed to load");
-
     let _ = Command::new("pactl")
         .args(["set-default-sink", "blue2th_test_sink"])
         .status();
 
-    // Drive the engine through the public router so the test mirrors real use.
-    let request = Request::builder()
-        .method("POST")
-        .uri("/play")
-        .body(Body::empty())
-        .expect("build request");
-    let response = build_app().oneshot(request).await.expect("router response");
-    assert_eq!(response.status(), StatusCode::OK);
+    // Drive the real rodio output.
+    let mut engine = AudioEngine::with_output(Box::new(RodioOutput::new()));
+    let state = engine.play().expect("play starts the output");
+    assert_eq!(state.status, PlaybackStatus::Playing);
 
-    // Inspect the graph: expect a running Stream/Output/Audio node.
+    // Let PipeWire register and run the output stream node.
+    std::thread::sleep(Duration::from_millis(800));
     let dump = Command::new("pw-dump").output().expect("run pw-dump");
     let graph = String::from_utf8_lossy(&dump.stdout);
-    assert!(
-        graph.contains("Stream/Output/Audio"),
-        "no Stream/Output/Audio node found in PipeWire graph"
-    );
-    assert!(
-        graph.contains("\"state\": \"running\""),
-        "output node is not in the running state"
-    );
 
-    // Tear down: unload the null sink module.
+    // Tear down before asserting so a failed assertion still restores audio.
+    let _ = engine.stop();
     let _ = Command::new("pactl")
         .args(["unload-module", &module_id])
         .status();
+    if let Some(prev) = previous_default {
+        let _ = Command::new("pactl")
+            .args(["set-default-sink", &prev])
+            .status();
+    }
+
+    assert!(
+        graph.contains("Stream/Output/Audio"),
+        "no Stream/Output/Audio node found in the PipeWire graph"
+    );
+    assert!(
+        graph.contains("\"state\": \"running\""),
+        "no running node found in the PipeWire graph"
+    );
 }

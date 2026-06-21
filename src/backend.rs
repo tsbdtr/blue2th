@@ -19,7 +19,7 @@
 
 use std::time::Duration;
 
-use blue2th_proto::{DeviceInfo, HealthStatus};
+use blue2th_proto::{DeviceInfo, HealthStatus, PlaybackState, VolumeRequest};
 use futures::StreamExt;
 
 /// How long the app keeps reading the `/scan` SSE feed before stopping. The
@@ -166,6 +166,72 @@ pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
         .error_for_status()
         .map_err(|e| BackendError::new(describe(&e)))?
         .json::<Vec<DeviceInfo>>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/play` — start (or resume) playback on the backend, returning the
+/// new playback state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn play() -> Result<PlaybackState, BackendError> {
+    post_transport("play").await
+}
+
+/// `POST {base}/pause` — pause playback, returning the new state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn pause() -> Result<PlaybackState, BackendError> {
+    post_transport("pause").await
+}
+
+/// `POST {base}/stop` — stop playback, returning the new state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn stop() -> Result<PlaybackState, BackendError> {
+    post_transport("stop").await
+}
+
+/// `GET {base}/playback` — the backend's current playback state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn playback_state() -> Result<PlaybackState, BackendError> {
+    let url = format!("{}/playback", backend_base_url().trim_end_matches('/'));
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<PlaybackState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/volume` — set the connected speaker's PipeWire sink volume
+/// (clamped server-side to `0.0..=1.0`), returning the new state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn set_volume(level: f32) -> Result<PlaybackState, BackendError> {
+    let url = format!("{}/volume", backend_base_url().trim_end_matches('/'));
+    reqwest::Client::new()
+        .post(&url)
+        .json(&VolumeRequest { level })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<PlaybackState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// POST `{base}/{action}` (no body) and decode the updated `PlaybackState`.
+async fn post_transport(action: &str) -> Result<PlaybackState, BackendError> {
+    let url = format!("{}/{action}", backend_base_url().trim_end_matches('/'));
+    reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<PlaybackState>()
         .await
         .map_err(|e| BackendError::new(describe(&e)))
 }

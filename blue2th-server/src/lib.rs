@@ -5,9 +5,7 @@
 //! in-process. Phase 0 only exposed `GET /health`; later phases add Bluetooth
 //! (`bluer`) and audio (PipeWire) routes — see `docs/ROADMAP.md`.
 
-use std::convert::Infallible;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     extract::{Path, State},
@@ -28,7 +26,7 @@ use tracing_subscriber::EnvFilter;
 pub mod audio;
 mod bluetooth;
 
-use audio::{AudioEngine, AudioError};
+use audio::{AudioEngine, AudioError, RodioOutput};
 
 /// Shared application state: the single audio engine guarded for concurrent
 /// access. The backend was stateless before phase 3; playback needs shared
@@ -64,7 +62,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// it in-process without binding a socket.
 pub fn app() -> Router {
     let state = AppState {
-        engine: Arc::new(Mutex::new(AudioEngine::new())),
+        // Real playback output (rodio → PipeWire); the device is opened lazily on
+        // the first `/play`, so building the router stays cheap and CI-safe.
+        engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
+            RodioOutput::new(),
+        )))),
         connected_speaker: Arc::new(Mutex::new(None)),
     };
 
@@ -85,11 +87,19 @@ pub fn app() -> Router {
         .with_state(state)
 }
 
-/// `POST /play` — start (or resume) playback of the embedded test file.
+/// `POST /play` — start (or resume) playback of the embedded test file on the
+/// connected speaker. Gated on the cached playback target, which `/connect`,
+/// `/scan` and `/devices` keep in sync with the live connection state.
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
-    if state.connected_speaker.lock().await.is_none() {
-        return Err(AudioError::NoSpeakerConnected.into());
-    }
+    // Clone the cached address to release the guard before the PipeWire calls.
+    let speaker = state
+        .connected_speaker
+        .lock()
+        .await
+        .clone()
+        .ok_or(AudioError::NoSpeakerConnected)?;
+    // Route audio output + volume to the speaker's PipeWire sink before playing.
+    audio::route_to_speaker(&speaker)?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
 }
@@ -106,19 +116,40 @@ async fn stop(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
     Ok(Json(engine.stop()?))
 }
 
-/// `POST /volume` — set the connected speaker's PipeWire sink volume (clamped).
+/// `POST /volume` — set the connected speaker's PipeWire sink volume (clamped),
+/// targeting that sink by name so it round-trips with `/playback`.
 async fn volume(
     State(state): State<AppState>,
     Json(req): Json<VolumeRequest>,
 ) -> Result<Json<PlaybackState>, AppError> {
+    // Clone the cached target to release the guard before the PipeWire call.
+    let speaker = state
+        .connected_speaker
+        .lock()
+        .await
+        .clone()
+        .ok_or(AudioError::NoSpeakerConnected)?;
+    audio::set_sink_volume(&speaker, req.level)?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.set_volume(req.level)?))
 }
 
-/// `GET /playback` — current playback state.
+/// `GET /playback` — current playback state, reconciled so it returns to
+/// `Stopped` once the tone ends on its own, and carrying the *live* sink volume
+/// so a change made on the speaker itself is reflected in the app.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
-    let engine = state.engine.lock().await;
-    Json(engine.playback_state())
+    let mut snapshot = {
+        let mut engine = state.engine.lock().await;
+        engine.poll_state()
+    };
+    // Clone the target out of the guard before the (blocking) PipeWire read.
+    let speaker = state.connected_speaker.lock().await.clone();
+    if let Some(speaker) = speaker {
+        if let Some(volume) = audio::sink_volume(&speaker) {
+            snapshot.volume = volume;
+        }
+    }
+    Json(snapshot)
 }
 
 /// `GET /health` — liveness probe carrying the backend version.
@@ -131,21 +162,46 @@ async fn adapters() -> Result<Json<Vec<AdapterInfo>>, AppError> {
     Ok(Json(bluetooth::list_adapters().await?))
 }
 
-/// `GET /devices` — paired devices on the default adapter.
-async fn devices() -> Result<Json<Vec<DeviceInfo>>, AppError> {
-    Ok(Json(bluetooth::list_paired_devices().await?))
+/// `GET /devices` — paired devices on the default adapter. Re-syncs the playback
+/// target with the live connection state so a speaker connected (or disconnected)
+/// outside the app is reflected for `/play`.
+async fn devices(State(state): State<AppState>) -> Result<Json<Vec<DeviceInfo>>, AppError> {
+    let devices = bluetooth::list_paired_devices().await?;
+    // Clone the address of the first connected device (if any) into the cache.
+    let connected = devices
+        .iter()
+        .find(|d| d.connected)
+        .map(|d| d.address.clone());
+    *state.connected_speaker.lock().await = connected;
+    Ok(Json(devices))
 }
 
 /// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its
-/// updated state.
-async fn connect(Path(addr): Path<String>) -> Result<Json<DeviceInfo>, AppError> {
-    Ok(Json(bluetooth::connect_device(parse_addr(&addr)?).await?))
+/// updated state. On success the device becomes the playback target so `/play`
+/// has somewhere to route audio.
+async fn connect(
+    State(state): State<AppState>,
+    Path(addr): Path<String>,
+) -> Result<Json<DeviceInfo>, AppError> {
+    let device = bluetooth::connect_device(parse_addr(&addr)?).await?;
+    // Clone the address: it is both stored as the playback target and returned
+    // to the caller in the device payload below.
+    *state.connected_speaker.lock().await = Some(device.address.clone());
+    Ok(Json(device))
 }
 
 /// `POST /devices/{addr}/disconnect` — disconnect a device, returning its
-/// updated state.
-async fn disconnect(Path(addr): Path<String>) -> Result<Json<DeviceInfo>, AppError> {
-    Ok(Json(bluetooth::disconnect_device(parse_addr(&addr)?).await?))
+/// updated state. Clears the playback target if it was this device.
+async fn disconnect(
+    State(state): State<AppState>,
+    Path(addr): Path<String>,
+) -> Result<Json<DeviceInfo>, AppError> {
+    let device = bluetooth::disconnect_device(parse_addr(&addr)?).await?;
+    let mut target = state.connected_speaker.lock().await;
+    if target.as_deref() == Some(device.address.as_str()) {
+        *target = None;
+    }
+    Ok(Json(device))
 }
 
 /// Parse a path MAC address, returning a 400-style error on malformed input.
@@ -157,10 +213,22 @@ fn parse_addr(addr: &str) -> Result<bluer::Address, AppError> {
 /// `GET /scan` — Server-Sent Events stream of devices discovered by an active
 /// scan. Emits a `device` event per discovery and an `error` event on failure;
 /// the scan stops after `SCAN_DURATION` or when the client disconnects.
-async fn scan() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn scan(State(state): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let deadline = tokio::time::sleep(SCAN_DURATION);
+    // Arc clone so the stream closure can heal the playback target as soon as a
+    // connected speaker is discovered (no need to wait for a /devices poll).
+    let target = state.connected_speaker.clone();
     let stream = bluetooth::scan_events()
-        .map(|result| {
+        .map(move |result| {
+            if let Ok(device) = &result {
+                if device.connected {
+                    if let Ok(mut guard) = target.try_lock() {
+                        // Clone the address into the cache; best-effort, skipped
+                        // if the lock is momentarily held elsewhere.
+                        *guard = Some(device.address.clone());
+                    }
+                }
+            }
             let event = match result {
                 Ok(device) => Event::default()
                     .event("device")
@@ -232,10 +300,13 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt; // for `oneshot`
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use super::*; // for `oneshot`
 
     #[tokio::test]
     async fn test_health_endpoint_returns_ok_status_and_version() {

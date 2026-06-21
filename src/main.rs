@@ -34,6 +34,10 @@ const BLUETOOTH_LOGO: Asset = asset!("/assets/bluetooth.svg");
 
 const MAX_CONNECTIONS: usize = 2;
 
+/// Vertical travel (px) past which a drag on the transport handle is treated as
+/// an expand/collapse gesture rather than a tap.
+const TRANSPORT_DRAG_THRESHOLD_PX: f64 = 24.0;
+
 /// Temporarily hide the legacy on-phone Bluetooth UI (scan button + device list)
 /// while the app transitions to driving the PC backend. The code path is kept
 /// intact for the future on-phone LE Audio feature (see docs/ROADMAP.md).
@@ -455,7 +459,10 @@ fn SignalBars(rssi: Option<i16>, #[props(default = false)] struck: bool) -> Elem
 }
 
 /// Replace the device with `info`'s address in `found` with its updated state.
-fn replace_device(found: &mut Signal<Vec<blue2th_proto::DeviceInfo>>, info: blue2th_proto::DeviceInfo) {
+fn replace_device(
+    found: &mut Signal<Vec<blue2th_proto::DeviceInfo>>,
+    info: blue2th_proto::DeviceInfo,
+) {
     let idx = found.read().iter().position(|d| d.address == info.address);
     if let Some(i) = idx {
         found.write()[i] = info;
@@ -477,7 +484,10 @@ fn BackendDeviceItem(
     let addr = device.address.clone();
     let connected = device.connected;
     let rssi = device.rssi;
-    let label = device.name.clone().unwrap_or_else(|| device.address.clone());
+    let label = device
+        .name
+        .clone()
+        .unwrap_or_else(|| device.address.clone());
 
     let in_flight = busy().as_deref() == Some(addr.as_str());
     // A connected device is reachable by definition, so it is never "unavailable".
@@ -599,6 +609,18 @@ fn BackendScan() -> Element {
     // Addresses found unreachable (a connect failed); cleared on a new scan.
     let mut unavailable: Signal<HashSet<String>> = use_signal(HashSet::new);
 
+    // Transport (phase 3): current playback state and whether the bottom player
+    // bar is expanded. Fetched once on mount; refreshed from each action's reply.
+    let mut playback: Signal<Option<blue2th_proto::PlaybackState>> = use_signal(|| None);
+    let expanded: Signal<bool> = use_signal(|| false);
+    use_hook(|| {
+        spawn(async move {
+            if let Ok(state) = backend::playback_state().await {
+                *playback.write() = Some(state);
+            }
+        });
+    });
+
     let backend_online = use_context::<BackendOnline>().0;
     // Drop stale scan results as soon as the backend becomes unreachable.
     use_effect(move || {
@@ -606,6 +628,26 @@ fn BackendScan() -> Element {
         if !backend_online() {
             found.write().clear();
         }
+    });
+
+    // Poll the playback state while online so the UI reflects changes made
+    // outside the app: the tone ending on its own, and the volume being changed
+    // on the speaker itself (AVRCP).
+    use_hook(|| {
+        let mut playback = playback;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if !*backend_online.peek() {
+                    continue;
+                }
+                if let Ok(state) = backend::playback_state().await {
+                    if playback.peek().as_ref() != Some(&state) {
+                        *playback.write() = Some(state);
+                    }
+                }
+            }
+        });
     });
 
     // Auto-dismiss errors as a transient toast (legacy toast UX). This runs in the
@@ -716,9 +758,30 @@ fn BackendScan() -> Element {
             // Sort the rest by signal strength: strongest (greenest) first, with
             // unknown RSSI last (Reverse(None) sorts after Reverse(Some(_))).
             others.sort_by_key(|d| std::cmp::Reverse(d.rssi));
+            // A connected speaker is required for playback; the transport bar is
+            // disabled otherwise.
+            let has_speaker = !connected.is_empty();
             rsx! {
-                div { class: "device-list-container",
-                    div { class: "device-list-wrapper",
+                // Pinned speakers — always visible, never covered by the player.
+                if has_speaker {
+                    ul { class: "pinned-devices pinned-card",
+                        for device in connected {
+                            BackendDeviceItem {
+                                key: "{device.address}",
+                                device: device.clone(),
+                                found,
+                                busy,
+                                error,
+                                unavailable,
+                            }
+                        }
+                    }
+                }
+                // Player stage: the scrollable device list with the transport bar
+                // anchored to its bottom. Expanding the bar covers the list only.
+                div { class: "player-stage",
+                    div {
+                        class: if has_speaker { "device-scroll has-player" } else { "device-scroll" },
                         if is_empty {
                             div { class: "device-list-empty",
                                 img {
@@ -729,20 +792,6 @@ fn BackendScan() -> Element {
                                 p { class: "device-list-empty-text", "{empty_label}" }
                             }
                         } else {
-                            if !connected.is_empty() {
-                                ul { class: "pinned-devices",
-                                    for device in connected {
-                                        BackendDeviceItem {
-                                            key: "{device.address}",
-                                            device: device.clone(),
-                                            found,
-                                            busy,
-                                            error,
-                                            unavailable,
-                                        }
-                                    }
-                                }
-                            }
                             ul { class: "device-list",
                                 for device in others {
                                     BackendDeviceItem {
@@ -757,7 +806,238 @@ fn BackendScan() -> Element {
                             }
                         }
                     }
+                    // The player only appears once a speaker is connected (so it
+                    // never shows before the backend/scan, nor with no target).
+                    if has_speaker {
+                        TransportBar { playback, expanded, has_speaker, error }
+                    }
                 }
+            }
+        }
+    }
+}
+
+/// Bottom transport bar (phase 3): play/pause, stop, and a PipeWire-sink volume
+/// slider. Collapsed it is a thin bar at the bottom of the player stage; expanded
+/// it covers the device list (but never the pinned speakers above it). Controls
+/// are disabled until a speaker is connected, since `/play` needs a target sink.
+#[component]
+fn TransportBar(
+    playback: Signal<Option<blue2th_proto::PlaybackState>>,
+    mut expanded: Signal<bool>,
+    has_speaker: bool,
+    error: Signal<Option<String>>,
+) -> Element {
+    use blue2th_proto::PlaybackStatus;
+    use_locale();
+
+    let status = playback()
+        .map(|p| p.status)
+        .unwrap_or(PlaybackStatus::Stopped);
+    let volume = playback().map(|p| p.volume).unwrap_or(1.0);
+    let is_playing = status == PlaybackStatus::Playing;
+
+    // Local slider value for smooth dragging; the backend is called on release
+    // (`onchange`) rather than on every tick (`oninput`).
+    let mut vol_draft = use_signal(|| volume);
+    // True while the user drags, so the polled backend volume does not fight the
+    // thumb under the finger.
+    let mut dragging = use_signal(|| false);
+    // Keep the slider in step with the backend volume (e.g. changed on the
+    // speaker itself), except while the user is actively dragging.
+    use_effect(move || {
+        if let Some(state) = playback() {
+            if !*dragging.peek() {
+                vol_draft.set(state.volume);
+            }
+        }
+    });
+    let vol_pct = (vol_draft() * 100.0).round() as i32;
+
+    // Y where a drag on the handle began, to tell an expand/collapse swipe from a
+    // tap on pointer release.
+    let mut drag_start_y = use_signal(|| Option::<f64>::None);
+    // Drives the press ripple via a signal (not CSS :active, which sticks on the
+    // Android WebView), matching the device-row pattern.
+    let mut handle_active = use_signal(|| false);
+    // Y where a drag anywhere on the bar began (separate from the handle's, since
+    // both can receive the bubbled pointer events).
+    let mut bar_drag_y = use_signal(|| Option::<f64>::None);
+
+    let bar_class = if expanded() {
+        "transport-bar expanded"
+    } else {
+        "transport-bar"
+    };
+    let toggle_icon = if expanded() { "⌄" } else { "⌃" };
+    let toggle_label = if expanded() {
+        rust_i18n::t!("transport.collapse")
+    } else {
+        rust_i18n::t!("transport.expand")
+    };
+    let (play_icon, play_label) = if is_playing {
+        ("⏸", rust_i18n::t!("transport.pause"))
+    } else {
+        ("▶", rust_i18n::t!("transport.play"))
+    };
+    let stop_label = rust_i18n::t!("transport.stop");
+    let status_label = match status {
+        PlaybackStatus::Playing => rust_i18n::t!("transport.status_playing"),
+        PlaybackStatus::Paused => rust_i18n::t!("transport.status_paused"),
+        PlaybackStatus::Stopped => rust_i18n::t!("transport.status_stopped"),
+    };
+
+    rsx! {
+        div {
+            class: "{bar_class}",
+            // Drag up/down anywhere on the bar expands/collapses it (the handle
+            // still toggles on tap). Children that need their own gesture (the
+            // volume slider) stop propagation so they never trigger this.
+            onpointerdown: move |e| {
+                *bar_drag_y.write() = Some(e.client_coordinates().y);
+            },
+            onpointermove: move |e| {
+                // Trigger as soon as the threshold is crossed (more reliable than
+                // waiting for pointerup, which a cancelled touch may skip).
+                let Some(start_y) = *bar_drag_y.peek() else {
+                    return;
+                };
+                let delta = e.client_coordinates().y - start_y;
+                if delta < -TRANSPORT_DRAG_THRESHOLD_PX {
+                    *expanded.write() = true;
+                    *bar_drag_y.write() = None;
+                } else if delta > TRANSPORT_DRAG_THRESHOLD_PX {
+                    *expanded.write() = false;
+                    *bar_drag_y.write() = None;
+                }
+            },
+            onpointerup: move |_| {
+                *bar_drag_y.write() = None;
+            },
+            button {
+                class: if handle_active() { "transport-handle active" } else { "transport-handle" },
+                title: "{toggle_label}",
+                aria_label: "{toggle_label}",
+                onpointerdown: move |e| {
+                    *drag_start_y.write() = Some(e.client_coordinates().y);
+                    // Fire the ripple and clear it after the animation so a quick
+                    // tap still plays it fully.
+                    *handle_active.write() = true;
+                    spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+                        *handle_active.write() = false;
+                    });
+                },
+                onpointerup: move |e| {
+                    let Some(start_y) = drag_start_y.write().take() else {
+                        return;
+                    };
+                    let delta = e.client_coordinates().y - start_y;
+                    // Drags are owned by the bar-level handler; the handle only
+                    // toggles on a short tap.
+                    if delta.abs() <= TRANSPORT_DRAG_THRESHOLD_PX {
+                        let now = expanded();
+                        *expanded.write() = !now;
+                    }
+                },
+                span { class: "transport-handle-icon", "{toggle_icon}" }
+            }
+            if expanded() {
+                div { class: "transport-meta",
+                    div { class: "transport-title", "{rust_i18n::t!(\"transport.title\")}" }
+                    div { class: "transport-track", "🎵 {rust_i18n::t!(\"transport.track\")}" }
+                    div { class: "transport-status", "{status_label}" }
+                }
+            }
+            div { class: "transport-controls",
+                button {
+                    class: "transport-btn transport-play",
+                    disabled: !has_speaker,
+                    title: "{play_label}",
+                    aria_label: "{play_label}",
+                    onclick: move |_| {
+                        if !has_speaker {
+                            return;
+                        }
+                        let mut playback = playback;
+                        let mut error = error;
+                        spawn(async move {
+                            let res = if is_playing {
+                                backend::pause().await
+                            } else {
+                                backend::play().await
+                            };
+                            match res {
+                                Ok(state) => *playback.write() = Some(state),
+                                Err(e) => *error.write() = Some(e.to_string()),
+                            }
+                        });
+                    },
+                    span { "{play_icon}" }
+                }
+                button {
+                    class: "transport-btn transport-stop",
+                    disabled: !has_speaker,
+                    title: "{stop_label}",
+                    aria_label: "{stop_label}",
+                    onclick: move |_| {
+                        if !has_speaker {
+                            return;
+                        }
+                        let mut playback = playback;
+                        let mut error = error;
+                        spawn(async move {
+                            match backend::stop().await {
+                                Ok(state) => *playback.write() = Some(state),
+                                Err(e) => *error.write() = Some(e.to_string()),
+                            }
+                        });
+                    },
+                    span { "⏹" }
+                }
+                div { class: "transport-volume",
+                    span { class: "transport-volume-icon", "🔊" }
+                    input {
+                        class: "transport-volume-slider",
+                        r#type: "range",
+                        min: "0",
+                        max: "1",
+                        step: "0.01",
+                        value: "{vol_draft}",
+                        disabled: !has_speaker,
+                        // Keep slider drags from bubbling to the bar's expand/
+                        // collapse gesture.
+                        onpointerdown: move |e| e.stop_propagation(),
+                        oninput: move |e| {
+                            *dragging.write() = true;
+                            if let Ok(v) = e.value().parse::<f32>() {
+                                *vol_draft.write() = v;
+                            }
+                        },
+                        onchange: move |e| {
+                            *dragging.write() = false;
+                            if !has_speaker {
+                                return;
+                            }
+                            if let Ok(v) = e.value().parse::<f32>() {
+                                let mut playback = playback;
+                                let mut error = error;
+                                spawn(async move {
+                                    match backend::set_volume(v).await {
+                                        Ok(state) => *playback.write() = Some(state),
+                                        Err(e) => *error.write() = Some(e.to_string()),
+                                    }
+                                });
+                            }
+                        },
+                    }
+                    if expanded() {
+                        span { class: "transport-volume-pct", "{vol_pct}%" }
+                    }
+                }
+            }
+            if !has_speaker {
+                div { class: "transport-hint", "{rust_i18n::t!(\"transport.no_speaker\")}" }
             }
         }
     }
@@ -1054,7 +1334,9 @@ fn DeviceSettings(name: String) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_connection_status, reconcile_connection_status, signal_bars, ConnectionStatus};
+    use super::{
+        merge_connection_status, reconcile_connection_status, signal_bars, ConnectionStatus,
+    };
 
     // AC: RSSI maps to a bar count (1..=4) and a colour, stronger = more bars/greener.
     #[test]

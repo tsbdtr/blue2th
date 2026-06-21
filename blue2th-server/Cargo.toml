@@ -19,12 +19,14 @@ blue2th-proto = { path = "../blue2th-proto" }
 bluer = { version = "0.17", features = ["bluetoothd"] }
 futures = "0.3"
 async-stream = "0.3"
-# Audio decoding (uses `symphonia`). Disposable phase 3-4 test source, kept
-# behind `audio.rs` so librespot can replace it in phase 5. Default features are
-# disabled to avoid the `cpal`/ALSA build dependency: phase 3 output is routed
-# through PipeWire, and only WAV decoding is needed here. The GREEN-phase
-# implementer enables whatever playback feature the chosen output path requires.
-rodio = { version = "0.22", default-features = false, features = ["wav"] }
+# Audio: WAV decoding (via `symphonia`) plus the `playback` backend (cpal → ALSA →
+# PipeWire) used to stream the embedded tone to the connected speaker's sink.
+# Disposable phase 3-4 test source, kept behind `audio.rs` so librespot can
+# replace it in phase 5. `cpal` needs the ALSA dev headers at build time
+# (`alsa-lib-devel`). The real output lives on a dedicated thread because cpal
+# streams are `!Send`; tests use a no-op output so they run without an audio
+# device. Volume targets the PipeWire sink (via `wpctl`), not rodio's gain.
+rodio = { version = "0.22", default-features = false, features = ["wav", "playback"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

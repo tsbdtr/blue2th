@@ -24,6 +24,20 @@ device:
   connect_failed: "Failed to connect to %{name}"
   disconnect_failed: "Failed to disconnect from %{name}"
 
+transport:
+  title: "Playback"
+  track: "Test tone"
+  play: "Play"
+  pause: "Pause"
+  stop: "Stop"
+  volume: "Volume"
+  no_speaker: "No speaker connected"
+  status_playing: "Playing"
+  status_paused: "Paused"
+  status_stopped: "Stopped"
+  expand: "Expand player"
+  collapse: "Collapse player"
+
 settings:
   title: "⚙ %{name}"
   section_general: "General"
