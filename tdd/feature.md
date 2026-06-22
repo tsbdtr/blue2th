@@ -25,18 +25,25 @@ PENDING
 <!-- Each criterion must map to one or more tests -->
 - [ ] PENDING
 
+## Layers touched
+<!-- Source of truth for which crates the TDD agents build/test. Check all that apply. -->
+<!-- mobile = blue2th (Dioxus/Android, src/) · server = blue2th-server (Axum/PipeWire) · proto = blue2th-proto (shared serde DTOs) -->
+- [ ] mobile (`blue2th` — `src/`, `tests/`, `assets/`, `locales/`)
+- [ ] server (`blue2th-server/`)
+- [ ] proto (`blue2th-proto/`)
+
 ## Technical Scope
 
 ### Files to modify
-<!-- Existing files that need changes -->
+<!-- Existing files that need changes, grouped by layer -->
 - PENDING
 
 ### Files to create
-<!-- New files if any -->
+<!-- New files if any, grouped by layer -->
 - PENDING
 
-### Server functions needed
-<!-- New async functions in bluetooth.rs if required -->
+### API / functions needed
+<!-- Per layer: mobile async fns + dispatcher (bluetooth.rs), server Axum routes/handlers + audio/transport logic, proto DTOs -->
 - PENDING
 
 ## Test Strategy
@@ -45,13 +52,15 @@ PENDING
 <!-- Tests with no async, no network -->
 - PENDING
 
-### Integration tests (async, server functions)
-<!-- Tests using #[tokio::test], covering bluetooth functions -->
+### Integration tests (async)
+<!-- mobile: tests/ + #[tokio::test] · server: blue2th-server/tests/ (e.g. route tests via tower oneshot) · proto: serde round-trip in lib.rs -->
+<!-- Hardware (BlueZ/PipeWire/audio device) is NOT test-runnable: cover pure logic, leave the hardware boundary to manual testing. -->
 - PENDING
 
 ## Constraints & Notes
 <!-- Technical constraints, edge cases to handle -->
-- Must pass `cargo test`
-- Must pass `cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented`
-- Must follow Dioxus 0.7 patterns (no cx/Scope/use_state)
+- Must pass `cargo test --workspace`
+- Must pass `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented`
+- If the **mobile** layer is touched: must pass `dx build --platform android`
+- Mobile code follows Dioxus 0.7 patterns (no cx/Scope/use_state); `blue2th-proto` stays target-agnostic
 - PENDING

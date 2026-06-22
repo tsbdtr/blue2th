@@ -3,6 +3,15 @@
 Orchestrates the Red → Green → Refactor TDD cycle using three sub-agents,
 each working in an isolated git worktree and receiving only the context relevant to its phase.
 
+This is a **cargo workspace** with three layers (see `docs/ROADMAP.md`):
+- **mobile** — `blue2th` (Dioxus/Android app, the root crate): `src/`, `tests/`, `assets/`, `locales/`.
+- **server** — `blue2th-server` (Axum/Tokio Linux backend, BlueZ + PipeWire): `blue2th-server/`.
+- **proto** — `blue2th-proto` (serde DTOs shared by both, target-agnostic): `blue2th-proto/`.
+
+A feature may touch one, two, or all three layers. The quality gates always run
+across the whole workspace; the Android NDK cross-build runs **only** when the
+mobile layer is affected.
+
 ## Usage
 `/tdd [test|impl|review|all|done]`
 
@@ -60,6 +69,23 @@ e. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 Read the agent file body (skip YAML frontmatter), build the prompt as described below,
 then spawn with `subagent_type: general-purpose`.
 
+#### 4.0 Determine the affected layers
+
+Build a `LAYERS` set from `tdd/feature.md`:
+
+1. Read the **Layers touched** section — it is the source of truth (checkboxes
+   for `mobile`, `server`, `proto`).
+2. Cross-check against the **Technical Scope** file paths, mapping each path to a layer:
+   - `blue2th-server/...` → **server**
+   - `blue2th-proto/...` → **proto**
+   - `src/...`, top-level `tests/...`, `assets/...`, `locales/...` → **mobile**
+3. If the two disagree, trust the file paths and warn the user.
+4. If nothing is decidable, default to all three layers (safest).
+
+Render `LAYERS` as a comma-separated list (e.g. `server, proto`) and inject it into
+every agent prompt under an `## Affected Layers` heading. Agents use it to decide
+whether to run the Android NDK cross-build (mobile only) and which crates to focus on.
+
 ---
 
 #### RED — tdd-test-writer
@@ -77,6 +103,11 @@ Branch: `<BRANCH>`
 
 ---
 
+## Affected Layers
+<LAYERS>
+
+---
+
 ## Feature Specification
 
 <full contents of tdd/feature.md>
@@ -86,9 +117,9 @@ Branch: `<BRANCH>`
 
 #### GREEN — tdd-implementer
 
-Before spawning, verify the RED phase output compiles:
+Before spawning, verify the RED phase output compiles across the whole workspace:
 ```bash
-cd "$WORKTREE_PATH" && cargo build --tests 2>&1 | tail -20
+cd "$WORKTREE_PATH" && cargo build --workspace --tests 2>&1 | tail -20
 ```
 If the build fails, **abort** and tell the user: "RED phase produced non-compiling tests — fix them before running impl."
 
@@ -107,6 +138,11 @@ Prompt structure:
 Work exclusively inside: `<WORKTREE_PATH>`
 Prefix every Bash command with: `cd <WORKTREE_PATH> &&`
 Branch: `<BRANCH>`
+
+---
+
+## Affected Layers
+<LAYERS>
 
 ---
 
@@ -155,6 +191,11 @@ Prompt structure:
 Work exclusively inside: `<WORKTREE_PATH>`
 Prefix every Bash command with: `cd <WORKTREE_PATH> &&`
 Branch: `<BRANCH>`
+
+---
+
+## Affected Layers
+<LAYERS>
 
 ---
 
