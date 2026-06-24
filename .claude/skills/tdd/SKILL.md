@@ -66,8 +66,16 @@ e. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 
 ### 4. Spawn agents with targeted context
 
-Read the agent file body (skip YAML frontmatter), build the prompt as described below,
-then spawn with `subagent_type: general-purpose`.
+Spawn each phase with its **dedicated** agent type — `tdd-test-writer` (RED),
+`tdd-implementer` (GREEN), `tdd-reviewer` (REFACTOR). These agents carry the right
+tool grants (`Read, Edit, Write, Bash`); `general-purpose` is denied `Read`/`Bash`
+by the permission hooks and will stall.
+
+Because the dedicated agent's `.md` body is already its system prompt, **do not**
+re-inject it into the prompt. Pass only the contextual sections shown below (the
+parts after the first `---`: Worktree, Affected Layers, and the phase-specific
+context). The leading `<...-body>` placeholder in each structure is therefore
+omitted when spawning a dedicated agent.
 
 #### 4.0 Determine the affected layers
 
