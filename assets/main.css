@@ -19,7 +19,8 @@ body {
     background-color: #0f1116;
     color: #ffffff;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    margin: 20px;
+    /* No top margin so the header sits flush against the top of the screen. */
+    margin: 0 20px 20px;
 }
 
 #hero {
@@ -67,14 +68,20 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    /* Subtle vertical gradient + soft elevation to set the header apart from the
-       cards below without drawing attention. */
-    background: linear-gradient(180deg, #242937 0%, #1e222d 100%);
+    /* Full-bleed: span the whole viewport width despite the body/.home
+       horizontal padding, flush to both edges. */
+    width: 100vw;
+    left: 50%;
+    transform: translateX(-50%);
+    /* Blue-tinted "hero" gradient echoing the title, fading toward the page
+       background at the bottom of the full-bleed banner. */
+    background: linear-gradient(180deg, #1a2740 0%, #11192a 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.25);
     border: 1px solid #2c3040;
-    border-radius: 16px;
+    /* No rounded corners while full-bleed so it sits flush to the edges. */
+    border-radius: 0;
     padding: 34px 32px;
-    margin-bottom: 56px;
+    margin-bottom: 16px;
 }
 
 /* Thin decorative arcs cresting just above and below the logo watermark,
@@ -183,8 +190,8 @@ body {
     width: fit-content;
     align-items: center;
     gap: 10px;
-    margin: 0 0 12px;
-    padding: 6px 12px;
+    margin: 0 0 8px;
+    padding: 4px 10px;
     background: #1e222d;
     border: 1px solid #374151;
     border-radius: 8px;
@@ -302,8 +309,8 @@ body {
     gap: 10px;
     width: 100%;
     box-sizing: border-box;
-    margin: 24px 0 20px 0;
-    padding: 14px 28px;
+    margin: 8px 0 20px 0;
+    padding: 10px 28px;
     background: #2563eb;
     color: #fff;
     border: none;
@@ -517,13 +524,16 @@ body {
 /* Pinned rows have a lighter (#1a2035) background, so the badge needs a darker
    fill there to stay visible. */
 .pinned-devices .signal-badge {
-    background: #0e1322;
+    /* Hidden in the pinned zone: a connected speaker is reachable by definition,
+       so its range indicator carries no useful information there. */
+    display: none;
 }
 
 /* In the pinned zone, nudge the signal + disconnect button closer to the
    right edge. */
 .pinned-devices .device-row {
     padding-right: 6px;
+    min-height: 80px;
 }
 
 /* Light vertical divider between the signal badge and the disconnect button. */
@@ -531,16 +541,15 @@ body {
     width: 1px;
     height: 24px;
     align-self: center;
-    margin-left: 8px;
     background: rgba(255, 255, 255, 0.12);
     flex-shrink: 0;
 }
 
-/* Visually balance the gap around the separator: the 44px button centres its
-   icon (~13px of inner left space) while the 32px signal circle leaves only
-   ~7px on its right, so a smaller button margin makes the *visible* gaps match. */
-.row-sep + .device-actions .btn-disconnect {
-    margin-left: 2px;
+/* The separator now sits *inside* device-actions, between the select and
+   disconnect buttons; the flex `gap` spaces it symmetrically, so neutralise the
+   disconnect button's own left margin. */
+.device-actions .btn-disconnect {
+    margin-left: 0;
 }
 
 /* Signal-strength bars (network-gauge style). Filled bar colours are set inline
@@ -687,7 +696,7 @@ body {
 
 .target-offset-slider {
     flex: 1;
-    accent-color: #4caf50;
+    accent-color: #8b5cf6;
 }
 
 .btn-settings {

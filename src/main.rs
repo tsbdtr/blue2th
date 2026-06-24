@@ -575,7 +575,6 @@ fn BackendDeviceItem(
             span { class: "device-name", "{label}" }
             SignalBars { rssi, struck: is_unavailable }
             if connected {
-                span { class: "row-sep" }
                 div { class: "device-actions",
                     button {
                         class: if selected { "btn-target selected" } else { "btn-target" },
@@ -603,6 +602,7 @@ fn BackendDeviceItem(
                         },
                         span { class: "btn-target-icon", if selected { "✓" } else { "+" } }
                     }
+                    span { class: "row-sep" }
                     button {
                         class: "btn-disconnect",
                         title: "{disconnect_label}",
@@ -707,10 +707,10 @@ fn BackendScan() -> Element {
     // Addresses found unreachable (a connect failed); cleared on a new scan.
     let mut unavailable: Signal<HashSet<String>> = use_signal(HashSet::new);
 
-    // Transport (phase 3): current playback state and whether the bottom player
-    // bar is expanded. Fetched once on mount; refreshed from each action's reply.
+    // Transport (phase 3): current playback state. Fetched once on mount;
+    // refreshed from each action's reply. The expand/collapse state lives inside
+    // TransportBar so it resets to expanded each time the bar (re)appears.
     let mut playback: Signal<Option<blue2th_proto::PlaybackState>> = use_signal(|| None);
-    let expanded: Signal<bool> = use_signal(|| false);
     use_hook(|| {
         spawn(async move {
             if let Ok(state) = backend::playback_state().await {
@@ -918,7 +918,7 @@ fn BackendScan() -> Element {
                 // anchored to its bottom. Expanding the bar covers the list only.
                 div { class: "player-stage",
                     div {
-                        class: if has_speaker { "device-scroll has-player" } else { "device-scroll" },
+                        class: if has_target { "device-scroll has-player" } else { "device-scroll" },
                         if is_empty {
                             div { class: "device-list-empty",
                                 img {
@@ -946,8 +946,8 @@ fn BackendScan() -> Element {
                     }
                     // The player only appears once a speaker is connected (so it
                     // never shows before the backend/scan, nor with no target).
-                    if has_speaker {
-                        TransportBar { playback, expanded, has_target, error }
+                    if has_target {
+                        TransportBar { playback, has_target, error }
                     }
                 }
             }
@@ -962,12 +962,15 @@ fn BackendScan() -> Element {
 #[component]
 fn TransportBar(
     playback: Signal<Option<blue2th_proto::PlaybackState>>,
-    mut expanded: Signal<bool>,
     has_target: bool,
     error: Signal<Option<String>>,
 ) -> Element {
     use blue2th_proto::PlaybackStatus;
     use_locale();
+
+    // Expand/collapse state is local so the bar (re)appears expanded each time it
+    // is mounted; the user can still collapse it while it is shown.
+    let mut expanded = use_signal(|| true);
 
     let status = playback()
         .map(|p| p.status)
