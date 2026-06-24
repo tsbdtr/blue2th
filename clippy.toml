@@ -1,6 +1,7 @@
 # Allow unwrap()/expect() inside #[cfg(test)] — idiomatic in Rust test code.
 # clippy::unwrap_used and clippy::expect_used are enabled via the cargo clippy command.
 allow-unwrap-in-tests = true
+allow-expect-in-tests = true
 
 # Forbid panic-prone macros in production code.
 # Using dedicated lints (clippy::panic etc.) instead of clippy::disallowed-macros
