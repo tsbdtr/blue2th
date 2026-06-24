@@ -19,7 +19,9 @@
 
 use std::time::Duration;
 
-use blue2th_proto::{DeviceInfo, HealthStatus, PlaybackState, VolumeRequest};
+use blue2th_proto::{
+    DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, TargetsState, VolumeRequest,
+};
 use futures::StreamExt;
 
 /// How long the app keeps reading the `/scan` SSE feed before stopping. The
@@ -236,6 +238,84 @@ async fn post_transport(action: &str) -> Result<PlaybackState, BackendError> {
         .map_err(|e| BackendError::new(describe(&e)))
 }
 
+/// Build the `{base}/devices/{address}/{action}` URL for a target action
+/// (`select`/`deselect`/`offset`), tolerating a trailing slash on the base.
+fn device_action_url(base: &str, address: &str, action: &str) -> String {
+    format!("{}/devices/{address}/{action}", base.trim_end_matches('/'))
+}
+
+/// Build the `{base}/targets` URL, tolerating a trailing slash on the base.
+fn targets_url(base: &str) -> String {
+    format!("{}/targets", base.trim_end_matches('/'))
+}
+
+/// `POST {base}/devices/{address}/select` — select a connected speaker as a
+/// playback target, returning the updated selection state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> {
+    let url = device_action_url(backend_base_url(), address, "select");
+    reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<TargetsState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/devices/{address}/deselect` — drop a speaker from the playback
+/// target selection, returning the updated selection state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError> {
+    let url = device_action_url(backend_base_url(), address, "deselect");
+    reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<TargetsState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/devices/{address}/offset` — set a target speaker's latency offset
+/// (clamped server-side to `0..=750` ms), returning the updated selection state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, BackendError> {
+    let url = device_action_url(backend_base_url(), address, "offset");
+    reqwest::Client::new()
+        .post(&url)
+        .json(&OffsetRequest { offset_ms })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<TargetsState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `GET {base}/targets` — the backend's current playback-target selection,
+/// per-speaker offsets and routing mode.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
+    let url = targets_url(backend_base_url());
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<TargetsState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive
 /// comments and non-device events.
 fn sse_device_payload(block: &str) -> Option<String> {
@@ -293,5 +373,49 @@ mod tests {
     fn test_sse_device_payload_ignores_non_device_and_comments() {
         assert_eq!(sse_device_payload("event:error\ndata:boom\n\n"), None);
         assert_eq!(sse_device_payload(": keep-alive\n\n"), None);
+    }
+
+    // Criterion: a connected speaker can be selected as a playback target — the
+    // client posts to `/devices/{addr}/select`.
+    #[test]
+    fn test_device_action_url_builds_select_path() {
+        assert_eq!(
+            device_action_url("http://10.0.0.5:4000", "AA:BB:CC:DD:EE:FF", "select"),
+            "http://10.0.0.5:4000/devices/AA:BB:CC:DD:EE:FF/select"
+        );
+    }
+
+    // Criterion: deselecting removes the speaker — the client posts to
+    // `/devices/{addr}/deselect`.
+    #[test]
+    fn test_device_action_url_builds_deselect_path() {
+        assert_eq!(
+            device_action_url("http://10.0.0.5:4000", "AA:BB:CC:DD:EE:FF", "deselect"),
+            "http://10.0.0.5:4000/devices/AA:BB:CC:DD:EE:FF/deselect"
+        );
+    }
+
+    // Criterion: a per-speaker latency offset can be set — the client posts to
+    // `/devices/{addr}/offset`.
+    #[test]
+    fn test_device_action_url_builds_offset_path_tolerating_trailing_slash() {
+        assert_eq!(
+            device_action_url("http://10.0.0.5:4000/", "AA:BB:CC:DD:EE:FF", "offset"),
+            "http://10.0.0.5:4000/devices/AA:BB:CC:DD:EE:FF/offset"
+        );
+    }
+
+    // Criterion: `GET /targets` returns the current selection — the client builds
+    // the `/targets` URL, tolerating a trailing slash.
+    #[test]
+    fn test_targets_url_appends_path() {
+        assert_eq!(
+            targets_url("http://10.0.0.5:4000"),
+            "http://10.0.0.5:4000/targets"
+        );
+        assert_eq!(
+            targets_url("http://10.0.0.5:4000/"),
+            "http://10.0.0.5:4000/targets"
+        );
     }
 }
