@@ -84,12 +84,15 @@ of CI.
 - **Mobile**: basic transport controls.
 - **Done when**: a local file plays on one speaker, controlled from the phone.
 
-### Phase 4 — Fan-out to TWO speakers ⭐ (original goal)
+### Phase 4 — Fan-out to TWO speakers ⭐ (original goal) — ✅ DONE
 - **Backend**: PipeWire **combined sink** spanning both BT sinks; route playback
   to it; expose a **per-speaker latency offset**.
 - **Mobile**: pick the two target speakers + a sync-offset slider.
 - **Done when**: the same track plays on two classic BT speakers, tunable to an
   acceptable sync. **This realizes the original goal (without Spotify).**
+- **Status**: shipped and **validated on hardware** — explicit two-speaker
+  selection (cap 2), per-speaker offset (0–750 ms) applied as `module-loopback`
+  branch latency over a shared null sink, single-speaker path preserved.
 
 ### Phase 5 — Spotify source ⭐ (full vision)
 - **Backend**: embed/spawn **`librespot`** → PC becomes a Spotify Connect device;

@@ -81,6 +81,48 @@ pub struct VolumeRequest {
     pub level: f32,
 }
 
+/// A speaker selected as a playback target, with its per-speaker latency offset.
+///
+/// Phase 4 (fan-out): the user picks up to two connected speakers and tunes each
+/// one's offset (ms) to align them. The offset is an absolute additive delay
+/// applied as branch latency on the combined sink; the backend clamps it to
+/// `0..=750` ms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeakerTarget {
+    /// Target speaker MAC address (matches `DeviceInfo::address`).
+    pub address: String,
+    /// Per-speaker latency offset in milliseconds (`0..=750`).
+    pub offset_ms: u32,
+}
+
+/// How the backend routes playback, derived from the number of selected targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingMode {
+    /// No target selected: nothing to play.
+    Idle,
+    /// Exactly one target: phase-3 single-speaker path (`set-default-sink`).
+    Single,
+    /// Two targets: a PipeWire combined sink spanning both speakers.
+    Combined,
+}
+
+/// Current playback-target selection returned by `GET /targets`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetsState {
+    /// Selected speakers (at most two) with their offsets.
+    pub speakers: Vec<SpeakerTarget>,
+    /// Routing mode derived from the selection count.
+    pub routing: RoutingMode,
+}
+
+/// Body of `POST /devices/{addr}/offset` — the desired per-speaker latency offset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OffsetRequest {
+    /// Desired offset in milliseconds; the backend clamps it to `0..=750`.
+    pub offset_ms: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +214,91 @@ mod tests {
         let original = VolumeRequest { level: 0.75 };
         let json = serde_json::to_string(&original).expect("serialize VolumeRequest");
         let parsed: VolumeRequest = serde_json::from_str(&json).expect("deserialize VolumeRequest");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion: the new proto DTOs round-trip through serde — SpeakerTarget.
+    #[test]
+    fn test_speaker_target_round_trips_through_json() {
+        let original = SpeakerTarget {
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            offset_ms: 120,
+        };
+        let json = serde_json::to_string(&original).expect("serialize SpeakerTarget");
+        let parsed: SpeakerTarget = serde_json::from_str(&json).expect("deserialize SpeakerTarget");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion: the new proto DTOs round-trip through serde — RoutingMode, all
+    // three variants, serialized lowercase.
+    #[test]
+    fn test_routing_mode_round_trips_through_json() {
+        for mode in [
+            RoutingMode::Idle,
+            RoutingMode::Single,
+            RoutingMode::Combined,
+        ] {
+            let json = serde_json::to_string(&mode).expect("serialize RoutingMode");
+            let parsed: RoutingMode = serde_json::from_str(&json).expect("deserialize RoutingMode");
+            assert_eq!(mode, parsed);
+        }
+    }
+
+    // Criterion: the routing mode is serialized in lowercase (shared contract).
+    #[test]
+    fn test_routing_mode_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&RoutingMode::Combined).expect("serialize"),
+            "\"combined\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RoutingMode::Single).expect("serialize"),
+            "\"single\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RoutingMode::Idle).expect("serialize"),
+            "\"idle\""
+        );
+    }
+
+    // Criterion: `GET /targets` returns the current selection, per-speaker offsets
+    // and routing mode — TargetsState must round-trip through JSON.
+    #[test]
+    fn test_targets_state_round_trips_through_json() {
+        let original = TargetsState {
+            speakers: vec![
+                SpeakerTarget {
+                    address: "AA:BB:CC:DD:EE:FF".to_string(),
+                    offset_ms: 0,
+                },
+                SpeakerTarget {
+                    address: "11:22:33:44:55:66".to_string(),
+                    offset_ms: 250,
+                },
+            ],
+            routing: RoutingMode::Combined,
+        };
+        let json = serde_json::to_string(&original).expect("serialize TargetsState");
+        let parsed: TargetsState = serde_json::from_str(&json).expect("deserialize TargetsState");
+        assert_eq!(original, parsed);
+
+        // An empty selection (Idle) must round-trip too.
+        let idle = TargetsState {
+            speakers: vec![],
+            routing: RoutingMode::Idle,
+        };
+        let json = serde_json::to_string(&idle).expect("serialize idle TargetsState");
+        let parsed: TargetsState =
+            serde_json::from_str(&json).expect("deserialize idle TargetsState");
+        assert_eq!(idle, parsed);
+    }
+
+    // Criterion: the new proto DTOs round-trip through serde — OffsetRequest.
+    #[test]
+    fn test_offset_request_round_trips_through_json() {
+        let original = OffsetRequest { offset_ms: 750 };
+        let json = serde_json::to_string(&original).expect("serialize OffsetRequest");
+        let parsed: OffsetRequest = serde_json::from_str(&json).expect("deserialize OffsetRequest");
         assert_eq!(original, parsed);
     }
 }

@@ -23,6 +23,9 @@ device:
   connected_count: "%{count}/2"
   connect_failed: "Échec de connexion à %{name}"
   disconnect_failed: "Échec de déconnexion de %{name}"
+  select_target: "Diffuser sur cette enceinte"
+  deselect_target: "Retirer cette enceinte"
+  offset: "Décalage"
 
 transport:
   title: "Lecture"
@@ -32,6 +35,7 @@ transport:
   stop: "Stop"
   volume: "Volume"
   no_speaker: "Aucune enceinte connectée"
+  no_target: "Sélectionnez une enceinte à diffuser"
   status_playing: "En lecture"
   status_paused: "En pause"
   status_stopped: "Arrêté"

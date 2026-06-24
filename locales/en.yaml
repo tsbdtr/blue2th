@@ -23,6 +23,9 @@ device:
   connected_count: "%{count}/2"
   connect_failed: "Failed to connect to %{name}"
   disconnect_failed: "Failed to disconnect from %{name}"
+  select_target: "Play on this speaker"
+  deselect_target: "Remove this speaker"
+  offset: "Offset"
 
 transport:
   title: "Playback"
@@ -32,6 +35,7 @@ transport:
   stop: "Stop"
   volume: "Volume"
   no_speaker: "No speaker connected"
+  no_target: "Select a speaker to play"
   status_playing: "Playing"
   status_paused: "Paused"
   status_stopped: "Stopped"

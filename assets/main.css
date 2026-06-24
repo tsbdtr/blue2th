@@ -633,6 +633,63 @@ body {
     color: #fff;
 }
 
+/* Phase 4: fan-out target selection + per-speaker latency offset. The row wraps
+   so the offset slider sits on its own line under a selected speaker. */
+.device-row {
+    flex-wrap: wrap;
+}
+
+.btn-target {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    color: #4caf50;
+    border: 1px solid #4caf50;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.btn-target.selected {
+    background: #4caf50;
+    color: #fff;
+}
+
+.btn-target-icon {
+    font-size: 1em;
+    line-height: 1;
+}
+
+@media (hover: hover) {
+    .btn-target:hover {
+        background: #4caf50;
+        color: #fff;
+    }
+}
+
+.target-offset {
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0 10px;
+}
+
+.target-offset-label {
+    font-size: 0.8em;
+    color: #9aa0b0;
+    white-space: nowrap;
+}
+
+.target-offset-slider {
+    flex: 1;
+    accent-color: #4caf50;
+}
+
 .btn-settings {
     margin-left: 6px;
     width: 28px;

@@ -480,6 +480,7 @@ fn BackendDeviceItem(
     busy: Signal<Option<String>>,
     error: Signal<Option<String>>,
     unavailable: Signal<HashSet<String>>,
+    targets: Signal<blue2th_proto::TargetsState>,
 ) -> Element {
     let addr = device.address.clone();
     let connected = device.connected;
@@ -488,6 +489,35 @@ fn BackendDeviceItem(
         .name
         .clone()
         .unwrap_or_else(|| device.address.clone());
+
+    // Phase 4: is this speaker a selected playback target, and at what offset?
+    let selected = targets.read().speakers.iter().any(|s| s.address == addr);
+    let offset_ms = targets
+        .read()
+        .speakers
+        .iter()
+        .find(|s| s.address == addr)
+        .map(|s| s.offset_ms)
+        .unwrap_or(0);
+    // Local slider value for smooth dragging; the backend is called on release
+    // (`onchange`). Kept in step with the backend offset, except while dragging.
+    let mut offset_draft = use_signal(|| offset_ms);
+    let mut offset_dragging = use_signal(|| false);
+    {
+        let addr_sync = addr.clone();
+        use_effect(move || {
+            let backend_offset = targets
+                .read()
+                .speakers
+                .iter()
+                .find(|s| s.address == addr_sync)
+                .map(|s| s.offset_ms)
+                .unwrap_or(0);
+            if !*offset_dragging.peek() {
+                offset_draft.set(backend_offset);
+            }
+        });
+    }
 
     let in_flight = busy().as_deref() == Some(addr.as_str());
     // A connected device is reachable by definition, so it is never "unavailable".
@@ -548,6 +578,32 @@ fn BackendDeviceItem(
                 span { class: "row-sep" }
                 div { class: "device-actions",
                     button {
+                        class: if selected { "btn-target selected" } else { "btn-target" },
+                        title: if selected { "{rust_i18n::t!(\"device.deselect_target\")}" } else { "{rust_i18n::t!(\"device.select_target\")}" },
+                        aria_label: if selected { "{rust_i18n::t!(\"device.deselect_target\")}" } else { "{rust_i18n::t!(\"device.select_target\")}" },
+                        onclick: {
+                            let addr = addr.clone();
+                            move |e: Event<MouseData>| {
+                                e.stop_propagation();
+                                let addr = addr.clone();
+                                let mut targets = targets;
+                                let mut error = error;
+                                spawn(async move {
+                                    let res = if selected {
+                                        backend::deselect_target(&addr).await
+                                    } else {
+                                        backend::select_target(&addr).await
+                                    };
+                                    match res {
+                                        Ok(state) => *targets.write() = state,
+                                        Err(e) => *error.write() = Some(e.to_string()),
+                                    }
+                                });
+                            }
+                        },
+                        span { class: "btn-target-icon", if selected { "✓" } else { "+" } }
+                    }
+                    button {
                         class: "btn-disconnect",
                         title: "{disconnect_label}",
                         aria_label: "{disconnect_label}",
@@ -589,6 +645,48 @@ fn BackendDeviceItem(
                         }
                     }
                 }
+                // Per-speaker latency offset, shown only once the speaker is a
+                // selected playback target (phase 4 sync tuning, 0..=750 ms).
+                if selected {
+                    div { class: "target-offset",
+                        span { class: "target-offset-label",
+                            "{rust_i18n::t!(\"device.offset\")}: {offset_draft} ms"
+                        }
+                        input {
+                            class: "target-offset-slider",
+                            r#type: "range",
+                            min: "0",
+                            max: "750",
+                            step: "10",
+                            value: "{offset_draft}",
+                            onpointerdown: move |e| e.stop_propagation(),
+                            onclick: move |e| e.stop_propagation(),
+                            oninput: move |e| {
+                                *offset_dragging.write() = true;
+                                if let Ok(v) = e.value().parse::<u32>() {
+                                    *offset_draft.write() = v;
+                                }
+                            },
+                            onchange: {
+                                let addr = addr.clone();
+                                move |e| {
+                                    *offset_dragging.write() = false;
+                                    if let Ok(v) = e.value().parse::<u32>() {
+                                        let addr = addr.clone();
+                                        let mut targets = targets;
+                                        let mut error = error;
+                                        spawn(async move {
+                                            match backend::set_offset(&addr, v).await {
+                                                Ok(state) => *targets.write() = state,
+                                                Err(e) => *error.write() = Some(e.to_string()),
+                                            }
+                                        });
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
             }
         }
     }
@@ -621,6 +719,22 @@ fn BackendScan() -> Element {
         });
     });
 
+    // Phase 4: the backend's playback-target selection (which speakers are picked
+    // for fan-out, plus each one's latency offset). Fetched once on mount and kept
+    // in step by each select/deselect/offset reply and the periodic refresh below.
+    let mut targets: Signal<blue2th_proto::TargetsState> =
+        use_signal(|| blue2th_proto::TargetsState {
+            speakers: Vec::new(),
+            routing: blue2th_proto::RoutingMode::Idle,
+        });
+    use_hook(|| {
+        spawn(async move {
+            if let Ok(state) = backend::fetch_targets().await {
+                *targets.write() = state;
+            }
+        });
+    });
+
     let backend_online = use_context::<BackendOnline>().0;
     // Drop stale scan results as soon as the backend becomes unreachable.
     use_effect(move || {
@@ -644,6 +758,25 @@ fn BackendScan() -> Element {
                 if let Ok(state) = backend::playback_state().await {
                     if playback.peek().as_ref() != Some(&state) {
                         *playback.write() = Some(state);
+                    }
+                }
+            }
+        });
+    });
+
+    // Poll the target selection while online so a speaker dropped server-side
+    // (e.g. it disconnected externally, recomputing the routing mode) is reflected.
+    use_hook(|| {
+        let mut targets = targets;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !*backend_online.peek() {
+                    continue;
+                }
+                if let Ok(state) = backend::fetch_targets().await {
+                    if *targets.peek() != state {
+                        *targets.write() = state;
                     }
                 }
             }
@@ -761,6 +894,9 @@ fn BackendScan() -> Element {
             // A connected speaker is required for playback; the transport bar is
             // disabled otherwise.
             let has_speaker = !connected.is_empty();
+            // At least one speaker must be *selected* as a target before `/play`
+            // has somewhere to route audio (phase 4 explicit selection).
+            let has_target = !targets().speakers.is_empty();
             rsx! {
                 // Pinned speakers — always visible, never covered by the player.
                 if has_speaker {
@@ -773,6 +909,7 @@ fn BackendScan() -> Element {
                                 busy,
                                 error,
                                 unavailable,
+                                targets,
                             }
                         }
                     }
@@ -801,6 +938,7 @@ fn BackendScan() -> Element {
                                         busy,
                                         error,
                                         unavailable,
+                                        targets,
                                     }
                                 }
                             }
@@ -809,7 +947,7 @@ fn BackendScan() -> Element {
                     // The player only appears once a speaker is connected (so it
                     // never shows before the backend/scan, nor with no target).
                     if has_speaker {
-                        TransportBar { playback, expanded, has_speaker, error }
+                        TransportBar { playback, expanded, has_target, error }
                     }
                 }
             }
@@ -825,7 +963,7 @@ fn BackendScan() -> Element {
 fn TransportBar(
     playback: Signal<Option<blue2th_proto::PlaybackState>>,
     mut expanded: Signal<bool>,
-    has_speaker: bool,
+    has_target: bool,
     error: Signal<Option<String>>,
 ) -> Element {
     use blue2th_proto::PlaybackStatus;
@@ -952,11 +1090,11 @@ fn TransportBar(
             div { class: "transport-controls",
                 button {
                     class: "transport-btn transport-play",
-                    disabled: !has_speaker,
+                    disabled: !has_target,
                     title: "{play_label}",
                     aria_label: "{play_label}",
                     onclick: move |_| {
-                        if !has_speaker {
+                        if !has_target {
                             return;
                         }
                         let mut playback = playback;
@@ -977,11 +1115,11 @@ fn TransportBar(
                 }
                 button {
                     class: "transport-btn transport-stop",
-                    disabled: !has_speaker,
+                    disabled: !has_target,
                     title: "{stop_label}",
                     aria_label: "{stop_label}",
                     onclick: move |_| {
-                        if !has_speaker {
+                        if !has_target {
                             return;
                         }
                         let mut playback = playback;
@@ -1004,7 +1142,7 @@ fn TransportBar(
                         max: "1",
                         step: "0.01",
                         value: "{vol_draft}",
-                        disabled: !has_speaker,
+                        disabled: !has_target,
                         // Keep slider drags from bubbling to the bar's expand/
                         // collapse gesture.
                         onpointerdown: move |e| e.stop_propagation(),
@@ -1016,7 +1154,7 @@ fn TransportBar(
                         },
                         onchange: move |e| {
                             *dragging.write() = false;
-                            if !has_speaker {
+                            if !has_target {
                                 return;
                             }
                             if let Ok(v) = e.value().parse::<f32>() {
@@ -1036,8 +1174,8 @@ fn TransportBar(
                     }
                 }
             }
-            if !has_speaker {
-                div { class: "transport-hint", "{rust_i18n::t!(\"transport.no_speaker\")}" }
+            if !has_target {
+                div { class: "transport-hint", "{rust_i18n::t!(\"transport.no_target\")}" }
             }
         }
     }

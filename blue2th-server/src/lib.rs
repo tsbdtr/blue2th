@@ -17,7 +17,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use blue2th_proto::{AdapterInfo, DeviceInfo, HealthStatus, PlaybackState, VolumeRequest};
+use blue2th_proto::{
+    AdapterInfo, DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, TargetsState,
+    VolumeRequest,
+};
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
@@ -25,19 +28,24 @@ use tracing_subscriber::EnvFilter;
 
 pub mod audio;
 mod bluetooth;
+pub mod targets;
 
 use audio::{AudioEngine, AudioError, RodioOutput};
+use targets::{SelectError, SpeakerTargets};
 
-/// Shared application state: the single audio engine guarded for concurrent
-/// access. The backend was stateless before phase 3; playback needs shared
-/// mutable state injected through the Axum router (no globals).
+/// Shared application state injected through the Axum router (no globals).
 #[derive(Clone)]
 struct AppState {
+    /// The audio engine, guarded for concurrent access.
     engine: Arc<Mutex<AudioEngine>>,
-    /// The speaker playback is routed to, if any. `None` until a Bluetooth
-    /// speaker is connected; `/play` is rejected with a 4xx while empty so we
-    /// never start a stream with nowhere to send it.
-    connected_speaker: Arc<Mutex<Option<String>>>,
+    /// The user's playback-target selection (0–2 speakers + offsets). `/play`
+    /// derives its routing mode from this; an empty selection (`Idle`) is
+    /// rejected with a 4xx so a stream never starts with nowhere to go.
+    targets: Arc<Mutex<SpeakerTargets>>,
+    /// Addresses of the currently connected speakers, kept in sync by
+    /// `connect`/`disconnect`/`devices`/`scan`. Used to validate a `select`
+    /// request and to drop disconnected speakers from the selection.
+    connected: Arc<Mutex<Vec<String>>>,
 }
 
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
@@ -67,7 +75,8 @@ pub fn app() -> Router {
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
             RodioOutput::new(),
         )))),
-        connected_speaker: Arc::new(Mutex::new(None)),
+        targets: Arc::new(Mutex::new(SpeakerTargets::new())),
+        connected: Arc::new(Mutex::new(Vec::new())),
     };
 
     Router::new()
@@ -76,6 +85,10 @@ pub fn app() -> Router {
         .route("/devices", get(devices))
         .route("/devices/{addr}/connect", post(connect))
         .route("/devices/{addr}/disconnect", post(disconnect))
+        .route("/devices/{addr}/select", post(select_target))
+        .route("/devices/{addr}/deselect", post(deselect_target))
+        .route("/devices/{addr}/offset", post(set_target_offset))
+        .route("/targets", get(get_targets))
         .route("/scan", get(scan))
         .route("/play", post(play))
         .route("/pause", post(pause))
@@ -87,19 +100,19 @@ pub fn app() -> Router {
         .with_state(state)
 }
 
-/// `POST /play` — start (or resume) playback of the embedded test file on the
-/// connected speaker. Gated on the cached playback target, which `/connect`,
-/// `/scan` and `/devices` keep in sync with the live connection state.
+/// `POST /play` — start (or resume) playback of the embedded test file, routed
+/// per the current target selection: one speaker uses the single-sink path, two
+/// build a PipeWire combined sink. An empty selection (`Idle`) is rejected (4xx).
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
-    // Clone the cached address to release the guard before the PipeWire calls.
-    let speaker = state
-        .connected_speaker
-        .lock()
-        .await
-        .clone()
-        .ok_or(AudioError::NoSpeakerConnected)?;
-    // Route audio output + volume to the speaker's PipeWire sink before playing.
-    audio::route_to_speaker(&speaker)?;
+    // Snapshot the selection and release the guard before the blocking PipeWire calls.
+    let speakers = state.targets.lock().await.speakers();
+    match speakers.len() {
+        0 => return Err(AudioError::NoSpeakerConnected.into()),
+        // One target: keep the phase-3 single-sink path (default-sink hijack).
+        1 => audio::route_to_speaker(&speakers[0].address)?,
+        // Two targets: fan out through a combined sink with per-speaker latency.
+        _ => audio::route_to_combined(&audio::combine_sink_plan(&speakers))?,
+    }
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
 }
@@ -116,36 +129,37 @@ async fn stop(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
     Ok(Json(engine.stop()?))
 }
 
-/// `POST /volume` — set the connected speaker's PipeWire sink volume (clamped),
-/// targeting that sink by name so it round-trips with `/playback`.
+/// `POST /volume` — set the selected speakers' PipeWire sink volume (clamped),
+/// applied to every target sink so both stay in step and round-trip with
+/// `/playback`. An empty selection is rejected (4xx).
 async fn volume(
     State(state): State<AppState>,
     Json(req): Json<VolumeRequest>,
 ) -> Result<Json<PlaybackState>, AppError> {
-    // Clone the cached target to release the guard before the PipeWire call.
-    let speaker = state
-        .connected_speaker
-        .lock()
-        .await
-        .clone()
-        .ok_or(AudioError::NoSpeakerConnected)?;
-    audio::set_sink_volume(&speaker, req.level)?;
+    // Snapshot the selection and release the guard before the PipeWire calls.
+    let speakers = state.targets.lock().await.speakers();
+    if speakers.is_empty() {
+        return Err(AudioError::NoSpeakerConnected.into());
+    }
+    for target in &speakers {
+        audio::set_sink_volume(&target.address, req.level)?;
+    }
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.set_volume(req.level)?))
 }
 
 /// `GET /playback` — current playback state, reconciled so it returns to
 /// `Stopped` once the tone ends on its own, and carrying the *live* sink volume
-/// so a change made on the speaker itself is reflected in the app.
+/// (of the first target) so a change made on the speaker itself is reflected.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
         engine.poll_state()
     };
-    // Clone the target out of the guard before the (blocking) PipeWire read.
-    let speaker = state.connected_speaker.lock().await.clone();
-    if let Some(speaker) = speaker {
-        if let Some(volume) = audio::sink_volume(&speaker) {
+    // Read the live volume from the first target's sink, outside the guard.
+    let first = state.targets.lock().await.speakers().into_iter().next();
+    if let Some(target) = first {
+        if let Some(volume) = audio::sink_volume(&target.address) {
             snapshot.volume = volume;
         }
     }
@@ -162,46 +176,97 @@ async fn adapters() -> Result<Json<Vec<AdapterInfo>>, AppError> {
     Ok(Json(bluetooth::list_adapters().await?))
 }
 
-/// `GET /devices` — paired devices on the default adapter. Re-syncs the playback
-/// target with the live connection state so a speaker connected (or disconnected)
-/// outside the app is reflected for `/play`.
+/// `GET /devices` — paired devices on the default adapter. Re-syncs the connected
+/// cache with the live state so a speaker connected (or disconnected) outside the
+/// app is reflected, and drops any disconnected speaker from the target selection.
 async fn devices(State(state): State<AppState>) -> Result<Json<Vec<DeviceInfo>>, AppError> {
     let devices = bluetooth::list_paired_devices().await?;
-    // Clone the address of the first connected device (if any) into the cache.
-    let connected = devices
-        .iter()
-        .find(|d| d.connected)
-        .map(|d| d.address.clone());
-    *state.connected_speaker.lock().await = connected;
+    sync_connected(&state, &devices).await;
     Ok(Json(devices))
 }
 
+/// Refresh the connected-address cache from a device list and drop any selected
+/// target that is no longer connected (keeping the selection and routing honest).
+async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
+    let connected: Vec<String> = devices
+        .iter()
+        .filter(|d| d.connected)
+        .map(|d| d.address.clone())
+        .collect();
+    *state.connected.lock().await = connected.clone();
+    state.targets.lock().await.retain_connected(&connected);
+}
+
 /// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its
-/// updated state. On success the device becomes the playback target so `/play`
-/// has somewhere to route audio.
+/// updated state. The device joins the connected cache so it becomes selectable
+/// as a playback target (selection itself is explicit, via `/select`).
 async fn connect(
     State(state): State<AppState>,
     Path(addr): Path<String>,
 ) -> Result<Json<DeviceInfo>, AppError> {
     let device = bluetooth::connect_device(parse_addr(&addr)?).await?;
-    // Clone the address: it is both stored as the playback target and returned
-    // to the caller in the device payload below.
-    *state.connected_speaker.lock().await = Some(device.address.clone());
+    {
+        let mut conn = state.connected.lock().await;
+        if !conn.iter().any(|a| a == &device.address) {
+            conn.push(device.address.clone());
+        }
+    }
     Ok(Json(device))
 }
 
-/// `POST /devices/{addr}/disconnect` — disconnect a device, returning its
-/// updated state. Clears the playback target if it was this device.
+/// `POST /devices/{addr}/disconnect` — disconnect a device, returning its updated
+/// state. Drops it from the connected cache and from the target selection.
 async fn disconnect(
     State(state): State<AppState>,
     Path(addr): Path<String>,
 ) -> Result<Json<DeviceInfo>, AppError> {
     let device = bluetooth::disconnect_device(parse_addr(&addr)?).await?;
-    let mut target = state.connected_speaker.lock().await;
-    if target.as_deref() == Some(device.address.as_str()) {
-        *target = None;
-    }
+    let connected = {
+        let mut conn = state.connected.lock().await;
+        conn.retain(|a| a != &device.address);
+        conn.clone()
+    };
+    state.targets.lock().await.retain_connected(&connected);
     Ok(Json(device))
+}
+
+/// `POST /devices/{addr}/select` — select a connected speaker as a playback
+/// target. Rejected (4xx) if it is not connected or the two-speaker cap is hit.
+async fn select_target(
+    State(state): State<AppState>,
+    Path(addr): Path<String>,
+) -> Result<Json<TargetsState>, AppError> {
+    let connected = { state.connected.lock().await.clone() };
+    let mut targets = state.targets.lock().await;
+    targets.select(&addr, &connected)?;
+    Ok(Json(targets.state()))
+}
+
+/// `POST /devices/{addr}/deselect` — drop a speaker from the target selection.
+async fn deselect_target(
+    State(state): State<AppState>,
+    Path(addr): Path<String>,
+) -> Json<TargetsState> {
+    let mut targets = state.targets.lock().await;
+    targets.deselect(&addr);
+    Json(targets.state())
+}
+
+/// `POST /devices/{addr}/offset` — set a target speaker's latency offset (clamped
+/// server-side to `0..=750` ms). A no-op if the speaker is not selected.
+async fn set_target_offset(
+    State(state): State<AppState>,
+    Path(addr): Path<String>,
+    Json(req): Json<OffsetRequest>,
+) -> Json<TargetsState> {
+    let mut targets = state.targets.lock().await;
+    targets.set_offset(&addr, req.offset_ms);
+    Json(targets.state())
+}
+
+/// `GET /targets` — the current selection, per-speaker offsets and routing mode.
+async fn get_targets(State(state): State<AppState>) -> Json<TargetsState> {
+    Json(state.targets.lock().await.state())
 }
 
 /// Parse a path MAC address, returning a 400-style error on malformed input.
@@ -215,17 +280,19 @@ fn parse_addr(addr: &str) -> Result<bluer::Address, AppError> {
 /// the scan stops after `SCAN_DURATION` or when the client disconnects.
 async fn scan(State(state): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let deadline = tokio::time::sleep(SCAN_DURATION);
-    // Arc clone so the stream closure can heal the playback target as soon as a
-    // connected speaker is discovered (no need to wait for a /devices poll).
-    let target = state.connected_speaker.clone();
+    // Arc clone so the stream closure can add a discovered connected speaker to
+    // the connected cache as soon as it is seen (no need to wait for a /devices poll).
+    let connected = state.connected.clone();
     let stream = bluetooth::scan_events()
         .map(move |result| {
             if let Ok(device) = &result {
                 if device.connected {
-                    if let Ok(mut guard) = target.try_lock() {
-                        // Clone the address into the cache; best-effort, skipped
-                        // if the lock is momentarily held elsewhere.
-                        *guard = Some(device.address.clone());
+                    if let Ok(mut guard) = connected.try_lock() {
+                        // Best-effort cache update; skipped if the lock is momentarily
+                        // held elsewhere. Removal is handled by /devices + /disconnect.
+                        if !guard.iter().any(|a| a == &device.address) {
+                            guard.push(device.address.clone());
+                        }
                     }
                 }
             }
@@ -288,6 +355,20 @@ impl From<AudioError> for AppError {
             // No connected speaker is a precondition failure, not a server bug.
             AudioError::NoSpeakerConnected => AppError::bad_request(err.to_string()),
             AudioError::Decode(_) | AudioError::PipeWire(_) => AppError::internal(err.to_string()),
+        }
+    }
+}
+
+impl From<SelectError> for AppError {
+    fn from(err: SelectError) -> Self {
+        // Both are bad client requests (not connected / cap exceeded), not server bugs.
+        match err {
+            SelectError::NotConnected => {
+                AppError::bad_request("speaker is not connected".to_string())
+            },
+            SelectError::CapExceeded => {
+                AppError::bad_request("at most two speakers can be selected".to_string())
+            },
         }
     }
 }

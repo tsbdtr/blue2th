@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use blue2th_proto::{PlaybackState, PlaybackStatus};
+use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
 
 /// The embedded test tone shipped with the backend (2s 440Hz stereo sine,
 /// 48kHz PCM 16-bit).
@@ -385,6 +385,52 @@ fn run_audio_thread(rx: Receiver<AudioCmd>, ended: Arc<AtomicBool>) {
     }
 }
 
+/// One branch of a PipeWire combined sink: the speaker's `bluez_output.*` sink
+/// node name and the per-speaker latency (ms) to apply to that branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombineBranch {
+    /// The speaker's `bluez_output.*` sink node-name prefix (from
+    /// [`bluez_sink_prefix`]); the hardware seam resolves it to the live node
+    /// (which carries a trailing card suffix, e.g. `.1`).
+    pub sink: String,
+    /// Branch latency in milliseconds (the speaker's offset).
+    pub latency_ms: u32,
+}
+
+/// Pure plan for a PipeWire combined sink spanning two speakers' sinks, with each
+/// speaker's offset captured as branch latency. Building this performs no I/O; the
+/// hardware seam (`route_to_combined` / `teardown_combined`) consumes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombineSinkSpec {
+    /// Node name of the combined sink to create.
+    pub sink_name: String,
+    /// The member branches, one per target speaker.
+    pub branches: Vec<CombineBranch>,
+}
+
+/// Build the (pure, testable) combined-sink plan for the given targets: each
+/// target maps to its `bluez_output.*` sink name and its offset as branch
+/// latency. Used by the two-speaker route path; performs no I/O.
+pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
+    let branches = targets
+        .iter()
+        .map(|t| CombineBranch {
+            sink: bluez_sink_prefix(&t.address),
+            latency_ms: t.offset_ms,
+        })
+        .collect();
+    CombineSinkSpec {
+        sink_name: "blue2th_combined".to_string(),
+        branches,
+    }
+}
+
+/// Derive the `bluez_output.*` PipeWire sink node-name prefix for a speaker MAC
+/// (colons → underscores, upper-cased), matching what BlueZ creates.
+pub fn bluez_sink_prefix(mac: &str) -> String {
+    format!("bluez_output.{}", mac.to_uppercase().replace(':', "_"))
+}
+
 /// Point the default PipeWire sink at the connected Bluetooth speaker so the
 /// rodio output (which opens the default device) and the `wpctl` volume both
 /// target it. Phase 4 will route to a combined sink instead of hijacking the
@@ -394,23 +440,106 @@ pub fn route_to_speaker(mac: &str) -> Result<(), AudioError> {
     set_default_sink(&sink)
 }
 
-/// Find the PipeWire sink BlueZ created for a speaker, matched by its MAC. The
-/// node name looks like `bluez_output.AA_BB_CC_DD_EE_FF.1` (colons → underscores).
-fn bluetooth_sink_for(mac: &str) -> Result<String, AudioError> {
-    let prefix = format!("bluez_output.{}", mac.to_uppercase().replace(':', "_"));
+/// Route playback to a PipeWire combined sink spanning the plan's speakers, so the
+/// player (which opens the default sink) fans out to both, each delayed by its own
+/// offset for tunable sync. Built as a shared null sink the player feeds, plus one
+/// delayed `module-loopback` per speaker into its real `bluez_output.*` sink.
+///
+/// Hardware seam (PipeWire/`pactl`): not exercised by CI, validated manually on a
+/// real two-speaker setup. Idempotent — it tears any previous combined sink down
+/// first so repeated `/play` calls do not stack modules.
+pub fn route_to_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
+    teardown_combined(&spec.sink_name)?;
+    // The shared virtual sink the player streams into.
+    load_module(&[
+        "module-null-sink".to_string(),
+        format!("sink_name={}", spec.sink_name),
+        format!("sink_properties=node.description={}", spec.sink_name),
+    ])?;
+    // One delayed loopback per speaker: combined.monitor -> real sink, with the
+    // speaker's offset applied as loopback latency (the per-branch sync tuning).
+    for branch in &spec.branches {
+        let real = find_sink_with_prefix(&branch.sink).ok_or_else(|| {
+            AudioError::PipeWire(format!("no PipeWire sink for prefix {}", branch.sink))
+        })?;
+        load_module(&[
+            "module-loopback".to_string(),
+            format!("source={}.monitor", spec.sink_name),
+            format!("sink={real}"),
+            format!("latency_msec={}", branch.latency_ms),
+            "source_dont_move=true".to_string(),
+            "sink_dont_move=true".to_string(),
+        ])?;
+    }
+    // Make the player target the combined sink.
+    set_default_sink(&spec.sink_name)
+}
+
+/// Tear down a combined sink built by [`route_to_combined`]: unload the null sink
+/// and every loopback whose arguments reference `sink_name`. Best-effort — a
+/// missing module is not an error (the combined sink may simply not exist yet).
+pub fn teardown_combined(sink_name: &str) -> Result<(), AudioError> {
     let output = Command::new("pactl")
-        .args(["list", "short", "sinks"])
+        .args(["list", "short", "modules"])
         .output()
         .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
     if !output.status.success() {
-        return Err(AudioError::PipeWire("pactl list sinks failed".to_string()));
+        return Err(AudioError::PipeWire(
+            "pactl list modules failed".to_string(),
+        ));
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.contains(sink_name) {
+            if let Some(id) = line.split('\t').next() {
+                // Best-effort: ignore failures so one stale module cannot block teardown.
+                let _ = Command::new("pactl").args(["unload-module", id]).status();
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Load a PipeWire module via `pactl load-module <args...>`, mapping a failure to
+/// an [`AudioError::PipeWire`].
+fn load_module(args: &[String]) -> Result<(), AudioError> {
+    let status = Command::new("pactl")
+        .arg("load-module")
+        .args(args)
+        .status()
+        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AudioError::PipeWire(format!(
+            "pactl load-module failed: {status}"
+        )))
+    }
+}
+
+/// Find the PipeWire sink BlueZ created for a speaker, matched by its MAC. The
+/// node name looks like `bluez_output.AA_BB_CC_DD_EE_FF.1` (colons → underscores),
+/// matched against the prefix from [`bluez_sink_prefix`].
+fn bluetooth_sink_for(mac: &str) -> Result<String, AudioError> {
+    find_sink_with_prefix(&bluez_sink_prefix(mac))
+        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
+}
+
+/// Resolve a live PipeWire sink node-name from its `bluez_output.*` prefix (which
+/// the combined-sink plan stores without the trailing card suffix). Returns
+/// `None` if no sink currently matches or `pactl` is unavailable.
+fn find_sink_with_prefix(prefix: &str) -> Option<String> {
+    let output = Command::new("pactl")
+        .args(["list", "short", "sinks"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| line.split('\t').nth(1))
-        .find(|name| name.starts_with(&prefix))
+        .find(|name| name.starts_with(prefix))
         .map(|name| name.to_string())
-        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
 }
 
 /// Make `sink` the default PipeWire sink (by node name) via `pactl`.
@@ -584,5 +713,50 @@ mod tests {
 
         let state = engine.set_volume(-1.0).expect("set negative volume");
         assert_eq!(state.volume, 0.0);
+    }
+
+    // The PipeWire sink node-name prefix is derived from a MAC by upper-casing and
+    // replacing colons with underscores (matches `bluetooth_sink_for`).
+    #[test]
+    fn test_bluez_sink_prefix_maps_mac_to_node_prefix() {
+        assert_eq!(
+            bluez_sink_prefix("aa:bb:cc:dd:ee:ff"),
+            "bluez_output.AA_BB_CC_DD_EE_FF"
+        );
+    }
+
+    // Criterion: with two targets, the combined-sink plan lists both speakers'
+    // `bluez_output.*` sink names and each speaker's offset as branch latency.
+    #[test]
+    fn test_combine_sink_plan_lists_both_sinks_and_offsets() {
+        let targets = vec![
+            SpeakerTarget {
+                address: "AA:BB:CC:DD:EE:FF".to_string(),
+                offset_ms: 0,
+            },
+            SpeakerTarget {
+                address: "11:22:33:44:55:66".to_string(),
+                offset_ms: 250,
+            },
+        ];
+
+        let spec = combine_sink_plan(&targets);
+        assert_eq!(spec.branches.len(), 2);
+
+        let first = &spec.branches[0];
+        assert!(
+            first.sink.starts_with("bluez_output.AA_BB_CC_DD_EE_FF"),
+            "first branch must target the first speaker's bluez sink, got {}",
+            first.sink
+        );
+        assert_eq!(first.latency_ms, 0);
+
+        let second = &spec.branches[1];
+        assert!(
+            second.sink.starts_with("bluez_output.11_22_33_44_55_66"),
+            "second branch must target the second speaker's bluez sink, got {}",
+            second.sink
+        );
+        assert_eq!(second.latency_ms, 250);
     }
 }
