@@ -18,8 +18,8 @@ use axum::{
     Json, Router,
 };
 use blue2th_proto::{
-    AdapterInfo, DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, TargetsState,
-    VolumeRequest,
+    AdapterInfo, DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, SpotifyState,
+    TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -28,9 +28,11 @@ use tracing_subscriber::EnvFilter;
 
 pub mod audio;
 mod bluetooth;
+pub mod spotify;
 pub mod targets;
 
 use audio::{AudioEngine, AudioError, RodioOutput};
+use spotify::{SpotifyBackend, SpotifyError};
 use targets::{SelectError, SpeakerTargets};
 
 /// Shared application state injected through the Axum router (no globals).
@@ -46,6 +48,9 @@ struct AppState {
     /// `connect`/`disconnect`/`devices`/`scan`. Used to validate a `select`
     /// request and to drop disconnected speakers from the selection.
     connected: Arc<Mutex<Vec<String>>>,
+    /// The Spotify source backend (a `librespot` subprocess), guarded for
+    /// concurrent access by the `/spotify/*` handlers.
+    spotify: Arc<Mutex<SpotifyBackend>>,
 }
 
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
@@ -77,6 +82,7 @@ pub fn app() -> Router {
         )))),
         targets: Arc::new(Mutex::new(SpeakerTargets::new())),
         connected: Arc::new(Mutex::new(Vec::new())),
+        spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
     };
 
     Router::new()
@@ -95,6 +101,9 @@ pub fn app() -> Router {
         .route("/stop", post(stop))
         .route("/volume", post(volume))
         .route("/playback", get(playback))
+        .route("/spotify/start", post(spotify_start))
+        .route("/spotify/stop", post(spotify_stop))
+        .route("/spotify/status", get(spotify_status))
         // Permissive CORS for LAN development; tightened in a later phase.
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -164,6 +173,30 @@ async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
         }
     }
     Json(snapshot)
+}
+
+/// `POST /spotify/start` — activate the Spotify source backend: snapshot the
+/// current target selection (like `/play`) and spawn the `librespot` Connect
+/// device pointed at the matching sink. An empty selection is rejected (400).
+async fn spotify_start(State(state): State<AppState>) -> Result<Json<SpotifyState>, AppError> {
+    // Snapshot the selection and release the guard before touching the backend.
+    let speakers = state.targets.lock().await.speakers();
+    let mut spotify = state.spotify.lock().await;
+    Ok(Json(spotify.start(&speakers)?))
+}
+
+/// `POST /spotify/stop` — deactivate the Spotify source backend (kill the
+/// subprocess), returning its reconciled state.
+async fn spotify_stop(State(state): State<AppState>) -> Result<Json<SpotifyState>, AppError> {
+    let mut spotify = state.spotify.lock().await;
+    Ok(Json(spotify.stop()?))
+}
+
+/// `GET /spotify/status` — the Spotify backend's current state, reconciled so a
+/// subprocess that exited on its own is reported as `Stopped`.
+async fn spotify_status(State(state): State<AppState>) -> Json<SpotifyState> {
+    let mut spotify = state.spotify.lock().await;
+    Json(spotify.poll_liveness())
 }
 
 /// `GET /health` — liveness probe carrying the backend version.
@@ -359,6 +392,19 @@ impl From<AudioError> for AppError {
     }
 }
 
+impl From<SpotifyError> for AppError {
+    fn from(err: SpotifyError) -> Self {
+        match err {
+            // No selected speaker is a precondition failure, not a server bug.
+            SpotifyError::NoSpeakerSelected => AppError::bad_request(err.to_string()),
+            // A missing binary or failed spawn is a backend/server-side fault.
+            SpotifyError::BackendMissing | SpotifyError::Spawn(_) => {
+                AppError::internal(err.to_string())
+            },
+        }
+    }
+}
+
 impl From<SelectError> for AppError {
     fn from(err: SelectError) -> Self {
         // Both are bad client requests (not connected / cap exceeded), not server bugs.
@@ -406,5 +452,28 @@ mod tests {
 
         assert_eq!(parsed.status, "ok");
         assert_eq!(parsed.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // Criterion: a `NoSpeakerSelected` error maps to a 400 (precondition failure),
+    // so `POST /spotify/start` with no target rejects the client.
+    #[test]
+    fn test_spotify_no_speaker_selected_maps_to_bad_request() {
+        let err: AppError = SpotifyError::NoSpeakerSelected.into();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    // Criterion: a `NotFound` spawn error (`BackendMissing`) maps to a 500 with a
+    // clear message ("Spotify backend unavailable").
+    #[test]
+    fn test_spotify_backend_missing_maps_to_internal_error() {
+        let err: AppError = SpotifyError::BackendMissing.into();
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Criterion: any other spawn failure maps to a 500 carrying the OS message.
+    #[test]
+    fn test_spotify_spawn_error_maps_to_internal_error() {
+        let err: AppError = SpotifyError::Spawn("permission denied".to_string()).into();
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
