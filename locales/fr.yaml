@@ -42,6 +42,16 @@ transport:
   expand: "Agrandir le lecteur"
   collapse: "Réduire le lecteur"
 
+spotify:
+  title: "Spotify"
+  hint: "Diffusez Spotify sur vos enceintes via blue2th-PC"
+  start: "Activer Spotify"
+  stop: "Arrêter Spotify"
+  working: "En cours…"
+  status_running: "Backend Spotify actif"
+  status_stopped: "Backend Spotify arrêté"
+  no_target: "Sélectionnez d'abord une enceinte"
+
 settings:
   title: "⚙ %{name}"
   section_general: "Général"

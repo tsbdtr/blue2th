@@ -913,6 +913,9 @@ fn BackendScan() -> Element {
                             }
                         }
                     }
+                    // Spotify source toggle — sits with the pinned card so it stays
+                    // visible above the player stage (phase 5.1).
+                    SpotifySource { targets, error }
                 }
                 // Player stage: the scrollable device list with the transport bar
                 // anchored to its bottom. Expanding the bar covers the list only.
@@ -1179,6 +1182,135 @@ fn TransportBar(
             }
             if !has_target {
                 div { class: "transport-hint", "{rust_i18n::t!(\"transport.no_target\")}" }
+            }
+        }
+    }
+}
+
+/// Spotify source control (phase 5.1): activate/deactivate the `librespot`
+/// backend on the PC. Streaming and transport are driven by the official Spotify
+/// app (pick `blue2th-PC` as the device); this only toggles the Connect backend
+/// and shows its state. The start action is disabled with no target selected,
+/// mirroring the server's 400 precondition, and errors surface via the shared
+/// `error` toast signal.
+#[component]
+fn SpotifySource(
+    targets: Signal<blue2th_proto::TargetsState>,
+    error: Signal<Option<String>>,
+) -> Element {
+    use blue2th_proto::SpotifyStatus;
+    use_locale();
+
+    // Current backend state: fetched once on mount, refreshed from each toggle's
+    // reply and the periodic poll below (the subprocess can die on its own
+    // server-side, so we reconcile rather than trust the last action).
+    let mut spotify: Signal<Option<blue2th_proto::SpotifyState>> = use_signal(|| None);
+    use_hook(|| {
+        spawn(async move {
+            if let Ok(state) = backend::spotify_status().await {
+                *spotify.write() = Some(state);
+            }
+        });
+    });
+
+    let backend_online = use_context::<BackendOnline>().0;
+    use_hook(|| {
+        let mut spotify = spotify;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !*backend_online.peek() {
+                    continue;
+                }
+                if let Ok(state) = backend::spotify_status().await {
+                    if spotify.peek().as_ref() != Some(&state) {
+                        *spotify.write() = Some(state);
+                    }
+                }
+            }
+        });
+    });
+
+    // In-flight guard so a double tap does not fire two start/stop calls.
+    let busy = use_signal(|| false);
+
+    let is_running = spotify()
+        .map(|s| s.status == SpotifyStatus::Running)
+        .unwrap_or(false);
+    let has_target = !targets().speakers.is_empty();
+
+    let status_label = if is_running {
+        rust_i18n::t!("spotify.status_running")
+    } else {
+        rust_i18n::t!("spotify.status_stopped")
+    };
+    let (btn_label, btn_icon) = if busy() {
+        (rust_i18n::t!("spotify.working"), "⟳")
+    } else if is_running {
+        (rust_i18n::t!("spotify.stop"), "⏹")
+    } else {
+        (rust_i18n::t!("spotify.start"), "▶")
+    };
+    let btn_class = if is_running {
+        "spotify-btn spotify-btn-stop"
+    } else {
+        "spotify-btn spotify-btn-start"
+    };
+    // Disable while offline or mid-flight; and when starting, until a speaker is
+    // selected (the server rejects a start with no target — a 400).
+    let disabled = busy() || !backend_online() || (!is_running && !has_target);
+
+    rsx! {
+        div { class: "spotify-source",
+            div { class: "spotify-header",
+                span { class: "spotify-mark", "♫" }
+                div { class: "spotify-meta",
+                    div { class: "spotify-title", "{rust_i18n::t!(\"spotify.title\")}" }
+                    div {
+                        class: if is_running { "spotify-status running" } else { "spotify-status" },
+                        "{status_label}"
+                    }
+                }
+                button {
+                    class: "{btn_class}",
+                    disabled,
+                    title: "{btn_label}",
+                    aria_label: "{btn_label}",
+                    onclick: move |_| {
+                        if busy() || !backend_online() {
+                            return;
+                        }
+                        // Guard the start precondition client-side too, so the user
+                        // gets the message without a round-trip to a 400.
+                        if !is_running && !has_target {
+                            *error.write() = Some(rust_i18n::t!("spotify.no_target").to_string());
+                            return;
+                        }
+                        let mut spotify = spotify;
+                        let mut error = error;
+                        let mut busy = busy;
+                        *busy.write() = true;
+                        spawn(async move {
+                            let res = if is_running {
+                                backend::stop_spotify().await
+                            } else {
+                                backend::start_spotify().await
+                            };
+                            match res {
+                                Ok(state) => *spotify.write() = Some(state),
+                                Err(e) => *error.write() = Some(e.to_string()),
+                            }
+                            *busy.write() = false;
+                        });
+                    },
+                    span { class: "spotify-btn-icon", "{btn_icon}" }
+                    "{btn_label}"
+                }
+            }
+            if !is_running && !has_target {
+                div { class: "spotify-hint", "{rust_i18n::t!(\"spotify.no_target\")}" }
+            } else if !is_running {
+                div { class: "spotify-hint", "{rust_i18n::t!(\"spotify.hint\")}" }
             }
         }
     }

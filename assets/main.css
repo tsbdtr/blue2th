@@ -1067,3 +1067,70 @@ body {
     font-size: 0.78rem;
     color: #5a6480;
 }
+
+/* ---- Phase 5.1: Spotify source -------------------------------------------- */
+
+.spotify-source {
+    border: 1px solid #2c3040;
+    border-radius: 10px;
+    background: #1e222d;
+    margin-top: 12px;
+    padding: 12px 14px;
+    flex: 0 0 auto;
+}
+.spotify-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.spotify-mark {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #1db954;
+    color: #0b0f17;
+    font-size: 1.05rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.spotify-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.spotify-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #e6ebf5;
+}
+.spotify-status {
+    font-size: 0.8rem;
+    color: #5a6480;
+    margin-top: 2px;
+}
+.spotify-status.running { color: #1db954; }
+.spotify-btn {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    border-radius: 999px;
+    padding: 8px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #ffffff;
+    cursor: pointer;
+}
+.spotify-btn-icon { font-size: 0.9rem; }
+.spotify-btn-start { background: #1db954; color: #0b0f17; }
+.spotify-btn-start:hover:not(:disabled) { background: #1ed760; }
+.spotify-btn-stop { background: #343d52; }
+.spotify-btn-stop:hover:not(:disabled) { background: #3f4a63; }
+.spotify-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.spotify-hint {
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: #5a6480;
+}

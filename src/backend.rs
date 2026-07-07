@@ -20,7 +20,8 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, TargetsState, VolumeRequest,
+    DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, SpotifyState, TargetsState,
+    VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -316,6 +317,56 @@ pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
         .map_err(|e| BackendError::new(describe(&e)))
 }
 
+/// Build the `{base}/spotify/{action}` URL for a Spotify backend action
+/// (`start`/`stop`/`status`), tolerating a trailing slash on the base.
+fn spotify_url(base: &str, action: &str) -> String {
+    format!("{}/spotify/{action}", base.trim_end_matches('/'))
+}
+
+/// `POST {base}/spotify/start` — activate the Spotify source backend (spawn the
+/// `librespot` Connect device), returning its new state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn start_spotify() -> Result<SpotifyState, BackendError> {
+    post_spotify("start").await
+}
+
+/// `POST {base}/spotify/stop` — deactivate the Spotify source backend (kill the
+/// subprocess), returning its new state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn stop_spotify() -> Result<SpotifyState, BackendError> {
+    post_spotify("stop").await
+}
+
+/// `GET {base}/spotify/status` — the Spotify backend's current state.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
+    let url = spotify_url(backend_base_url(), "status");
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<SpotifyState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// POST `{base}/spotify/{action}` (no body) and decode the updated `SpotifyState`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
+    let url = spotify_url(backend_base_url(), action);
+    reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<SpotifyState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive
 /// comments and non-device events.
 fn sse_device_payload(block: &str) -> Option<String> {
@@ -416,6 +467,36 @@ mod tests {
         assert_eq!(
             targets_url("http://10.0.0.5:4000/"),
             "http://10.0.0.5:4000/targets"
+        );
+    }
+
+    // Criterion: mobile exposes a Spotify start call — the client posts to
+    // `/spotify/start`.
+    #[test]
+    fn test_spotify_url_builds_start_path() {
+        assert_eq!(
+            spotify_url("http://10.0.0.5:4000", "start"),
+            "http://10.0.0.5:4000/spotify/start"
+        );
+    }
+
+    // Criterion: mobile exposes a Spotify stop call — the client posts to
+    // `/spotify/stop`, tolerating a trailing slash on the base.
+    #[test]
+    fn test_spotify_url_builds_stop_path_tolerating_trailing_slash() {
+        assert_eq!(
+            spotify_url("http://10.0.0.5:4000/", "stop"),
+            "http://10.0.0.5:4000/spotify/stop"
+        );
+    }
+
+    // Criterion: mobile exposes a Spotify status call — the client builds the
+    // `/spotify/status` URL.
+    #[test]
+    fn test_spotify_url_builds_status_path() {
+        assert_eq!(
+            spotify_url("http://10.0.0.5:4000", "status"),
+            "http://10.0.0.5:4000/spotify/status"
         );
     }
 }
