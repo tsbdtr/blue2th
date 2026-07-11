@@ -42,6 +42,16 @@ transport:
   expand: "Expand player"
   collapse: "Collapse player"
 
+spotify:
+  title: "Spotify"
+  hint: "Stream Spotify to your speakers via blue2th-PC"
+  start: "Start Spotify"
+  stop: "Stop Spotify"
+  working: "Working…"
+  status_running: "Spotify backend running"
+  status_stopped: "Spotify backend stopped"
+  no_target: "Select a speaker first"
+
 settings:
   title: "⚙ %{name}"
   section_general: "General"

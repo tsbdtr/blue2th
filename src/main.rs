@@ -244,15 +244,6 @@ fn Home() -> Element {
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);
     let toast_error: Signal<Option<String>> = use_signal(|| None);
 
-    // Backend reachability (probed in App), shown as a status dot in the header.
-    let backend_online = use_context::<BackendOnline>().0;
-    let server_label = rust_i18n::t!("server.status");
-    let server_tooltip = if backend_online() {
-        rust_i18n::t!("server.online")
-    } else {
-        rust_i18n::t!("server.offline")
-    };
-
     // When BT is disabled, clear the device list.
     use_effect(move || {
         if !bt_enabled() {
@@ -290,18 +281,6 @@ fn Home() -> Element {
                     class: "app-logo",
                     src: BLUETOOTH_LOGO,
                     alt: "Bluetooth",
-                }
-            }
-            div { class: "backend-status",
-                span { class: "backend-status-label", "{server_label}" }
-                span { class: "backend-status-sep" }
-                span {
-                    class: "backend-status-dot",
-                    title: "{server_tooltip}",
-                    style: format!(
-                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
-                        if backend_online() { "#22c55e" } else { "#ef4444" },
-                    ),
                 }
             }
             BackendScan {}
@@ -861,7 +840,31 @@ fn BackendScan() -> Element {
     };
     let empty_label = rust_i18n::t!("device.empty");
 
+    // Server-reachability encart (label + green/red dot), paired with the Spotify
+    // toggle in a single status row above the scan button.
+    let server_label = rust_i18n::t!("server.status");
+    let server_tooltip = if backend_online() {
+        rust_i18n::t!("server.online")
+    } else {
+        rust_i18n::t!("server.offline")
+    };
+
     rsx! {
+        div { class: "status-row",
+            div { class: "backend-status",
+                span { class: "backend-status-label", "{server_label}" }
+                span { class: "backend-status-sep" }
+                span {
+                    class: "backend-status-dot",
+                    title: "{server_tooltip}",
+                    style: format!(
+                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
+                        if backend_online() { "#22c55e" } else { "#ef4444" },
+                    ),
+                }
+            }
+            SpotifySource { targets, error }
+        }
         button {
             class: "{btn_class}",
             disabled: scanning() || !backend_online(),
@@ -1179,6 +1182,121 @@ fn TransportBar(
             }
             if !has_target {
                 div { class: "transport-hint", "{rust_i18n::t!(\"transport.no_target\")}" }
+            }
+        }
+    }
+}
+
+/// Spotify source control (phase 5.1): activate/deactivate the `librespot`
+/// backend on the PC. Streaming and transport are driven by the official Spotify
+/// app (pick `blue2th-PC` as the device); this only toggles the Connect backend
+/// and shows its state. The start action is disabled with no target selected,
+/// mirroring the server's 400 precondition, and errors surface via the shared
+/// `error` toast signal.
+#[component]
+fn SpotifySource(
+    targets: Signal<blue2th_proto::TargetsState>,
+    error: Signal<Option<String>>,
+) -> Element {
+    use blue2th_proto::SpotifyStatus;
+    use_locale();
+
+    // Current backend state: fetched once on mount, refreshed from each toggle's
+    // reply and the periodic poll below (the subprocess can die on its own
+    // server-side, so we reconcile rather than trust the last action).
+    let mut spotify: Signal<Option<blue2th_proto::SpotifyState>> = use_signal(|| None);
+    use_hook(|| {
+        spawn(async move {
+            if let Ok(state) = backend::spotify_status().await {
+                *spotify.write() = Some(state);
+            }
+        });
+    });
+
+    let backend_online = use_context::<BackendOnline>().0;
+    use_hook(|| {
+        let mut spotify = spotify;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !*backend_online.peek() {
+                    continue;
+                }
+                if let Ok(state) = backend::spotify_status().await {
+                    if spotify.peek().as_ref() != Some(&state) {
+                        *spotify.write() = Some(state);
+                    }
+                }
+            }
+        });
+    });
+
+    // In-flight guard so a double tap does not fire two start/stop calls.
+    let busy = use_signal(|| false);
+
+    let is_running = spotify()
+        .map(|s| s.status == SpotifyStatus::Running)
+        .unwrap_or(false);
+    let has_target = !targets().speakers.is_empty();
+
+    // Tooltip mirrors the action the click will perform (or the in-flight state).
+    let toggle_tooltip = if busy() {
+        rust_i18n::t!("spotify.working")
+    } else if is_running {
+        rust_i18n::t!("spotify.stop")
+    } else {
+        rust_i18n::t!("spotify.start")
+    };
+    // Dim (and block) the encart while offline or mid-flight; and when starting,
+    // until a speaker is selected (the server rejects a start with no target — a 400).
+    let disabled = busy() || !backend_online() || (!is_running && !has_target);
+    let card_class = if disabled {
+        "backend-status spotify-card disabled"
+    } else {
+        "backend-status spotify-card"
+    };
+
+    rsx! {
+        // Compact status encart matching the server one: "Spotify | ●".
+        // The whole card is the toggle — green dot ⇒ running, red ⇒ stopped.
+        div {
+            class: "{card_class}",
+            title: "{toggle_tooltip}",
+            onclick: move |_| {
+                if busy() || !backend_online() {
+                    return;
+                }
+                // Guard the start precondition client-side too, so the user gets
+                // the message without a round-trip to a 400.
+                if !is_running && !has_target {
+                    *error.write() = Some(rust_i18n::t!("spotify.no_target").to_string());
+                    return;
+                }
+                let mut spotify = spotify;
+                let mut error = error;
+                let mut busy = busy;
+                *busy.write() = true;
+                spawn(async move {
+                    let res = if is_running {
+                        backend::stop_spotify().await
+                    } else {
+                        backend::start_spotify().await
+                    };
+                    match res {
+                        Ok(state) => *spotify.write() = Some(state),
+                        Err(e) => *error.write() = Some(e.to_string()),
+                    }
+                    *busy.write() = false;
+                });
+            },
+            span { class: "backend-status-label", "{rust_i18n::t!(\"spotify.title\")}" }
+            span { class: "backend-status-sep" }
+            span {
+                class: "backend-status-dot",
+                style: format!(
+                    "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
+                    if is_running { "#22c55e" } else { "#ef4444" },
+                ),
             }
         }
     }

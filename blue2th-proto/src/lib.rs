@@ -123,6 +123,29 @@ pub struct OffsetRequest {
     pub offset_ms: u32,
 }
 
+/// Whether the Spotify Connect source backend (a `librespot` subprocess) is up.
+///
+/// Phase 5.1: the PC advertises itself as a Spotify Connect device; the user
+/// activates/deactivates the backend from the app. Actual transport is driven by
+/// the official Spotify app in this slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpotifyStatus {
+    /// The `librespot` subprocess is not running.
+    Stopped,
+    /// The `librespot` subprocess is running and advertised as a Connect device.
+    Running,
+}
+
+/// State of the Spotify source backend returned by the `/spotify/*` endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyState {
+    /// Whether the backend subprocess is stopped or running.
+    pub status: SpotifyStatus,
+    /// The Spotify Connect device name advertised (e.g. `blue2th-PC`).
+    pub device_name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +323,35 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize OffsetRequest");
         let parsed: OffsetRequest = serde_json::from_str(&json).expect("deserialize OffsetRequest");
         assert_eq!(original, parsed);
+    }
+
+    // Criterion: `SpotifyState` DTO round-trips through serde — every status
+    // variant survives serialize -> deserialize.
+    #[test]
+    fn test_spotify_state_round_trips_through_json() {
+        for status in [SpotifyStatus::Stopped, SpotifyStatus::Running] {
+            let original = SpotifyState {
+                status,
+                device_name: "blue2th-PC".to_string(),
+            };
+            let json = serde_json::to_string(&original).expect("serialize SpotifyState");
+            let parsed: SpotifyState =
+                serde_json::from_str(&json).expect("deserialize SpotifyState");
+            assert_eq!(original, parsed);
+        }
+    }
+
+    // Criterion: `SpotifyState` DTO round-trips through serde — the status is
+    // serialized in lowercase (shared mobile<->server contract).
+    #[test]
+    fn test_spotify_status_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&SpotifyStatus::Running).expect("serialize"),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SpotifyStatus::Stopped).expect("serialize"),
+            "\"stopped\""
+        );
     }
 }

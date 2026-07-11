@@ -1067,3 +1067,31 @@ body {
     font-size: 0.78rem;
     color: #5a6480;
 }
+
+/* ---- Phase 5.1: Spotify source -------------------------------------------- */
+
+/* Status row: server-reachability encart + Spotify toggle, side by side. */
+.status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 0 0 8px;
+}
+/* Inside the row the encarts share the row's bottom margin. */
+.status-row .backend-status {
+    margin: 0;
+}
+/* Spotify encart reuses the .backend-status look but is a clickable toggle. */
+.spotify-card {
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.spotify-card:hover:not(.disabled) {
+    border-color: #4b5563;
+    background: #232733;
+}
+.spotify-card.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
