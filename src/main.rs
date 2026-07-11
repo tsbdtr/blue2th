@@ -244,15 +244,6 @@ fn Home() -> Element {
     let mut bt_error: Signal<Option<String>> = use_signal(|| None);
     let toast_error: Signal<Option<String>> = use_signal(|| None);
 
-    // Backend reachability (probed in App), shown as a status dot in the header.
-    let backend_online = use_context::<BackendOnline>().0;
-    let server_label = rust_i18n::t!("server.status");
-    let server_tooltip = if backend_online() {
-        rust_i18n::t!("server.online")
-    } else {
-        rust_i18n::t!("server.offline")
-    };
-
     // When BT is disabled, clear the device list.
     use_effect(move || {
         if !bt_enabled() {
@@ -290,18 +281,6 @@ fn Home() -> Element {
                     class: "app-logo",
                     src: BLUETOOTH_LOGO,
                     alt: "Bluetooth",
-                }
-            }
-            div { class: "backend-status",
-                span { class: "backend-status-label", "{server_label}" }
-                span { class: "backend-status-sep" }
-                span {
-                    class: "backend-status-dot",
-                    title: "{server_tooltip}",
-                    style: format!(
-                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
-                        if backend_online() { "#22c55e" } else { "#ef4444" },
-                    ),
                 }
             }
             BackendScan {}
@@ -861,7 +840,31 @@ fn BackendScan() -> Element {
     };
     let empty_label = rust_i18n::t!("device.empty");
 
+    // Server-reachability encart (label + green/red dot), paired with the Spotify
+    // toggle in a single status row above the scan button.
+    let server_label = rust_i18n::t!("server.status");
+    let server_tooltip = if backend_online() {
+        rust_i18n::t!("server.online")
+    } else {
+        rust_i18n::t!("server.offline")
+    };
+
     rsx! {
+        div { class: "status-row",
+            div { class: "backend-status",
+                span { class: "backend-status-label", "{server_label}" }
+                span { class: "backend-status-sep" }
+                span {
+                    class: "backend-status-dot",
+                    title: "{server_tooltip}",
+                    style: format!(
+                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
+                        if backend_online() { "#22c55e" } else { "#ef4444" },
+                    ),
+                }
+            }
+            SpotifySource { targets, error }
+        }
         button {
             class: "{btn_class}",
             disabled: scanning() || !backend_online(),
@@ -913,9 +916,6 @@ fn BackendScan() -> Element {
                             }
                         }
                     }
-                    // Spotify source toggle — sits with the pinned card so it stays
-                    // visible above the player stage (phase 5.1).
-                    SpotifySource { targets, error }
                 }
                 // Player stage: the scrollable device list with the transport bar
                 // anchored to its bottom. Expanding the bar covers the list only.
@@ -1239,78 +1239,64 @@ fn SpotifySource(
         .unwrap_or(false);
     let has_target = !targets().speakers.is_empty();
 
-    let status_label = if is_running {
-        rust_i18n::t!("spotify.status_running")
-    } else {
-        rust_i18n::t!("spotify.status_stopped")
-    };
-    let (btn_label, btn_icon) = if busy() {
-        (rust_i18n::t!("spotify.working"), "⟳")
+    // Tooltip mirrors the action the click will perform (or the in-flight state).
+    let toggle_tooltip = if busy() {
+        rust_i18n::t!("spotify.working")
     } else if is_running {
-        (rust_i18n::t!("spotify.stop"), "⏹")
+        rust_i18n::t!("spotify.stop")
     } else {
-        (rust_i18n::t!("spotify.start"), "▶")
+        rust_i18n::t!("spotify.start")
     };
-    let btn_class = if is_running {
-        "spotify-btn spotify-btn-stop"
-    } else {
-        "spotify-btn spotify-btn-start"
-    };
-    // Disable while offline or mid-flight; and when starting, until a speaker is
-    // selected (the server rejects a start with no target — a 400).
+    // Dim (and block) the encart while offline or mid-flight; and when starting,
+    // until a speaker is selected (the server rejects a start with no target — a 400).
     let disabled = busy() || !backend_online() || (!is_running && !has_target);
+    let card_class = if disabled {
+        "backend-status spotify-card disabled"
+    } else {
+        "backend-status spotify-card"
+    };
 
     rsx! {
-        div { class: "spotify-source",
-            div { class: "spotify-header",
-                span { class: "spotify-mark", "♫" }
-                div { class: "spotify-meta",
-                    div { class: "spotify-title", "{rust_i18n::t!(\"spotify.title\")}" }
-                    div {
-                        class: if is_running { "spotify-status running" } else { "spotify-status" },
-                        "{status_label}"
+        // Compact status encart matching the server one: "Spotify | ●".
+        // The whole card is the toggle — green dot ⇒ running, red ⇒ stopped.
+        div {
+            class: "{card_class}",
+            title: "{toggle_tooltip}",
+            onclick: move |_| {
+                if busy() || !backend_online() {
+                    return;
+                }
+                // Guard the start precondition client-side too, so the user gets
+                // the message without a round-trip to a 400.
+                if !is_running && !has_target {
+                    *error.write() = Some(rust_i18n::t!("spotify.no_target").to_string());
+                    return;
+                }
+                let mut spotify = spotify;
+                let mut error = error;
+                let mut busy = busy;
+                *busy.write() = true;
+                spawn(async move {
+                    let res = if is_running {
+                        backend::stop_spotify().await
+                    } else {
+                        backend::start_spotify().await
+                    };
+                    match res {
+                        Ok(state) => *spotify.write() = Some(state),
+                        Err(e) => *error.write() = Some(e.to_string()),
                     }
-                }
-                button {
-                    class: "{btn_class}",
-                    disabled,
-                    title: "{btn_label}",
-                    aria_label: "{btn_label}",
-                    onclick: move |_| {
-                        if busy() || !backend_online() {
-                            return;
-                        }
-                        // Guard the start precondition client-side too, so the user
-                        // gets the message without a round-trip to a 400.
-                        if !is_running && !has_target {
-                            *error.write() = Some(rust_i18n::t!("spotify.no_target").to_string());
-                            return;
-                        }
-                        let mut spotify = spotify;
-                        let mut error = error;
-                        let mut busy = busy;
-                        *busy.write() = true;
-                        spawn(async move {
-                            let res = if is_running {
-                                backend::stop_spotify().await
-                            } else {
-                                backend::start_spotify().await
-                            };
-                            match res {
-                                Ok(state) => *spotify.write() = Some(state),
-                                Err(e) => *error.write() = Some(e.to_string()),
-                            }
-                            *busy.write() = false;
-                        });
-                    },
-                    span { class: "spotify-btn-icon", "{btn_icon}" }
-                    "{btn_label}"
-                }
-            }
-            if !is_running && !has_target {
-                div { class: "spotify-hint", "{rust_i18n::t!(\"spotify.no_target\")}" }
-            } else if !is_running {
-                div { class: "spotify-hint", "{rust_i18n::t!(\"spotify.hint\")}" }
+                    *busy.write() = false;
+                });
+            },
+            span { class: "backend-status-label", "{rust_i18n::t!(\"spotify.title\")}" }
+            span { class: "backend-status-sep" }
+            span {
+                class: "backend-status-dot",
+                style: format!(
+                    "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
+                    if is_running { "#22c55e" } else { "#ef4444" },
+                ),
             }
         }
     }
