@@ -29,10 +29,12 @@ use tracing_subscriber::EnvFilter;
 pub mod audio;
 mod bluetooth;
 pub mod spotify;
+pub mod spotify_auth;
 pub mod targets;
 
 use audio::{AudioEngine, AudioError, RodioOutput};
 use spotify::{SpotifyBackend, SpotifyError};
+use spotify_auth::SpotifyApiError;
 use targets::{SelectError, SpeakerTargets};
 
 /// Shared application state injected through the Axum router (no globals).
@@ -405,6 +407,16 @@ impl From<SpotifyError> for AppError {
     }
 }
 
+impl From<SpotifyApiError> for AppError {
+    fn from(err: SpotifyApiError) -> Self {
+        // Phase 5.2 (red): the mapping is filled in by the implementer. The
+        // contract under test: transport-while-Disconnected -> 409, token
+        // exchange failure -> 502, Premium required -> 403.
+        let _ = err;
+        todo!("map SpotifyApiError to AppError HTTP codes")
+    }
+}
+
 impl From<SelectError> for AppError {
     fn from(err: SelectError) -> Self {
         // Both are bad client requests (not connected / cap exceeded), not server bugs.
@@ -475,5 +487,26 @@ mod tests {
     fn test_spotify_spawn_error_maps_to_internal_error() {
         let err: AppError = SpotifyError::Spawn("permission denied".to_string()).into();
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Criterion (phase 5.2): a transport call while Disconnected maps to 409.
+    #[test]
+    fn test_spotify_api_not_connected_maps_to_conflict() {
+        let err: AppError = SpotifyApiError::NotConnected.into();
+        assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    // Criterion (phase 5.2): a token exchange failure maps to 502 (Bad Gateway).
+    #[test]
+    fn test_spotify_api_exchange_failure_maps_to_bad_gateway() {
+        let err: AppError = SpotifyApiError::Exchange("invalid code".to_string()).into();
+        assert_eq!(err.status, StatusCode::BAD_GATEWAY);
+    }
+
+    // Criterion (phase 5.2): a Premium-required rejection maps to 403 (Forbidden).
+    #[test]
+    fn test_spotify_api_premium_required_maps_to_forbidden() {
+        let err: AppError = SpotifyApiError::PremiumRequired.into();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 }

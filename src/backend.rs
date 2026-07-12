@@ -20,8 +20,8 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, SpotifyState, TargetsState,
-    VolumeRequest,
+    AuthUrlResponse, DeviceInfo, HealthStatus, NowPlaying, OffsetRequest, PlaybackState,
+    SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -367,6 +367,85 @@ async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
         .map_err(|e| BackendError::new(describe(&e)))
 }
 
+/// Build the `{base}/spotify/now-playing` SSE URL, tolerating a trailing slash.
+///
+/// Phase 5.2 (red): stubbed so the URL-shape test compiles and fails.
+fn now_playing_url(base: &str) -> String {
+    let _ = base;
+    todo!("now_playing_url: build the /spotify/now-playing SSE URL")
+}
+
+/// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
+/// (PKCE) and the CSRF `state` to echo back on callback.
+///
+/// Phase 5.2 (red): stubbed until the auth client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
+    todo!("spotify_auth_url: GET /spotify/auth/url")
+}
+
+/// `POST {base}/spotify/auth/callback` — hand the backend the authorization
+/// `code` (and CSRF `state`) captured from the custom-scheme redirect.
+///
+/// Phase 5.2 (red): stubbed until the auth client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_auth_callback(
+    code: &str,
+    state: &str,
+) -> Result<SpotifyAuthState, BackendError> {
+    let _ = (code, state);
+    todo!("spotify_auth_callback: POST /spotify/auth/callback")
+}
+
+/// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
+///
+/// Phase 5.2 (red): stubbed until the auth client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
+    todo!("spotify_auth_status: GET /spotify/auth/status")
+}
+
+/// `POST {base}/spotify/play` — resume playback via the Web API on `blue2th-PC`.
+///
+/// Phase 5.2 (red): stubbed until the transport client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_play() -> Result<(), BackendError> {
+    todo!("spotify_play: POST /spotify/play")
+}
+
+/// `POST {base}/spotify/pause` — pause playback via the Web API on `blue2th-PC`.
+///
+/// Phase 5.2 (red): stubbed until the transport client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_pause() -> Result<(), BackendError> {
+    todo!("spotify_pause: POST /spotify/pause")
+}
+
+/// `POST {base}/spotify/next` — skip to the next track via the Web API.
+///
+/// Phase 5.2 (red): stubbed until the transport client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_next() -> Result<(), BackendError> {
+    todo!("spotify_next: POST /spotify/next")
+}
+
+/// `POST {base}/spotify/previous` — skip to the previous track via the Web API.
+///
+/// Phase 5.2 (red): stubbed until the transport client is implemented.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_previous() -> Result<(), BackendError> {
+    todo!("spotify_previous: POST /spotify/previous")
+}
+
+/// Extract and parse the `NowPlaying` payload of a `now-playing` SSE event block,
+/// ignoring keep-alive comments and non-`now-playing` events.
+///
+/// Phase 5.2 (red): stubbed so the parser test compiles and fails.
+fn sse_now_playing_payload(block: &str) -> Option<NowPlaying> {
+    let _ = block;
+    todo!("sse_now_playing_payload: parse a now-playing SSE event block")
+}
+
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive
 /// comments and non-device events.
 fn sse_device_payload(block: &str) -> Option<String> {
@@ -498,5 +577,41 @@ mod tests {
             spotify_url("http://10.0.0.5:4000", "status"),
             "http://10.0.0.5:4000/spotify/status"
         );
+    }
+
+    // Criterion (phase 5.2): mobile exposes an SSE now-playing subscription — the
+    // client builds the `/spotify/now-playing` URL, tolerating a trailing slash.
+    #[test]
+    fn test_now_playing_url_appends_path() {
+        assert_eq!(
+            now_playing_url("http://10.0.0.5:4000"),
+            "http://10.0.0.5:4000/spotify/now-playing"
+        );
+        assert_eq!(
+            now_playing_url("http://10.0.0.5:4000/"),
+            "http://10.0.0.5:4000/spotify/now-playing"
+        );
+    }
+
+    // Criterion (phase 5.2): the SSE reader parses a `now-playing` event block into
+    // a `NowPlaying` snapshot.
+    #[test]
+    fn test_sse_now_playing_payload_parses_now_playing_event() {
+        let block = concat!(
+            "event:now-playing\n",
+            "data:{\"state\":\"playing\",\"title\":\"Song\",\"artist\":\"Artist\",",
+            "\"album\":\"Album\",\"progress_ms\":12000,\"duration_ms\":210000}\n\n",
+        );
+        let np = sse_now_playing_payload(block).expect("parse now-playing event");
+        assert_eq!(np.state, blue2th_proto::NowPlayingState::Playing);
+        assert_eq!(np.title.as_deref(), Some("Song"));
+    }
+
+    // Criterion (phase 5.2): the SSE reader ignores keep-alive comments and other
+    // event kinds (returns None).
+    #[test]
+    fn test_sse_now_playing_payload_ignores_non_now_playing_and_comments() {
+        assert!(sse_now_playing_payload("event:error\ndata:boom\n\n").is_none());
+        assert!(sse_now_playing_payload(": keep-alive\n\n").is_none());
     }
 }
