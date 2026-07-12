@@ -20,8 +20,8 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    AuthUrlResponse, DeviceInfo, HealthStatus, NowPlaying, OffsetRequest, PlaybackState,
-    SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
+    AuthCallbackRequest, AuthUrlResponse, DeviceInfo, HealthStatus, NowPlaying, OffsetRequest,
+    PlaybackState, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -368,82 +368,153 @@ async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
 }
 
 /// Build the `{base}/spotify/now-playing` SSE URL, tolerating a trailing slash.
-///
-/// Phase 5.2 (red): stubbed so the URL-shape test compiles and fails.
 fn now_playing_url(base: &str) -> String {
-    let _ = base;
-    todo!("now_playing_url: build the /spotify/now-playing SSE URL")
+    format!("{}/spotify/now-playing", base.trim_end_matches('/'))
 }
 
 /// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
 /// (PKCE) and the CSRF `state` to echo back on callback.
-///
-/// Phase 5.2 (red): stubbed until the auth client is implemented.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
-    todo!("spotify_auth_url: GET /spotify/auth/url")
+    let url = spotify_url(backend_base_url(), "auth/url");
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<AuthUrlResponse>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// `POST {base}/spotify/auth/callback` — hand the backend the authorization
 /// `code` (and CSRF `state`) captured from the custom-scheme redirect.
 ///
-/// Phase 5.2 (red): stubbed until the auth client is implemented.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+/// Invoked from the Android deep-link (custom-scheme redirect) handler, which is
+/// a manual seam not wired in-app yet — hence unconditionally allowed dead code.
+#[allow(dead_code)]
 pub async fn spotify_auth_callback(
     code: &str,
     state: &str,
 ) -> Result<SpotifyAuthState, BackendError> {
-    let _ = (code, state);
-    todo!("spotify_auth_callback: POST /spotify/auth/callback")
+    let url = spotify_url(backend_base_url(), "auth/callback");
+    reqwest::Client::new()
+        .post(&url)
+        .json(&AuthCallbackRequest {
+            code: code.to_string(),
+            state: state.to_string(),
+        })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<SpotifyAuthState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
-///
-/// Phase 5.2 (red): stubbed until the auth client is implemented.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
-    todo!("spotify_auth_status: GET /spotify/auth/status")
+    let url = spotify_url(backend_base_url(), "auth/status");
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<SpotifyAuthState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// `POST {base}/spotify/play` — resume playback via the Web API on `blue2th-PC`.
-///
-/// Phase 5.2 (red): stubbed until the transport client is implemented.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_play() -> Result<(), BackendError> {
-    todo!("spotify_play: POST /spotify/play")
+    post_spotify_transport("play").await
 }
 
 /// `POST {base}/spotify/pause` — pause playback via the Web API on `blue2th-PC`.
-///
-/// Phase 5.2 (red): stubbed until the transport client is implemented.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_pause() -> Result<(), BackendError> {
-    todo!("spotify_pause: POST /spotify/pause")
+    post_spotify_transport("pause").await
 }
 
 /// `POST {base}/spotify/next` — skip to the next track via the Web API.
-///
-/// Phase 5.2 (red): stubbed until the transport client is implemented.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_next() -> Result<(), BackendError> {
-    todo!("spotify_next: POST /spotify/next")
+    post_spotify_transport("next").await
 }
 
 /// `POST {base}/spotify/previous` — skip to the previous track via the Web API.
-///
-/// Phase 5.2 (red): stubbed until the transport client is implemented.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_previous() -> Result<(), BackendError> {
-    todo!("spotify_previous: POST /spotify/previous")
+    post_spotify_transport("previous").await
+}
+
+/// POST `{base}/spotify/{action}` (no body) for a transport action; the backend
+/// replies 204 (no content) on success, so no body is decoded.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
+    let url = spotify_url(backend_base_url(), action);
+    reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    Ok(())
+}
+
+/// Subscribe to the `{base}/spotify/now-playing` SSE feed, invoking `on_event`
+/// for each `now-playing` snapshot until the stream ends or the caller drops the
+/// future. Errors talking to the backend are surfaced to the caller.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn subscribe_now_playing<F>(mut on_event: F) -> Result<(), BackendError>
+where
+    F: FnMut(NowPlaying),
+{
+    let url = now_playing_url(backend_base_url());
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| BackendError::new(describe(&e)))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // SSE events are separated by a blank line.
+        while let Some(pos) = buffer.find("\n\n") {
+            let block: String = buffer.drain(..pos + 2).collect();
+            if let Some(now_playing) = sse_now_playing_payload(&block) {
+                on_event(now_playing);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Extract and parse the `NowPlaying` payload of a `now-playing` SSE event block,
 /// ignoring keep-alive comments and non-`now-playing` events.
-///
-/// Phase 5.2 (red): stubbed so the parser test compiles and fails.
 fn sse_now_playing_payload(block: &str) -> Option<NowPlaying> {
-    let _ = block;
-    todo!("sse_now_playing_payload: parse a now-playing SSE event block")
+    let mut is_now_playing = false;
+    let mut data: Option<String> = None;
+    for line in block.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            is_now_playing = rest.trim() == "now-playing";
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data = Some(rest.trim().to_string());
+        }
+    }
+    if is_now_playing {
+        data.and_then(|json| serde_json::from_str::<NowPlaying>(&json).ok())
+    } else {
+        None
+    }
 }
 
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive

@@ -51,6 +51,14 @@ spotify:
   status_running: "Spotify backend running"
   status_stopped: "Spotify backend stopped"
   no_target: "Select a speaker first"
+  connect: "Connect Spotify"
+  open_login: "Open Spotify login"
+  nothing_playing: "Nothing playing"
+  unknown_track: "Unknown track"
+  play: "Play"
+  pause: "Pause"
+  next: "Next"
+  previous: "Previous"
 
 settings:
   title: "⚙ %{name}"

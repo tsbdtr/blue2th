@@ -1,16 +1,16 @@
-# Graph Report - blue2th  (2026-06-25)
+# Graph Report - blue2th  (2026-07-12)
 
 ## Corpus Check
-- 28 files · ~33,018 words
+- 30 files · ~35,719 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 638 nodes · 1431 edges · 30 communities (24 shown, 6 thin omitted)
+- 707 nodes · 1582 edges · 32 communities (26 shown, 6 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 33 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `f622f101`
+- Built from commit: `e1f23d4e`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -43,18 +43,20 @@
 - [[_COMMUNITY_Community 27|Community 27]]
 - [[_COMMUNITY_Community 28|Community 28]]
 - [[_COMMUNITY_Community 29|Community 29]]
+- [[_COMMUNITY_Community 30|Community 30]]
+- [[_COMMUNITY_Community 31|Community 31]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `BluetoothError` - 32 edges
-2. `Result` - 26 edges
-3. `AppState` - 23 edges
-4. `Result` - 22 edges
-5. `Result` - 21 edges
-6. `AudioEngine` - 20 edges
-7. `BackendError` - 20 edges
-8. `bt_err_clear()` - 20 edges
-9. `Json` - 19 edges
-10. `connected()` - 18 edges
+2. `AppState` - 27 edges
+3. `Result` - 26 edges
+4. `BackendError` - 24 edges
+5. `Json` - 22 edges
+6. `Result` - 22 edges
+7. `AudioEngine` - 21 edges
+8. `Result` - 21 edges
+9. `Result` - 21 edges
+10. `bt_err_clear()` - 20 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `README Project Overview` --references--> `App()`  [INFERRED]
@@ -71,6 +73,7 @@
 ## Import Cycles
 - 1-file cycle: `blue2th-server/src/lib.rs -> blue2th-server/src/lib.rs`
 - 1-file cycle: `blue2th-server/src/main.rs -> blue2th-server/src/main.rs`
+- 1-file cycle: `blue2th-server/src/spotify.rs -> blue2th-server/src/spotify.rs`
 - 1-file cycle: `src/backend.rs -> src/backend.rs`
 - 1-file cycle: `src/main.rs -> src/main.rs`
 
@@ -82,11 +85,11 @@
 - **Android Bluetooth JNI Detection Flow** — src_bluetooth_enable_bluetooth, src_bluetooth_enable_bluetooth_inner, concept_jni_android_bluetooth, concept_platform_conditional_compilation [EXTRACTED 0.95]
 - **UI Bluetooth Enable Confirmation Flow** — src_main_home, src_main_confirmmodal, src_bluetooth_enable_bluetooth, src_main_connectionstatus [EXTRACTED 0.95]
 
-## Communities (30 total, 6 thin omitted)
+## Communities (32 total, 6 thin omitted)
 
 ### Community 0 - "Android BT JNI & Errors"
 Cohesion: 0.08
-Nodes (84): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), Display, Error, Formatter, GlobalRef, Into, JavaVM (+76 more)
+Nodes (83): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), Display, Error, Formatter, GlobalRef, Into, JavaVM (+75 more)
 
 ### Community 1 - "Dioxus Framework Concepts"
 Cohesion: 0.08
@@ -94,7 +97,7 @@ Nodes (26): App Root Component, asset! Macro, Assets, Async, Component Model, Co
 
 ### Community 2 - "UI App & State"
 Cohesion: 0.11
-Nodes (40): Element, EventHandler, HashSet, README Project Overview, Signal, App(), BackendDeviceItem(), BackendOnline (+32 more)
+Nodes (42): Element, EventHandler, HashSet, README Project Overview, Signal, enable_bluetooth(), App(), BackendDeviceItem() (+34 more)
 
 ### Community 3 - "TDD Workflow & Dev Standards"
 Cohesion: 0.09
@@ -133,28 +136,28 @@ Cohesion: 0.29
 Nodes (6): Hardware is NOT testable in this sandbox, Project context, Rules, What you must NOT do, Workspace layers, Your role (RED phase)
 
 ### Community 16 - "Community 16"
-Cohesion: 0.31
-Nodes (14): Affected Layers, Final Status, Issues Found & Fixed, Items Reviewed — No Change Needed, New Tests Added, Notes, Review focus verification (no change needed), Review Report — Fan-out playback to two speakers (+6 more)
+Cohesion: 0.23
+Nodes (18): Affected Layers, Correctness Review (SpotifyBackend lifecycle), Final Status, Issues Found & Fixed, Items Reviewed — No Change Needed, Manual (hardware/process) seam — not CI-testable, Minor Notes (not blocking), New Tests Added (+10 more)
 
 ### Community 19 - "Community 19"
 Cohesion: 0.39
 Nodes (3): BluetoothProfile, A2dpServiceListener, Override
 
 ### Community 21 - "Community 21"
-Cohesion: 0.12
-Nodes (36): backend_base_url(), BackendError, connect_device(), describe(), deselect_target(), device_action_url(), disconnect_device(), fetch_devices() (+28 more)
+Cohesion: 0.10
+Nodes (42): backend_base_url(), BackendError, connect_device(), describe(), deselect_target(), device_action_url(), disconnect_device(), fetch_devices() (+34 more)
 
 ### Community 22 - "Community 22"
 Cohesion: 0.12
 Nodes (16): Architecture, blue2th Roadmap — Multi-speaker audio via mobile remote + PC backend, Cross-cutting concerns, Legacy: existing Android Bluetooth code, Phase 0 — Foundations, Phase 1 — Bluetooth discovery (`bluer`), Phase 2 — Connect / disconnect a speaker, Phase 3 — Play audio to ONE speaker (PipeWire) (+8 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.07
-Nodes (74): AppError, Arc, AudioEngine, AdapterInfo, Address, Arc, Box, DeviceInfo (+66 more)
+Cohesion: 0.06
+Nodes (79): AppError, Arc, AudioEngine, AdapterInfo, Address, Arc, Box, DeviceInfo (+71 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.09
-Nodes (17): Into, Option, Self, String, Vec, AdapterInfo, DeviceInfo, HealthStatus (+9 more)
+Cohesion: 0.08
+Nodes (19): Into, Option, Self, String, Vec, AdapterInfo, DeviceInfo, HealthStatus (+11 more)
 
 ### Community 26 - "Community 26"
 Cohesion: 0.27
@@ -162,18 +165,26 @@ Nodes (14): AdapterInfo, Address, DeviceInfo, Item, Result, connect_device(), di
 
 ### Community 27 - "Community 27"
 Cohesion: 0.07
-Nodes (48): AtomicBool, Arc, AudioError, Box, Display, Error, Formatter, Option (+40 more)
+Nodes (49): AtomicBool, Arc, AudioError, Box, Default, Display, Error, Formatter (+41 more)
 
 ### Community 28 - "Community 28"
-Cohesion: 0.17
-Nodes (13): AudioError, Error, Into, Self, Error, Self, From, IntoResponse (+5 more)
+Cohesion: 0.16
+Nodes (14): AudioError, Error, Into, Self, Error, Self, From, IntoResponse (+6 more)
 
 ### Community 29 - "Community 29"
 Cohesion: 0.33
 Nodes (6): Router, build_app(), test_play_links_running_output_node_to_pipewire_sink(), test_play_without_connected_speaker_returns_client_error(), test_playback_endpoint_returns_state(), test_volume_endpoint_rejects_malformed_body()
 
+### Community 30 - "Community 30"
+Cohesion: 0.11
+Nodes (24): Default, Display, Error, Formatter, Option, Result, Self, SpeakerTarget (+16 more)
+
+### Community 31 - "Community 31"
+Cohesion: 0.60
+Nodes (4): Router, build_app(), test_spotify_start_without_target_returns_bad_request(), test_spotify_status_on_fresh_server_is_stopped()
+
 ## Knowledge Gaps
-- **170 isolated node(s):** `Into`, `Self`, `Option`, `VolumeRequest`, `Vec` (+165 more)
+- **180 isolated node(s):** `Into`, `Self`, `Option`, `VolumeRequest`, `Vec` (+175 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -181,16 +192,16 @@ Nodes (6): Router, build_app(), test_play_links_running_output_node_to_pipewire_
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Community 23` to `Android BT JNI & Errors`, `Community 21`?**
-  _High betweenness centrality (0.116) - this node is a cross-community bridge._
+  _High betweenness centrality (0.111) - this node is a cross-community bridge._
 - **Why does `obtain_profile_proxy()` connect `Android BT JNI & Errors` to `Community 23`?**
-  _High betweenness centrality (0.050) - this node is a cross-community bridge._
+  _High betweenness centrality (0.046) - this node is a cross-community bridge._
 - **Why does `obtain_a2dp_proxy()` connect `Android BT JNI & Errors` to `Community 23`?**
-  _High betweenness centrality (0.035) - this node is a cross-community bridge._
+  _High betweenness centrality (0.032) - this node is a cross-community bridge._
 - **What connects `Into`, `Self`, `Option` to the rest of the system?**
-  _172 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _182 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Android BT JNI & Errors` be split into smaller, more focused modules?**
-  _Cohesion score 0.07596751075011944 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.0761904761904762 - nodes in this community are weakly interconnected._
 - **Should `Dioxus Framework Concepts` be split into smaller, more focused modules?**
   _Cohesion score 0.08262108262108261 - nodes in this community are weakly interconnected._
 - **Should `UI App & State` be split into smaller, more focused modules?**
-  _Cohesion score 0.10545790934320073 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.1054421768707483 - nodes in this community are weakly interconnected._

@@ -51,6 +51,14 @@ spotify:
   status_running: "Backend Spotify actif"
   status_stopped: "Backend Spotify arrêté"
   no_target: "Sélectionnez d'abord une enceinte"
+  connect: "Connecter Spotify"
+  open_login: "Ouvrir la connexion Spotify"
+  nothing_playing: "Aucune lecture"
+  unknown_track: "Titre inconnu"
+  play: "Lecture"
+  pause: "Pause"
+  next: "Suivant"
+  previous: "Précédent"
 
 settings:
   title: "⚙ %{name}"

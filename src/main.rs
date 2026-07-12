@@ -865,6 +865,7 @@ fn BackendScan() -> Element {
             }
             SpotifySource { targets, error }
         }
+        SpotifyConnect { error }
         button {
             class: "{btn_class}",
             disabled: scanning() || !backend_online(),
@@ -1297,6 +1298,186 @@ fn SpotifySource(
                     "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
                     if is_running { "#22c55e" } else { "#ef4444" },
                 ),
+            }
+        }
+    }
+}
+
+/// Spotify Web API control (phase 5.2): OAuth (PKCE) login plus now-playing and
+/// transport over the PC backend. When Disconnected it offers a "Connect Spotify"
+/// action that fetches the authorize URL to open in the browser; when Connected it
+/// shows the now-playing track (pushed over SSE) and play/pause/next/previous
+/// controls. Errors surface via the shared `error` toast signal.
+#[component]
+fn SpotifyConnect(error: Signal<Option<String>>) -> Element {
+    use blue2th_proto::{NowPlayingState, SpotifyAuthStatus};
+    use_locale();
+
+    let backend_online = use_context::<BackendOnline>().0;
+
+    // Current auth state: fetched on mount and refreshed by the poll below.
+    let mut auth: Signal<Option<blue2th_proto::SpotifyAuthState>> = use_signal(|| None);
+    use_hook(|| {
+        spawn(async move {
+            if let Ok(state) = backend::spotify_auth_status().await {
+                *auth.write() = Some(state);
+            }
+        });
+    });
+    use_hook(|| {
+        let mut auth = auth;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if !*backend_online.peek() {
+                    continue;
+                }
+                if let Ok(state) = backend::spotify_auth_status().await {
+                    if auth.peek().as_ref() != Some(&state) {
+                        *auth.write() = Some(state);
+                    }
+                }
+            }
+        });
+    });
+
+    // Now-playing snapshot pushed over the SSE feed; (re)subscribes if the stream
+    // ends. The task lives on the root scope so it is not cancelled on re-render.
+    let now_playing: Signal<Option<blue2th_proto::NowPlaying>> = use_signal(|| None);
+    use_hook(|| {
+        let mut now_playing = now_playing;
+        spawn(async move {
+            loop {
+                let _ = backend::subscribe_now_playing(|np| {
+                    *now_playing.write() = Some(np);
+                })
+                .await;
+                // The stream closed (backend down or restarted); retry shortly.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        });
+    });
+
+    // The authorize URL to open in the browser once "Connect Spotify" is tapped.
+    let auth_url = use_signal(|| Option::<String>::None);
+    let busy = use_signal(|| false);
+
+    let connected = auth()
+        .map(|s| s.status == SpotifyAuthStatus::Connected)
+        .unwrap_or(false);
+
+    if !backend_online() {
+        return rsx! {};
+    }
+
+    if !connected {
+        return rsx! {
+            div { class: "spotify-connect",
+                button {
+                    class: "btn-spotify-connect",
+                    disabled: busy(),
+                    onclick: move |_| {
+                        let mut busy = busy;
+                        let mut error = error;
+                        let mut auth_url = auth_url;
+                        *busy.write() = true;
+                        spawn(async move {
+                            match backend::spotify_auth_url().await {
+                                Ok(resp) => *auth_url.write() = Some(resp.url),
+                                Err(e) => *error.write() = Some(e.to_string()),
+                            }
+                            *busy.write() = false;
+                        });
+                    },
+                    span { "🎧 " }
+                    "{rust_i18n::t!(\"spotify.connect\")}"
+                }
+                if let Some(url) = auth_url() {
+                    a {
+                        class: "spotify-auth-link",
+                        href: "{url}",
+                        "{rust_i18n::t!(\"spotify.open_login\")}"
+                    }
+                }
+            }
+        };
+    }
+
+    let (title, subtitle) = match now_playing() {
+        Some(np) if np.state != NowPlayingState::Idle => (
+            np.title
+                .unwrap_or_else(|| rust_i18n::t!("spotify.unknown_track").to_string()),
+            np.artist.unwrap_or_default(),
+        ),
+        _ => (
+            rust_i18n::t!("spotify.nothing_playing").to_string(),
+            String::new(),
+        ),
+    };
+
+    rsx! {
+        div { class: "spotify-connect connected",
+            div { class: "spotify-now-playing",
+                span { class: "spotify-np-title", "{title}" }
+                span { class: "spotify-np-artist", "{subtitle}" }
+            }
+            div { class: "spotify-transport",
+                button {
+                    class: "spotify-transport-btn",
+                    title: "{rust_i18n::t!(\"spotify.previous\")}",
+                    aria_label: "{rust_i18n::t!(\"spotify.previous\")}",
+                    onclick: move |_| {
+                        let mut error = error;
+                        spawn(async move {
+                            if let Err(e) = backend::spotify_previous().await {
+                                *error.write() = Some(e.to_string());
+                            }
+                        });
+                    },
+                    "⏮"
+                }
+                button {
+                    class: "spotify-transport-btn",
+                    title: "{rust_i18n::t!(\"spotify.play\")}",
+                    aria_label: "{rust_i18n::t!(\"spotify.play\")}",
+                    onclick: move |_| {
+                        let mut error = error;
+                        spawn(async move {
+                            if let Err(e) = backend::spotify_play().await {
+                                *error.write() = Some(e.to_string());
+                            }
+                        });
+                    },
+                    "▶"
+                }
+                button {
+                    class: "spotify-transport-btn",
+                    title: "{rust_i18n::t!(\"spotify.pause\")}",
+                    aria_label: "{rust_i18n::t!(\"spotify.pause\")}",
+                    onclick: move |_| {
+                        let mut error = error;
+                        spawn(async move {
+                            if let Err(e) = backend::spotify_pause().await {
+                                *error.write() = Some(e.to_string());
+                            }
+                        });
+                    },
+                    "⏸"
+                }
+                button {
+                    class: "spotify-transport-btn",
+                    title: "{rust_i18n::t!(\"spotify.next\")}",
+                    aria_label: "{rust_i18n::t!(\"spotify.next\")}",
+                    onclick: move |_| {
+                        let mut error = error;
+                        spawn(async move {
+                            if let Err(e) = backend::spotify_next().await {
+                                *error.write() = Some(e.to_string());
+                            }
+                        });
+                    },
+                    "⏭"
+                }
             }
         }
     }

@@ -18,8 +18,8 @@ use axum::{
     Json, Router,
 };
 use blue2th_proto::{
-    AdapterInfo, DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, SpotifyState,
-    TargetsState, VolumeRequest,
+    AdapterInfo, AuthCallbackRequest, AuthUrlResponse, DeviceInfo, HealthStatus, OffsetRequest,
+    PlaybackState, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -34,7 +34,7 @@ pub mod targets;
 
 use audio::{AudioEngine, AudioError, RodioOutput};
 use spotify::{SpotifyBackend, SpotifyError};
-use spotify_auth::SpotifyApiError;
+use spotify_auth::{SpotifyApiError, SpotifyAuth, Transport};
 use targets::{SelectError, SpeakerTargets};
 
 /// Shared application state injected through the Axum router (no globals).
@@ -53,6 +53,9 @@ struct AppState {
     /// The Spotify source backend (a `librespot` subprocess), guarded for
     /// concurrent access by the `/spotify/*` handlers.
     spotify: Arc<Mutex<SpotifyBackend>>,
+    /// The Spotify Web API auth driver (OAuth PKCE tokens + transport), guarded
+    /// for concurrent access by the `/spotify/auth/*` and transport handlers.
+    spotify_auth: Arc<Mutex<SpotifyAuth>>,
 }
 
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
@@ -85,6 +88,7 @@ pub fn app() -> Router {
         targets: Arc::new(Mutex::new(SpeakerTargets::new())),
         connected: Arc::new(Mutex::new(Vec::new())),
         spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
+        spotify_auth: Arc::new(Mutex::new(SpotifyAuth::new())),
     };
 
     Router::new()
@@ -106,6 +110,14 @@ pub fn app() -> Router {
         .route("/spotify/start", post(spotify_start))
         .route("/spotify/stop", post(spotify_stop))
         .route("/spotify/status", get(spotify_status))
+        .route("/spotify/auth/url", get(spotify_auth_url))
+        .route("/spotify/auth/callback", post(spotify_auth_callback))
+        .route("/spotify/auth/status", get(spotify_auth_status))
+        .route("/spotify/play", post(spotify_play))
+        .route("/spotify/pause", post(spotify_pause))
+        .route("/spotify/next", post(spotify_next))
+        .route("/spotify/previous", post(spotify_previous))
+        .route("/spotify/now-playing", get(spotify_now_playing))
         // Permissive CORS for LAN development; tightened in a later phase.
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -199,6 +211,88 @@ async fn spotify_stop(State(state): State<AppState>) -> Result<Json<SpotifyState
 async fn spotify_status(State(state): State<AppState>) -> Json<SpotifyState> {
     let mut spotify = state.spotify.lock().await;
     Json(spotify.poll_liveness())
+}
+
+/// `GET /spotify/auth/url` — mint a PKCE authorize URL and CSRF `state` for the
+/// app to open in the system browser; the pending verifier/state is remembered
+/// server-side until the callback.
+async fn spotify_auth_url(State(state): State<AppState>) -> Json<AuthUrlResponse> {
+    let (url, csrf) = state.spotify_auth.lock().await.authorize_url();
+    Json(AuthUrlResponse { url, state: csrf })
+}
+
+/// `POST /spotify/auth/callback` — exchange the authorization `code` (validated
+/// against the pending CSRF `state`) for tokens. A body missing `code` is a
+/// malformed callback and is rejected with 400; the token exchange is a manual
+/// network seam.
+async fn spotify_auth_callback(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Json<SpotifyAuthState>, AppError> {
+    // Parse leniently so a missing `code` yields a 400 (not Axum's default 422).
+    let req: AuthCallbackRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::bad_request(format!("invalid callback body: {e}")))?;
+    let mut auth = state.spotify_auth.lock().await;
+    Ok(Json(auth.exchange_code(&req.code, &req.state).await?))
+}
+
+/// `GET /spotify/auth/status` — the coarse auth state (Connected/Disconnected).
+async fn spotify_auth_status(State(state): State<AppState>) -> Json<SpotifyAuthState> {
+    Json(state.spotify_auth.lock().await.auth_state())
+}
+
+/// `POST /spotify/play` — resume Web API playback (409 while Disconnected).
+async fn spotify_play(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+    spotify_transport(&state, Transport::Play).await
+}
+
+/// `POST /spotify/pause` — pause Web API playback (409 while Disconnected).
+async fn spotify_pause(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+    spotify_transport(&state, Transport::Pause).await
+}
+
+/// `POST /spotify/next` — skip to the next track (409 while Disconnected).
+async fn spotify_next(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+    spotify_transport(&state, Transport::Next).await
+}
+
+/// `POST /spotify/previous` — skip to the previous track (409 while Disconnected).
+async fn spotify_previous(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+    spotify_transport(&state, Transport::Previous).await
+}
+
+/// Drive a transport action on the Spotify Web API, returning 204 on success.
+/// While Disconnected the auth driver rejects before any outbound call (→ 409).
+async fn spotify_transport(state: &AppState, action: Transport) -> Result<StatusCode, AppError> {
+    let mut auth = state.spotify_auth.lock().await;
+    auth.transport(action).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /spotify/now-playing` — Server-Sent Events stream of now-playing
+/// snapshots polled from the Web API. Emits a `now-playing` event per tick; a
+/// Disconnected server keeps the stream alive with keep-alive comments only.
+async fn spotify_now_playing(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let auth = state.spotify_auth.clone();
+    let stream = async_stream::stream! {
+        loop {
+            let snapshot = {
+                let mut guard = auth.lock().await;
+                guard.now_playing().await
+            };
+            if let Ok(now_playing) = snapshot {
+                let event = Event::default()
+                    .event("now-playing")
+                    .json_data(now_playing)
+                    .unwrap_or_else(|_| Event::default().comment("serialization failed"));
+                yield Ok(event);
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// `GET /health` — liveness probe carrying the backend version.
@@ -409,11 +503,24 @@ impl From<SpotifyError> for AppError {
 
 impl From<SpotifyApiError> for AppError {
     fn from(err: SpotifyApiError) -> Self {
-        // Phase 5.2 (red): the mapping is filled in by the implementer. The
-        // contract under test: transport-while-Disconnected -> 409, token
-        // exchange failure -> 502, Premium required -> 403.
-        let _ = err;
-        todo!("map SpotifyApiError to AppError HTTP codes")
+        let status = match err {
+            // Transport while Disconnected: a precondition conflict, not a bug.
+            SpotifyApiError::NotConnected => StatusCode::CONFLICT,
+            // Access token rejected: the app must reauth (log in again).
+            SpotifyApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+            // Non-Premium account: transport is forbidden by Spotify.
+            SpotifyApiError::PremiumRequired => StatusCode::FORBIDDEN,
+            // No active device to target.
+            SpotifyApiError::NoActiveDevice => StatusCode::NOT_FOUND,
+            // Rate limited by the Web API.
+            SpotifyApiError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            // Token exchange/refresh or any upstream HTTP failure: a bad gateway.
+            SpotifyApiError::Exchange(_) | SpotifyApiError::Http(_) => StatusCode::BAD_GATEWAY,
+        };
+        AppError {
+            status,
+            message: err.to_string(),
+        }
     }
 }
 
