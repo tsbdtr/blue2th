@@ -6,9 +6,6 @@
 //! [`build_authorize_url`], [`parse_now_playing`], [`needs_refresh`],
 //! [`map_api_status`]) plus the typed [`SpotifyApiError`]. The stateful token
 //! lifecycle / network client is a manual seam (no real HTTP in CI).
-//!
-//! Phase 5.2 is being written test-first: the helper bodies below are stubs
-//! (`todo!()`) so the tests compile and FAIL until the implementer fills them in.
 
 use base64::Engine as _;
 use blue2th_proto::{NowPlaying, NowPlayingState, SpotifyAuthState, SpotifyAuthStatus};
@@ -346,6 +343,7 @@ impl SpotifyAuth {
             self.refresh().await?;
         }
         match &self.tokens {
+            // Clone is required: return an owned token while `self` stays borrowed.
             Some(t) => Ok(t.access_token.clone()),
             None => Err(SpotifyApiError::NotConnected),
         }
@@ -354,6 +352,8 @@ impl SpotifyAuth {
     /// Refresh the access token using the held refresh token (network seam).
     async fn refresh(&mut self) -> Result<(), SpotifyApiError> {
         let refresh_token = match &self.tokens {
+            // Clone is required: the token is reused below after `self.tokens` is
+            // reassigned, so it cannot stay borrowed from `self`.
             Some(t) => t.refresh_token.clone(),
             None => return Err(SpotifyApiError::NotConnected),
         };
@@ -608,6 +608,24 @@ mod tests {
         assert_eq!(np.state, NowPlayingState::Idle);
         assert_eq!(np.title, None);
         assert_eq!(np.artist, None);
+    }
+
+    // Edge case: a 200 body with no `item` (Web API returns `{}` when nothing is
+    // loaded / no active device) maps to Idle rather than a title-less Playing.
+    #[test]
+    fn test_parse_now_playing_no_item_is_idle() {
+        let np = parse_now_playing("{}");
+        assert_eq!(np.state, NowPlayingState::Idle);
+        assert_eq!(np.title, None);
+        assert_eq!(np.artist, None);
+    }
+
+    // Edge case: a malformed body is treated as Idle rather than propagated as an
+    // error, so a transient bad payload never breaks the now-playing SSE feed.
+    #[test]
+    fn test_parse_now_playing_malformed_body_is_idle() {
+        let np = parse_now_playing("not json at all");
+        assert_eq!(np.state, NowPlayingState::Idle);
     }
 
     // Criterion: `needs_refresh` is true once `now` is past `expires_at`.
