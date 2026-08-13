@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright 2026 Blue2th — Licensed under the Apache License, Version 2.0.
+
+  Custom manifest, referenced by `[application] android_manifest` in Dioxus.toml.
+  It is dx's generated manifest with one addition: android:launchMode="singleTop"
+  on the main activity. Without it, the Spotify OAuth redirect
+  (blue2th://spotify-callback) would push a SECOND MainActivity on top of the
+  running one instead of being delivered to onNewIntent — two wry activities in
+  one process. dx has no config key for launchMode, hence this file.
+
+  Everything else mirrors the dx template; re-diff it against
+  target/dx/blue2th/debug/android/app/app/src/main/AndroidManifest.xml after a
+  dx upgrade.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <application android:hasCode="true" android:icon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true"
+        android:allowNativeHeapPointerTagging="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:configChanges="orientation|screenLayout|screenSize|keyboardHidden"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="@string/app_name" android:name="dev.dioxus.main.MainActivity">
+            <meta-data android:name="android.app.lib_name" android:value="main" />
+            <meta-data android:name="android.app.func_name" android:value="ANativeActivity_onCreate" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- URL scheme deep link: blue2th:// (Spotify OAuth redirect) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="blue2th" />
+            </intent-filter>
+        </activity>
+
+        <!-- Receives onTaskRemoved when blue2th is swiped out of recents, the one
+             case where the activity's onDestroy never runs. stopWithTask="false"
+             keeps it alive long enough to tell the backend the app is gone. -->
+        <service
+            android:name="dev.dioxus.main.Blue2thPresenceService"
+            android:exported="false"
+            android:stopWithTask="false" />
+    </application>
+</manifest>

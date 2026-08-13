@@ -9,7 +9,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use blue2th_proto::PlaybackState;
+use blue2th_proto::{PlaybackState, RoutingMode, TargetsState};
 use tower::ServiceExt; // for `oneshot`
 
 /// The binary crate is not a library, so we rebuild the router here through the
@@ -180,4 +180,33 @@ fn test_play_streams_running_output_node_to_pipewire() {
         graph.contains("\"state\": \"running\""),
         "no running node found in the PipeWire graph"
     );
+}
+
+// Criterion: dropping a speaker from the selection empties it and returns to
+// Idle routing. Deselecting used to only update the stored selection, leaving
+// the PipeWire graph untouched — so the speaker kept playing. The handler now
+// pushes the change into the live graph, which must stay panic-free with no
+// speaker selected and no PipeWire around (CI).
+#[tokio::test]
+async fn test_deselect_last_speaker_empties_the_selection() {
+    let app = build_app();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/devices/AA:BB:CC:DD:EE:FF/deselect")
+        .body(Body::empty())
+        .expect("build request");
+
+    let response = app.oneshot(request).await.expect("router response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let targets: TargetsState = serde_json::from_slice(&bytes).expect("parse TargetsState");
+    assert!(
+        targets.speakers.is_empty(),
+        "no speaker must remain selected, got {:?}",
+        targets.speakers
+    );
+    assert_eq!(targets.routing, RoutingMode::Idle);
 }

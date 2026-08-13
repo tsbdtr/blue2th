@@ -40,6 +40,48 @@ dx build --platform android
 
 Install the pre-commit hook once with: `git config core.hooksPath .githooks`
 
+### After a Dioxus / `dx` upgrade — re-diff the frozen Android files
+
+`android/AndroidManifest.xml` and `android/MainActivity.kt` are **copies of dx's own
+templates**, declared in `Dioxus.toml` (`[application] android_manifest` /
+`android_main_activity`). dx **replaces** rather than merges them, so they no longer
+follow template changes — and a stale copy fails at runtime, not at build time
+(missing permission, `UnsatisfiedLinkError`, dead deep link).
+
+Why each is frozen — keep the delta this small:
+- **manifest**: declares `Blue2thPresenceService` (see below) and adds
+  `android:launchMode="singleTop"` (no dx config key for it), without
+  which the Spotify OAuth redirect stacks a second activity instead of reaching
+  `onNewIntent`. Also carries the permissions and the `blue2th://` intent-filter, since
+  `[android.raw]` and `[deep_links]` are inert while a custom manifest is set.
+- **MainActivity.kt**: adds `onNewIntent` → `setIntent`, without which the base
+  `Activity` leaves `getIntent()` on the launcher intent and `src/deep_link.rs` never
+  sees the OAuth redirect; plus `onStart`/`onStop`/`onDestroy` → the
+  `nativeOn{Foreground,Background,Gone}` JNI hooks in `src/lifecycle.rs`, which tell
+  the backend a frozen app from a dead one (see the watchdog in
+  `blue2th-server/src/watchdog.rs`). It also carries `Blue2thPresenceService`, whose
+  `onTaskRemoved` is the only reliable signal for a swipe out of recents — dx copies
+  this single file, and Kotlin allows several top-level classes per file, so a second
+  class has nowhere else to go.
+
+Checklist after bumping `dioxus` or `dx`:
+
+```bash
+# 1. See what dx generates now: comment out both keys in [application], then
+dx build --platform android
+diff android/AndroidManifest.xml target/dx/blue2th/debug/android/app/app/src/main/AndroidManifest.xml
+diff android/MainActivity.kt     target/dx/blue2th/debug/android/app/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt
+# 2. Port any template change into our copies, restore the keys, rebuild.
+# 3. The JNI symbols must be exported, or the app crashes on background/redirect:
+nm -D --defined-only target/dx/blue2th/debug/android/app/app/src/main/jniLibs/<abi>/libmain.so \
+  | grep Java_dev_dioxus_main_MainActivity
+```
+
+Watch the `typealias BuildConfig = <namespace>.BuildConfig` line in `MainActivity.kt`:
+the namespace comes from the bundle identifier in the generated `build.gradle.kts`, and
+the wry Kotlin glue needs it. Check the `<abi>` directory is the one just rebuilt — dx
+only rebuilds the ABI it targets, so a stale sibling can look like a missing symbol.
+
 ## Code Guidelines
 
 ### Error Handling

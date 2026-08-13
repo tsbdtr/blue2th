@@ -146,6 +146,100 @@ pub struct SpotifyState {
     pub device_name: String,
 }
 
+/// Whether the app is authenticated against the Spotify Web API (phase 5.2).
+///
+/// The server holds the OAuth (Authorization Code + PKCE) tokens; the app only
+/// observes this coarse state via `GET /spotify/auth/status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpotifyAuthStatus {
+    /// No tokens held: the user has not logged in (or the refresh was revoked).
+    Disconnected,
+    /// Valid tokens held: the server can drive the Spotify Web API.
+    Connected,
+}
+
+/// Auth state returned by `GET /spotify/auth/status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyAuthState {
+    /// Whether the app is connected (tokens held) or disconnected.
+    pub status: SpotifyAuthStatus,
+}
+
+/// Response of `GET /spotify/auth/url`: the Spotify authorize URL to open in the
+/// system browser, plus the CSRF `state` the app must echo back on callback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthUrlResponse {
+    /// The `accounts.spotify.com/authorize` URL (PKCE challenge embedded).
+    pub url: String,
+    /// Opaque CSRF token the server validates on `POST /spotify/auth/callback`.
+    pub state: String,
+}
+
+/// Body of `POST /spotify/auth/callback`: the authorization `code` returned by
+/// Spotify on the custom-scheme redirect, and the CSRF `state` to validate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthCallbackRequest {
+    /// The one-time authorization code to exchange for tokens.
+    pub code: String,
+    /// The CSRF state echoed back from the authorize step.
+    pub state: String,
+}
+
+/// High-level now-playing state pushed over the `/spotify/now-playing` SSE feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NowPlayingState {
+    /// Nothing playing / no active device (Web API 204 or empty body).
+    Idle,
+    /// A track is actively playing.
+    Playing,
+    /// A track is loaded but paused.
+    Paused,
+}
+
+/// A now-playing snapshot mapped from the Spotify `/me/player` payload and pushed
+/// to the app over SSE. All track fields are absent when the state is `Idle`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NowPlaying {
+    /// Playing / paused / idle.
+    pub state: NowPlayingState,
+    /// Track title, if any.
+    pub title: Option<String>,
+    /// Primary artist name, if any.
+    pub artist: Option<String>,
+    /// Album name, if any.
+    pub album: Option<String>,
+    /// Playback position in milliseconds, if known.
+    pub progress_ms: Option<u64>,
+    /// Track duration in milliseconds, if known.
+    pub duration_ms: Option<u64>,
+}
+
+/// What the app is doing, reported to the backend so it can tell "the user left"
+/// from "Android froze the app in the background" (phase 5.2).
+///
+/// The backend cannot infer this: a frozen app and a dead one both stop reading
+/// the now-playing SSE feed, so the app says which one it is on its way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientPresence {
+    /// The app is on screen.
+    Foreground,
+    /// The app is backgrounded but alive; Android may freeze it at any moment,
+    /// so losing the SSE feed says nothing about the user's intent.
+    Background,
+    /// The app is closing for good: playback should stop being kept alive for it.
+    Gone,
+}
+
+/// Body of `POST /client/presence`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceRequest {
+    /// The app's new presence.
+    pub presence: ClientPresence,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +447,136 @@ mod tests {
             serde_json::to_string(&SpotifyStatus::Stopped).expect("serialize"),
             "\"stopped\""
         );
+    }
+
+    // Criterion (phase 5.2): `SpotifyAuthState` round-trips through serde for every
+    // status variant.
+    #[test]
+    fn test_spotify_auth_state_round_trips_through_json() {
+        for status in [
+            SpotifyAuthStatus::Disconnected,
+            SpotifyAuthStatus::Connected,
+        ] {
+            let original = SpotifyAuthState { status };
+            let json = serde_json::to_string(&original).expect("serialize SpotifyAuthState");
+            let parsed: SpotifyAuthState =
+                serde_json::from_str(&json).expect("deserialize SpotifyAuthState");
+            assert_eq!(original, parsed);
+        }
+    }
+
+    // Criterion (phase 5.2): the auth status serializes lowercase (shared contract).
+    #[test]
+    fn test_spotify_auth_status_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&SpotifyAuthStatus::Connected).expect("serialize"),
+            "\"connected\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SpotifyAuthStatus::Disconnected).expect("serialize"),
+            "\"disconnected\""
+        );
+    }
+
+    // Criterion (phase 5.2): the auth request/response DTOs round-trip through serde.
+    #[test]
+    fn test_auth_url_response_round_trips_through_json() {
+        let original = AuthUrlResponse {
+            url: "https://accounts.spotify.com/authorize?response_type=code".to_string(),
+            state: "csrf-abc123".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize AuthUrlResponse");
+        let parsed: AuthUrlResponse =
+            serde_json::from_str(&json).expect("deserialize AuthUrlResponse");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion (phase 5.2): the auth callback request DTO round-trips through serde.
+    #[test]
+    fn test_auth_callback_request_round_trips_through_json() {
+        let original = AuthCallbackRequest {
+            code: "auth-code-xyz".to_string(),
+            state: "csrf-abc123".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize AuthCallbackRequest");
+        let parsed: AuthCallbackRequest =
+            serde_json::from_str(&json).expect("deserialize AuthCallbackRequest");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion (phase 5.2): `NowPlayingState` round-trips and serializes lowercase.
+    #[test]
+    fn test_now_playing_state_round_trips_and_serializes_lowercase() {
+        for state in [
+            NowPlayingState::Idle,
+            NowPlayingState::Playing,
+            NowPlayingState::Paused,
+        ] {
+            let json = serde_json::to_string(&state).expect("serialize NowPlayingState");
+            let parsed: NowPlayingState =
+                serde_json::from_str(&json).expect("deserialize NowPlayingState");
+            assert_eq!(state, parsed);
+        }
+        assert_eq!(
+            serde_json::to_string(&NowPlayingState::Playing).expect("serialize"),
+            "\"playing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NowPlayingState::Idle).expect("serialize"),
+            "\"idle\""
+        );
+    }
+
+    // Criterion (phase 5.2): `NowPlaying` round-trips through serde with a full
+    // track payload (playing) and with an idle payload (all track fields absent).
+    #[test]
+    fn test_now_playing_round_trips_through_json() {
+        let playing = NowPlaying {
+            state: NowPlayingState::Playing,
+            title: Some("Song".to_string()),
+            artist: Some("Artist".to_string()),
+            album: Some("Album".to_string()),
+            progress_ms: Some(12_000),
+            duration_ms: Some(210_000),
+        };
+        let json = serde_json::to_string(&playing).expect("serialize NowPlaying");
+        let parsed: NowPlaying = serde_json::from_str(&json).expect("deserialize NowPlaying");
+        assert_eq!(playing, parsed);
+
+        // An idle snapshot (nothing playing) must round-trip too.
+        let idle = NowPlaying {
+            state: NowPlayingState::Idle,
+            title: None,
+            artist: None,
+            album: None,
+            progress_ms: None,
+            duration_ms: None,
+        };
+        let json = serde_json::to_string(&idle).expect("serialize idle NowPlaying");
+        let parsed: NowPlaying = serde_json::from_str(&json).expect("deserialize idle NowPlaying");
+        assert_eq!(idle, parsed);
+    }
+
+    // Criterion (phase 5.2): the presence report round-trips through serde, so the
+    // app and the backend agree on the three states the watchdog keys off.
+    #[test]
+    fn test_presence_request_round_trips_through_json() {
+        for presence in [
+            ClientPresence::Foreground,
+            ClientPresence::Background,
+            ClientPresence::Gone,
+        ] {
+            let request = PresenceRequest { presence };
+            let json = serde_json::to_string(&request).expect("serialize PresenceRequest");
+            let parsed: PresenceRequest =
+                serde_json::from_str(&json).expect("deserialize PresenceRequest");
+            assert_eq!(request, parsed);
+        }
+        // The wire form stays lowercase, as for the other status enums.
+        let json = serde_json::to_string(&PresenceRequest {
+            presence: ClientPresence::Background,
+        })
+        .expect("serialize PresenceRequest");
+        assert_eq!(json, r#"{"presence":"background"}"#);
     }
 }

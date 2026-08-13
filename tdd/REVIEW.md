@@ -1,59 +1,29 @@
-# Review Report — Phase 5.1 Spotify source backend (librespot)
-
-> The dedicated `tdd-reviewer` agent crashed mid-run (connection closed after ~80 min)
-> without writing its report or applying changes. This review was completed by the
-> orchestrator directly.
+# Review Report — Phase 5.2 — Spotify OAuth (PKCE) + Web API transport & now-playing over SSE
 
 ## Affected Layers
-mobile, server, proto
+mobile, server, proto (all three reviewed)
 
 ## Issues Found & Fixed
-- [build artifact] `assets/tailwind.css` — an 87-line diff (`.absolute`, `.grow`,
-  `.transition`, `--default-transition-*`) was a regenerated `dx build` Tailwind output.
-  Phase 5.1 touches no UI markup (backend + reqwest call layer only), so the change is
-  unrelated drift. Reverted to base — identical handling to the phase-4 review.
+- [docs] `blue2th-server/src/spotify_auth.rs:10` — module doc still claimed the helper bodies were `todo!()` stubs "written test-first"; the helpers are fully implemented → removed the stale paragraph.
+- [convention] `blue2th-server/src/spotify_auth.rs:349,356` — two `String` clones (`access_token`, `refresh_token`) had no justification comment, which CLAUDE.md requires → added brief comments explaining each clone is necessary (returning owned data / reusing after `self.tokens` is reassigned).
+- [edge case] `parse_now_playing` mapped a body with no `item` and a malformed body to Idle, but neither path was covered → added `test_parse_now_playing_no_item_is_idle` and `test_parse_now_playing_malformed_body_is_idle`.
+- [build drift] `assets/tailwind.css` — 85-line regenerated Tailwind artifact (generic `absolute`/`grow`/`lowercase`/`filter`/`transition` utilities + `@property` blocks from a newer Tailwind); the phase 5.2 UI uses custom classes in `main.css`, none of these utilities → reverted to base (consistent with phase 4 / 5.1 reviews). Android build still succeeds with the base file.
+- [process] `graphify-out/` was bundled into the implementation commit; project convention regenerates the graph in a separate `chore(graph): …` commit during `/tdd done` → reset `graphify-out/` back to base so it regenerates cleanly on develop after merge.
 
-No code issues found. The implementation already:
-- Reuses `audio::bluez_sink_prefix` (single-target sink) and the `blue2th_combined`
-  convention (two-target sink) instead of re-deriving node names.
-- Reuses `route_to_speaker` / `route_to_combined` for routing — no duplicated PipeWire logic.
-- Mirrors `From<AudioError> for AppError` in `From<SpotifyError> for AppError`
-  (precondition → 400, backend fault → 500).
-- Snapshots the target selection then locks the backend, matching the `/play` handler pattern.
+## Security review (no code change needed — verified clean)
+- No client secret anywhere; only the public `client_id` (env-overridable) is used, consistent with the PKCE public-client flow.
+- `code_verifier` never leaves the server: minted in `authorize_url`, stored in `Pending`, sent only to the token endpoint; only the derived `code_challenge` is placed in the authorize URL.
+- CSRF `state` is validated on callback: `exchange_code` does `pending.take().filter(|p| p.state == state)`, rejecting a mismatch with a 502-mapped `Exchange` error and consuming the pending authorization.
+- Tokens are in-memory only (`Option<Tokens>`); dropping them on `disconnect()` returns to Disconnected.
+- No tokens/codes are logged: `SpotifyApiError`'s `Display` and the `Exchange(String)` payload carry only reqwest/status text, and `AppError::into_response` logs that message — never a token or code. No `tracing` call touches the code/token.
+- SSE resilience: `spotify_now_playing` ignores per-tick `Err` (incl. `NotConnected` while Disconnected) and keeps the stream alive via keep-alive; a dropped client just ends the stream. Note: the single `Arc<Mutex<SpotifyAuth>>` means a slow now-playing HTTP fetch briefly blocks a concurrent transport call for that request's duration — acceptable for this single-user backend and out of scope to redesign here.
 
-## Correctness Review (SpotifyBackend lifecycle)
-- **start**: rejects an empty selection (`NoSpeakerSelected`) before any work; calls
-  `poll_liveness` first so a self-exited child never blocks a respawn; honours idempotence
-  via `should_spawn`; establishes routing, then spawns `librespot` mapping spawn errors with
-  `map_spawn_error`. ✅
-- **stop**: best-effort `kill` + `wait`, idempotent while stopped (`child.take()`). ✅
-- **poll_liveness**: reconciles an exited/errored child back to `Stopped` — a dead
-  subprocess never poisons the server. ✅
-- No `unwrap`/`expect`/`panic`/`todo!` outside `#[cfg(test)]`; errors propagate via typed
-  `SpotifyError` + `?`. ✅
-
-## Minor Notes (not blocking)
-- The `[] =>` arm inside `start`'s routing `match` is unreachable in practice (the
-  `speakers.is_empty()` guard returns earlier) but is a plain `return Err(..)`, not
-  `unreachable!()`, so it is clippy-clean and harmless — a defensive belt-and-braces.
-- The new mobile client fns (`start_spotify`/`stop_spotify`/`spotify_status`/`spotify_url`)
-  are the in-scope reqwest layer; they are not yet wired into a UI component, so the Android
-  build emits non-blocking `never used` INFO warnings under the existing
-  `#[cfg_attr(not(target_os = "android"), allow(dead_code))]` guard — same pattern as the
-  phase-3/4 client fns. UI wiring is deliberately out of this slice's tested scope.
+## New Tests Added
+- `test_parse_now_playing_no_item_is_idle`: a 200 `{}` body (no active track) maps to `NowPlayingState::Idle` with no title/artist.
+- `test_parse_now_playing_malformed_body_is_idle`: a non-JSON body is treated as Idle, so a transient bad payload cannot break the SSE feed.
 
 ## Final Status
-- `cargo test --workspace`: ✅ all passed (proto serde round-trip; server unit incl. spotify
-  pure helpers + error mapping; spotify route tests; mobile URL tests; transport integration;
-  1 PipeWire-gated test ignored as designed)
-- `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used ...`: ✅ clean
-- `cargo fmt --check`: ✅ clean
-- `dx build --platform android`: ✅ success in the GREEN phase (mobile layer built);
-  no source changed in review beyond reverting the CSS artifact.
-
-## Manual (hardware/process) seam — not CI-testable
-Left to a live setup with `librespot` installed:
-- Actual spawn/kill of the real binary, appearance as `blue2th-PC` in the official Spotify app,
-  audio on both speakers via the combined sink, per-speaker offset tuning, crash detection.
-- In the current sandbox `librespot` is **not installed**, so `POST /spotify/start` with a
-  selected speaker exercises the `BackendMissing` path (clean 500) — a valid first manual check.
+- `cargo test --workspace`: ✅ all passed (server lib now 63, incl. 2 new)
+- `cargo fmt --check`: ✅ clean (only pre-existing nightly-only rustfmt option warnings)
+- `cargo clippy --workspace --all-targets -- -D warnings …`: ✅ clean
+- `dx build --platform android`: ✅ success

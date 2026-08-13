@@ -1,3 +1,26 @@
+[application]
+
+# Stock Dioxus/wry activity plus an onNewIntent override, so the Spotify OAuth
+# redirect reaches src/deep_link.rs when the app is already running.
+android_main_activity = "android/MainActivity.kt"
+
+# dx's generated manifest plus launchMode="singleTop" on the main activity, so
+# the redirect is delivered to the running activity instead of stacking a second
+# one. See the comment at the top of the file.
+android_manifest = "android/AndroidManifest.xml"
+
+# NOTE: dx REPLACES the manifest with `android_manifest` above rather than
+# merging into it, so the two sections below are currently inert — the permissions
+# and the blue2th:// intent-filter are declared directly in
+# android/AndroidManifest.xml. They are kept in sync so that dropping the custom
+# manifest restores the same result.
+
+# Custom URL scheme: Spotify's consent screen redirects to
+# blue2th://spotify-callback?code=…&state=…, which Android routes to the app
+# through the intent-filter generated from this scheme (phase 5.2).
+[deep_links]
+schemes = ["blue2th"]
+
 [android.raw]
 manifest = """
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />

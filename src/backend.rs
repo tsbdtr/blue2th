@@ -20,7 +20,8 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    DeviceInfo, HealthStatus, OffsetRequest, PlaybackState, SpotifyState, TargetsState,
+    AuthCallbackRequest, AuthUrlResponse, ClientPresence, DeviceInfo, HealthStatus, NowPlaying,
+    OffsetRequest, PlaybackState, PresenceRequest, SpotifyAuthState, SpotifyState, TargetsState,
     VolumeRequest,
 };
 use futures::StreamExt;
@@ -367,6 +368,205 @@ async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
         .map_err(|e| BackendError::new(describe(&e)))
 }
 
+/// Build the `{base}/spotify/now-playing` SSE URL, tolerating a trailing slash.
+fn now_playing_url(base: &str) -> String {
+    format!("{}/spotify/now-playing", base.trim_end_matches('/'))
+}
+
+/// Surface the backend's own message for a failed response. `AppError` replies
+/// with a plain-text body ("Spotify client id not configured — …", "start the
+/// Spotify backend first"), which `error_for_status` would throw away, leaving
+/// the user with a bare "503 Service Unavailable" on the phone.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn backend_error_message(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, BackendError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    let message = body.trim();
+    Err(BackendError::new(if message.is_empty() {
+        status.to_string()
+    } else {
+        message.to_string()
+    }))
+}
+
+/// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
+/// (PKCE) and the CSRF `state` to echo back on callback.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
+    let url = spotify_url(backend_base_url(), "auth/url");
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
+        .json::<AuthUrlResponse>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/spotify/auth/callback` — hand the backend the authorization
+/// `code` (and CSRF `state`) captured from the custom-scheme redirect.
+///
+/// Invoked from the root deep-link poll in `App`, which consumes the
+/// redirect through `deep_link::take_pending_deep_link`.
+pub async fn spotify_auth_callback(
+    code: &str,
+    state: &str,
+) -> Result<SpotifyAuthState, BackendError> {
+    let url = spotify_url(backend_base_url(), "auth/callback");
+    let response = reqwest::Client::new()
+        .post(&url)
+        .json(&AuthCallbackRequest {
+            code: code.to_string(),
+            state: state.to_string(),
+        })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
+        .json::<SpotifyAuthState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
+    let url = spotify_url(backend_base_url(), "auth/status");
+    reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .json::<SpotifyAuthState>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/client/presence` — tell the backend whether the app is on screen,
+/// backgrounded or closing.
+///
+/// The backend cannot infer this: Android freezes a backgrounded app, so its
+/// dropped SSE feed looks exactly like a phone that is gone. Reporting keeps a
+/// background listening session alive and pauses at once on a real exit.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn report_presence(presence: ClientPresence) -> Result<(), BackendError> {
+    let url = format!(
+        "{}/client/presence",
+        backend_base_url().trim_end_matches('/')
+    );
+    let response = reqwest::Client::new()
+        .post(&url)
+        .json(&PresenceRequest { presence })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response).await?;
+    Ok(())
+}
+
+/// A Spotify transport action, so the UI can carry one in a prop instead of a
+/// stringly-typed path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SpotifyAction {
+    /// Skip to the previous track.
+    Previous,
+    /// Resume playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Skip to the next track.
+    Next,
+}
+
+impl SpotifyAction {
+    /// The `/spotify/{…}` path segment this action posts to.
+    fn path(self) -> &'static str {
+        match self {
+            SpotifyAction::Previous => "previous",
+            SpotifyAction::Play => "play",
+            SpotifyAction::Pause => "pause",
+            SpotifyAction::Next => "next",
+        }
+    }
+}
+
+/// `POST {base}/spotify/{action}` — drive playback through the Web API, which the
+/// server applies to the `blue2th-PC` Connect device.
+pub async fn spotify_transport(action: SpotifyAction) -> Result<(), BackendError> {
+    post_spotify_transport(action.path()).await
+}
+
+/// POST `{base}/spotify/{action}` (no body) for a transport action; the backend
+/// replies 204 (no content) on success, so no body is decoded.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
+    let url = spotify_url(backend_base_url(), action);
+    let response = reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response).await?;
+    Ok(())
+}
+
+/// Subscribe to the `{base}/spotify/now-playing` SSE feed, invoking `on_event`
+/// for each `now-playing` snapshot until the stream ends or the caller drops the
+/// future. Errors talking to the backend are surfaced to the caller.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn subscribe_now_playing<F>(mut on_event: F) -> Result<(), BackendError>
+where
+    F: FnMut(NowPlaying),
+{
+    let url = now_playing_url(backend_base_url());
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .error_for_status()
+        .map_err(|e| BackendError::new(describe(&e)))?;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| BackendError::new(describe(&e)))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // SSE events are separated by a blank line.
+        while let Some(pos) = buffer.find("\n\n") {
+            let block: String = buffer.drain(..pos + 2).collect();
+            if let Some(now_playing) = sse_now_playing_payload(&block) {
+                on_event(now_playing);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Extract and parse the `NowPlaying` payload of a `now-playing` SSE event block,
+/// ignoring keep-alive comments and non-`now-playing` events.
+fn sse_now_playing_payload(block: &str) -> Option<NowPlaying> {
+    let mut is_now_playing = false;
+    let mut data: Option<String> = None;
+    for line in block.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            is_now_playing = rest.trim() == "now-playing";
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data = Some(rest.trim().to_string());
+        }
+    }
+    if is_now_playing {
+        data.and_then(|json| serde_json::from_str::<NowPlaying>(&json).ok())
+    } else {
+        None
+    }
+}
+
 /// Extract the JSON payload of a `device` SSE event block, ignoring keep-alive
 /// comments and non-device events.
 fn sse_device_payload(block: &str) -> Option<String> {
@@ -498,5 +698,41 @@ mod tests {
             spotify_url("http://10.0.0.5:4000", "status"),
             "http://10.0.0.5:4000/spotify/status"
         );
+    }
+
+    // Criterion (phase 5.2): mobile exposes an SSE now-playing subscription — the
+    // client builds the `/spotify/now-playing` URL, tolerating a trailing slash.
+    #[test]
+    fn test_now_playing_url_appends_path() {
+        assert_eq!(
+            now_playing_url("http://10.0.0.5:4000"),
+            "http://10.0.0.5:4000/spotify/now-playing"
+        );
+        assert_eq!(
+            now_playing_url("http://10.0.0.5:4000/"),
+            "http://10.0.0.5:4000/spotify/now-playing"
+        );
+    }
+
+    // Criterion (phase 5.2): the SSE reader parses a `now-playing` event block into
+    // a `NowPlaying` snapshot.
+    #[test]
+    fn test_sse_now_playing_payload_parses_now_playing_event() {
+        let block = concat!(
+            "event:now-playing\n",
+            "data:{\"state\":\"playing\",\"title\":\"Song\",\"artist\":\"Artist\",",
+            "\"album\":\"Album\",\"progress_ms\":12000,\"duration_ms\":210000}\n\n",
+        );
+        let np = sse_now_playing_payload(block).expect("parse now-playing event");
+        assert_eq!(np.state, blue2th_proto::NowPlayingState::Playing);
+        assert_eq!(np.title.as_deref(), Some("Song"));
+    }
+
+    // Criterion (phase 5.2): the SSE reader ignores keep-alive comments and other
+    // event kinds (returns None).
+    #[test]
+    fn test_sse_now_playing_payload_ignores_non_now_playing_and_comments() {
+        assert!(sse_now_playing_payload("event:error\ndata:boom\n\n").is_none());
+        assert!(sse_now_playing_payload(": keep-alive\n\n").is_none());
     }
 }
