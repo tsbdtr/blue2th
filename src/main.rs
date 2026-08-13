@@ -1585,6 +1585,18 @@ fn SpotifySource(
     }
 }
 
+/// The state a transport action is expected to leave playback in, or `None` when
+/// it does not change it (a skip keeps playing, or keeps paused). Pure.
+fn optimistic_now_playing_state(
+    action: backend::SpotifyAction,
+) -> Option<blue2th_proto::NowPlayingState> {
+    match action {
+        backend::SpotifyAction::Play => Some(blue2th_proto::NowPlayingState::Playing),
+        backend::SpotifyAction::Pause => Some(blue2th_proto::NowPlayingState::Paused),
+        backend::SpotifyAction::Next | backend::SpotifyAction::Previous => None,
+    }
+}
+
 /// One Spotify transport button in the bottom bar. Disabled until the OAuth
 /// login is done; failures land in the shared toast rather than being dropped.
 #[component]
@@ -1597,6 +1609,7 @@ fn SpotifyTransportButton(
     primary: bool,
     error: Signal<Option<String>>,
 ) -> Element {
+    let spotify = use_context::<SpotifyUi>();
     let class = if primary {
         "transport-btn spotify-transport-btn primary"
     } else {
@@ -1613,9 +1626,23 @@ fn SpotifyTransportButton(
                     return;
                 }
                 let mut error = error;
+                let mut now_playing = spotify.now_playing;
+                // Assume the command lands, so the icon flips under the finger.
+                // Waiting for the SSE feed to confirm would leave the button up to
+                // one poll interval behind the sound, which is what makes it feel
+                // laggy — the audio path is far shorter than the state path.
+                let previous = now_playing.peek().clone();
+                if let Some(state) = optimistic_now_playing_state(action) {
+                    if let Some(snapshot) = now_playing.write().as_mut() {
+                        snapshot.state = state;
+                    }
+                }
                 spawn(async move {
                     if let Err(e) = backend::spotify_transport(action).await {
                         *error.write() = Some(e.to_string());
+                        // It did not land after all: put back what the feed last
+                        // reported rather than leaving the icon lying.
+                        *now_playing.write() = previous;
                     }
                 });
             },
