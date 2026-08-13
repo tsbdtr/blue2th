@@ -216,6 +216,30 @@ pub struct NowPlaying {
     pub duration_ms: Option<u64>,
 }
 
+/// What the app is doing, reported to the backend so it can tell "the user left"
+/// from "Android froze the app in the background" (phase 5.2).
+///
+/// The backend cannot infer this: a frozen app and a dead one both stop reading
+/// the now-playing SSE feed, so the app says which one it is on its way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientPresence {
+    /// The app is on screen.
+    Foreground,
+    /// The app is backgrounded but alive; Android may freeze it at any moment,
+    /// so losing the SSE feed says nothing about the user's intent.
+    Background,
+    /// The app is closing for good: playback should stop being kept alive for it.
+    Gone,
+}
+
+/// Body of `POST /client/presence`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceRequest {
+    /// The app's new presence.
+    pub presence: ClientPresence,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +555,28 @@ mod tests {
         let json = serde_json::to_string(&idle).expect("serialize idle NowPlaying");
         let parsed: NowPlaying = serde_json::from_str(&json).expect("deserialize idle NowPlaying");
         assert_eq!(idle, parsed);
+    }
+
+    // Criterion (phase 5.2): the presence report round-trips through serde, so the
+    // app and the backend agree on the three states the watchdog keys off.
+    #[test]
+    fn test_presence_request_round_trips_through_json() {
+        for presence in [
+            ClientPresence::Foreground,
+            ClientPresence::Background,
+            ClientPresence::Gone,
+        ] {
+            let request = PresenceRequest { presence };
+            let json = serde_json::to_string(&request).expect("serialize PresenceRequest");
+            let parsed: PresenceRequest =
+                serde_json::from_str(&json).expect("deserialize PresenceRequest");
+            assert_eq!(request, parsed);
+        }
+        // The wire form stays lowercase, as for the other status enums.
+        let json = serde_json::to_string(&PresenceRequest {
+            presence: ClientPresence::Background,
+        })
+        .expect("serialize PresenceRequest");
+        assert_eq!(json, r#"{"presence":"background"}"#);
     }
 }

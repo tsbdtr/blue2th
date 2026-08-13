@@ -425,6 +425,28 @@ pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
     }
 }
 
+/// Whether a selection needs the combined-sink path: two speakers to fan out, or
+/// a single one carrying an offset. The offset only exists as `module-loopback`
+/// latency, so routing a single speaker straight to its sink would silently drop
+/// it — which is why a lone speaker's offset used to have no audible effect. Pure.
+pub fn needs_combined(speakers: &[SpeakerTarget]) -> bool {
+    speakers.len() > 1 || speakers.iter().any(|s| s.offset_ms > 0)
+}
+
+/// Apply the PipeWire routing a selection calls for: the combined sink when
+/// [`needs_combined`], the direct single-sink route otherwise. The single seam
+/// used by `/play` and by the Spotify backend, so both agree on where audio goes.
+pub fn route_for_targets(speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
+    let Some(only) = speakers.first() else {
+        return Err(AudioError::NoSpeakerConnected);
+    };
+    if needs_combined(speakers) {
+        route_to_combined(&combine_sink_plan(speakers))
+    } else {
+        route_to_speaker(&only.address)
+    }
+}
+
 /// Derive the `bluez_output.*` PipeWire sink node-name prefix for a speaker MAC
 /// (colons → underscores, upper-cased), matching what BlueZ creates.
 pub fn bluez_sink_prefix(mac: &str) -> String {
@@ -479,6 +501,43 @@ pub fn route_to_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
 /// and every loopback whose arguments reference `sink_name`. Best-effort — a
 /// missing module is not an error (the combined sink may simply not exist yet).
 pub fn teardown_combined(sink_name: &str) -> Result<(), AudioError> {
+    unload_modules_matching(&[sink_name])
+}
+
+/// Whether the combined null sink is currently loaded, i.e. whether a branch can
+/// be retuned in place rather than routed from scratch.
+pub fn combined_sink_exists(sink_name: &str) -> bool {
+    find_sink_with_prefix(sink_name).is_some()
+}
+
+/// Re-apply one branch's latency **without** tearing the combined sink down:
+/// unload just that speaker's loopback and reload it with the new offset. The
+/// shared null sink stays up, so whatever feeds it — the tone player or
+/// `librespot` — keeps streaming while the speaker is retuned.
+///
+/// Hardware seam (PipeWire/`pactl`): not exercised by CI.
+pub fn retune_combined_branch(sink_name: &str, branch: &CombineBranch) -> Result<(), AudioError> {
+    let real = find_sink_with_prefix(&branch.sink).ok_or_else(|| {
+        AudioError::PipeWire(format!("no PipeWire sink for prefix {}", branch.sink))
+    })?;
+    let source = format!("source={sink_name}.monitor");
+    let sink = format!("sink={real}");
+    // Match on both ends so only this branch's loopback is unloaded, leaving the
+    // null sink and the other speaker's branch untouched.
+    unload_modules_matching(&[&source, &sink])?;
+    load_module(&[
+        "module-loopback".to_string(),
+        source,
+        sink,
+        format!("latency_msec={}", branch.latency_ms),
+        "source_dont_move=true".to_string(),
+        "sink_dont_move=true".to_string(),
+    ])
+}
+
+/// Unload every loaded module whose `pactl list short modules` line contains all
+/// of `patterns`. Best-effort — a missing module is not an error.
+fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
     let output = Command::new("pactl")
         .args(["list", "short", "modules"])
         .output()
@@ -489,7 +548,7 @@ pub fn teardown_combined(sink_name: &str) -> Result<(), AudioError> {
         ));
     }
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if line.contains(sink_name) {
+        if patterns.iter().all(|pattern| line.contains(pattern)) {
             if let Some(id) = line.split('\t').next() {
                 // Best-effort: ignore failures so one stale module cannot block teardown.
                 let _ = Command::new("pactl").args(["unload-module", id]).status();
@@ -609,6 +668,35 @@ fn parse_first_percent(text: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Criterion: a lone speaker with an offset needs the combined sink — the
+    // offset is realised as loopback latency, which the direct single-sink route
+    // does not have, so it would otherwise be silently dropped.
+    #[test]
+    fn test_needs_combined_single_target_with_offset() {
+        let delayed = SpeakerTarget {
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            offset_ms: 750,
+        };
+        assert!(needs_combined(std::slice::from_ref(&delayed)));
+    }
+
+    // Criterion: a lone speaker with no offset keeps the direct route, and two
+    // speakers always fan out through the combined sink.
+    #[test]
+    fn test_needs_combined_covers_plain_single_and_fan_out() {
+        let plain = SpeakerTarget {
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            offset_ms: 0,
+        };
+        let other = SpeakerTarget {
+            address: "11:22:33:44:55:66".to_string(),
+            offset_ms: 0,
+        };
+        assert!(!needs_combined(std::slice::from_ref(&plain)));
+        assert!(needs_combined(&[plain, other]));
+        assert!(!needs_combined(&[]));
+    }
 
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — value below 0 saturates
     // to 0.0.

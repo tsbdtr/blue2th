@@ -12,44 +12,82 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use blue2th_proto::{AuthUrlResponse, SpotifyAuthState, SpotifyAuthStatus};
+use blue2th_proto::{SpotifyAuthState, SpotifyAuthStatus};
+use blue2th_server::spotify_auth::SpotifyAuth;
 use tower::ServiceExt; // for `oneshot`
 
+/// A router with an unconfigured, off-disk auth driver: no client id, no tokens,
+/// and no access to the real user's persisted refresh token (which `app()` would
+/// load and which would silently turn these Disconnected cases into Connected).
 fn build_app() -> axum::Router {
-    blue2th_server::app()
+    blue2th_server::app_with_auth(SpotifyAuth::with_config(
+        None,
+        "blue2th://spotify-callback".to_string(),
+    ))
 }
 
-// Criterion: `GET /spotify/auth/url` returns 200 with a URL and a non-empty CSRF
-// `state` (the app opens the URL and echoes the state back on callback).
+// Criterion: `GET /spotify/auth/url` refuses to mint an authorize URL when no
+// client id is configured, instead of falling back to a placeholder that Spotify
+// would reject much later with an opaque `invalid_client` on its consent page.
+// The test process has no BLUE2TH_SPOTIFY_CLIENT_ID; the configured path is
+// covered by the `SpotifyAuth::with_config` unit tests, which need no env var.
 #[tokio::test]
-async fn test_spotify_auth_url_returns_url_and_state() {
+async fn test_spotify_auth_url_without_client_id_is_unavailable() {
     let request = Request::builder()
         .uri("/spotify/auth/url")
         .body(Body::empty())
         .expect("build request");
 
     let response = build_app().oneshot(request).await.expect("router response");
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read body");
-    let parsed: AuthUrlResponse =
-        serde_json::from_slice(&bytes).expect("parse AuthUrlResponse from /spotify/auth/url");
+    let message = String::from_utf8_lossy(&bytes);
+    assert!(
+        message.contains("BLUE2TH_SPOTIFY_CLIENT_ID"),
+        "the error must name the missing env var, got {message}"
+    );
+}
+
+// Criterion: a configured driver mints a URL to the Spotify authorize endpoint
+// carrying that client id and a non-empty CSRF `state` (the app opens the URL and
+// echoes the state back on callback).
+#[tokio::test]
+async fn test_spotify_auth_url_with_client_id_carries_it() {
+    let mut auth = SpotifyAuth::with_config(
+        Some("test-client-id".to_string()),
+        "blue2th://spotify-callback".to_string(),
+    );
+    let (url, state) = auth.authorize_url().expect("configured driver mints a url");
 
     assert!(
-        parsed.url.contains("accounts.spotify.com/authorize"),
-        "auth url must target the Spotify authorize endpoint, got {}",
-        parsed.url
+        url.contains("accounts.spotify.com/authorize"),
+        "auth url must target the Spotify authorize endpoint, got {url}"
     );
     assert!(
-        parsed.url.contains("response_type=code"),
-        "auth url must request an authorization code, got {}",
-        parsed.url
+        url.contains("response_type=code"),
+        "auth url must request an authorization code, got {url}"
     );
     assert!(
-        !parsed.state.is_empty(),
-        "auth url response must carry a CSRF state"
+        url.contains("client_id=test-client-id"),
+        "auth url must carry the configured client id, got {url}"
+    );
+    assert!(!state.is_empty(), "authorize_url must carry a CSRF state");
+}
+
+// Criterion: a blank client id is as unusable as an absent one and must not be
+// sent to Spotify (an empty `BLUE2TH_SPOTIFY_CLIENT_ID=` in a shell wrapper).
+#[test]
+fn test_spotify_auth_url_with_blank_client_id_is_rejected() {
+    let mut auth = SpotifyAuth::with_config(
+        Some("   ".to_string()),
+        "blue2th://spotify-callback".to_string(),
+    );
+    assert!(
+        auth.authorize_url().is_err(),
+        "a blank client id must be treated as unconfigured"
     );
 }
 

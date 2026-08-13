@@ -49,7 +49,7 @@ impl std::error::Error for SpotifyError {}
 /// Build the argv for the `librespot` subprocess: a Connect device named
 /// `device_name`, the PulseAudio/PipeWire backend, and the output pointed at
 /// `sink_name`. Pure — performs no I/O.
-pub fn build_librespot_args(device_name: &str, sink_name: &str) -> Vec<String> {
+pub fn build_librespot_args(device_name: &str, sink_name: &str, cache_dir: &str) -> Vec<String> {
     vec![
         "--name".to_string(),
         device_name.to_string(),
@@ -57,7 +57,26 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str) -> Vec<String> {
         "pulseaudio".to_string(),
         "--device".to_string(),
         sink_name.to_string(),
+        // Cache the Spotify credentials: in plain zeroconf mode librespot only
+        // advertises over mDNS and is NOT logged into the account, so it never
+        // appears in `GET /me/player/devices` and the Web API cannot target it.
+        // Once the user has picked blue2th-PC in a Spotify client, the cached
+        // credentials let librespot log in by itself on every later start.
+        "--system-cache".to_string(),
+        cache_dir.to_string(),
     ]
+}
+
+/// Directory where `librespot` caches the Spotify credentials, honouring
+/// `XDG_CACHE_HOME` and falling back to `~/.cache` (then the current directory
+/// if even `HOME` is unset).
+pub fn librespot_cache_dir() -> String {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.cache")))
+        .unwrap_or_else(|| ".".to_string());
+    format!("{base}/blue2th/librespot")
 }
 
 /// Resolve the PipeWire sink `librespot` should feed for the current selection:
@@ -65,11 +84,12 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str) -> Vec<String> {
 /// `bluez_output.*` sink prefix for one. Pure — performs no I/O.
 pub fn spotify_target_sink(speakers: &[SpeakerTarget]) -> String {
     match speakers {
-        // Two (or more) targets fan out through the shared combined sink.
-        [_, _, ..] => COMBINED_SINK_NAME.to_string(),
-        // A single target feeds its own `bluez_output.*` sink directly.
-        [only] => crate::audio::bluez_sink_prefix(&only.address),
         [] => String::new(),
+        // Fan-out, or a single speaker carrying an offset: both go through the
+        // combined sink, the only place where the offset exists (loopback latency).
+        _ if crate::audio::needs_combined(speakers) => COMBINED_SINK_NAME.to_string(),
+        // A single target with no offset feeds its own `bluez_output.*` sink.
+        [only, ..] => crate::audio::bluez_sink_prefix(&only.address),
     }
 }
 
@@ -97,6 +117,9 @@ pub struct SpotifyBackend {
     child: Option<Child>,
     /// The advertised Connect device name.
     device_name: String,
+    /// The PipeWire sink the running `librespot` was pointed at (`--device`),
+    /// so a selection change that moves the sink can trigger a respawn.
+    sink: Option<String>,
 }
 
 impl SpotifyBackend {
@@ -105,7 +128,13 @@ impl SpotifyBackend {
         Self {
             child: None,
             device_name: SPOTIFY_DEVICE_NAME.to_string(),
+            sink: None,
         }
+    }
+
+    /// The sink the running subprocess feeds, or `None` while stopped.
+    pub fn current_sink(&self) -> Option<&str> {
+        self.child.as_ref().and(self.sink.as_deref())
     }
 
     /// Current backend state (derived from whether a live child is held).
@@ -135,23 +164,19 @@ impl SpotifyBackend {
         }
 
         // Establish PipeWire routing for the selection (single sink vs combined).
-        match speakers {
-            [_, _, ..] => {
-                crate::audio::route_to_combined(&crate::audio::combine_sink_plan(speakers))
-                    .map_err(|e| SpotifyError::Spawn(e.to_string()))?
-            },
-            [only] => crate::audio::route_to_speaker(&only.address)
-                .map_err(|e| SpotifyError::Spawn(e.to_string()))?,
-            [] => return Err(SpotifyError::NoSpeakerSelected),
-        }
+        crate::audio::route_for_targets(speakers)
+            .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
-        let args = build_librespot_args(&self.device_name, &sink);
+        let args = build_librespot_args(&self.device_name, &sink, &librespot_cache_dir());
         let child = std::process::Command::new("librespot")
             .args(&args)
             .spawn()
             .map_err(map_spawn_error)?;
         self.child = Some(child);
+        // Remember where librespot was pointed: `--device` is fixed at spawn, so a
+        // later selection change that moves the sink requires a respawn.
+        self.sink = Some(sink);
         Ok(self.status())
     }
 
@@ -162,6 +187,7 @@ impl SpotifyBackend {
             let _ = child.kill();
             let _ = child.wait();
         }
+        self.sink = None;
         Ok(self.status())
     }
 
@@ -201,7 +227,7 @@ mod tests {
     // argv — `--name blue2th-PC`, `--backend pulseaudio`, and the sink name.
     #[test]
     fn test_build_librespot_args_includes_name_backend_and_sink() {
-        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME);
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
         assert!(
             args.iter().any(|a| a == "--name"),
             "argv must carry --name: {args:?}"
@@ -224,6 +250,34 @@ mod tests {
         );
     }
 
+    // Criterion: the argv caches credentials, so librespot logs into the account
+    // by itself on later starts and shows up in `GET /me/player/devices` — without
+    // it the Web API cannot target blue2th-PC and transport hits the wrong device.
+    #[test]
+    fn test_build_librespot_args_caches_credentials() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        let flag = args
+            .iter()
+            .position(|a| a == "--system-cache")
+            .expect("argv must carry --system-cache");
+        assert_eq!(
+            args.get(flag + 1).map(String::as_str),
+            Some("/tmp/cache"),
+            "--system-cache must be followed by the cache dir: {args:?}"
+        );
+    }
+
+    // Criterion: the cache dir honours XDG_CACHE_HOME and is app-scoped, so the
+    // credentials do not land in a random working directory.
+    #[test]
+    fn test_librespot_cache_dir_is_app_scoped() {
+        let dir = librespot_cache_dir();
+        assert!(
+            dir.ends_with("/blue2th/librespot"),
+            "cache dir must be app-scoped, got {dir}"
+        );
+    }
+
     // Criterion: `spotify_target_sink(&speakers)` returns `blue2th_combined` for
     // two targets.
     #[test]
@@ -242,6 +296,18 @@ mod tests {
             sink.starts_with("bluez_output."),
             "single-target sink must be a bluez_output.* prefix, got {sink}"
         );
+    }
+
+    // Criterion: a single target carrying an offset goes through the combined
+    // sink, the only routing where the offset exists (as loopback latency).
+    // Routed straight to its bluez sink, the offset would be silently ignored.
+    #[test]
+    fn test_spotify_target_sink_single_target_with_offset_is_combined() {
+        let delayed = SpeakerTarget {
+            address: A.to_string(),
+            offset_ms: 750,
+        };
+        assert_eq!(spotify_target_sink(&[delayed]), COMBINED_SINK_NAME);
     }
 
     // Criterion: a `NotFound` spawn error maps to the `BackendMissing` variant.
