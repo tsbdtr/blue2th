@@ -20,8 +20,9 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    AuthCallbackRequest, AuthUrlResponse, DeviceInfo, HealthStatus, NowPlaying, OffsetRequest,
-    PlaybackState, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
+    AuthCallbackRequest, AuthUrlResponse, ClientPresence, DeviceInfo, HealthStatus, NowPlaying,
+    OffsetRequest, PlaybackState, PresenceRequest, SpotifyAuthState, SpotifyState, TargetsState,
+    VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -372,16 +373,37 @@ fn now_playing_url(base: &str) -> String {
     format!("{}/spotify/now-playing", base.trim_end_matches('/'))
 }
 
+/// Surface the backend's own message for a failed response. `AppError` replies
+/// with a plain-text body ("Spotify client id not configured — …", "start the
+/// Spotify backend first"), which `error_for_status` would throw away, leaving
+/// the user with a bare "503 Service Unavailable" on the phone.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn backend_error_message(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, BackendError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    let message = body.trim();
+    Err(BackendError::new(if message.is_empty() {
+        status.to_string()
+    } else {
+        message.to_string()
+    }))
+}
+
 /// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
 /// (PKCE) and the CSRF `state` to echo back on callback.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
     let url = spotify_url(backend_base_url(), "auth/url");
-    reqwest::get(&url)
+    let response = reqwest::get(&url)
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
         .json::<AuthUrlResponse>()
         .await
         .map_err(|e| BackendError::new(describe(&e)))
@@ -390,15 +412,14 @@ pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
 /// `POST {base}/spotify/auth/callback` — hand the backend the authorization
 /// `code` (and CSRF `state`) captured from the custom-scheme redirect.
 ///
-/// Invoked from the Android deep-link (custom-scheme redirect) handler, which is
-/// a manual seam not wired in-app yet — hence unconditionally allowed dead code.
-#[allow(dead_code)]
+/// Invoked from the root deep-link poll in `App`, which consumes the
+/// redirect through `deep_link::take_pending_deep_link`.
 pub async fn spotify_auth_callback(
     code: &str,
     state: &str,
 ) -> Result<SpotifyAuthState, BackendError> {
     let url = spotify_url(backend_base_url(), "auth/callback");
-    reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(&url)
         .json(&AuthCallbackRequest {
             code: code.to_string(),
@@ -406,9 +427,9 @@ pub async fn spotify_auth_callback(
         })
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
         .json::<SpotifyAuthState>()
         .await
         .map_err(|e| BackendError::new(describe(&e)))
@@ -428,28 +449,58 @@ pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
         .map_err(|e| BackendError::new(describe(&e)))
 }
 
-/// `POST {base}/spotify/play` — resume playback via the Web API on `blue2th-PC`.
+/// `POST {base}/client/presence` — tell the backend whether the app is on screen,
+/// backgrounded or closing.
+///
+/// The backend cannot infer this: Android freezes a backgrounded app, so its
+/// dropped SSE feed looks exactly like a phone that is gone. Reporting keeps a
+/// background listening session alive and pauses at once on a real exit.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn spotify_play() -> Result<(), BackendError> {
-    post_spotify_transport("play").await
+pub async fn report_presence(presence: ClientPresence) -> Result<(), BackendError> {
+    let url = format!(
+        "{}/client/presence",
+        backend_base_url().trim_end_matches('/')
+    );
+    let response = reqwest::Client::new()
+        .post(&url)
+        .json(&PresenceRequest { presence })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response).await?;
+    Ok(())
 }
 
-/// `POST {base}/spotify/pause` — pause playback via the Web API on `blue2th-PC`.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn spotify_pause() -> Result<(), BackendError> {
-    post_spotify_transport("pause").await
+/// A Spotify transport action, so the UI can carry one in a prop instead of a
+/// stringly-typed path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SpotifyAction {
+    /// Skip to the previous track.
+    Previous,
+    /// Resume playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Skip to the next track.
+    Next,
 }
 
-/// `POST {base}/spotify/next` — skip to the next track via the Web API.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn spotify_next() -> Result<(), BackendError> {
-    post_spotify_transport("next").await
+impl SpotifyAction {
+    /// The `/spotify/{…}` path segment this action posts to.
+    fn path(self) -> &'static str {
+        match self {
+            SpotifyAction::Previous => "previous",
+            SpotifyAction::Play => "play",
+            SpotifyAction::Pause => "pause",
+            SpotifyAction::Next => "next",
+        }
+    }
 }
 
-/// `POST {base}/spotify/previous` — skip to the previous track via the Web API.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn spotify_previous() -> Result<(), BackendError> {
-    post_spotify_transport("previous").await
+/// `POST {base}/spotify/{action}` — drive playback through the Web API, which the
+/// server applies to the `blue2th-PC` Connect device.
+pub async fn spotify_transport(action: SpotifyAction) -> Result<(), BackendError> {
+    post_spotify_transport(action.path()).await
 }
 
 /// POST `{base}/spotify/{action}` (no body) for a transport action; the backend
@@ -457,13 +508,12 @@ pub async fn spotify_previous() -> Result<(), BackendError> {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
     let url = spotify_url(backend_base_url(), action);
-    reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(&url)
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
         .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response).await?;
     Ok(())
 }
 

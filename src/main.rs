@@ -18,6 +18,8 @@ use dioxus::prelude::*;
 
 mod backend;
 mod bluetooth;
+mod deep_link;
+mod lifecycle;
 
 #[cfg(target_os = "android")]
 use bluetooth::enable_bluetooth;
@@ -46,11 +48,41 @@ const SHOW_LEGACY_BT_UI: bool = false;
 /// How often the app re-checks the PC backend's reachability.
 const BACKEND_HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long the vertical volume panel stays open after the last interaction.
+const VOLUME_PANEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How often the app checks whether Android handed it a custom-scheme redirect
+/// (the Spotify OAuth callback). Short enough that the login feels immediate on
+/// return from the browser; the check is a single JNI call when idle.
+const DEEP_LINK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Whether the PC backend is currently reachable, shared via context. A newtype
 /// (not a bare `Signal<bool>`) so it does not collide with `bt_enabled`, which is
 /// also a `Signal<bool>` in context.
 #[derive(Clone, Copy)]
 struct BackendOnline(Signal<bool>);
+
+/// How often the app reconciles the Spotify backend and OAuth states.
+const SPOTIFY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Spotify state shared across the app, provided once by [`App`]: the status
+/// card, the login dialog and the transport bar must agree on whether the
+/// librespot backend runs and whether the OAuth login is done, and the polling
+/// tasks must keep running whichever of them is currently visible.
+#[derive(Clone, Copy)]
+struct SpotifyUi {
+    /// The `librespot` Connect backend is running on the PC (phase 5.1).
+    running: Signal<bool>,
+    /// The OAuth login is done and the server holds tokens (phase 5.2).
+    connected: Signal<bool>,
+    /// Latest now-playing snapshot pushed over SSE.
+    now_playing: Signal<Option<blue2th_proto::NowPlaying>>,
+    /// Whether the login dialog is open.
+    show_login: Signal<bool>,
+    /// Login failure raised by the background deep-link task, mirrored into the
+    /// screen's toast (the task has no access to that local signal).
+    login_error: Signal<Option<String>>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum ConnectionStatus {
@@ -174,6 +206,104 @@ fn App() -> Element {
                     *backend_online.write() = reachable;
                 }
                 tokio::time::sleep(BACKEND_HEALTH_INTERVAL).await;
+            }
+        });
+    });
+
+    // Hand the app's runtime to the JNI lifecycle hooks, so the activity can
+    // report from a Java thread whether blue2th is on screen, backgrounded or
+    // closing — the backend cannot tell a frozen app from a dead one otherwise.
+    use_hook(|| {
+        spawn(async {
+            lifecycle::arm(tokio::runtime::Handle::current());
+        });
+    });
+
+    // Spotify state lives at the root: the polling tasks below must survive
+    // navigation and keep feeding the card, the dialog and the transport bar.
+    let spotify_ui = SpotifyUi {
+        running: use_signal(|| false),
+        connected: use_signal(|| false),
+        now_playing: use_signal(|| None),
+        show_login: use_signal(|| false),
+        login_error: use_signal(|| None),
+    };
+    use_context_provider(|| spotify_ui);
+
+    // Reconcile both Spotify states in one task: the librespot subprocess can die
+    // server-side, and the OAuth session can expire, so neither is inferred from
+    // the last action alone.
+    use_hook(|| {
+        let mut running = spotify_ui.running;
+        let mut connected = spotify_ui.connected;
+        spawn(async move {
+            loop {
+                if *backend_online.peek() {
+                    if let Ok(state) = backend::spotify_status().await {
+                        let is_running = state.status == blue2th_proto::SpotifyStatus::Running;
+                        if *running.peek() != is_running {
+                            *running.write() = is_running;
+                        }
+                    }
+                    if let Ok(state) = backend::spotify_auth_status().await {
+                        let is_connected =
+                            state.status == blue2th_proto::SpotifyAuthStatus::Connected;
+                        if *connected.peek() != is_connected {
+                            *connected.write() = is_connected;
+                        }
+                    }
+                }
+                tokio::time::sleep(SPOTIFY_POLL_INTERVAL).await;
+            }
+        });
+    });
+
+    // Now-playing snapshots pushed over SSE; re-subscribes if the stream ends.
+    use_hook(|| {
+        let mut now_playing = spotify_ui.now_playing;
+        spawn(async move {
+            loop {
+                let _ = backend::subscribe_now_playing(|np| {
+                    *now_playing.write() = Some(np);
+                })
+                .await;
+                // The stream closed (backend down or restarted); retry shortly.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        });
+    });
+
+    // Consume the OAuth redirect Android routed to us and exchange its one-time
+    // code for tokens. Whatever the outcome, the browser round-trip is over, so
+    // the login dialog closes and any failure lands in the toast.
+    use_hook(|| {
+        let mut connected = spotify_ui.connected;
+        let mut show_login = spotify_ui.show_login;
+        let mut login_error = spotify_ui.login_error;
+        spawn(async move {
+            loop {
+                tokio::time::sleep(DEEP_LINK_POLL_INTERVAL).await;
+                let Some(uri) = deep_link::take_pending_deep_link() else {
+                    continue;
+                };
+                match deep_link::parse_spotify_callback(&uri) {
+                    Some(deep_link::SpotifyCallback::Authorized { code, state }) => {
+                        match backend::spotify_auth_callback(&code, &state).await {
+                            Ok(authorized) => {
+                                *connected.write() = authorized.status
+                                    == blue2th_proto::SpotifyAuthStatus::Connected;
+                            },
+                            Err(e) => *login_error.write() = Some(e.to_string()),
+                        }
+                    },
+                    Some(deep_link::SpotifyCallback::Denied(_)) => {
+                        *login_error.write() =
+                            Some(rust_i18n::t!("spotify.login_cancelled").to_string());
+                    },
+                    // Not our callback (e.g. the plain launcher intent): ignore it.
+                    None => continue,
+                }
+                *show_login.write() = false;
             }
         });
     });
@@ -433,6 +563,22 @@ fn SignalBars(rssi: Option<i16>, #[props(default = false)] struck: bool) -> Elem
                     }
                 }
             }
+        }
+    }
+}
+
+/// Merge the backend's device list into `found`: refresh the rows already shown
+/// (keeping their order) and append the ones missing. Never clears, so a
+/// transient backend hiccup cannot empty the list under the user.
+fn merge_devices(
+    found: &mut Signal<Vec<blue2th_proto::DeviceInfo>>,
+    fetched: Vec<blue2th_proto::DeviceInfo>,
+) {
+    let mut list = found.write();
+    for device in fetched {
+        match list.iter().position(|d| d.address == device.address) {
+            Some(i) => list[i] = device,
+            None => list.push(device),
         }
     }
 }
@@ -715,12 +861,20 @@ fn BackendScan() -> Element {
     });
 
     let backend_online = use_context::<BackendOnline>().0;
-    // Drop stale scan results as soon as the backend becomes unreachable.
+    // Load the backend's known devices on mount, and again each time it comes
+    // back online. The list is never cleared: leaving the app (Spotify login in
+    // the browser, or a restart) briefly flips the health probe to offline, and
+    // wiping the list there is what used to force a manual "load devices".
     use_effect(move || {
-        let mut found = found;
         if !backend_online() {
-            found.write().clear();
+            return;
         }
+        let mut found = found;
+        spawn(async move {
+            if let Ok(devices) = backend::fetch_devices().await {
+                merge_devices(&mut found, devices);
+            }
+        });
     });
 
     // Poll the playback state while online so the UI reflects changes made
@@ -865,7 +1019,7 @@ fn BackendScan() -> Element {
             }
             SpotifySource { targets, error }
         }
-        SpotifyConnect { error }
+        SpotifyLoginDialog { error }
         button {
             class: "{btn_class}",
             disabled: scanning() || !backend_online(),
@@ -997,7 +1151,6 @@ fn TransportBar(
             }
         }
     });
-    let vol_pct = (vol_draft() * 100.0).round() as i32;
 
     // Y where a drag on the handle began, to tell an expand/collapse swipe from a
     // tap on pointer release.
@@ -1030,6 +1183,87 @@ fn TransportBar(
         PlaybackStatus::Playing => rust_i18n::t!("transport.status_playing"),
         PlaybackStatus::Paused => rust_i18n::t!("transport.status_paused"),
         PlaybackStatus::Stopped => rust_i18n::t!("transport.status_stopped"),
+    };
+
+    // The bar shows one source at a time: Spotify once its backend runs, the
+    // local test tone otherwise. Transport stays disabled until the OAuth login
+    // is done, since the server would only answer 409.
+    let spotify = use_context::<SpotifyUi>();
+    let spotify_running = (spotify.running)();
+    let spotify_connected = (spotify.connected)();
+    let now_playing = (spotify.now_playing)();
+    let volume_label = rust_i18n::t!("transport.volume");
+    // The vertical volume panel: opened from the icon, closed a few seconds after
+    // the last interaction. The token makes each interaction cancel the pending
+    // close, so the panel never vanishes mid-drag.
+    let mut volume_open = use_signal(|| false);
+    let volume_hide_token = use_signal(|| 0u32);
+    let schedule_volume_hide = move || {
+        let mut token = volume_hide_token;
+        let mut volume_open = volume_open;
+        let ticket = token().wrapping_add(1);
+        *token.write() = ticket;
+        spawn(async move {
+            tokio::time::sleep(VOLUME_PANEL_TIMEOUT).await;
+            // A later interaction bumped the token: that one owns the close.
+            if *token.peek() == ticket {
+                *volume_open.write() = false;
+            }
+        });
+    };
+
+    let spotify_playing = now_playing
+        .as_ref()
+        .map(|np| np.state == blue2th_proto::NowPlayingState::Playing)
+        .unwrap_or(false);
+    let (spotify_toggle_icon, spotify_toggle_label, spotify_toggle_action) = if spotify_playing {
+        (
+            "⏸",
+            rust_i18n::t!("spotify.pause").to_string(),
+            backend::SpotifyAction::Pause,
+        )
+    } else {
+        (
+            "▶",
+            rust_i18n::t!("spotify.play").to_string(),
+            backend::SpotifyAction::Play,
+        )
+    };
+    let (meta_title, meta_track, meta_status) = if spotify_running {
+        let track = now_playing
+            .as_ref()
+            .filter(|np| np.state != blue2th_proto::NowPlayingState::Idle)
+            .map(|np| {
+                let title = np
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| rust_i18n::t!("spotify.unknown_track").to_string());
+                match np.artist.as_deref().filter(|a| !a.is_empty()) {
+                    Some(artist) => format!("{title} — {artist}"),
+                    None => title,
+                }
+            })
+            .unwrap_or_else(|| rust_i18n::t!("spotify.nothing_playing").to_string());
+        let state = if !spotify_connected {
+            rust_i18n::t!("spotify.not_connected").to_string()
+        } else {
+            match now_playing.as_ref().map(|np| np.state) {
+                Some(blue2th_proto::NowPlayingState::Playing) => {
+                    rust_i18n::t!("transport.status_playing").to_string()
+                },
+                Some(blue2th_proto::NowPlayingState::Paused) => {
+                    rust_i18n::t!("transport.status_paused").to_string()
+                },
+                _ => rust_i18n::t!("transport.status_stopped").to_string(),
+            }
+        };
+        (rust_i18n::t!("spotify.title").to_string(), track, state)
+    } else {
+        (
+            rust_i18n::t!("transport.title").to_string(),
+            rust_i18n::t!("transport.track").to_string(),
+            status_label.to_string(),
+        )
     };
 
     rsx! {
@@ -1089,12 +1323,48 @@ fn TransportBar(
             }
             if expanded() {
                 div { class: "transport-meta",
-                    div { class: "transport-title", "{rust_i18n::t!(\"transport.title\")}" }
-                    div { class: "transport-track", "🎵 {rust_i18n::t!(\"transport.track\")}" }
-                    div { class: "transport-status", "{status_label}" }
+                    div { class: "transport-title", "{meta_title}" }
+                    div { class: "transport-track", "🎵 {meta_track}" }
+                    div { class: "transport-status", "{meta_status}" }
                 }
             }
             div { class: "transport-controls",
+                // Flexible edge, mirroring the volume block on the right: both
+                // grow equally, which centres the buttons in the bar whatever the
+                // volume badge's width.
+                div { class: "transport-spacer" }
+                // With the Spotify backend running, the bar drives Spotify; the
+                // local test tone would fight it for the same speakers, so the two
+                // control sets are mutually exclusive.
+                if spotify_running {
+                    SpotifyTransportButton {
+                        icon: "⏮".to_string(),
+                        label: rust_i18n::t!("spotify.previous").to_string(),
+                        action: backend::SpotifyAction::Previous,
+                        disabled: !spotify_connected,
+                        primary: false,
+                        error,
+                    }
+                    // One toggle, driven by the SSE state: two separate buttons
+                    // could not show what Spotify is actually doing, so pausing
+                    // from the Spotify app left the wrong one highlighted here.
+                    SpotifyTransportButton {
+                        icon: spotify_toggle_icon.to_string(),
+                        label: spotify_toggle_label.clone(),
+                        action: spotify_toggle_action,
+                        disabled: !spotify_connected,
+                        primary: true,
+                        error,
+                    }
+                    SpotifyTransportButton {
+                        icon: "⏭".to_string(),
+                        label: rust_i18n::t!("spotify.next").to_string(),
+                        action: backend::SpotifyAction::Next,
+                        disabled: !spotify_connected,
+                        primary: false,
+                        error,
+                    }
+                } else {
                 button {
                     class: "transport-btn transport-play",
                     disabled: !has_target,
@@ -1140,44 +1410,71 @@ fn TransportBar(
                     },
                     span { "⏹" }
                 }
+                }
                 div { class: "transport-volume",
-                    span { class: "transport-volume-icon", "🔊" }
-                    input {
-                        class: "transport-volume-slider",
-                        r#type: "range",
-                        min: "0",
-                        max: "1",
-                        step: "0.01",
-                        value: "{vol_draft}",
+                    // The slider used to sit inline and horizontal, sharing the
+                    // bar's width with the controls — too cramped to aim at. It is
+                    // now a vertical panel opened from the icon, closing on its own.
+                    button {
+                        class: "transport-volume-icon",
+                        title: "{volume_label}",
+                        aria_label: "{volume_label}",
                         disabled: !has_target,
-                        // Keep slider drags from bubbling to the bar's expand/
-                        // collapse gesture.
-                        onpointerdown: move |e| e.stop_propagation(),
-                        oninput: move |e| {
-                            *dragging.write() = true;
-                            if let Ok(v) = e.value().parse::<f32>() {
-                                *vol_draft.write() = v;
-                            }
-                        },
-                        onchange: move |e| {
-                            *dragging.write() = false;
+                        onpointerdown: move |e: PointerEvent| e.stop_propagation(),
+                        onclick: move |_| {
                             if !has_target {
                                 return;
                             }
-                            if let Ok(v) = e.value().parse::<f32>() {
-                                let mut playback = playback;
-                                let mut error = error;
-                                spawn(async move {
-                                    match backend::set_volume(v).await {
-                                        Ok(state) => *playback.write() = Some(state),
-                                        Err(e) => *error.write() = Some(e.to_string()),
-                                    }
-                                });
+                            let open = !volume_open();
+                            *volume_open.write() = open;
+                            if open {
+                                schedule_volume_hide();
                             }
                         },
+                        span { "🔊" }
                     }
-                    if expanded() {
-                        span { class: "transport-volume-pct", "{vol_pct}%" }
+                    if volume_open() {
+                        div {
+                            class: "transport-volume-panel",
+                            onpointerdown: move |e: PointerEvent| e.stop_propagation(),
+                            input {
+                                class: "transport-volume-slider vertical",
+                                r#type: "range",
+                                min: "0",
+                                max: "1",
+                                step: "0.01",
+                                value: "{vol_draft}",
+                                disabled: !has_target,
+                                // Keep slider drags from bubbling to the bar's
+                                // expand/collapse gesture.
+                                onpointerdown: move |e| e.stop_propagation(),
+                                oninput: move |e| {
+                                    *dragging.write() = true;
+                                    if let Ok(v) = e.value().parse::<f32>() {
+                                        *vol_draft.write() = v;
+                                    }
+                                    // Any interaction restarts the auto-close delay.
+                                    schedule_volume_hide();
+                                },
+                                onchange: move |e| {
+                                    *dragging.write() = false;
+                                    schedule_volume_hide();
+                                    if !has_target {
+                                        return;
+                                    }
+                                    if let Ok(v) = e.value().parse::<f32>() {
+                                        let mut playback = playback;
+                                        let mut error = error;
+                                        spawn(async move {
+                                            match backend::set_volume(v).await {
+                                                Ok(state) => *playback.write() = Some(state),
+                                                Err(e) => *error.write() = Some(e.to_string()),
+                                            }
+                                        });
+                                    }
+                                },
+                            }
+                        }
                     }
                 }
             }
@@ -1202,42 +1499,15 @@ fn SpotifySource(
     use blue2th_proto::SpotifyStatus;
     use_locale();
 
-    // Current backend state: fetched once on mount, refreshed from each toggle's
-    // reply and the periodic poll below (the subprocess can die on its own
-    // server-side, so we reconcile rather than trust the last action).
-    let mut spotify: Signal<Option<blue2th_proto::SpotifyState>> = use_signal(|| None);
-    use_hook(|| {
-        spawn(async move {
-            if let Ok(state) = backend::spotify_status().await {
-                *spotify.write() = Some(state);
-            }
-        });
-    });
-
+    // Backend/OAuth state and the login dialog are shared: `App` polls them and
+    // the transport bar reads the same signals.
+    let spotify = use_context::<SpotifyUi>();
     let backend_online = use_context::<BackendOnline>().0;
-    use_hook(|| {
-        let mut spotify = spotify;
-        spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if !*backend_online.peek() {
-                    continue;
-                }
-                if let Ok(state) = backend::spotify_status().await {
-                    if spotify.peek().as_ref() != Some(&state) {
-                        *spotify.write() = Some(state);
-                    }
-                }
-            }
-        });
-    });
 
     // In-flight guard so a double tap does not fire two start/stop calls.
     let busy = use_signal(|| false);
 
-    let is_running = spotify()
-        .map(|s| s.status == SpotifyStatus::Running)
-        .unwrap_or(false);
+    let is_running = (spotify.running)();
     let has_target = !targets().speakers.is_empty();
 
     // Tooltip mirrors the action the click will perform (or the in-flight state).
@@ -1273,7 +1543,9 @@ fn SpotifySource(
                     *error.write() = Some(rust_i18n::t!("spotify.no_target").to_string());
                     return;
                 }
-                let mut spotify = spotify;
+                let mut running = spotify.running;
+                let mut show_login = spotify.show_login;
+                let connected = spotify.connected;
                 let mut error = error;
                 let mut busy = busy;
                 *busy.write() = true;
@@ -1284,7 +1556,17 @@ fn SpotifySource(
                         backend::start_spotify().await
                     };
                     match res {
-                        Ok(state) => *spotify.write() = Some(state),
+                        Ok(state) => {
+                            let now_running = state.status == SpotifyStatus::Running;
+                            *running.write() = now_running;
+                            // Starting the backend is only half the story: without
+                            // the OAuth login the app can show nothing and drive
+                            // nothing, so offer it right away instead of leaving
+                            // the user to find a second control.
+                            if now_running && !*connected.peek() {
+                                *show_login.write() = true;
+                            }
+                        },
                         Err(e) => *error.write() = Some(e.to_string()),
                     }
                     *busy.write() = false;
@@ -1303,88 +1585,108 @@ fn SpotifySource(
     }
 }
 
-/// Spotify Web API control (phase 5.2): OAuth (PKCE) login plus now-playing and
-/// transport over the PC backend. When Disconnected it offers a "Connect Spotify"
-/// action that fetches the authorize URL to open in the browser; when Connected it
-/// shows the now-playing track (pushed over SSE) and play/pause/next/previous
-/// controls. Errors surface via the shared `error` toast signal.
+/// One Spotify transport button in the bottom bar. Disabled until the OAuth
+/// login is done; failures land in the shared toast rather than being dropped.
 #[component]
-fn SpotifyConnect(error: Signal<Option<String>>) -> Element {
-    use blue2th_proto::{NowPlayingState, SpotifyAuthStatus};
-    use_locale();
-
-    let backend_online = use_context::<BackendOnline>().0;
-
-    // Current auth state: fetched on mount and refreshed by the poll below.
-    let mut auth: Signal<Option<blue2th_proto::SpotifyAuthState>> = use_signal(|| None);
-    use_hook(|| {
-        spawn(async move {
-            if let Ok(state) = backend::spotify_auth_status().await {
-                *auth.write() = Some(state);
-            }
-        });
-    });
-    use_hook(|| {
-        let mut auth = auth;
-        spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                if !*backend_online.peek() {
-                    continue;
+fn SpotifyTransportButton(
+    icon: String,
+    label: String,
+    action: backend::SpotifyAction,
+    disabled: bool,
+    /// Highlight this button as the main action (the play/pause toggle).
+    primary: bool,
+    error: Signal<Option<String>>,
+) -> Element {
+    let class = if primary {
+        "transport-btn spotify-transport-btn primary"
+    } else {
+        "transport-btn spotify-transport-btn"
+    };
+    rsx! {
+        button {
+            class: "{class}",
+            disabled,
+            title: "{label}",
+            aria_label: "{label}",
+            onclick: move |_| {
+                if disabled {
+                    return;
                 }
-                if let Ok(state) = backend::spotify_auth_status().await {
-                    if auth.peek().as_ref() != Some(&state) {
-                        *auth.write() = Some(state);
+                let mut error = error;
+                spawn(async move {
+                    if let Err(e) = backend::spotify_transport(action).await {
+                        *error.write() = Some(e.to_string());
                     }
-                }
-            }
-        });
-    });
+                });
+            },
+            span { "{icon}" }
+        }
+    }
+}
 
-    // Now-playing snapshot pushed over the SSE feed; (re)subscribes if the stream
-    // ends. The task lives on the root scope so it is not cancelled on re-render.
-    let now_playing: Signal<Option<blue2th_proto::NowPlaying>> = use_signal(|| None);
-    use_hook(|| {
-        let mut now_playing = now_playing;
-        spawn(async move {
-            loop {
-                let _ = backend::subscribe_now_playing(|np| {
-                    *now_playing.write() = Some(np);
-                })
-                .await;
-                // The stream closed (backend down or restarted); retry shortly.
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
-        });
-    });
-
-    // The authorize URL to open in the browser once "Connect Spotify" is tapped.
-    let auth_url = use_signal(|| Option::<String>::None);
+/// Spotify login dialog (phase 5.2): one action that fetches the PKCE authorize
+/// URL and hands it to the system browser. It opens right after the Spotify
+/// backend starts while the OAuth login is still missing, and closes as soon as
+/// the redirect comes back — successful or not, a failure landing in the toast.
+#[component]
+fn SpotifyLoginDialog(error: Signal<Option<String>>) -> Element {
+    use_locale();
+    let spotify = use_context::<SpotifyUi>();
     let busy = use_signal(|| false);
 
-    let connected = auth()
-        .map(|s| s.status == SpotifyAuthStatus::Connected)
-        .unwrap_or(false);
+    // Surface a login failure raised by the root deep-link task, which runs
+    // outside this screen and cannot reach its toast signal.
+    use_effect(move || {
+        if let Some(message) = (spotify.login_error)() {
+            let mut error = error;
+            let mut login_error = spotify.login_error;
+            *error.write() = Some(message);
+            *login_error.write() = None;
+        }
+    });
 
-    if !backend_online() {
+    if !(spotify.show_login)() {
         return rsx! {};
     }
 
-    if !connected {
-        return rsx! {
-            div { class: "spotify-connect",
+    let close = move |_: MouseEvent| {
+        let mut show_login = spotify.show_login;
+        *show_login.write() = false;
+    };
+
+    rsx! {
+        div { class: "spotify-dialog-backdrop", onclick: close,
+            div {
+                class: "spotify-dialog",
+                // A click inside the card must not dismiss the dialog.
+                onclick: move |e: MouseEvent| e.stop_propagation(),
+                div { class: "spotify-dialog-title", "{rust_i18n::t!(\"spotify.login_title\")}" }
+                div { class: "spotify-dialog-hint", "{rust_i18n::t!(\"spotify.login_hint\")}" }
                 button {
                     class: "btn-spotify-connect",
                     disabled: busy(),
                     onclick: move |_| {
                         let mut busy = busy;
                         let mut error = error;
-                        let mut auth_url = auth_url;
+                        let mut show_login = spotify.show_login;
                         *busy.write() = true;
                         spawn(async move {
                             match backend::spotify_auth_url().await {
-                                Ok(resp) => *auth_url.write() = Some(resp.url),
-                                Err(e) => *error.write() = Some(e.to_string()),
+                                Ok(resp) => {
+                                    // The consent page cannot run in the app's own
+                                    // WebView: only a real browser sends the
+                                    // blue2th:// redirect back as an intent.
+                                    if !deep_link::open_in_browser(&resp.url) {
+                                        *error.write() = Some(
+                                            rust_i18n::t!("spotify.login_no_browser").to_string(),
+                                        );
+                                        *show_login.write() = false;
+                                    }
+                                },
+                                Err(e) => {
+                                    *error.write() = Some(e.to_string());
+                                    *show_login.write() = false;
+                                },
                             }
                             *busy.write() = false;
                         });
@@ -1392,91 +1694,10 @@ fn SpotifyConnect(error: Signal<Option<String>>) -> Element {
                     span { "🎧 " }
                     "{rust_i18n::t!(\"spotify.connect\")}"
                 }
-                if let Some(url) = auth_url() {
-                    a {
-                        class: "spotify-auth-link",
-                        href: "{url}",
-                        "{rust_i18n::t!(\"spotify.open_login\")}"
-                    }
-                }
-            }
-        };
-    }
-
-    let (title, subtitle) = match now_playing() {
-        Some(np) if np.state != NowPlayingState::Idle => (
-            np.title
-                .unwrap_or_else(|| rust_i18n::t!("spotify.unknown_track").to_string()),
-            np.artist.unwrap_or_default(),
-        ),
-        _ => (
-            rust_i18n::t!("spotify.nothing_playing").to_string(),
-            String::new(),
-        ),
-    };
-
-    rsx! {
-        div { class: "spotify-connect connected",
-            div { class: "spotify-now-playing",
-                span { class: "spotify-np-title", "{title}" }
-                span { class: "spotify-np-artist", "{subtitle}" }
-            }
-            div { class: "spotify-transport",
                 button {
-                    class: "spotify-transport-btn",
-                    title: "{rust_i18n::t!(\"spotify.previous\")}",
-                    aria_label: "{rust_i18n::t!(\"spotify.previous\")}",
-                    onclick: move |_| {
-                        let mut error = error;
-                        spawn(async move {
-                            if let Err(e) = backend::spotify_previous().await {
-                                *error.write() = Some(e.to_string());
-                            }
-                        });
-                    },
-                    "⏮"
-                }
-                button {
-                    class: "spotify-transport-btn",
-                    title: "{rust_i18n::t!(\"spotify.play\")}",
-                    aria_label: "{rust_i18n::t!(\"spotify.play\")}",
-                    onclick: move |_| {
-                        let mut error = error;
-                        spawn(async move {
-                            if let Err(e) = backend::spotify_play().await {
-                                *error.write() = Some(e.to_string());
-                            }
-                        });
-                    },
-                    "▶"
-                }
-                button {
-                    class: "spotify-transport-btn",
-                    title: "{rust_i18n::t!(\"spotify.pause\")}",
-                    aria_label: "{rust_i18n::t!(\"spotify.pause\")}",
-                    onclick: move |_| {
-                        let mut error = error;
-                        spawn(async move {
-                            if let Err(e) = backend::spotify_pause().await {
-                                *error.write() = Some(e.to_string());
-                            }
-                        });
-                    },
-                    "⏸"
-                }
-                button {
-                    class: "spotify-transport-btn",
-                    title: "{rust_i18n::t!(\"spotify.next\")}",
-                    aria_label: "{rust_i18n::t!(\"spotify.next\")}",
-                    onclick: move |_| {
-                        let mut error = error;
-                        spawn(async move {
-                            if let Err(e) = backend::spotify_next().await {
-                                *error.write() = Some(e.to_string());
-                            }
-                        });
-                    },
-                    "⏭"
+                    class: "spotify-dialog-cancel",
+                    onclick: close,
+                    "{rust_i18n::t!(\"spotify.login_cancel\")}"
                 }
             }
         }
