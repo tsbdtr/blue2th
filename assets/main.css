@@ -1013,7 +1013,8 @@ body {
     display: flex;
     align-items: center;
     gap: 14px;
-    /* Allow the volume slider to shrink instead of overflowing the bar. */
+    /* Let the row itself shrink inside the bar rather than overflow it; the
+       controls it holds keep their own size. */
     min-width: 0;
 }
 
@@ -1036,12 +1037,22 @@ body {
 .transport-play { background: #2563eb; }
 .transport-play:hover:not(:disabled) { background: #3b76f0; }
 
-.transport-volume {
-    flex: 1 1 auto;
+/* Left counterweight to the volume block: both take an equal share of the free
+   space, so the play/stop (or Spotify) buttons sit centred in the bar. */
+.transport-spacer {
+    flex: 1 1 0;
     min-width: 0;
+}
+
+/* `flex-basis: 0` so the free space is split evenly with the spacer (centring the
+   buttons), but NO `min-width: 0`: the default `auto` floor stops the block from
+   shrinking under its own button and badge, which is what made it spill over the
+   neighbouring control when the row got tight. */
+.transport-volume {
+    flex: 1 1 0;
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: flex-end;
 }
 .transport-volume-icon { font-size: 0.95rem; }
 .transport-volume-slider {
@@ -1054,13 +1065,6 @@ body {
     touch-action: pan-x;
 }
 .transport-volume-slider:disabled { opacity: 0.4; cursor: not-allowed; }
-.transport-volume-pct {
-    flex: 0 0 auto;
-    min-width: 40px;
-    text-align: right;
-    font-size: 0.8rem;
-    color: #8b9cc8;
-}
 
 .transport-hint {
     text-align: center;
@@ -1094,4 +1098,138 @@ body {
 .spotify-card.disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+/* ── Spotify (phase 5.2) ─────────────────────────────────────────────────── */
+
+/* Transport buttons in the bottom bar: same shape as the tone controls, with
+   Spotify green on the primary action so the source is obvious at a glance. */
+.spotify-transport-btn {
+    background: #1f2937;
+}
+.spotify-transport-btn:hover:not(:disabled) {
+    background: #2f3a4d;
+}
+/* The play/pause toggle is the main action, so it carries the accent. */
+.spotify-transport-btn.primary {
+    background: #1db954;
+    color: #08130c;
+}
+.spotify-transport-btn.primary:hover:not(:disabled) {
+    background: #24d366;
+}
+
+/* Volume: a tap target in the bar that opens a vertical slider above it. The
+   old inline horizontal slider shared the bar's width with the controls, which
+   left it too narrow to aim at on a phone. */
+.transport-volume {
+    position: relative;
+}
+button.transport-volume-icon {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border: none;
+    border-radius: 50%;
+    background: #2a3142;
+    color: #e6ebf5;
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+button.transport-volume-icon:hover:not(:disabled) { background: #343d52; }
+button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
+.transport-volume-panel {
+    position: absolute;
+    bottom: 56px;
+    right: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 10px;
+    border: 1px solid #2f3a4d;
+    border-radius: 12px;
+    background: #171b26;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+/* `slider-vertical` is the WebView-supported form; `writing-mode` is the
+   standard one newer Chromium honours. Both are set so the orientation holds
+   whichever the device's WebView implements. */
+.transport-volume-slider.vertical {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 36px;
+    height: 140px;
+}
+
+/* Login dialog: a centred card over a dimmed backdrop, shown right after the
+   Spotify backend starts while the OAuth login is still missing. */
+.spotify-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(9, 12, 20, 0.72);
+}
+.spotify-dialog {
+    width: 100%;
+    max-width: 340px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+    border: 1px solid #2f3a4d;
+    border-radius: 14px;
+    background: #171b26;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+.spotify-dialog-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #e6ebf5;
+}
+.spotify-dialog-hint {
+    font-size: 0.85rem;
+    line-height: 1.4;
+    color: #9aa4b8;
+}
+.btn-spotify-connect {
+    width: 100%;
+    padding: 12px 16px;
+    border: none;
+    border-radius: 10px;
+    background: #1db954;
+    color: #08130c;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.btn-spotify-connect:hover:not(:disabled) {
+    background: #24d366;
+}
+.btn-spotify-connect:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.spotify-dialog-cancel {
+    width: 100%;
+    padding: 10px 16px;
+    border: 1px solid #2f3a4d;
+    border-radius: 10px;
+    background: transparent;
+    color: #9aa4b8;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+.spotify-dialog-cancel:hover {
+    border-color: #4b5563;
+    color: #e6ebf5;
 }
