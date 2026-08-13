@@ -40,6 +40,11 @@ dx build --platform android
 
 Install the pre-commit hook once with: `git config core.hooksPath .githooks`
 
+`assets/tailwind.css` is **generated, not tracked**: `dx` rebuilds it from the root
+`tailwind.css` on every Android build. `build.rs` creates an empty one when it is
+missing, because `asset!("/assets/tailwind.css")` fails at macro expansion — without
+it a fresh clone could not even run `cargo test`. Never commit that file.
+
 ### After a Dioxus / `dx` upgrade — re-diff the frozen Android files
 
 `android/AndroidManifest.xml` and `android/MainActivity.kt` are **copies of dx's own
