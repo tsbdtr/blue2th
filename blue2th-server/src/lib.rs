@@ -458,9 +458,15 @@ async fn select_target(
     Path(addr): Path<String>,
 ) -> Result<Json<TargetsState>, AppError> {
     let connected = { state.connected.lock().await.clone() };
-    let mut targets = state.targets.lock().await;
-    targets.select(&addr, &connected)?;
-    Ok(Json(targets.state()))
+    let (speakers, updated) = {
+        let mut targets = state.targets.lock().await;
+        targets.select(&addr, &connected)?;
+        (targets.speakers(), targets.state())
+    };
+    // Symmetric with deselect: a speaker added mid-playback must be brought into
+    // the routing, not just into the stored selection.
+    apply_selection_change(&state, &speakers).await;
+    Ok(Json(updated))
 }
 
 /// `POST /devices/{addr}/deselect` — drop a speaker from the target selection.
@@ -468,9 +474,15 @@ async fn deselect_target(
     State(state): State<AppState>,
     Path(addr): Path<String>,
 ) -> Json<TargetsState> {
-    let mut targets = state.targets.lock().await;
-    targets.deselect(&addr);
-    Json(targets.state())
+    let (speakers, updated) = {
+        let mut targets = state.targets.lock().await;
+        targets.deselect(&addr);
+        (targets.speakers(), targets.state())
+    };
+    // Dropping a speaker must actually stop the audio reaching it, not just
+    // update the selection.
+    apply_selection_change(&state, &speakers).await;
+    Json(updated)
 }
 
 /// `POST /devices/{addr}/offset` — set a target speaker's latency offset (clamped
@@ -500,20 +512,11 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     let plan = audio::combine_sink_plan(speakers);
 
     // Moving a lone speaker off (or onto) a zero offset switches it between the
-    // direct route and the combined sink. `librespot` binds its sink at spawn, so
-    // that transition needs a respawn; a plain latency change does not.
-    let mut spotify = state.spotify.lock().await;
-    if spotify.poll_liveness().status == SpotifyStatus::Running {
-        let wanted = spotify::spotify_target_sink(speakers);
-        if spotify.current_sink() != Some(wanted.as_str()) {
-            let _ = spotify.stop();
-            if let Err(e) = spotify.start(speakers) {
-                tracing::warn!("could not restart the Spotify backend after an offset change: {e}");
-            }
-            return;
-        }
+    // direct route and the combined sink, which needs a respawn; a plain latency
+    // change does not, and is retuned in place below.
+    if resync_spotify_sink(state, speakers).await {
+        return;
     }
-    drop(spotify);
 
     if audio::combined_sink_exists(&plan.sink_name) {
         let branch = audio::CombineBranch {
@@ -524,6 +527,55 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
             tracing::warn!("could not retune the speaker offset live: {e}");
         }
     }
+}
+
+/// Respawn `librespot` when the selection moves it to a different sink.
+/// `--device` is fixed at spawn, so re-routing alone would leave it feeding the
+/// sink it was started with. Returns whether it was restarted.
+async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bool {
+    let mut spotify = state.spotify.lock().await;
+    if spotify.poll_liveness().status != SpotifyStatus::Running {
+        return false;
+    }
+    let wanted = spotify::spotify_target_sink(speakers);
+    if spotify.current_sink() == Some(wanted.as_str()) {
+        return false;
+    }
+    let _ = spotify.stop();
+    if let Err(e) = spotify.start(speakers) {
+        tracing::warn!("could not restart the Spotify backend after a routing change: {e}");
+    }
+    true
+}
+
+/// Push a selection change into the live audio graph.
+///
+/// Selecting or deselecting a speaker used to only update the stored selection:
+/// the PipeWire routing stayed exactly as it was, so a speaker dropped from the
+/// selection kept receiving the stream and playing on.
+async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
+    if speakers.is_empty() {
+        // Nothing left to play to. Pause both sources, then tear the combined
+        // sink down so no loopback keeps feeding a speaker nobody selected.
+        pause_spotify_now(state).await;
+        {
+            let mut engine = state.engine.lock().await;
+            if let Err(e) = engine.pause() {
+                tracing::warn!("could not pause playback after the last speaker was dropped: {e}");
+            }
+        }
+        if let Err(e) = audio::teardown_combined(spotify::COMBINED_SINK_NAME) {
+            tracing::warn!("could not tear the combined sink down: {e}");
+        }
+        return;
+    }
+    // Still a target: rebuild the routing so it spans exactly the current
+    // selection (this is what stops feeding a speaker that was just dropped).
+    if let Err(e) = audio::route_for_targets(speakers) {
+        tracing::warn!("could not re-route after a selection change: {e}");
+        return;
+    }
+    resync_spotify_sink(state, speakers).await;
 }
 
 /// `GET /targets` — the current selection, per-speaker offsets and routing mode.
