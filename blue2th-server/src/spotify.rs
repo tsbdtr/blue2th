@@ -132,13 +132,10 @@ pub struct SpotifyBackend {
 }
 
 impl SpotifyBackend {
-    /// A fresh backend with no subprocess (status `Stopped`).
+    /// A fresh backend with no subprocess (status `Stopped`), advertising the
+    /// default name until the app configures another one.
     pub fn new() -> Self {
-        Self {
-            child: None,
-            device_name: SPOTIFY_DEVICE_NAME.to_string(),
-            sink: None,
-        }
+        Self::with_name(SPOTIFY_DEVICE_NAME)
     }
 
     /// A backend advertising an explicit Connect device name (phase 6.2: the

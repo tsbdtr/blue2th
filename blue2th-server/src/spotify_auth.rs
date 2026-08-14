@@ -405,7 +405,6 @@ impl SpotifyAuth {
             .ok_or(SpotifyApiError::NotConfigured)
     }
 
-    /// Coarse auth state observed by the app (Connected iff tokens are held).
     /// Adopt the configured Connect device name (phase 6.2). The Web API device
     /// lookup must search for the name `librespot` actually advertises: keeping
     /// the constant here while the backend was renamed makes every transport
@@ -419,6 +418,7 @@ impl SpotifyAuth {
         &self.device_name
     }
 
+    /// Coarse auth state observed by the app (Connected iff tokens are held).
     pub fn auth_state(&self) -> SpotifyAuthState {
         let status = if self.tokens.is_some() {
             SpotifyAuthStatus::Connected

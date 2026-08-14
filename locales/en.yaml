@@ -75,7 +75,11 @@ settings:
   volume: "Volume (%{volume} %)"
   section_danger: "Danger zone"
   forget: "Forget device"
-settings:
+
+# The app-wide settings page (phase 6.2). A namespace of its own: `settings.*`
+# already belongs to the per-device page above, and a second `settings:` key
+# would silently drop one of the two blocks.
+app_settings:
   title: "Settings"
   backends: "Backends"
   no_backend_yet: "No backend configured yet"

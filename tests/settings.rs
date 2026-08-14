@@ -23,6 +23,10 @@
 use blue2th::settings::{self, AppSettings, BackendEntry, SettingsError, NO_BACKEND_LABEL};
 use blue2th_proto::{NameError, MAX_BACKEND_NAME_LEN};
 
+// The settings page reads its labels from `locales/`, and a duplicated top-level
+// key there silently drops a whole block, so the keys are checked here.
+rust_i18n::i18n!("locales", fallback = "en");
+
 /// A settings blob holding two backends with the first one active.
 ///
 /// Built by hand rather than through `add`/`activate`: a fixture must not depend
@@ -253,6 +257,33 @@ fn test_remove_non_active_backend_keeps_the_active_one() {
     );
 }
 
+// Criterion: deleting an entry that is no longer there is refused rather than
+// panicking on an out-of-range index — the row the user tapped may already be
+// gone (a second tap, a stale render).
+#[test]
+fn test_remove_unknown_index_is_refused() {
+    let mut settings = two_backends();
+    assert_eq!(settings.remove(7), Err(SettingsError::UnknownBackend));
+    assert_eq!(settings.backends.len(), 2);
+    assert_eq!(settings.active, Some(0));
+
+    let mut empty = AppSettings::default();
+    assert_eq!(empty.remove(0), Err(SettingsError::UnknownBackend));
+    assert_eq!(empty.active, None);
+}
+
+// Criterion: a name freed by a deletion can be used again — the duplicate check
+// looks at the current list, not at a history of names.
+#[test]
+fn test_add_accepts_a_name_freed_by_a_deletion() {
+    let mut settings = two_backends();
+    settings.remove(0).expect("remove Salon");
+    settings
+        .add("Salon", "http://10.0.0.9:4000")
+        .expect("the freed name must be available again");
+    assert_eq!(settings.backends.len(), 2);
+}
+
 // Criterion: `active_backend_url()` returns the active entry's URL.
 #[test]
 fn test_active_url_returns_the_active_entry_url() {
@@ -332,6 +363,47 @@ fn test_load_repairs_an_out_of_range_active_index() {
     assert_eq!(loaded.backends.len(), 1);
     assert_eq!(loaded.active, None);
     assert_eq!(loaded.active_label(), NO_BACKEND_LABEL);
+}
+
+// Criterion: the settings page has labels, and adding them did not cost the
+// per-device settings page its own. `rust-i18n` resolves a missing key to the
+// key itself, and a second `settings:` mapping in a locale file drops the first
+// one wholesale — which is exactly how this page silently un-translated the
+// device page.
+#[test]
+fn test_locales_carry_both_settings_pages_labels() {
+    for locale in ["en", "fr"] {
+        rust_i18n::set_locale(locale);
+        for key in [
+            // The app-wide settings page (phase 6.2).
+            "app_settings.title",
+            "app_settings.backends",
+            "app_settings.no_backend_yet",
+            "app_settings.active",
+            "app_settings.activate",
+            "app_settings.delete",
+            "app_settings.add",
+            "app_settings.test",
+            "app_settings.test_ok",
+            "app_settings.name_placeholder",
+            "app_settings.url_placeholder",
+            // The per-device settings page, which must keep its own namespace.
+            "settings.section_general",
+            "settings.alias",
+            "settings.auto_reconnect",
+            "settings.trusted",
+            "settings.section_audio",
+            "settings.codec",
+            "settings.section_danger",
+            "settings.forget",
+        ] {
+            let translated = rust_i18n::t!(key);
+            assert_ne!(
+                translated, key,
+                "{key} must be translated in {locale}, got the raw key back"
+            );
+        }
+    }
 }
 
 // Criterion: `BLUE2TH_BACKEND_URL` no longer appears anywhere in the codebase —

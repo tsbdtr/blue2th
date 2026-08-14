@@ -1611,13 +1611,19 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
     } else {
         rust_i18n::t!("server.offline")
     };
-    let entries: Vec<(usize, String, bool)> = app_settings
-        .read()
-        .backends
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (i, b.name.clone(), Some(i) == app_settings.read().active))
-        .collect();
+    // One read for the whole list: the active index comes from the same snapshot
+    // as the names, so the menu can never mark a row the list no longer holds.
+    let entries: Vec<(usize, String, bool)> = {
+        let snapshot = app_settings.read();
+        let active = snapshot.active;
+        snapshot
+            .backends
+            .iter()
+            .enumerate()
+            // Owned name: the rsx below outlives this borrow of the signal.
+            .map(|(i, b)| (i, b.name.clone(), Some(i) == active))
+            .collect()
+    };
 
     rsx! {
         div { class: "backend-switch",
@@ -1649,7 +1655,7 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
                                 *open.write() = false;
                                 navigator.push(Route::AppSettingsPage {});
                             },
-                            "{rust_i18n::t!(\"settings.no_backend_yet\")}"
+                            "{rust_i18n::t!(\"app_settings.no_backend_yet\")}"
                         }
                     }
                     for (index, name, active) in entries {
@@ -1687,7 +1693,7 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
 fn SettingsButton() -> Element {
     use_locale();
     let navigator = use_navigator();
-    let label = rust_i18n::t!("settings.title");
+    let label = rust_i18n::t!("app_settings.title");
     rsx! {
         button {
             class: "settings-button",
@@ -1710,24 +1716,23 @@ fn AppSettingsPage() -> Element {
     let navigator = use_navigator();
     let mut app_settings = use_context::<SettingsState>().0;
     let mut error: Signal<Option<String>> = use_signal(|| None);
-    let notice: Signal<Option<String>> = use_signal(|| None);
+    let mut notice: Signal<Option<String>> = use_signal(|| None);
     let mut name_draft = use_signal(String::new);
     let mut url_draft = use_signal(String::new);
 
-    let entries: Vec<(usize, String, String, bool)> = app_settings
-        .read()
-        .backends
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            (
-                i,
-                b.name.clone(),
-                b.url.clone(),
-                Some(i) == app_settings.read().active,
-            )
-        })
-        .collect();
+    // One read for the whole list (see `BackendStatus`): names, addresses and the
+    // active index all come from the same snapshot.
+    let entries: Vec<(usize, String, String, bool)> = {
+        let snapshot = app_settings.read();
+        let active = snapshot.active;
+        snapshot
+            .backends
+            .iter()
+            .enumerate()
+            // Owned name/URL: the rsx below outlives this borrow of the signal.
+            .map(|(i, b)| (i, b.name.clone(), b.url.clone(), Some(i) == active))
+            .collect()
+    };
 
     rsx! {
         div { class: "settings-page",
@@ -1737,14 +1742,14 @@ fn AppSettingsPage() -> Element {
                     onclick: move |_| { navigator.go_back(); },
                     "‹"
                 }
-                span { class: "settings-title", "{rust_i18n::t!(\"settings.title\")}" }
+                span { class: "settings-title", "{rust_i18n::t!(\"app_settings.title\")}" }
             }
 
             div { class: "settings-section",
-                div { class: "settings-section-title", "{rust_i18n::t!(\"settings.backends\")}" }
+                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.backends\")}" }
 
                 if entries.is_empty() {
-                    div { class: "settings-empty", "{rust_i18n::t!(\"settings.no_backend_yet\")}" }
+                    div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
                 }
                 for (index, name, url, active) in entries {
                     div { class: if active { "backend-row active" } else { "backend-row" },
@@ -1757,35 +1762,41 @@ fn AppSettingsPage() -> Element {
                             disabled: active,
                             onclick: move |_| {
                                 let mut error = error;
+                                let mut notice = notice;
                                 spawn(async move {
                                     // Owned copy: mutated by the switch, then
                                     // written back to the shared signal.
                                     let mut next = app_settings.peek().clone();
                                     let outcome = backend::activate_backend(&mut next, index).await;
                                     *app_settings.write() = next;
-                                    if let Err(e) = outcome {
-                                        *error.write() = Some(e.to_string());
-                                    }
+                                    // Feedback left over from a previous action
+                                    // would read as this one's outcome.
+                                    *notice.write() = None;
+                                    *error.write() = outcome.err().map(|e| e.to_string());
                                 });
                             },
                             if active {
-                                "{rust_i18n::t!(\"settings.active\")}"
+                                "{rust_i18n::t!(\"app_settings.active\")}"
                             } else {
-                                "{rust_i18n::t!(\"settings.activate\")}"
+                                "{rust_i18n::t!(\"app_settings.activate\")}"
                             }
                         }
                         button {
                             class: "backend-row-delete",
-                            title: "{rust_i18n::t!(\"settings.delete\")}",
-                            aria_label: "{rust_i18n::t!(\"settings.delete\")}",
+                            title: "{rust_i18n::t!(\"app_settings.delete\")}",
+                            aria_label: "{rust_i18n::t!(\"app_settings.delete\")}",
                             onclick: move |_| {
                                 let mut next = app_settings.peek().clone();
                                 if let Err(e) = next.remove(index) {
                                     *error.write() = Some(e.to_string());
                                     return;
                                 }
+                                // Owned copy: the process-wide cache keeps its own
+                                // settings beyond this handler.
                                 settings::set_current(next.clone());
                                 *app_settings.write() = next;
+                                *notice.write() = None;
+                                *error.write() = None;
                             },
                             "✕"
                         }
@@ -1797,14 +1808,14 @@ fn AppSettingsPage() -> Element {
                         class: "backend-input",
                         r#type: "text",
                         maxlength: "{blue2th_proto::MAX_BACKEND_NAME_LEN}",
-                        placeholder: "{rust_i18n::t!(\"settings.name_placeholder\")}",
+                        placeholder: "{rust_i18n::t!(\"app_settings.name_placeholder\")}",
                         value: "{name_draft}",
                         oninput: move |e| *name_draft.write() = e.value(),
                     }
                     input {
                         class: "backend-input",
                         r#type: "text",
-                        placeholder: "{rust_i18n::t!(\"settings.url_placeholder\")}",
+                        placeholder: "{rust_i18n::t!(\"app_settings.url_placeholder\")}",
                         value: "{url_draft}",
                         oninput: move |e| *url_draft.write() = e.value(),
                     }
@@ -1816,17 +1827,24 @@ fn AppSettingsPage() -> Element {
                                 let mut error = error;
                                 let mut notice = notice;
                                 spawn(async move {
+                                    // Exactly one of the two is shown: a stale
+                                    // error next to a fresh "it answered" (or the
+                                    // reverse) is unreadable.
                                     match backend::test_backend(&url).await {
                                         Ok(_) => {
+                                            *error.write() = None;
                                             *notice.write() = Some(
-                                                rust_i18n::t!("settings.test_ok").to_string(),
-                                            )
+                                                rust_i18n::t!("app_settings.test_ok").to_string(),
+                                            );
                                         },
-                                        Err(e) => *error.write() = Some(e.to_string()),
+                                        Err(e) => {
+                                            *notice.write() = None;
+                                            *error.write() = Some(e.to_string());
+                                        },
                                     }
                                 });
                             },
-                            "{rust_i18n::t!(\"settings.test\")}"
+                            "{rust_i18n::t!(\"app_settings.test\")}"
                         }
                         button {
                             class: "backend-add",
@@ -1835,21 +1853,32 @@ fn AppSettingsPage() -> Element {
                                 match next.add(&name_draft(), &url_draft()) {
                                     Ok(()) => {
                                         // First backend added: make it active, or
-                                        // the app would still know no address.
+                                        // the app would still know no address. The
+                                        // entry was just pushed, so the index is in
+                                        // range; a failure would still be told.
+                                        let mut failure = None;
                                         if next.active.is_none() {
                                             let last = next.backends.len().saturating_sub(1);
-                                            let _ = next.activate(last);
+                                            if let Err(e) = next.activate(last) {
+                                                failure = Some(e.to_string());
+                                            }
                                         }
+                                        // Owned copy: the process-wide cache keeps
+                                        // its own settings beyond this handler.
                                         settings::set_current(next.clone());
                                         *app_settings.write() = next;
                                         *name_draft.write() = String::new();
                                         *url_draft.write() = String::new();
-                                        *error.write() = None;
+                                        *notice.write() = None;
+                                        *error.write() = failure;
                                     },
-                                    Err(e) => *error.write() = Some(e.to_string()),
+                                    Err(e) => {
+                                        *notice.write() = None;
+                                        *error.write() = Some(e.to_string());
+                                    },
                                 }
                             },
-                            "{rust_i18n::t!(\"settings.add\")}"
+                            "{rust_i18n::t!(\"app_settings.add\")}"
                         }
                     }
                 }

@@ -240,35 +240,44 @@ fn read_stored() -> Option<String> {
     // SAFETY: the context pointer is the app's Activity object, owned by the runtime.
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
 
-    let name = env.new_string(PREFS_NAME).ok()?;
-    let prefs = env
-        .call_method(
-            &activity,
-            "getSharedPreferences",
-            "(Ljava/lang/String;I)Landroid/content/SharedPreferences;",
-            &[JValue::Object(&name), JValue::Int(0)],
-        )
-        .ok()?
-        .l()
-        .ok()?;
-    let key = env.new_string(PREFS_KEY).ok()?;
-    let null = JObject::null();
-    let stored = env
-        .call_method(
-            &prefs,
-            "getString",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-            &[JValue::Object(&key), JValue::Object(&null)],
-        )
-        .ok()?
-        .l()
-        .ok()?;
-    if stored.is_null() {
-        return None;
+    let stored = (|| {
+        let name = env.new_string(PREFS_NAME).ok()?;
+        let prefs = env
+            .call_method(
+                &activity,
+                "getSharedPreferences",
+                "(Ljava/lang/String;I)Landroid/content/SharedPreferences;",
+                &[JValue::Object(&name), JValue::Int(0)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        let key = env.new_string(PREFS_KEY).ok()?;
+        let null = JObject::null();
+        let stored = env
+            .call_method(
+                &prefs,
+                "getString",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&key), JValue::Object(&null)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if stored.is_null() {
+            return None;
+        }
+        env.get_string(&JString::from(stored))
+            .ok()
+            .map(Into::<String>::into)
+    })();
+    if stored.is_none() {
+        // Mirrors `write_stored` and `deep_link.rs`: leaving an exception pending
+        // aborts the process on the next JNI call. Clearing when nothing was
+        // thrown (the "never stored anything" case) is a no-op.
+        let _ = env.exception_clear();
     }
-    env.get_string(&JString::from(stored))
-        .ok()
-        .map(Into::<String>::into)
+    stored
 }
 
 /// Persist the blob to `SharedPreferences` (Android storage seam).
@@ -290,7 +299,7 @@ fn write_stored(blob: &str) {
     // SAFETY: see `read_stored`.
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
 
-    let stored = (|| {
+    let written = (|| {
         let name = env.new_string(PREFS_NAME).ok()?;
         let prefs = env
             .call_method(
@@ -324,7 +333,7 @@ fn write_stored(blob: &str) {
         env.call_method(&editor, "apply", "()V", &[]).ok()?;
         Some(())
     })();
-    if stored.is_none() {
+    if written.is_none() {
         // Leaving an exception pending aborts the process on the next JNI call.
         let _ = env.exception_clear();
     }

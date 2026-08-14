@@ -52,6 +52,14 @@ impl std::fmt::Display for BackendError {
 /// fails fast with it instead of guessing an address and timing out.
 pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 
+/// How long a settings-page call waits before giving up.
+///
+/// A mistyped LAN address is the normal case here: the host either refuses at
+/// once or, when it silently drops packets, never answers at all. Without a
+/// bound, `Test` would spin forever and the two best-effort steps of
+/// [`activate_backend`] would leak a task per switch.
+const SETTINGS_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The active backend's base URL, resolved at **runtime** from the app settings.
 ///
 /// There is no compile-time address, no seeded default, not even a localhost
@@ -73,28 +81,19 @@ fn config_url(base: &str) -> String {
     format!("{}/config", base.trim_end_matches('/'))
 }
 
-/// `GET {base}/config` — the name the active backend currently holds.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn get_config() -> Result<ServerConfig, BackendError> {
-    let url = config_url(&backend_base_url()?);
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    backend_error_message(response)
-        .await?
-        .json::<ServerConfig>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
-}
-
-/// `POST {base}/config` — push the app's name for the active backend, which
-/// adopts it as its Spotify Connect device name.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn set_config(name: &str) -> Result<ServerConfig, BackendError> {
-    let url = config_url(&backend_base_url()?);
+/// `POST {base}/config` against an explicit address — push the app's name to the
+/// backend, which adopts it as its Spotify Connect device name.
+///
+/// Addressed explicitly rather than through `backend_base_url()`: the only caller
+/// is [`activate_backend`], which must reach the backend it *just* switched to
+/// even if a concurrent switch has already moved the resolved address on.
+async fn set_config_at(base: &str, name: &str) -> Result<ServerConfig, BackendError> {
+    let url = config_url(base);
     let response = reqwest::Client::new()
         .post(&url)
+        .timeout(SETTINGS_CALL_TIMEOUT)
         .json(&ConfigRequest {
+            // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
             name: name.to_string(),
         })
         .send()
@@ -114,11 +113,19 @@ async fn pause_at(base: &str) -> Result<(), BackendError> {
     let url = format!("{}/spotify/pause", base.trim_end_matches('/'));
     let response = reqwest::Client::new()
         .post(&url)
+        .timeout(SETTINGS_CALL_TIMEOUT)
         .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?;
     backend_error_message(response).await?;
     Ok(())
+}
+
+/// Whether the backend at `previous` is really being left behind by a switch to
+/// `next`. Re-activating the backend already in use must quieten nothing:
+/// pausing it is the opposite of what the user asked for. Pure.
+fn is_left_behind(previous: &str, next: Option<&str>) -> bool {
+    next != Some(previous)
 }
 
 /// Switch the active backend: pause the previous one (best-effort), repoint the
@@ -145,16 +152,24 @@ pub async fn activate_backend(
     // Owned copy: the cache keeps its own settings beyond this borrow.
     crate::settings::set_current(settings.clone());
 
+    // Owned copy: the borrow of `settings` must not survive the awaits below,
+    // and the address is the one to push to whatever the cache does meanwhile.
+    let target = settings
+        .active_backend()
+        .map(|b| (b.url.clone(), b.name.clone()));
+
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
     let mut failure = None;
     if let Some(base) = previous {
-        if let Err(e) = pause_at(&base).await {
-            failure = Some(e);
+        if is_left_behind(&base, target.as_ref().map(|(url, _)| url.as_str())) {
+            if let Err(e) = pause_at(&base).await {
+                failure = Some(e);
+            }
         }
     }
-    if let Some(name) = settings.active_backend().map(|b| b.name.clone()) {
-        if let Err(e) = set_config(&name).await {
+    if let Some((base, name)) = target {
+        if let Err(e) = set_config_at(&base, &name).await {
             failure = Some(e);
         }
     }
@@ -168,7 +183,12 @@ pub async fn activate_backend(
 /// action, which pings a backend that is not (yet) the active one.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
-    let response = reqwest::get(&health_url(url))
+    // Bounded: a typo'd address that drops packets would otherwise leave the
+    // `Test` button waiting forever with no answer either way.
+    let response = reqwest::Client::new()
+        .get(health_url(url))
+        .timeout(SETTINGS_CALL_TIMEOUT)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?;
     backend_error_message(response)
@@ -849,6 +869,33 @@ mod tests {
 
         // Leave the process-wide cache as we found it, as the guard's contract says.
         crate::settings::set_current(AppSettings::default());
+    }
+
+    // Criterion (phase 6.2): switching backends quietens the one being left
+    // behind — a different address than the newly active one.
+    #[test]
+    fn test_is_left_behind_is_true_for_another_backend() {
+        assert!(is_left_behind(
+            "http://127.0.0.1:1",
+            Some("http://127.0.0.1:2")
+        ));
+    }
+
+    // Criterion (phase 6.2): re-activating the backend already in use must not
+    // pause it — that would stop the playback the user just asked to keep.
+    #[test]
+    fn test_is_left_behind_is_false_for_the_same_backend() {
+        assert!(!is_left_behind(
+            "http://127.0.0.1:1",
+            Some("http://127.0.0.1:1")
+        ));
+    }
+
+    // Criterion (phase 6.2): with no backend left active (the switch target
+    // vanished), the previous one is still quietened rather than left playing.
+    #[test]
+    fn test_is_left_behind_is_true_when_nothing_is_active() {
+        assert!(is_left_behind("http://127.0.0.1:1", None));
     }
 
     #[test]

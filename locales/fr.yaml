@@ -75,7 +75,11 @@ settings:
   volume: "Volume (%{volume} %)"
   section_danger: "Zone de danger"
   forget: "Oublier l'appareil"
-settings:
+
+# La page de réglages de l'application (phase 6.2). Espace de noms distinct :
+# `settings.*` appartient déjà à la page par appareil ci-dessus, et une seconde
+# clé `settings:` ferait disparaître silencieusement l'un des deux blocs.
+app_settings:
   title: "Réglages"
   backends: "Backends"
   no_backend_yet: "Aucune backend configurée"

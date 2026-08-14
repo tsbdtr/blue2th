@@ -463,7 +463,11 @@ async fn set_config(
     );
     spotify.set_device_name(&name);
     if restart {
-        let _ = spotify.stop();
+        // Both halves are logged rather than propagated: the name *is* stored, so
+        // a rename must not report failure because the subprocess dance did.
+        if let Err(e) = spotify.stop() {
+            tracing::warn!("could not stop the Spotify backend before a rename: {e}");
+        }
         if let Err(e) = spotify.start(&speakers) {
             tracing::warn!("could not restart the Spotify backend after a rename: {e}");
         }
