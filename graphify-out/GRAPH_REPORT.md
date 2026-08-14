@@ -1,16 +1,16 @@
 # Graph Report - blue2th  (2026-08-14)
 
 ## Corpus Check
-- 40 files · ~53,756 words
+- 44 files · ~64,272 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1025 nodes · 2363 edges · 46 communities (40 shown, 6 thin omitted)
-- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 39 edges (avg confidence: 0.82)
+- 1192 nodes · 2720 edges · 54 communities (47 shown, 7 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 39 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `97e2be1b`
+- Built from commit: `2bf18189`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -59,18 +59,26 @@
 - [[_COMMUNITY_Community 43|Community 43]]
 - [[_COMMUNITY_Community 44|Community 44]]
 - [[_COMMUNITY_Community 45|Community 45]]
+- [[_COMMUNITY_Community 46|Community 46]]
+- [[_COMMUNITY_Community 47|Community 47]]
+- [[_COMMUNITY_Community 48|Community 48]]
+- [[_COMMUNITY_Community 49|Community 49]]
+- [[_COMMUNITY_Community 50|Community 50]]
+- [[_COMMUNITY_Community 51|Community 51]]
+- [[_COMMUNITY_Community 52|Community 52]]
+- [[_COMMUNITY_Community 53|Community 53]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `AppState` - 45 edges
-2. `BackendError` - 32 edges
-3. `BluetoothError` - 32 edges
-4. `Result` - 29 edges
+1. `AppState` - 48 edges
+2. `BackendError` - 38 edges
+3. `Result` - 35 edges
+4. `BluetoothError` - 32 edges
 5. `Result` - 29 edges
-6. `connected()` - 28 edges
-7. `Json` - 26 edges
-8. `SpotifyAuth` - 26 edges
-9. `State` - 25 edges
-10. `AppError` - 24 edges
+6. `Json` - 28 edges
+7. `SpotifyAuth` - 28 edges
+8. `connected()` - 28 edges
+9. `State` - 27 edges
+10. `AppError` - 25 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `README Project Overview` --references--> `App()`  [INFERRED]
@@ -81,8 +89,8 @@
   .claude/agents/tdd-test-writer.md → src/bluetooth.rs
 - `Review Report — Real BT Adapter State Detection` --references--> `enable_bluetooth_inner()`  [EXTRACTED]
   tdd/REVIEW.md → src/bluetooth.rs
-- `test_connect_device_simulated_ok_on_non_android()` --calls--> `connect_device()`  [INFERRED]
-  tests/a2dp_dex_listener.rs → src/bluetooth.rs
+- `test_no_fake_activation_when_bt_returns_error()` --semantically_similar_to--> `ConfirmModal()`  [INFERRED] [semantically similar]
+  tests/bluetooth_integration.rs → src/main.rs
 
 ## Import Cycles
 - 1-file cycle: `blue2th-server/src/lib.rs -> blue2th-server/src/lib.rs`
@@ -103,19 +111,19 @@
 - **Android Bluetooth JNI Detection Flow** — src_bluetooth_enable_bluetooth, src_bluetooth_enable_bluetooth_inner, concept_jni_android_bluetooth, concept_platform_conditional_compilation [EXTRACTED 0.95]
 - **UI Bluetooth Enable Confirmation Flow** — src_main_home, src_main_confirmmodal, src_bluetooth_enable_bluetooth, src_main_connectionstatus [EXTRACTED 0.95]
 
-## Communities (46 total, 6 thin omitted)
+## Communities (54 total, 7 thin omitted)
 
 ### Community 0 - "Android BT JNI & Errors"
-Cohesion: 0.07
-Nodes (87): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), Display, Error, Formatter, GlobalRef, Into, JavaVM (+79 more)
+Cohesion: 0.06
+Nodes (89): JNI Android Bluetooth Detection, Platform-Conditional Compilation (#[cfg(target_os)]), Display, Error, Formatter, GlobalRef, Into, JavaVM (+81 more)
 
 ### Community 1 - "Dioxus Framework Concepts"
 Cohesion: 0.08
 Nodes (26): App Root Component, asset! Macro, Assets, Async, Component Model, Components, Context API, Dioxus Dependency (+18 more)
 
 ### Community 2 - "UI App & State"
-Cohesion: 0.10
-Nodes (49): Element, EventHandler, HashSet, NowPlayingState, README Project Overview, Signal, SpotifyAction, App() (+41 more)
+Cohesion: 0.09
+Nodes (53): Element, EventHandler, HashSet, NowPlayingState, README Project Overview, Signal, SpotifyAction, App() (+45 more)
 
 ### Community 3 - "TDD Workflow & Dev Standards"
 Cohesion: 0.09
@@ -154,28 +162,32 @@ Cohesion: 0.29
 Nodes (6): Hardware is NOT testable in this sandbox, Project context, Rules, What you must NOT do, Workspace layers, Your role (RED phase)
 
 ### Community 16 - "Community 16"
-Cohesion: 0.21
-Nodes (22): Affected Layers, Correctness Review (SpotifyBackend lifecycle), Final Status, Issues Found & Fixed, Items Reviewed — No Change Needed, Manual (hardware/process) seam — not CI-testable, Minor Notes (not blocking), New Tests Added (+14 more)
+Cohesion: 0.19
+Nodes (24): Affected Layers, Checked, no change needed, Correctness Review (SpotifyBackend lifecycle), Final Status, Issues Found & Fixed, Items Reviewed — No Change Needed, Manual (hardware/process) seam — not CI-testable, Minor Notes (not blocking) (+16 more)
+
+### Community 18 - "Community 18"
+Cohesion: 0.14
+Nodes (22): Default, Option, Path, PathBuf, Result, Self, String, NameError (+14 more)
 
 ### Community 19 - "Community 19"
 Cohesion: 0.39
 Nodes (3): BluetoothProfile, A2dpServiceListener, Override
 
 ### Community 21 - "Community 21"
-Cohesion: 0.08
-Nodes (60): F, backend_base_url(), backend_error_message(), BackendError, connect_device(), describe(), deselect_target(), device_action_url() (+52 more)
+Cohesion: 0.06
+Nodes (75): F, activate_backend(), active_at(), backend_base_url(), backend_error_message(), BackendError, base_url_from(), config_url() (+67 more)
 
 ### Community 22 - "Community 22"
-Cohesion: 0.12
-Nodes (16): Architecture, blue2th Roadmap — Multi-speaker audio via mobile remote + PC backend, Cross-cutting concerns, Legacy: existing Android Bluetooth code, Phase 0 — Foundations, Phase 1 — Bluetooth discovery (`bluer`), Phase 2 — Connect / disconnect a speaker, Phase 3 — Play audio to ONE speaker (PipeWire) (+8 more)
+Cohesion: 0.11
+Nodes (18): Architecture, blue2th Roadmap — Multi-speaker audio via mobile remote + PC backend, Cross-cutting concerns, Legacy: existing Android Bluetooth code, Phase 0 — Foundations, Phase 1 — Bluetooth discovery (`bluer`), Phase 2 — Connect / disconnect a speaker, Phase 3 — Play audio to ONE speaker (PipeWire) (+10 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.19
-Nodes (29): AppError, AuthUrlResponse, PlaybackState, Result, SpotifyAuthState, SpotifyState, Bytes, Json (+21 more)
+Cohesion: 0.18
+Nodes (26): AppError, AuthUrlResponse, HealthStatus, PlaybackState, ServerConfig, SpotifyAuthState, SpotifyState, Bytes (+18 more)
 
 ### Community 24 - "Community 24"
 Cohesion: 0.06
-Nodes (27): Into, Option, Self, String, Vec, AdapterInfo, AuthCallbackRequest, AuthUrlResponse (+19 more)
+Nodes (4): OffsetRequest, SpotifyAuthState, SpotifyAuthStatus, VolumeRequest
 
 ### Community 26 - "Community 26"
 Cohesion: 0.27
@@ -187,15 +199,15 @@ Nodes (55): AtomicBool, Arc, AtomicBool, AudioError, Box, Default, Display, Erro
 
 ### Community 28 - "Community 28"
 Cohesion: 0.16
-Nodes (15): AudioError, Error, Into, Response, Self, Error, Self, From (+7 more)
+Nodes (16): AudioError, Error, Into, Response, Self, String, Error, Self (+8 more)
 
 ### Community 29 - "Community 29"
 Cohesion: 0.31
 Nodes (7): Router, build_app(), test_deselect_last_speaker_empties_the_selection(), test_play_links_running_output_node_to_pipewire_sink(), test_play_without_connected_speaker_returns_client_error(), test_playback_endpoint_returns_state(), test_volume_endpoint_rejects_malformed_body()
 
 ### Community 30 - "Community 30"
-Cohesion: 0.09
-Nodes (27): Default, Display, Error, Formatter, Option, Result, Self, SpeakerTarget (+19 more)
+Cohesion: 0.08
+Nodes (32): Default, Display, Error, Formatter, Option, Result, Self, SpeakerTarget (+24 more)
 
 ### Community 31 - "Community 31"
 Cohesion: 0.60
@@ -203,7 +215,7 @@ Nodes (4): Router, build_app(), test_spotify_start_without_target_returns_bad_re
 
 ### Community 32 - "Community 32"
 Cohesion: 0.06
-Nodes (44): Default, Display, Error, Formatter, NowPlaying, Option, Path, PathBuf (+36 more)
+Nodes (46): Default, Display, Error, Formatter, NowPlaying, Option, Path, PathBuf (+38 more)
 
 ### Community 33 - "Community 33"
 Cohesion: 0.10
@@ -226,24 +238,24 @@ Cohesion: 0.31
 Nodes (7): Router, build_app(), test_spotify_auth_callback_missing_code_returns_bad_request(), test_spotify_auth_status_on_fresh_server_is_disconnected(), test_spotify_auth_url_without_client_id_is_unavailable(), test_spotify_play_while_disconnected_returns_conflict(), test_spotify_transport_actions_while_disconnected_return_conflict()
 
 ### Community 38 - "Community 38"
-Cohesion: 0.13
-Nodes (17): Arc, Box, HealthStatus, Mutex, Router, Mutex, SpeakerTargets, SpotifyAuth (+9 more)
+Cohesion: 0.10
+Nodes (29): Arc, AudioEngine, Arc, Box, Mutex, Option, Router, SpeakerTarget (+21 more)
 
 ### Community 39 - "Community 39"
-Cohesion: 0.16
-Nodes (21): AdapterInfo, Address, Box, DeviceInfo, HealthStatus, Result, app(), main() (+13 more)
+Cohesion: 0.11
+Nodes (31): Item, Stream, AdapterInfo, Address, Box, DeviceInfo, HealthStatus, Item (+23 more)
 
 ### Community 40 - "Community 40"
-Cohesion: 0.26
-Nodes (12): Address, Path, String, TargetsState, OffsetRequest, Path, connect(), deselect_target() (+4 more)
+Cohesion: 0.24
+Nodes (11): Address, Path, TargetsState, OffsetRequest, Path, connect(), deselect_target(), disconnect() (+3 more)
 
 ### Community 41 - "Community 41"
-Cohesion: 0.23
-Nodes (13): AudioEngine, Arc, Option, SpeakerTarget, PresenceRequest, SpotifyBackend, apply_offset_live(), apply_selection_change() (+5 more)
+Cohesion: 0.17
+Nodes (19): RwLock, AppSettings, BackendEntry, cache(), current(), load(), normalise_url(), read_stored() (+11 more)
 
 ### Community 42 - "Community 42"
-Cohesion: 0.33
-Nodes (10): Item, Stream, Item, Stream, Event, Infallible, scan(), spotify_now_playing() (+2 more)
+Cohesion: 0.10
+Nodes (12): AppSettings, test_activate_keeps_exactly_one_backend_active(), test_activate_unknown_index_is_refused(), test_active_url_returns_the_active_entry_url(), test_add_accepts_a_name_freed_by_a_deletion(), test_add_rejects_a_duplicate_name(), test_app_settings_round_trips_through_serde(), test_remove_active_backend_leaves_no_active_backend() (+4 more)
 
 ### Community 43 - "Community 43"
 Cohesion: 0.29
@@ -257,25 +269,49 @@ Nodes (6): AdapterInfo, DeviceInfo, Vec, adapters(), devices(), sync_connected()
 Cohesion: 0.67
 Nodes (3): Option, PathBuf, state_store_path()
 
+### Community 46 - "Community 46"
+Cohesion: 0.26
+Nodes (16): Result, Router, ServerConfig, StatusCode, String, build_app(), get_config(), post_config() (+8 more)
+
+### Community 47 - "Community 47"
+Cohesion: 0.18
+Nodes (12): Option, String, AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ConfigRequest, DeviceInfo, NowPlaying (+4 more)
+
+### Community 48 - "Community 48"
+Cohesion: 0.56
+Nodes (9): Result, StatusCode, spotify_next(), spotify_pause(), spotify_play(), spotify_previous(), spotify_transport(), StatusCode (+1 more)
+
+### Community 49 - "Community 49"
+Cohesion: 0.33
+Nodes (6): Display, Error, Formatter, Result, NameError, validate_backend_name()
+
+### Community 50 - "Community 50"
+Cohesion: 0.33
+Nodes (5): Into, Self, HealthStatus, test_health_status_ok_sets_status_field(), test_health_status_round_trips_through_json()
+
+### Community 51 - "Community 51"
+Cohesion: 0.50
+Nodes (4): Vec, RoutingMode, SpeakerTarget, TargetsState
+
 ## Knowledge Gaps
-- **208 isolated node(s):** `android`, `IBinder`, `Int`, `Into`, `Self` (+203 more)
+- **221 isolated node(s):** `android`, `IBinder`, `Int`, `Into`, `Self` (+216 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **7 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Community 39` to `Android BT JNI & Errors`, `Community 21`, `Community 38`?**
-  _High betweenness centrality (0.114) - this node is a cross-community bridge._
+  _High betweenness centrality (0.103) - this node is a cross-community bridge._
 - **Why does `NowPlayingState` connect `UI App & State` to `Community 32`?**
-  _High betweenness centrality (0.080) - this node is a cross-community bridge._
+  _High betweenness centrality (0.071) - this node is a cross-community bridge._
 - **What connects `android`, `IBinder`, `Int` to the rest of the system?**
-  _210 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _223 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Android BT JNI & Errors` be split into smaller, more focused modules?**
-  _Cohesion score 0.0748040313549832 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06336996336996337 - nodes in this community are weakly interconnected._
 - **Should `Dioxus Framework Concepts` be split into smaller, more focused modules?**
   _Cohesion score 0.08262108262108261 - nodes in this community are weakly interconnected._
 - **Should `UI App & State` be split into smaller, more focused modules?**
-  _Cohesion score 0.09545454545454546 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09096045197740113 - nodes in this community are weakly interconnected._
 - **Should `TDD Workflow & Dev Standards` be split into smaller, more focused modules?**
   _Cohesion score 0.09486166007905138 - nodes in this community are weakly interconnected._

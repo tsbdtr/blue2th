@@ -1,7 +1,7 @@
 {
   "src/main.rs": {
-    "mtime": 1786646364.7368848,
-    "ast_hash": "e34b95e86b36c5ba06dc07f6aa9a2324",
+    "mtime": 1786744313.70954,
+    "ast_hash": "93e4706f27433917ca6ec6c26a40ae45",
     "semantic_hash": ""
   },
   "AGENTS.md": {
@@ -60,13 +60,13 @@
     "semantic_hash": ""
   },
   "locales/en.yaml": {
-    "mtime": 1786646364.735885,
-    "ast_hash": "391c1ccc96af40a7ba5d345b0d58500a",
+    "mtime": 1786744313.70954,
+    "ast_hash": "5384d6c42b7da1dc9ef4c28fc2e2ef00",
     "semantic_hash": ""
   },
   "locales/fr.yaml": {
-    "mtime": 1786646364.735885,
-    "ast_hash": "39eb8e630cff3ead95ac64e6c1c3a758",
+    "mtime": 1786744313.70954,
+    "ast_hash": "2a19d530cbc0c5b2f4c071f1df477feb",
     "semantic_hash": ""
   },
   "tdd/README.md": {
@@ -75,7 +75,7 @@
     "semantic_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346"
   },
   "tdd/feature.md": {
-    "mtime": 1786666979.6565673,
+    "mtime": 1786744356.012129,
     "ast_hash": "6f5a8051aefff5ca9f7435a8672a9122",
     "semantic_hash": ""
   },
@@ -85,8 +85,8 @@
     "semantic_hash": "e4f03da13eae6b381ded1e989ee3345f"
   },
   "src/lib.rs": {
-    "mtime": 1786646364.7368848,
-    "ast_hash": "38f5e8bbbd8eb0ca05a2078d9469944f",
+    "mtime": 1786744313.70954,
+    "ast_hash": "049c20f40382975580a7631dcc800328",
     "semantic_hash": ""
   },
   "tests/bluetooth_integration.rs": {
@@ -95,8 +95,8 @@
     "semantic_hash": ""
   },
   "tdd/REVIEW.md": {
-    "mtime": 1786666953.8198135,
-    "ast_hash": "d384181f9eaf61c571efa88ad29392e2",
+    "mtime": 1786744313.7105398,
+    "ast_hash": "132c7f1901dd52e7c53d01be2d552fb2",
     "semantic_hash": ""
   },
   "java/A2dpServiceListener.java": {
@@ -115,8 +115,8 @@
     "semantic_hash": ""
   },
   "blue2th-proto/src/lib.rs": {
-    "mtime": 1786646364.7351134,
-    "ast_hash": "9c70d20be2eedb653eb871b087a44fbb",
+    "mtime": 1786744313.70754,
+    "ast_hash": "dee860ec598b06d59952b6dbc2a6bdc2",
     "semantic_hash": ""
   },
   "blue2th-server/src/main.rs": {
@@ -125,13 +125,13 @@
     "semantic_hash": ""
   },
   "src/backend.rs": {
-    "mtime": 1786646364.735885,
-    "ast_hash": "31e592a97e8d834781d9a735307ecf23",
+    "mtime": 1786744313.70954,
+    "ast_hash": "6227342a9a5b303354563994ab71f58e",
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
-    "mtime": 1782340342.0193465,
-    "ast_hash": "5f9e333c219009642e6af9cb6725e972",
+    "mtime": 1786744313.70854,
+    "ast_hash": "682aa2704d9adccda7fce661d57519c8",
     "semantic_hash": ""
   },
   "blue2th-server/src/bluetooth.rs": {
@@ -145,8 +145,8 @@
     "semantic_hash": ""
   },
   "blue2th-server/src/lib.rs": {
-    "mtime": 1786666953.8188136,
-    "ast_hash": "eb8467b603508f87a800969811b0983d",
+    "mtime": 1786744313.70754,
+    "ast_hash": "d3d091e356b693d6116422b21d5d4c89",
     "semantic_hash": ""
   },
   "blue2th-server/tests/transport.rs": {
@@ -165,8 +165,8 @@
     "semantic_hash": ""
   },
   "blue2th-server/src/spotify.rs": {
-    "mtime": 1786646364.735885,
-    "ast_hash": "6461da4749b2d537c4fd347f0e9be99e",
+    "mtime": 1786744313.70854,
+    "ast_hash": "2723a8b43376c2ed304029e7e1969de0",
     "semantic_hash": ""
   },
   "blue2th-server/tests/spotify.rs": {
@@ -180,8 +180,8 @@
     "semantic_hash": ""
   },
   "blue2th-server/src/spotify_auth.rs": {
-    "mtime": 1786666953.8188136,
-    "ast_hash": "2c7a3f5a2c38b65797c2a0cda9a09cd3",
+    "mtime": 1786744313.70854,
+    "ast_hash": "9382bdf4c2f7709544bfa20fce3637cd",
     "semantic_hash": ""
   },
   "blue2th-server/src/watchdog.rs": {
@@ -222,6 +222,26 @@
   "build.rs": {
     "mtime": 1786646708.6408818,
     "ast_hash": "82a7a5387173c85c39b1e36709630e70",
+    "semantic_hash": ""
+  },
+  "blue2th-server/src/config.rs": {
+    "mtime": 1786744313.70754,
+    "ast_hash": "a838081ccc409455288d88163893e093",
+    "semantic_hash": ""
+  },
+  "blue2th-server/tests/config.rs": {
+    "mtime": 1786744313.70854,
+    "ast_hash": "7acc80724d4df2ada41fe68425ebf5de",
+    "semantic_hash": ""
+  },
+  "src/settings.rs": {
+    "mtime": 1786744313.70954,
+    "ast_hash": "62e54be3962144440943104e9cf0ebbf",
+    "semantic_hash": ""
+  },
+  "tests/settings.rs": {
+    "mtime": 1786744313.7105398,
+    "ast_hash": "84c89f52eb99a44c72a8c024171c2450",
     "semantic_hash": ""
   }
 }
