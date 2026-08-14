@@ -1233,3 +1233,189 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     border-color: #4b5563;
     color: #e6ebf5;
 }
+
+/* ── Settings (phase 6.2) ────────────────────────────────────────────────── */
+
+/* The status encart is now a control: it names the active backend and drops
+   down the quick switch. `relative` anchors that menu. */
+.backend-switch {
+    position: relative;
+}
+.backend-card {
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.backend-card:hover {
+    border-color: #4b5563;
+    background: #232733;
+}
+.backend-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 40;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    gap: 2px;
+    border: 1px solid #2f3a4d;
+    border-radius: 10px;
+    background: #171b26;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+.backend-menu-item {
+    padding: 9px 12px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: #e6ebf5;
+    font-size: 0.9rem;
+    text-align: left;
+    cursor: pointer;
+}
+.backend-menu-item:hover { background: #232a38; }
+.backend-menu-item.active { color: #22c55e; }
+
+/* Gear closing the status row, pushed against the right edge. */
+.settings-button {
+    flex: 0 0 auto;
+    margin: 0 0 8px auto;
+    width: 34px;
+    height: 34px;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    background: #1e222d;
+    color: #9ca3af;
+    font-size: 1rem;
+    cursor: pointer;
+}
+.settings-button:hover { border-color: #4b5563; color: #e6ebf5; }
+
+.settings-page { padding-bottom: 24px; }
+.settings-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0 18px;
+}
+.settings-back {
+    width: 34px;
+    height: 34px;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    background: #1e222d;
+    color: #e6ebf5;
+    font-size: 1.2rem;
+    cursor: pointer;
+}
+.settings-title { font-size: 1.15rem; font-weight: 600; }
+.settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+    border: 1px solid #2c3040;
+    border-radius: 12px;
+    background: #171b26;
+}
+.settings-section-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #9aa4b8;
+}
+.settings-empty, .settings-notice {
+    font-size: 0.85rem;
+    color: #9aa4b8;
+}
+
+.backend-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #2f3a4d;
+    border-radius: 10px;
+    background: #1b2130;
+}
+.backend-row.active { border-color: #22c55e; }
+.backend-row-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.backend-row-name { font-size: 0.95rem; color: #e6ebf5; }
+.backend-row-url {
+    font-size: 0.75rem;
+    color: #8b9cc8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.backend-row-action {
+    flex: 0 0 auto;
+    padding: 7px 12px;
+    border: 1px solid #2f3a4d;
+    border-radius: 8px;
+    background: #232a38;
+    color: #e6ebf5;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.backend-row-action:disabled {
+    color: #22c55e;
+    border-color: #22c55e;
+    cursor: default;
+}
+.backend-row-delete {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #9aa4b8;
+    cursor: pointer;
+}
+.backend-row-delete:hover { color: #ef4444; }
+
+.backend-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+}
+.backend-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid #2f3a4d;
+    border-radius: 8px;
+    background: #10141d;
+    color: #e6ebf5;
+    font-size: 0.9rem;
+}
+.backend-form-actions { display: flex; gap: 8px; }
+.backend-test, .backend-add {
+    flex: 1 1 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.backend-test {
+    border: 1px solid #2f3a4d;
+    background: transparent;
+    color: #9aa4b8;
+}
+.backend-test:hover { border-color: #4b5563; color: #e6ebf5; }
+.backend-add {
+    border: none;
+    background: #2563eb;
+    color: #ffffff;
+}
+.backend-add:hover { background: #3b76f0; }

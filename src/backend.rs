@@ -20,9 +20,9 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    AuthCallbackRequest, AuthUrlResponse, ClientPresence, DeviceInfo, HealthStatus, NowPlaying,
-    OffsetRequest, PlaybackState, PresenceRequest, ServerConfig, SpotifyAuthState, SpotifyState,
-    TargetsState, VolumeRequest,
+    AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo, HealthStatus,
+    NowPlaying, OffsetRequest, PlaybackState, PresenceRequest, ServerConfig, SpotifyAuthState,
+    SpotifyState, TargetsState, VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -62,26 +62,63 @@ pub fn backend_base_url() -> Result<String, BackendError> {
 }
 
 /// Resolve the base URL from an explicit settings snapshot (pure, testable).
-fn base_url_from(_settings: &AppSettings) -> Result<String, BackendError> {
-    todo!("phase 6.2: resolve the active backend URL, or fail with NO_BACKEND_CONFIGURED")
+fn base_url_from(settings: &AppSettings) -> Result<String, BackendError> {
+    settings
+        .active_url()
+        .ok_or_else(|| BackendError::new(NO_BACKEND_CONFIGURED))
 }
 
 /// Build the `{base}/config` URL, tolerating a trailing slash on the base.
-fn config_url(_base: &str) -> String {
-    todo!("phase 6.2: build the /config URL")
+fn config_url(base: &str) -> String {
+    format!("{}/config", base.trim_end_matches('/'))
 }
 
 /// `GET {base}/config` — the name the active backend currently holds.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn get_config() -> Result<ServerConfig, BackendError> {
-    todo!("phase 6.2: read the backend's configured name")
+    let url = config_url(&backend_base_url()?);
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
+        .json::<ServerConfig>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// `POST {base}/config` — push the app's name for the active backend, which
 /// adopts it as its Spotify Connect device name.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn set_config(_name: &str) -> Result<ServerConfig, BackendError> {
-    todo!("phase 6.2: push the configured name to the active backend")
+pub async fn set_config(name: &str) -> Result<ServerConfig, BackendError> {
+    let url = config_url(&backend_base_url()?);
+    let response = reqwest::Client::new()
+        .post(&url)
+        .json(&ConfigRequest {
+            name: name.to_string(),
+        })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
+        .json::<ServerConfig>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
+}
+
+/// `POST {base}/spotify/pause` against an explicit address — used to quieten the
+/// backend being left behind, which is no longer the one `backend_base_url()`
+/// resolves to.
+async fn pause_at(base: &str) -> Result<(), BackendError> {
+    let url = format!("{}/spotify/pause", base.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response).await?;
+    Ok(())
 }
 
 /// Switch the active backend: pause the previous one (best-effort), repoint the
@@ -93,17 +130,52 @@ pub async fn set_config(_name: &str) -> Result<ServerConfig, BackendError> {
 /// the app must never be stuck on a dead backend.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn activate_backend(
-    _settings: &mut AppSettings,
-    _index: usize,
+    settings: &mut AppSettings,
+    index: usize,
 ) -> Result<(), BackendError> {
-    todo!("phase 6.2: pause the previous backend, repoint, push the name")
+    // Captured before the switch: afterwards this address is no longer the one
+    // the app resolves, and it is the one that must be quietened.
+    let previous = settings.active_url();
+
+    // Switch locally first, and persist: a slow or dead backend must never hold
+    // the app on a target the user has left.
+    settings
+        .activate(index)
+        .map_err(|e| BackendError::new(e.to_string()))?;
+    // Owned copy: the cache keeps its own settings beyond this borrow.
+    crate::settings::set_current(settings.clone());
+
+    // Both remote steps are best-effort and independent; the last failure is
+    // surfaced so the toast says something, but neither undoes the switch.
+    let mut failure = None;
+    if let Some(base) = previous {
+        if let Err(e) = pause_at(&base).await {
+            failure = Some(e);
+        }
+    }
+    if let Some(name) = settings.active_backend().map(|b| b.name.clone()) {
+        if let Err(e) = set_config(&name).await {
+            failure = Some(e);
+        }
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// `GET {base}/health` against an explicit address — the settings page's `Test`
 /// action, which pings a backend that is not (yet) the active one.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn test_backend(_url: &str) -> Result<HealthStatus, BackendError> {
-    todo!("phase 6.2: ping an arbitrary backend address")
+pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
+    let response = reqwest::get(&health_url(url))
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
+        .json::<HealthStatus>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// Build the `/health` URL from a base, tolerating a trailing slash.
@@ -643,6 +715,14 @@ fn sse_device_payload(block: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The settings cache is process-wide, so a test that replaces it and one
+    /// that asserts "nothing is configured" cannot run at the same time: the
+    /// first one's active backend leaks into the second one's assertion. Tests
+    /// touching the cache take this lock and leave it empty behind them.
+    /// Async-aware on purpose: these tests hold the guard across `await`s, which
+    /// a `std::sync::Mutex` must never do.
+    static SETTINGS_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn test_health_url_appends_path() {
         assert_eq!(
@@ -707,6 +787,9 @@ mod tests {
     // configured" error rather than performing a request (and timing out).
     #[tokio::test]
     async fn test_ping_backend_without_a_configured_backend_fails_fast() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        crate::settings::set_current(AppSettings::default());
+
         let started = std::time::Instant::now();
         let error = ping_backend()
             .await
@@ -741,6 +824,8 @@ mod tests {
     // surfaced, never blocking: the app must never be stuck on a dead backend.
     #[tokio::test]
     async fn test_activate_backend_switches_locally_even_when_the_push_fails() {
+        let _guard = SETTINGS_GUARD.lock().await;
+
         let mut settings = AppSettings::default();
         // Port 1 is never listening: both the pause and the push are refused.
         settings
@@ -761,6 +846,9 @@ mod tests {
             Some("Bureau"),
             "the switch must still happen locally"
         );
+
+        // Leave the process-wide cache as we found it, as the guard's contract says.
+        crate::settings::set_current(AppSettings::default());
     }
 
     #[test]

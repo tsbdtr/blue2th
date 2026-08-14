@@ -114,8 +114,8 @@ pub fn should_spawn(current: SpotifyStatus) -> bool {
 /// `--name` is bound at spawn, so a running backend has to be respawned for the
 /// Connect device to come back under the new name; a stopped one simply picks
 /// the new name up at its next start. Pure.
-pub fn should_restart_for_rename(_current: SpotifyStatus, _running: &str, _wanted: &str) -> bool {
-    todo!("phase 6.2: decide whether a rename requires respawning librespot")
+pub fn should_restart_for_rename(current: SpotifyStatus, running: &str, wanted: &str) -> bool {
+    matches!(current, SpotifyStatus::Running) && running != wanted
 }
 
 /// Owns the `librespot` subprocess lifecycle. Held behind the router's
@@ -143,25 +143,33 @@ impl SpotifyBackend {
 
     /// A backend advertising an explicit Connect device name (phase 6.2: the
     /// name the app configured, restored from the server's own store).
-    pub fn with_name(_device_name: &str) -> Self {
-        todo!("phase 6.2: build a backend around the configured device name")
+    pub fn with_name(device_name: &str) -> Self {
+        Self {
+            child: None,
+            device_name: device_name.to_string(),
+            sink: None,
+        }
     }
 
     /// Adopt a new Connect device name. The caller restarts the subprocess when
     /// [`should_restart_for_rename`] says so — `--name` is fixed at spawn.
-    pub fn set_device_name(&mut self, _device_name: &str) {
-        todo!("phase 6.2: adopt the configured device name")
+    pub fn set_device_name(&mut self, device_name: &str) {
+        self.device_name = device_name.to_string();
     }
 
     /// The Connect device name currently advertised.
     pub fn device_name(&self) -> &str {
-        todo!("phase 6.2: expose the advertised device name")
+        &self.device_name
     }
 
     /// The argv the next spawn would use for `speakers` — the seam that pins
     /// `librespot --name <configured name>` without spawning anything. Pure.
-    pub fn librespot_args(&self, _speakers: &[SpeakerTarget]) -> Vec<String> {
-        todo!("phase 6.2: build the argv from the configured device name")
+    pub fn librespot_args(&self, speakers: &[SpeakerTarget]) -> Vec<String> {
+        build_librespot_args(
+            &self.device_name,
+            &spotify_target_sink(speakers),
+            &librespot_cache_dir(),
+        )
     }
 
     /// The sink the running subprocess feeds, or `None` while stopped.
@@ -200,7 +208,9 @@ impl SpotifyBackend {
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
-        let args = build_librespot_args(&self.device_name, &sink, &librespot_cache_dir());
+        // The argv comes from the same seam the tests pin, so the spawned
+        // process can never drift from `--name <configured name>`.
+        let args = self.librespot_args(speakers);
         let child = std::process::Command::new("librespot")
             .args(&args)
             .spawn()

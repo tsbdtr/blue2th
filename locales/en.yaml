@@ -3,7 +3,6 @@ scan:
   scanning: "Loading…"
 
 server:
-  status: "Server status"
   online: "Backend connected"
   offline: "Backend unreachable"
 
@@ -76,3 +75,15 @@ settings:
   volume: "Volume (%{volume} %)"
   section_danger: "Danger zone"
   forget: "Forget device"
+settings:
+  title: "Settings"
+  backends: "Backends"
+  no_backend_yet: "No backend configured yet"
+  active: "Active"
+  activate: "Use"
+  delete: "Delete"
+  add: "Add"
+  test: "Test"
+  test_ok: "Backend answered"
+  name_placeholder: "Name (e.g. Salon)"
+  url_placeholder: "http://192.168.1.10:4000"

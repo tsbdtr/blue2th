@@ -27,40 +27,53 @@ fn build_app() -> axum::Router {
 }
 
 /// `GET /config` against `app`, returning the decoded payload.
-async fn get_config(app: axum::Router) -> ServerConfig {
+///
+/// Fallible rather than asserting: `clippy`'s `allow-expect-in-tests` does not
+/// reach a free helper in an integration-test binary, and the `#[tokio::test]`
+/// functions are the right place to assert anyway — a decode failure then says
+/// which step broke.
+async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
     let request = Request::builder()
         .uri("/config")
         .body(Body::empty())
-        .expect("build request");
-    let response = app.oneshot(request).await.expect("router response");
-    assert_eq!(response.status(), StatusCode::OK);
+        .map_err(|e| format!("build request: {e}"))?;
+    let response = app
+        .oneshot(request)
+        .await
+        .map_err(|e| format!("router response: {e}"))?;
+    if response.status() != StatusCode::OK {
+        return Err(format!("GET /config answered {}", response.status()));
+    }
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).expect("parse ServerConfig from /config")
+        .map_err(|e| format!("read body: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parse ServerConfig: {e}"))
 }
 
 /// `POST /config` with a raw JSON body, returning the status and body text.
-async fn post_config(app: axum::Router, body: &str) -> (StatusCode, String) {
+async fn post_config(app: axum::Router, body: &str) -> Result<(StatusCode, String), String> {
     let request = Request::builder()
         .method("POST")
         .uri("/config")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
-        .expect("build request");
-    let response = app.oneshot(request).await.expect("router response");
+        .map_err(|e| format!("build request: {e}"))?;
+    let response = app
+        .oneshot(request)
+        .await
+        .map_err(|e| format!("router response: {e}"))?;
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read body");
-    (status, String::from_utf8_lossy(&bytes).to_string())
+        .map_err(|e| format!("read body: {e}"))?;
+    Ok((status, String::from_utf8_lossy(&bytes).to_string()))
 }
 
 // Criterion: `GET /config` returns the stored name; a fresh server returns the
 // default `blue2th-PC`.
 #[tokio::test]
 async fn test_get_config_on_a_fresh_router_returns_the_default_name() {
-    let config = get_config(build_app()).await;
+    let config = get_config(build_app()).await.expect("GET /config");
     assert_eq!(config.name, DEFAULT_BACKEND_NAME);
 }
 
@@ -68,7 +81,9 @@ async fn test_get_config_on_a_fresh_router_returns_the_default_name() {
 // re-validates rather than trusting the client).
 #[tokio::test]
 async fn test_post_config_rejects_a_blank_name_with_bad_request() {
-    let (status, _) = post_config(build_app(), r#"{"name":"   "}"#).await;
+    let (status, _) = post_config(build_app(), r#"{"name":"   "}"#)
+        .await
+        .expect("POST /config");
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
@@ -83,7 +98,7 @@ async fn test_post_config_rejects_a_blank_name_with_bad_request() {
 async fn test_post_config_rejects_an_invalid_name_with_a_message_naming_the_rule() {
     for name in ["2salon", "-salon", "salon tv", "s\u{e9}jour", "salon!"] {
         let body = serde_json::json!({ "name": name }).to_string();
-        let (status, message) = post_config(build_app(), &body).await;
+        let (status, message) = post_config(build_app(), &body).await.expect("POST /config");
         assert_eq!(
             status,
             StatusCode::BAD_REQUEST,
@@ -99,11 +114,9 @@ async fn test_post_config_rejects_an_invalid_name_with_a_message_naming_the_rule
 // Criterion: the length cap is enforced server-side too.
 #[tokio::test]
 async fn test_post_config_rejects_a_name_longer_than_the_cap() {
-    let too_long: String = std::iter::repeat('a')
-        .take(MAX_BACKEND_NAME_LEN + 1)
-        .collect();
+    let too_long: String = "a".repeat(MAX_BACKEND_NAME_LEN + 1);
     let body = serde_json::json!({ "name": too_long }).to_string();
-    let (status, _) = post_config(build_app(), &body).await;
+    let (status, _) = post_config(build_app(), &body).await.expect("POST /config");
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -113,10 +126,12 @@ async fn test_post_config_rejects_a_name_longer_than_the_cap() {
 async fn test_post_config_stores_a_trimmed_valid_name_and_get_reflects_it() {
     // Cloned so both requests hit the same router state (oneshot consumes it).
     let app = build_app();
-    let (status, _) = post_config(app.clone(), r#"{"name":"  Salon  "}"#).await;
+    let (status, _) = post_config(app.clone(), r#"{"name":"  Salon  "}"#)
+        .await
+        .expect("POST /config");
     assert_eq!(status, StatusCode::OK, "a valid name must be accepted");
 
-    let config = get_config(app).await;
+    let config = get_config(app).await.expect("GET /config");
     assert_eq!(config.name, "Salon");
 }
 
@@ -126,7 +141,9 @@ async fn test_post_config_stores_a_trimmed_valid_name_and_get_reflects_it() {
 #[tokio::test]
 async fn test_configured_name_becomes_the_spotify_connect_device_name() {
     let app = build_app();
-    let (status, _) = post_config(app.clone(), r#"{"name":"Salon"}"#).await;
+    let (status, _) = post_config(app.clone(), r#"{"name":"Salon"}"#)
+        .await
+        .expect("POST /config");
     assert_eq!(status, StatusCode::OK);
 
     let request = Request::builder()
@@ -150,7 +167,9 @@ async fn test_configured_name_becomes_the_spotify_connect_device_name() {
 // status is pinned exactly so an unwired route (404) still fails this test.
 #[tokio::test]
 async fn test_post_config_rejects_a_malformed_body() {
-    let (status, _) = post_config(build_app(), "{ not valid json }").await;
+    let (status, _) = post_config(build_app(), "{ not valid json }")
+        .await
+        .expect("POST /config");
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,

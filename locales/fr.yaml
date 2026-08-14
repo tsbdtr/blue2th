@@ -3,7 +3,6 @@ scan:
   scanning: "Chargement en cours…"
 
 server:
-  status: "État serveur"
   online: "Backend connecté"
   offline: "Backend injoignable"
 
@@ -76,3 +75,15 @@ settings:
   volume: "Volume (%{volume} %)"
   section_danger: "Zone de danger"
   forget: "Oublier l'appareil"
+settings:
+  title: "Réglages"
+  backends: "Backends"
+  no_backend_yet: "Aucune backend configurée"
+  active: "Active"
+  activate: "Utiliser"
+  delete: "Supprimer"
+  add: "Ajouter"
+  test: "Tester"
+  test_ok: "La backend a répondu"
+  name_placeholder: "Nom (ex. Salon)"
+  url_placeholder: "http://192.168.1.10:4000"

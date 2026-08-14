@@ -24,16 +24,24 @@ use blue2th::settings::{self, AppSettings, BackendEntry, SettingsError, NO_BACKE
 use blue2th_proto::{NameError, MAX_BACKEND_NAME_LEN};
 
 /// A settings blob holding two backends with the first one active.
+///
+/// Built by hand rather than through `add`/`activate`: a fixture must not depend
+/// on the very functions under test, and `clippy`'s `allow-expect-in-tests` does
+/// not reach a free helper in an integration-test binary.
 fn two_backends() -> AppSettings {
-    let mut settings = AppSettings::default();
-    settings
-        .add("Salon", "http://192.168.1.107:4000")
-        .expect("add Salon");
-    settings
-        .add("Bureau", "http://192.168.1.42:4000")
-        .expect("add Bureau");
-    settings.activate(0).expect("activate Salon");
-    settings
+    AppSettings {
+        backends: vec![
+            BackendEntry {
+                name: "Salon".to_string(),
+                url: "http://192.168.1.107:4000".to_string(),
+            },
+            BackendEntry {
+                name: "Bureau".to_string(),
+                url: "http://192.168.1.42:4000".to_string(),
+            },
+        ],
+        active: Some(0),
+    }
 }
 
 // Criterion: `AppSettings` (backends + active selection) round-trips through serde.
@@ -131,9 +139,8 @@ fn test_add_applies_the_shared_proto_name_rule() {
 
     for name in ["Salon", "blue2th-PC", "salon_tv", "pc2"] {
         let mut settings = AppSettings::default();
-        settings
-            .add(name, "http://192.168.1.107:4000")
-            .unwrap_or_else(|e| panic!("{name} must be accepted, got {e:?}"));
+        let outcome = settings.add(name, "http://192.168.1.107:4000");
+        assert!(outcome.is_ok(), "{name} must be accepted, got {outcome:?}");
     }
 }
 
@@ -141,9 +148,7 @@ fn test_add_applies_the_shared_proto_name_rule() {
 // carries the reason so the UI can name the rule.
 #[test]
 fn test_add_rejects_a_name_longer_than_the_cap() {
-    let too_long: String = std::iter::repeat('a')
-        .take(MAX_BACKEND_NAME_LEN + 1)
-        .collect();
+    let too_long: String = "a".repeat(MAX_BACKEND_NAME_LEN + 1);
     let mut settings = AppSettings::default();
     assert_eq!(
         settings.add(&too_long, "http://192.168.1.107:4000"),
@@ -341,7 +346,11 @@ fn test_compile_time_backend_url_env_var_is_gone_from_the_codebase() {
 
     for dir in ["src", "tests", "blue2th-server/src", "blue2th-proto/src"] {
         let dir = root.join(dir);
-        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}"));
+        // Mapped to a String so the failure names the directory without a
+        // `panic!`, which clippy forbids even in tests here.
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("read {dir:?}: {e}"))
+            .expect("the scanned source directories must be readable");
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {

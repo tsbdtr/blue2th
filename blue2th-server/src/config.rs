@@ -10,7 +10,7 @@
 //! the client. Following the `state_store` pattern, `new()` is disk-free so tests
 //! never read or write the real `~/.local/state/blue2th/`.
 
-use blue2th_proto::NameError;
+use blue2th_proto::{NameError, ServerConfig, DEFAULT_BACKEND_NAME};
 
 /// File holding the configured name under the app-scoped state directory.
 const NAME_STORE_FILE: &str = "name.json";
@@ -29,28 +29,65 @@ pub struct ServerName {
     store: Option<std::path::PathBuf>,
 }
 
+/// Read the persisted name. A missing, unreadable, malformed — or invalid —
+/// blob simply means "never configured": a broken file must never prevent a
+/// start, and must never resurrect a name the shared rule would refuse.
+fn load_name(path: Option<&std::path::Path>) -> Option<String> {
+    let raw = std::fs::read_to_string(path?).ok()?;
+    let config: ServerConfig = serde_json::from_str(&raw).ok()?;
+    blue2th_proto::validate_backend_name(&config.name).ok()
+}
+
+/// Persist the configured name. Failures are reported to the caller, which logs
+/// them: losing persistence must never turn a rename into an error.
+fn save_name(path: &std::path::Path, name: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string(&ServerConfig {
+        // Owned copy: `ServerConfig` is a plain DTO built for serialization.
+        name: name.to_string(),
+    })
+    .map_err(std::io::Error::other)?;
+    std::fs::write(path, body)
+}
+
 impl ServerName {
     /// The default name, with no store: performs no I/O (used by tests and by
     /// the store-free router constructors).
     pub fn new() -> Self {
-        todo!("phase 6.2: a disk-free ServerName holding the default name")
+        Self {
+            name: DEFAULT_BACKEND_NAME.to_string(),
+            store: None,
+        }
     }
 
     /// A name backed by a store, reloaded on construction so a restart keeps the
     /// configured name. A missing or malformed store yields the default.
-    pub fn with_store(_store: Option<std::path::PathBuf>) -> Self {
-        todo!("phase 6.2: load the persisted name, falling back to the default")
+    pub fn with_store(store: Option<std::path::PathBuf>) -> Self {
+        Self {
+            name: load_name(store.as_deref()).unwrap_or_else(|| DEFAULT_BACKEND_NAME.to_string()),
+            store,
+        }
     }
 
     /// The current name.
     pub fn name(&self) -> &str {
-        todo!("phase 6.2: expose the configured name")
+        &self.name
     }
 
     /// Validate (shared proto rule), trim, store and persist a new name,
     /// returning what was actually stored.
-    pub fn set_name(&mut self, _raw: &str) -> Result<String, NameError> {
-        todo!("phase 6.2: re-validate, store and persist the pushed name")
+    pub fn set_name(&mut self, raw: &str) -> Result<String, NameError> {
+        let name = blue2th_proto::validate_backend_name(raw)?;
+        // Owned copy: the validated value is both stored and handed back.
+        self.name = name.clone();
+        if let Some(path) = self.store.as_deref() {
+            if let Err(e) = save_name(path, &self.name) {
+                tracing::warn!("could not persist the backend name: {e}");
+            }
+        }
+        Ok(name)
     }
 }
 
@@ -116,9 +153,7 @@ mod tests {
         assert_eq!(config.set_name("salon tv"), Err(NameError::BadChar));
         assert_eq!(config.set_name("séjour"), Err(NameError::BadChar));
 
-        let too_long: String = std::iter::repeat('a')
-            .take(MAX_BACKEND_NAME_LEN + 1)
-            .collect();
+        let too_long: String = "a".repeat(MAX_BACKEND_NAME_LEN + 1);
         assert_eq!(config.set_name(&too_long), Err(NameError::TooLong));
         assert_eq!(config.name(), DEFAULT_BACKEND_NAME);
     }

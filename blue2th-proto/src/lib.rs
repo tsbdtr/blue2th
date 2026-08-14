@@ -264,8 +264,19 @@ pub enum NameError {
 }
 
 impl std::fmt::Display for NameError {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!("phase 6.2: spell out the naming rule for each rejection reason")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NameError::Empty => write!(f, "the name cannot be empty"),
+            NameError::TooLong => write!(
+                f,
+                "the name cannot exceed {MAX_BACKEND_NAME_LEN} characters"
+            ),
+            NameError::BadStart => write!(f, "the name must start with a letter (a-z, A-Z)"),
+            NameError::BadChar => write!(
+                f,
+                "the name may only hold letters, digits, '-' and '_' (no space or accent)"
+            ),
+        }
     }
 }
 
@@ -277,8 +288,25 @@ impl std::error::Error for NameError {}
 /// or `_`, at most [`MAX_BACKEND_NAME_LEN`] characters. It lives here precisely
 /// because the app and the server must apply the *same* rule — duplicating it
 /// would let them drift, and the server cannot trust the client.
-pub fn validate_backend_name(_raw: &str) -> Result<String, NameError> {
-    todo!("phase 6.2: validate and trim a backend name")
+pub fn validate_backend_name(raw: &str) -> Result<String, NameError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(NameError::Empty);
+    }
+    if name.chars().count() > MAX_BACKEND_NAME_LEN {
+        return Err(NameError::TooLong);
+    }
+    let mut chars = name.chars();
+    // Checked before the character scan so `2salon` reports the start rule
+    // rather than a generic "bad character".
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() => {},
+        _ => return Err(NameError::BadStart),
+    }
+    if chars.any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')) {
+        return Err(NameError::BadChar);
+    }
+    Ok(name.to_string())
 }
 
 /// The name a backend advertises, returned by `GET /config`.
@@ -712,12 +740,10 @@ mod tests {
     // characters is accepted, one more is refused.
     #[test]
     fn test_validate_backend_name_enforces_the_length_cap() {
-        let at_cap: String = std::iter::repeat('a').take(MAX_BACKEND_NAME_LEN).collect();
+        let at_cap: String = "a".repeat(MAX_BACKEND_NAME_LEN);
         assert_eq!(validate_backend_name(&at_cap), Ok(at_cap.clone()));
 
-        let over_cap: String = std::iter::repeat('a')
-            .take(MAX_BACKEND_NAME_LEN + 1)
-            .collect();
+        let over_cap: String = "a".repeat(MAX_BACKEND_NAME_LEN + 1);
         assert_eq!(validate_backend_name(&over_cap), Err(NameError::TooLong));
     }
 

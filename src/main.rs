@@ -63,6 +63,12 @@ const DEEP_LINK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_m
 #[derive(Clone, Copy)]
 struct BackendOnline(Signal<bool>);
 
+/// The app settings (known backends + the active one), shared so the status
+/// encart, its quick-switch dropdown and the settings page all read and write the
+/// same list. Seeded by `App` from the persisted blob.
+#[derive(Clone, Copy)]
+struct SettingsState(Signal<settings::AppSettings>);
+
 /// How often the app reconciles the Spotify backend and OAuth states.
 const SPOTIFY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -177,6 +183,8 @@ enum Route {
     Home {},
     #[route("/device/:name")]
     DeviceSettings { name: String },
+    #[route("/settings")]
+    AppSettingsPage {},
 }
 
 fn main() {
@@ -219,6 +227,11 @@ fn App() -> Element {
             lifecycle::arm(tokio::runtime::Handle::current());
         });
     });
+
+    // Settings are read once from the phone's storage and shared from the root:
+    // every screen must agree on which backend is active.
+    let app_settings: Signal<settings::AppSettings> = use_signal(settings::current);
+    use_context_provider(|| SettingsState(app_settings));
 
     // Spotify state lives at the root: the polling tasks below must survive
     // navigation and keep feeding the card, the dialog and the transport bar.
@@ -995,30 +1008,11 @@ fn BackendScan() -> Element {
     };
     let empty_label = rust_i18n::t!("device.empty");
 
-    // Server-reachability encart (label + green/red dot), paired with the Spotify
-    // toggle in a single status row above the scan button.
-    let server_label = rust_i18n::t!("server.status");
-    let server_tooltip = if backend_online() {
-        rust_i18n::t!("server.online")
-    } else {
-        rust_i18n::t!("server.offline")
-    };
-
     rsx! {
         div { class: "status-row",
-            div { class: "backend-status",
-                span { class: "backend-status-label", "{server_label}" }
-                span { class: "backend-status-sep" }
-                span {
-                    class: "backend-status-dot",
-                    title: "{server_tooltip}",
-                    style: format!(
-                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
-                        if backend_online() { "#22c55e" } else { "#ef4444" },
-                    ),
-                }
-            }
+            BackendStatus { error }
             SpotifySource { targets, error }
+            SettingsButton {}
         }
         SpotifyLoginDialog { error }
         button {
@@ -1595,6 +1589,279 @@ fn optimistic_now_playing_state(
         backend::SpotifyAction::Play => Some(blue2th_proto::NowPlayingState::Playing),
         backend::SpotifyAction::Pause => Some(blue2th_proto::NowPlayingState::Paused),
         backend::SpotifyAction::Next | backend::SpotifyAction::Previous => None,
+    }
+}
+
+/// The backend status encart: the active backend's name (or `-`), a reachability
+/// dot, and — on tap — the quick-switch list of configured backends.
+///
+/// The switch goes through `backend::activate_backend`, the very same path the
+/// settings page uses, so the shortcut can never drift from the page.
+#[component]
+fn BackendStatus(error: Signal<Option<String>>) -> Element {
+    use_locale();
+    let backend_online = use_context::<BackendOnline>().0;
+    let mut app_settings = use_context::<SettingsState>().0;
+    let navigator = use_navigator();
+    let mut open = use_signal(|| false);
+
+    let label = app_settings.read().active_label();
+    let tooltip = if backend_online() {
+        rust_i18n::t!("server.online")
+    } else {
+        rust_i18n::t!("server.offline")
+    };
+    let entries: Vec<(usize, String, bool)> = app_settings
+        .read()
+        .backends
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (i, b.name.clone(), Some(i) == app_settings.read().active))
+        .collect();
+
+    rsx! {
+        div { class: "backend-switch",
+            div {
+                class: "backend-status backend-card",
+                title: "{tooltip}",
+                onclick: move |_| {
+                    let now = open();
+                    *open.write() = !now;
+                },
+                span { class: "backend-status-label", "{label}" }
+                span { class: "backend-status-sep" }
+                span {
+                    class: "backend-status-dot",
+                    style: format!(
+                        "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
+                        if backend_online() { "#22c55e" } else { "#ef4444" },
+                    ),
+                }
+            }
+            if open() {
+                div { class: "backend-menu",
+                    if entries.is_empty() {
+                        // Nothing to switch to: point at the place that fixes it
+                        // rather than showing an empty menu.
+                        button {
+                            class: "backend-menu-item",
+                            onclick: move |_| {
+                                *open.write() = false;
+                                navigator.push(Route::AppSettingsPage {});
+                            },
+                            "{rust_i18n::t!(\"settings.no_backend_yet\")}"
+                        }
+                    }
+                    for (index, name, active) in entries {
+                        button {
+                            class: if active { "backend-menu-item active" } else { "backend-menu-item" },
+                            onclick: move |_| {
+                                *open.write() = false;
+                                if active {
+                                    return;
+                                }
+                                let mut error = error;
+                                spawn(async move {
+                                    // Owned copy: the switch is applied to it and
+                                    // written back, never to a borrowed signal
+                                    // across the await.
+                                    let mut next = app_settings.peek().clone();
+                                    let outcome = backend::activate_backend(&mut next, index).await;
+                                    *app_settings.write() = next;
+                                    if let Err(e) = outcome {
+                                        *error.write() = Some(e.to_string());
+                                    }
+                                });
+                            },
+                            "{name}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Gear control closing the status row, routing to the settings page.
+#[component]
+fn SettingsButton() -> Element {
+    use_locale();
+    let navigator = use_navigator();
+    let label = rust_i18n::t!("settings.title");
+    rsx! {
+        button {
+            class: "settings-button",
+            title: "{label}",
+            aria_label: "{label}",
+            onclick: move |_| {
+                navigator.push(Route::AppSettingsPage {});
+            },
+            "⚙"
+        }
+    }
+}
+
+/// The app settings page (phase 6.2). Built to grow: this slice ships only the
+/// **Backends** section — add, test, activate and delete the backends the app
+/// knows, one active at a time.
+#[component]
+fn AppSettingsPage() -> Element {
+    use_locale();
+    let navigator = use_navigator();
+    let mut app_settings = use_context::<SettingsState>().0;
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+    let notice: Signal<Option<String>> = use_signal(|| None);
+    let mut name_draft = use_signal(String::new);
+    let mut url_draft = use_signal(String::new);
+
+    let entries: Vec<(usize, String, String, bool)> = app_settings
+        .read()
+        .backends
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            (
+                i,
+                b.name.clone(),
+                b.url.clone(),
+                Some(i) == app_settings.read().active,
+            )
+        })
+        .collect();
+
+    rsx! {
+        div { class: "settings-page",
+            div { class: "settings-header",
+                button {
+                    class: "settings-back",
+                    onclick: move |_| { navigator.go_back(); },
+                    "‹"
+                }
+                span { class: "settings-title", "{rust_i18n::t!(\"settings.title\")}" }
+            }
+
+            div { class: "settings-section",
+                div { class: "settings-section-title", "{rust_i18n::t!(\"settings.backends\")}" }
+
+                if entries.is_empty() {
+                    div { class: "settings-empty", "{rust_i18n::t!(\"settings.no_backend_yet\")}" }
+                }
+                for (index, name, url, active) in entries {
+                    div { class: if active { "backend-row active" } else { "backend-row" },
+                        div { class: "backend-row-meta",
+                            span { class: "backend-row-name", "{name}" }
+                            span { class: "backend-row-url", "{url}" }
+                        }
+                        button {
+                            class: "backend-row-action",
+                            disabled: active,
+                            onclick: move |_| {
+                                let mut error = error;
+                                spawn(async move {
+                                    // Owned copy: mutated by the switch, then
+                                    // written back to the shared signal.
+                                    let mut next = app_settings.peek().clone();
+                                    let outcome = backend::activate_backend(&mut next, index).await;
+                                    *app_settings.write() = next;
+                                    if let Err(e) = outcome {
+                                        *error.write() = Some(e.to_string());
+                                    }
+                                });
+                            },
+                            if active {
+                                "{rust_i18n::t!(\"settings.active\")}"
+                            } else {
+                                "{rust_i18n::t!(\"settings.activate\")}"
+                            }
+                        }
+                        button {
+                            class: "backend-row-delete",
+                            title: "{rust_i18n::t!(\"settings.delete\")}",
+                            aria_label: "{rust_i18n::t!(\"settings.delete\")}",
+                            onclick: move |_| {
+                                let mut next = app_settings.peek().clone();
+                                if let Err(e) = next.remove(index) {
+                                    *error.write() = Some(e.to_string());
+                                    return;
+                                }
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                            "✕"
+                        }
+                    }
+                }
+
+                div { class: "backend-form",
+                    input {
+                        class: "backend-input",
+                        r#type: "text",
+                        maxlength: "{blue2th_proto::MAX_BACKEND_NAME_LEN}",
+                        placeholder: "{rust_i18n::t!(\"settings.name_placeholder\")}",
+                        value: "{name_draft}",
+                        oninput: move |e| *name_draft.write() = e.value(),
+                    }
+                    input {
+                        class: "backend-input",
+                        r#type: "text",
+                        placeholder: "{rust_i18n::t!(\"settings.url_placeholder\")}",
+                        value: "{url_draft}",
+                        oninput: move |e| *url_draft.write() = e.value(),
+                    }
+                    div { class: "backend-form-actions",
+                        button {
+                            class: "backend-test",
+                            onclick: move |_| {
+                                let url = url_draft();
+                                let mut error = error;
+                                let mut notice = notice;
+                                spawn(async move {
+                                    match backend::test_backend(&url).await {
+                                        Ok(_) => {
+                                            *notice.write() = Some(
+                                                rust_i18n::t!("settings.test_ok").to_string(),
+                                            )
+                                        },
+                                        Err(e) => *error.write() = Some(e.to_string()),
+                                    }
+                                });
+                            },
+                            "{rust_i18n::t!(\"settings.test\")}"
+                        }
+                        button {
+                            class: "backend-add",
+                            onclick: move |_| {
+                                let mut next = app_settings.peek().clone();
+                                match next.add(&name_draft(), &url_draft()) {
+                                    Ok(()) => {
+                                        // First backend added: make it active, or
+                                        // the app would still know no address.
+                                        if next.active.is_none() {
+                                            let last = next.backends.len().saturating_sub(1);
+                                            let _ = next.activate(last);
+                                        }
+                                        settings::set_current(next.clone());
+                                        *app_settings.write() = next;
+                                        *name_draft.write() = String::new();
+                                        *url_draft.write() = String::new();
+                                        *error.write() = None;
+                                    },
+                                    Err(e) => *error.write() = Some(e.to_string()),
+                                }
+                            },
+                            "{rust_i18n::t!(\"settings.add\")}"
+                        }
+                    }
+                }
+
+                if let Some(message) = notice() {
+                    div { class: "settings-notice", "{message}" }
+                }
+                if let Some(message) = error() {
+                    div { class: "toast-error", "{message}" }
+                }
+            }
+        }
     }
 }
 

@@ -78,9 +78,11 @@ impl std::fmt::Display for SpotifyApiError {
             SpotifyApiError::NotConnected => {
                 write!(f, "Spotify is not connected — log in first")
             },
+            // Deliberately name-free: the Connect device is named by the app
+            // (phase 6.2), so spelling the default here would lie after a rename.
             SpotifyApiError::BackendNotRunning => write!(
                 f,
-                "the {SPOTIFY_DEVICE_NAME} Connect device is not available — start the Spotify backend first"
+                "the blue2th Connect device is not available — start the Spotify backend first"
             ),
             SpotifyApiError::Unauthorized => {
                 write!(f, "Spotify authorization expired — please reconnect")
@@ -349,6 +351,9 @@ pub struct SpotifyAuth {
     tokens: Option<Tokens>,
     /// Where the refresh token is persisted, or `None` to keep it in memory only.
     store: Option<std::path::PathBuf>,
+    /// The Connect device name the Web API lookup matches on (phase 6.2): the
+    /// name the app configured, defaulting to [`SPOTIFY_DEVICE_NAME`].
+    device_name: String,
     client: reqwest::Client,
 }
 
@@ -388,6 +393,7 @@ impl SpotifyAuth {
             // No store: an explicitly configured driver never touches the disk,
             // so tests can never read or delete the real refresh token.
             store: None,
+            device_name: SPOTIFY_DEVICE_NAME.to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -404,13 +410,13 @@ impl SpotifyAuth {
     /// lookup must search for the name `librespot` actually advertises: keeping
     /// the constant here while the backend was renamed makes every transport
     /// call fail with a 412 that blames the user for not starting the backend.
-    pub fn set_device_name(&mut self, _device_name: &str) {
-        todo!("phase 6.2: adopt the configured device name for the Web API lookup")
+    pub fn set_device_name(&mut self, device_name: &str) {
+        self.device_name = device_name.to_string();
     }
 
     /// The Connect device name the Web API lookup matches on.
     pub fn device_name(&self) -> &str {
-        todo!("phase 6.2: expose the device name used by the Web API lookup")
+        &self.device_name
     }
 
     pub fn auth_state(&self) -> SpotifyAuthState {
@@ -654,7 +660,10 @@ impl SpotifyAuth {
             .text()
             .await
             .map_err(|e| SpotifyApiError::Exchange(e.to_string()))?;
-        find_device(&body, SPOTIFY_DEVICE_NAME).ok_or(SpotifyApiError::BackendNotRunning)
+        // The *configured* name, never the constant: once the app renamed the
+        // backend, librespot advertises the new name and a hard-coded lookup
+        // would 412 every transport call.
+        find_device(&body, &self.device_name).ok_or(SpotifyApiError::BackendNotRunning)
     }
 
     /// Move playback to `device_id` (`PUT /me/player`), optionally starting it.
