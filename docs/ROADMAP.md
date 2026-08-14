@@ -94,17 +94,61 @@ of CI.
   selection (cap 2), per-speaker offset (0–750 ms) applied as `module-loopback`
   branch latency over a shared null sink, single-speaker path preserved.
 
-### Phase 5 — Spotify source ⭐ (full vision)
+### Phase 5 — Spotify source ⭐ (full vision) — ✅ DONE
 - **Backend**: embed/spawn **`librespot`** → PC becomes a Spotify Connect device;
   route its output into the combined sink (Spotify → two speakers).
 - **Mobile**: **Spotify OAuth** (Authorization Code + PKCE); Web API to transfer
   playback to the blue2th-PC device + play/pause/skip/volume + now-playing metadata.
 - **Done when**: from the phone — log in, "play on blue2th-PC", Spotify audio on two
   speakers with full transport control.
+- **Status**: shipped in two slices, **validated on hardware**.
+  - **5.1** — `librespot` spawned as a Connect device (`blue2th-PC`), output routed
+    per the current selection. `--system-cache` is required: in plain zeroconf mode
+    librespot never logs into the account, so it stays absent from
+    `GET /me/player/devices` and the Web API cannot target it. The **first** run
+    still needs one manual pick of `blue2th-PC` in a Spotify client to seed the
+    credentials.
+  - **5.2** — OAuth PKCE (no client secret anywhere), tokens held server-side with
+    silent refresh, the refresh token persisted so a restart does not send the user
+    back through the browser. Transport resolves the `blue2th-PC` device and
+    transfers playback to it rather than driving whichever device is active. The
+    redirect comes back through an Android deep link (`blue2th://spotify-callback`,
+    `launchMode="singleTop"` + `onNewIntent` → `setIntent`), and now-playing is
+    pushed over SSE.
+- **Requires**: a Spotify **Premium** account, a registered Developer app whose
+  client id is given to the backend as `BLUE2TH_SPOTIFY_CLIENT_ID` (no default —
+  the server answers 503 naming the variable), and the account listed in that app's
+  Development-mode allowlist.
 
-### Phase 6 — Robustness (optional)
-- Auto-reconnect, persistence (favorite speakers, offsets), token refresh, **mDNS**
-  backend discovery, authenticated LAN-only control API.
+### Phase 6 — Robustness (optional) — 🚧 IN PROGRESS
+Auto-reconnect, persistence (favorite speakers, offsets), token refresh, **mDNS**
+backend discovery, authenticated LAN-only control API.
+
+- ✅ **Token refresh** — shipped with 5.2: silent refresh before expiry, refresh
+  token persisted, dropped only when Spotify itself rejects the grant (never on a
+  network failure, which would cost a browser round-trip for nothing).
+- ✅ **6.1 — Offset persistence** — each speaker's sync offset is remembered by MAC
+  in `$XDG_STATE_HOME/blue2th/offsets.json` and restored when that speaker is
+  selected again, including after a restart. **Validated on hardware.** Only the
+  offsets are persisted, never the selection: at startup no speaker is connected,
+  so a restored selection would be dropped immediately by `retain_connected` —
+  restoring it belongs with auto-reconnect below.
+- ⬜ **Auto-reconnect** — reconnect the remembered speakers on startup; this is what
+  would make restoring the *selection* meaningful.
+- ⬜ **Runtime backend address + mDNS discovery** — `BLUE2TH_BACKEND_URL` is read by
+  `option_env!`, i.e. at **compile time**, so the PC's LAN address is baked into the
+  APK. This is the blocker for distributing a binary: today sharing the app means
+  sharing the repo so each user rebuilds with their own address. Runtime
+  configuration first, mDNS after.
+- ⬜ **Authenticated, LAN-only control API** — the router still runs
+  `CorsLayer::permissive()` with no authentication: anyone on the network can drive
+  the backend, Spotify transport included. Becomes necessary as soon as discovery
+  exists.
+- ⬜ **Background listening reliability** — Android freezes a backgrounded app, which
+  drops the now-playing SSE stream the backend uses as a liveness signal. Handled
+  today by presence reporting (`onStart`/`onStop`/`onTaskRemoved`) plus a 30-minute
+  grace period; a **foreground service** (with its permanent notification) is the
+  only way to stop the freeze outright, to be paid only if the compromise bites.
 
 ## Cross-cutting concerns
 
@@ -119,5 +163,6 @@ of CI.
 ## Sequencing note
 
 Phases 0→4 already deliver the original goal (two speakers, local files) **without
-Spotify**. Phase 5 layers Spotify on top. The project can stop after phase 4 if
-Spotify integration proves too brittle.
+Spotify**. Phase 5 layers Spotify on top. The project could have stopped after
+phase 4 if Spotify integration had proved too brittle — it did not: phases 0→5 are
+shipped and validated on hardware, and only the optional phase 6 remains.
