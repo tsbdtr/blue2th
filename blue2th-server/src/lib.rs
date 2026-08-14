@@ -31,6 +31,7 @@ pub mod audio;
 mod bluetooth;
 pub mod spotify;
 pub mod spotify_auth;
+mod state_store;
 pub mod targets;
 pub mod watchdog;
 

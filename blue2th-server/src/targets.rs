@@ -31,20 +31,7 @@ const OFFSETS_STORE_FILE: &str = "offsets.json";
 /// `$XDG_STATE_HOME/blue2th/offsets.json` (or `~/.local/state/blue2th/offsets.json`).
 /// `None` when neither variable is set, in which case offsets stay in memory only.
 pub fn offsets_store_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var("XDG_STATE_HOME")
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .filter(|h| !h.trim().is_empty())
-                .map(|h| format!("{h}/.local/state"))
-        })?;
-    Some(
-        std::path::PathBuf::from(base)
-            .join("blue2th")
-            .join(OFFSETS_STORE_FILE),
-    )
+    crate::state_store::state_store_path(OFFSETS_STORE_FILE)
 }
 
 /// Read the remembered `address → offset_ms` table. A missing, unreadable or
@@ -497,31 +484,23 @@ mod tests {
         let previous_xdg = std::env::var("XDG_STATE_HOME").ok();
         let previous_home = std::env::var("HOME").ok();
 
+        // Resolve all three cases first and assert only once the process env is
+        // restored: a failing assertion here must not leak a bogus HOME into the
+        // rest of the test binary and cascade into unrelated failures.
         std::env::set_var("XDG_STATE_HOME", "/tmp/blue2th-xdg-state");
-        assert_eq!(
-            offsets_store_path(),
-            Some(std::path::PathBuf::from(
-                "/tmp/blue2th-xdg-state/blue2th/offsets.json"
-            )),
-            "XDG_STATE_HOME must win and be app-scoped"
-        );
+        let from_xdg = offsets_store_path();
 
         std::env::remove_var("XDG_STATE_HOME");
         std::env::set_var("HOME", "/tmp/blue2th-home");
-        assert_eq!(
-            offsets_store_path(),
-            Some(std::path::PathBuf::from(
-                "/tmp/blue2th-home/.local/state/blue2th/offsets.json"
-            )),
-            "HOME must fall back to ~/.local/state"
-        );
+        let from_home = offsets_store_path();
 
+        // A blank XDG_STATE_HOME is treated as unset, not as the root directory.
+        std::env::set_var("XDG_STATE_HOME", "   ");
+        let from_blank_xdg = offsets_store_path();
+
+        std::env::remove_var("XDG_STATE_HOME");
         std::env::remove_var("HOME");
-        assert_eq!(
-            offsets_store_path(),
-            None,
-            "with neither variable set the backend stays in-memory only"
-        );
+        let from_neither = offsets_store_path();
 
         match previous_xdg {
             Some(v) => std::env::set_var("XDG_STATE_HOME", v),
@@ -531,6 +510,29 @@ mod tests {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+
+        assert_eq!(
+            from_xdg,
+            Some(std::path::PathBuf::from(
+                "/tmp/blue2th-xdg-state/blue2th/offsets.json"
+            )),
+            "XDG_STATE_HOME must win and be app-scoped"
+        );
+        assert_eq!(
+            from_home,
+            Some(std::path::PathBuf::from(
+                "/tmp/blue2th-home/.local/state/blue2th/offsets.json"
+            )),
+            "HOME must fall back to ~/.local/state"
+        );
+        assert_eq!(
+            from_blank_xdg, from_home,
+            "a blank XDG_STATE_HOME must fall back to HOME, not to the root"
+        );
+        assert_eq!(
+            from_neither, None,
+            "with neither variable set the backend stays in-memory only"
+        );
     }
 
     // Criterion: `SpeakerTargets::new()` performs no I/O and has no store, so a
@@ -682,6 +684,43 @@ mod tests {
         let addrs: Vec<String> = state.speakers.into_iter().map(|s| s.address).collect();
         assert_eq!(addrs, vec![A.to_string()]);
         assert_eq!(targets.speakers().len(), 1);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Edge case (first run): the app-scoped state directory does not exist yet —
+    // `save_offsets` creates it instead of failing, so the very first slider drag
+    // is already remembered.
+    #[test]
+    fn test_save_offsets_creates_the_missing_store_directory() {
+        let dir = std::env::temp_dir().join("blue2th-test-offsets-missing-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        // Nested, as `$XDG_STATE_HOME/blue2th/` is under a state home that may
+        // itself be missing on a fresh machine.
+        let path = dir.join("state").join("blue2th").join(OFFSETS_STORE_FILE);
+
+        save_offsets(&path, &table(&[(A, 120)])).expect("save into a missing directory");
+        assert_eq!(load_offsets(Some(&path)), table(&[(A, 120)]));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Edge case: persisting one speaker's offset must not drop what is remembered
+    // for the others — the whole table is rewritten, seeded entries included.
+    #[test]
+    fn test_set_offset_keeps_the_remembered_offsets_of_other_speakers() {
+        let path = store_path("other-speakers");
+        save_offsets(&path, &table(&[(B, 500), (C, 100)])).expect("seed the store");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.set_offset(A, 300);
+
+        assert_eq!(
+            load_offsets(Some(&path)),
+            table(&[(A, 300), (B, 500), (C, 100)]),
+            "an unrelated speaker's tuning must survive another one's update"
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
     }

@@ -27,15 +27,14 @@ fn build_app() -> axum::Router {
     ))
 }
 
-/// Read a `TargetsState` out of a route response body.
-// Test-only helper: clippy's `allow-expect-in-tests` only covers `#[test]`
-// functions and `#[cfg(test)]` modules, not a free helper in an integration test.
-#[allow(clippy::expect_used)]
-async fn targets_state(response: axum::response::Response) -> TargetsState {
+/// Read a `TargetsState` out of a route response body. Errors are propagated
+/// rather than asserted here: clippy's `allow-expect-in-tests` covers `#[test]`
+/// functions, not a free helper, and the call sites read better anyway.
+async fn targets_state(response: axum::response::Response) -> Result<TargetsState, String> {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).expect("parse TargetsState")
+        .map_err(|e| format!("read body: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parse TargetsState: {e}"))
 }
 
 // Criterion: the refactor keeps the offset route answering 200 with the current
@@ -52,7 +51,7 @@ async fn test_offset_route_still_returns_targets_state() {
 
     let response = build_app().oneshot(request).await.expect("router response");
     assert_eq!(response.status(), StatusCode::OK);
-    let _state = targets_state(response).await;
+    let _state = targets_state(response).await.expect("decode TargetsState");
 }
 
 // Criterion: remembered offsets for unselected speakers never appear in
@@ -82,7 +81,7 @@ async fn test_offset_route_on_unselected_speaker_reports_empty_selection() {
     let response = app.oneshot(targets_request).await.expect("router response");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let state = targets_state(response).await;
+    let state = targets_state(response).await.expect("decode TargetsState");
     assert!(
         state.speakers.is_empty(),
         "an unselected speaker must not surface through a remembered offset, got {:?}",

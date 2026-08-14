@@ -204,20 +204,7 @@ pub fn needs_refresh(expires_at: u64, now: u64, skew: u64) -> bool {
 /// `~/.local/state/blue2th/`). `None` when neither variable is set, in which case
 /// tokens simply stay in memory as before.
 fn token_store_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var("XDG_STATE_HOME")
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .filter(|h| !h.trim().is_empty())
-                .map(|h| format!("{h}/.local/state"))
-        })?;
-    Some(
-        std::path::PathBuf::from(base)
-            .join("blue2th")
-            .join(TOKEN_STORE_FILE),
-    )
+    crate::state_store::state_store_path(TOKEN_STORE_FILE)
 }
 
 /// Read the persisted refresh token, if any. A missing or unreadable file just
