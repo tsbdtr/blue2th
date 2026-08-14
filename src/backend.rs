@@ -121,6 +121,23 @@ async fn pause_at(base: &str) -> Result<(), BackendError> {
     Ok(())
 }
 
+/// Push the active backend's name to it, best-effort and silent.
+///
+/// The app is the source of truth for that name, but it only reaches the backend
+/// when something sends it: a push that failed while the backend was down, or a
+/// server that restarted since, would otherwise leave the Connect device
+/// advertising a stale name. Called when the backend becomes reachable again, so
+/// a failure here is expected — it will simply be retried on the next transition,
+/// and there is no user action to prompt.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn push_active_name() {
+    let settings = crate::settings::current();
+    let Some(entry) = settings.active_backend() else {
+        return;
+    };
+    let _ = set_config_at(&entry.url, &entry.name).await;
+}
+
 /// Whether the backend at `previous` is really being left behind by a switch to
 /// `next`. Re-activating the backend already in use must quieten nothing:
 /// pausing it is the opposite of what the user asked for. Pure.

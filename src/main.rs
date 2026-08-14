@@ -213,6 +213,14 @@ fn App() -> Element {
                 let reachable = backend::ping_backend().await.is_ok();
                 if *backend_online.peek() != reachable {
                     *backend_online.write() = reachable;
+                    // Coming back online: re-assert the name the app is the source
+                    // of truth for. This covers a push that failed while the
+                    // backend was down, and a backend (or app) that restarted
+                    // since — otherwise the Connect device would keep advertising
+                    // whatever name the server last stored.
+                    if reachable {
+                        backend::push_active_name().await;
+                    }
                 }
                 tokio::time::sleep(BACKEND_HEALTH_INTERVAL).await;
             }
@@ -1852,17 +1860,10 @@ fn AppSettingsPage() -> Element {
                                 let mut next = app_settings.peek().clone();
                                 match next.add(&name_draft(), &url_draft()) {
                                     Ok(()) => {
-                                        // First backend added: make it active, or
-                                        // the app would still know no address. The
-                                        // entry was just pushed, so the index is in
-                                        // range; a failure would still be told.
-                                        let mut failure = None;
-                                        if next.active.is_none() {
-                                            let last = next.backends.len().saturating_sub(1);
-                                            if let Err(e) = next.activate(last) {
-                                                failure = Some(e.to_string());
-                                            }
-                                        }
+                                        let added = next.backends.len().saturating_sub(1);
+                                        // First backend added: it becomes the active
+                                        // one, or the app would still know no address.
+                                        let activating = next.active.is_none();
                                         // Owned copy: the process-wide cache keeps
                                         // its own settings beyond this handler.
                                         settings::set_current(next.clone());
@@ -1870,7 +1871,24 @@ fn AppSettingsPage() -> Element {
                                         *name_draft.write() = String::new();
                                         *url_draft.write() = String::new();
                                         *notice.write() = None;
-                                        *error.write() = failure;
+                                        *error.write() = None;
+                                        if activating {
+                                            // Through the shared activation path, so
+                                            // the name reaches the backend: storing
+                                            // it locally alone left the Connect
+                                            // device advertising the old one.
+                                            let mut error = error;
+                                            spawn(async move {
+                                                let mut next = app_settings.peek().clone();
+                                                let outcome =
+                                                    backend::activate_backend(&mut next, added)
+                                                        .await;
+                                                *app_settings.write() = next;
+                                                if let Err(e) = outcome {
+                                                    *error.write() = Some(e.to_string());
+                                                }
+                                            });
+                                        }
                                     },
                                     Err(e) => {
                                         *notice.write() = None;
