@@ -15,6 +15,9 @@ blue2th-proto = { path = "blue2th-proto" }
 # can be added later). `json` pulls in serde_json for response decoding; `stream`
 # enables `bytes_stream()` for consuming the /scan SSE feed.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+# The persisted app settings (phase 6.2) are serde types owned by the app, not
+# shared DTOs, so the derive lives here rather than in `blue2th-proto`.
+serde = { workspace = true }
 serde_json = "1"
 futures = "0.3"
 

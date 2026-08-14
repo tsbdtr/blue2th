@@ -135,11 +135,11 @@ backend discovery, authenticated LAN-only control API.
   restoring it belongs with auto-reconnect below.
 - ⬜ **Auto-reconnect** — reconnect the remembered speakers on startup; this is what
   would make restoring the *selection* meaningful.
-- ⬜ **Runtime backend address + mDNS discovery** — `BLUE2TH_BACKEND_URL` is read by
-  `option_env!`, i.e. at **compile time**, so the PC's LAN address is baked into the
-  APK. This is the blocker for distributing a binary: today sharing the app means
-  sharing the repo so each user rebuilds with their own address. Runtime
-  configuration first, mDNS after.
+- ⬜ **mDNS discovery** — the backend address is no longer baked into the APK: phase
+  6.2 made it a runtime setting (the settings page keeps a list of named backends,
+  one active at a time, persisted in `SharedPreferences`), so sharing the app no
+  longer means sharing the repo. What is left is finding the PC by itself instead of
+  typing its LAN address.
 - ⬜ **Authenticated, LAN-only control API** — the router still runs
   `CorsLayer::permissive()` with no authentication: anyone on the network can drive
   the backend, Spotify transport included. Becomes necessary as soon as discovery

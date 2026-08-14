@@ -240,6 +240,89 @@ pub struct PresenceRequest {
     pub presence: ClientPresence,
 }
 
+/// Hard cap on a backend name (phase 6.2). The value ends up as a
+/// `librespot --name` argument and as the string the Spotify Web API device
+/// lookup matches on, so it stays short and boring.
+pub const MAX_BACKEND_NAME_LEN: usize = 12;
+
+/// The name a backend answers to until the app configures another one.
+pub const DEFAULT_BACKEND_NAME: &str = "blue2th-PC";
+
+/// Why a backend name was refused. The app rejects at save time and the server
+/// re-validates on `POST /config` (unauthenticated on the LAN), so both layers
+/// speak the same vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameError {
+    /// Empty, or nothing but whitespace.
+    Empty,
+    /// Longer than [`MAX_BACKEND_NAME_LEN`].
+    TooLong,
+    /// Does not start with an ASCII letter (`2salon`, `-salon`, `_salon`).
+    BadStart,
+    /// Holds a character outside `[A-Za-z0-9_-]` (space, accent, emoji, `!`).
+    BadChar,
+}
+
+impl std::fmt::Display for NameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NameError::Empty => write!(f, "the name cannot be empty"),
+            NameError::TooLong => write!(
+                f,
+                "the name cannot exceed {MAX_BACKEND_NAME_LEN} characters"
+            ),
+            NameError::BadStart => write!(f, "the name must start with a letter (a-z, A-Z)"),
+            NameError::BadChar => write!(
+                f,
+                "the name may only hold letters, digits, '-' and '_' (no space or accent)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NameError {}
+
+/// Validate a backend name, returning the trimmed value.
+///
+/// The rule: starts with an ASCII letter, then only ASCII letters, digits, `-`
+/// or `_`, at most [`MAX_BACKEND_NAME_LEN`] characters. It lives here precisely
+/// because the app and the server must apply the *same* rule — duplicating it
+/// would let them drift, and the server cannot trust the client.
+pub fn validate_backend_name(raw: &str) -> Result<String, NameError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(NameError::Empty);
+    }
+    if name.chars().count() > MAX_BACKEND_NAME_LEN {
+        return Err(NameError::TooLong);
+    }
+    let mut chars = name.chars();
+    // Checked before the character scan so `2salon` reports the start rule
+    // rather than a generic "bad character".
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() => {},
+        _ => return Err(NameError::BadStart),
+    }
+    if chars.any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')) {
+        return Err(NameError::BadChar);
+    }
+    Ok(name.to_string())
+}
+
+/// The name a backend advertises, returned by `GET /config`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// The configured backend name (also its Spotify Connect device name).
+    pub name: String,
+}
+
+/// Body of `POST /config` — the name the app pushes to the backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigRequest {
+    /// The desired backend name; the server re-validates and trims it.
+    pub name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,5 +661,108 @@ mod tests {
         })
         .expect("serialize PresenceRequest");
         assert_eq!(json, r#"{"presence":"background"}"#);
+    }
+
+    // Criterion (phase 6.2): the config DTO (`ServerConfig`) round-trips through serde.
+    #[test]
+    fn test_server_config_round_trips_through_json() {
+        let original = ServerConfig {
+            name: "Salon".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize ServerConfig");
+        let parsed: ServerConfig = serde_json::from_str(&json).expect("deserialize ServerConfig");
+        assert_eq!(original, parsed);
+        assert_eq!(json, r#"{"name":"Salon"}"#);
+    }
+
+    // Criterion (phase 6.2): the name request DTO (`ConfigRequest`) round-trips
+    // through serde — it is what the app pushes to `POST /config`.
+    #[test]
+    fn test_config_request_round_trips_through_json() {
+        let original = ConfigRequest {
+            name: "blue2th-PC".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
+        let parsed: ConfigRequest = serde_json::from_str(&json).expect("deserialize ConfigRequest");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion (phase 6.2): `validate_backend_name` accepts `Salon`, `blue2th-PC`,
+    // `salon_tv` and `pc2` — a leading ASCII letter then letters/digits/`-`/`_`.
+    #[test]
+    fn test_validate_backend_name_accepts_the_allowed_shapes() {
+        for name in ["Salon", "blue2th-PC", "salon_tv", "pc2"] {
+            assert_eq!(
+                validate_backend_name(name),
+                Ok(name.to_string()),
+                "{name} must be accepted"
+            );
+        }
+    }
+
+    // Criterion (phase 6.2): an empty or blank name is rejected — an unnamed
+    // backend would show as nothing at all in the status encart.
+    #[test]
+    fn test_validate_backend_name_rejects_empty_and_blank() {
+        assert_eq!(validate_backend_name(""), Err(NameError::Empty));
+        assert_eq!(validate_backend_name("   "), Err(NameError::Empty));
+        assert_eq!(validate_backend_name("\t\n"), Err(NameError::Empty));
+    }
+
+    // Criterion (phase 6.2): a name starting with a digit or a separator is
+    // rejected (`2salon`, `-salon`, `_salon`).
+    #[test]
+    fn test_validate_backend_name_rejects_a_non_letter_start() {
+        for name in ["2salon", "-salon", "_salon"] {
+            assert_eq!(
+                validate_backend_name(name),
+                Err(NameError::BadStart),
+                "{name} must be rejected: a name starts with a letter"
+            );
+        }
+    }
+
+    // Criterion (phase 6.2): a space, an accent, an emoji or punctuation is
+    // rejected — the value becomes a `librespot --name` argv entry and the string
+    // the Web API device lookup matches on.
+    #[test]
+    fn test_validate_backend_name_rejects_disallowed_characters() {
+        for name in ["salon tv", "séjour", "salon!", "salon\u{1F3B5}", "sa/lon"] {
+            assert_eq!(
+                validate_backend_name(name),
+                Err(NameError::BadChar),
+                "{name} must be rejected: only ASCII letters, digits, - and _"
+            );
+        }
+    }
+
+    // Criterion (phase 6.2): the cap is `MAX_BACKEND_NAME_LEN` — exactly that many
+    // characters is accepted, one more is refused.
+    #[test]
+    fn test_validate_backend_name_enforces_the_length_cap() {
+        let at_cap: String = "a".repeat(MAX_BACKEND_NAME_LEN);
+        assert_eq!(validate_backend_name(&at_cap), Ok(at_cap.clone()));
+
+        let over_cap: String = "a".repeat(MAX_BACKEND_NAME_LEN + 1);
+        assert_eq!(validate_backend_name(&over_cap), Err(NameError::TooLong));
+    }
+
+    // Criterion (phase 6.2): the validator trims, and the trimmed value is what
+    // comes back (that is what gets stored and pushed to the backend).
+    #[test]
+    fn test_validate_backend_name_returns_the_trimmed_value() {
+        assert_eq!(validate_backend_name("  Salon \n"), Ok("Salon".to_string()));
+    }
+
+    // Criterion (phase 6.2): the default name `blue2th-PC` satisfies its own
+    // validator — a server that never got configured must not hold a name its own
+    // rule would refuse.
+    #[test]
+    fn test_default_backend_name_satisfies_the_validator() {
+        assert_eq!(
+            validate_backend_name(DEFAULT_BACKEND_NAME),
+            Ok(DEFAULT_BACKEND_NAME.to_string())
+        );
+        assert!(DEFAULT_BACKEND_NAME.len() <= MAX_BACKEND_NAME_LEN);
     }
 }

@@ -18,9 +18,9 @@ use axum::{
     Json, Router,
 };
 use blue2th_proto::{
-    AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, DeviceInfo, HealthStatus,
-    OffsetRequest, PlaybackState, PresenceRequest, SpeakerTarget, SpotifyAuthState, SpotifyState,
-    SpotifyStatus, TargetsState, VolumeRequest,
+    AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
+    HealthStatus, OffsetRequest, PlaybackState, PresenceRequest, ServerConfig, SpeakerTarget,
+    SpotifyAuthState, SpotifyState, SpotifyStatus, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -29,6 +29,7 @@ use tracing_subscriber::EnvFilter;
 
 pub mod audio;
 mod bluetooth;
+pub mod config;
 pub mod spotify;
 pub mod spotify_auth;
 mod state_store;
@@ -63,6 +64,10 @@ struct AppState {
     /// for as long as it runs, so losing every reader means the phone is gone —
     /// the watchdog then pauses playback (see `watchdog`).
     sse_watch: Arc<watchdog::SseWatch>,
+    /// The backend's own name, pushed by the app. It is the Spotify Connect
+    /// device name `librespot` advertises *and* the name the Web API lookup
+    /// matches on, so the two can never disagree.
+    name: Arc<Mutex<config::ServerName>>,
 }
 
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
@@ -92,6 +97,9 @@ pub fn app() -> Router {
     app_with_auth_and_targets(
         SpotifyAuth::new(),
         SpeakerTargets::with_store(targets::offsets_store_path()),
+        // Reloaded from disk so the Web API lookup keeps matching the running
+        // librespot even before the app talks to us again.
+        config::ServerName::with_store(config::name_store_path()),
     )
 }
 
@@ -100,12 +108,25 @@ pub fn app() -> Router {
 /// test run can neither read nor clobber the real user's credential. The selection
 /// is store-free for the same reason.
 pub fn app_with_auth(spotify_auth: SpotifyAuth) -> Router {
-    app_with_auth_and_targets(spotify_auth, SpeakerTargets::new())
+    app_with_auth_and_targets(
+        spotify_auth,
+        SpeakerTargets::new(),
+        config::ServerName::new(),
+    )
 }
 
 /// Build the router around an explicit Spotify auth driver and an explicit
 /// playback selection, so the on-disk seams stay in the caller's hands.
-fn app_with_auth_and_targets(spotify_auth: SpotifyAuth, speaker_targets: SpeakerTargets) -> Router {
+fn app_with_auth_and_targets(
+    mut spotify_auth: SpotifyAuth,
+    speaker_targets: SpeakerTargets,
+    server_name: config::ServerName,
+) -> Router {
+    // The auth driver and the subprocess must start out agreeing with the stored
+    // name, or the very first transport call would look up a device nobody
+    // advertises.
+    spotify_auth.set_device_name(server_name.name());
+    let spotify = SpotifyBackend::with_name(server_name.name());
     let state = AppState {
         // Real playback output (rodio → PipeWire); the device is opened lazily on
         // the first `/play`, so building the router stays cheap and CI-safe.
@@ -114,9 +135,10 @@ fn app_with_auth_and_targets(spotify_auth: SpotifyAuth, speaker_targets: Speaker
         )))),
         targets: Arc::new(Mutex::new(speaker_targets)),
         connected: Arc::new(Mutex::new(Vec::new())),
-        spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
+        spotify: Arc::new(Mutex::new(spotify)),
         spotify_auth: Arc::new(Mutex::new(spotify_auth)),
         sse_watch: Arc::new(watchdog::SseWatch::default()),
+        name: Arc::new(Mutex::new(server_name)),
     };
 
     spawn_idle_watchdog(state.clone());
@@ -149,6 +171,7 @@ fn app_with_auth_and_targets(spotify_auth: SpotifyAuth, speaker_targets: Speaker
         .route("/spotify/previous", post(spotify_previous))
         .route("/spotify/now-playing", get(spotify_now_playing))
         .route("/client/presence", post(client_presence))
+        .route("/config", get(get_config).post(set_config))
         // Permissive CORS for LAN development; tightened in a later phase.
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -397,6 +420,60 @@ async fn pause_spotify_now(state: &AppState) {
     if let Err(e) = auth.transport(Transport::Pause).await {
         tracing::warn!("could not pause Spotify on client exit: {e}");
     }
+}
+
+/// `GET /config` — the backend's current name.
+async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
+    Json(ServerConfig {
+        name: state.name.lock().await.name().to_string(),
+    })
+}
+
+/// `POST /config` — set the backend's name, which becomes its Spotify Connect
+/// device name.
+///
+/// The name is re-validated here rather than trusted: this route is reachable by
+/// anything on the LAN until the authenticated API lands.
+async fn set_config(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Json<ServerConfig>, AppError> {
+    // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
+    let req: ConfigRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::bad_request(format!("invalid config body: {e}")))?;
+    let name = {
+        let mut stored = state.name.lock().await;
+        stored
+            .set_name(&req.name)
+            .map_err(|e| AppError::bad_request(e.to_string()))?
+    };
+
+    // The Web API lookup must follow the advertised name, or transport would 412
+    // while blaming the user for not starting the backend.
+    state.spotify_auth.lock().await.set_device_name(&name);
+
+    let speakers = state.targets.lock().await.speakers();
+    let mut spotify = state.spotify.lock().await;
+    // `--name` is fixed at spawn: a running backend has to be respawned to be
+    // renamed, which briefly drops the Connect device.
+    let restart = spotify::should_restart_for_rename(
+        spotify.poll_liveness().status,
+        spotify.device_name(),
+        &name,
+    );
+    spotify.set_device_name(&name);
+    if restart {
+        // Both halves are logged rather than propagated: the name *is* stored, so
+        // a rename must not report failure because the subprocess dance did.
+        if let Err(e) = spotify.stop() {
+            tracing::warn!("could not stop the Spotify backend before a rename: {e}");
+        }
+        if let Err(e) = spotify.start(&speakers) {
+            tracing::warn!("could not restart the Spotify backend after a rename: {e}");
+        }
+    }
+
+    Ok(Json(ServerConfig { name }))
 }
 
 /// `GET /health` — liveness probe carrying the backend version.

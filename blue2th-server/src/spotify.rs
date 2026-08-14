@@ -109,6 +109,15 @@ pub fn should_spawn(current: SpotifyStatus) -> bool {
     !matches!(current, SpotifyStatus::Running)
 }
 
+/// Rename decision (phase 6.2): whether a rename must restart `librespot`.
+///
+/// `--name` is bound at spawn, so a running backend has to be respawned for the
+/// Connect device to come back under the new name; a stopped one simply picks
+/// the new name up at its next start. Pure.
+pub fn should_restart_for_rename(current: SpotifyStatus, running: &str, wanted: &str) -> bool {
+    matches!(current, SpotifyStatus::Running) && running != wanted
+}
+
 /// Owns the `librespot` subprocess lifecycle. Held behind the router's
 /// `Arc<Mutex<_>>`. A dead child must never poison the server, so `poll_liveness`
 /// reconciles the state back to `Stopped` once the child exits.
@@ -123,13 +132,41 @@ pub struct SpotifyBackend {
 }
 
 impl SpotifyBackend {
-    /// A fresh backend with no subprocess (status `Stopped`).
+    /// A fresh backend with no subprocess (status `Stopped`), advertising the
+    /// default name until the app configures another one.
     pub fn new() -> Self {
+        Self::with_name(SPOTIFY_DEVICE_NAME)
+    }
+
+    /// A backend advertising an explicit Connect device name (phase 6.2: the
+    /// name the app configured, restored from the server's own store).
+    pub fn with_name(device_name: &str) -> Self {
         Self {
             child: None,
-            device_name: SPOTIFY_DEVICE_NAME.to_string(),
+            device_name: device_name.to_string(),
             sink: None,
         }
+    }
+
+    /// Adopt a new Connect device name. The caller restarts the subprocess when
+    /// [`should_restart_for_rename`] says so — `--name` is fixed at spawn.
+    pub fn set_device_name(&mut self, device_name: &str) {
+        self.device_name = device_name.to_string();
+    }
+
+    /// The Connect device name currently advertised.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// The argv the next spawn would use for `speakers` — the seam that pins
+    /// `librespot --name <configured name>` without spawning anything. Pure.
+    pub fn librespot_args(&self, speakers: &[SpeakerTarget]) -> Vec<String> {
+        build_librespot_args(
+            &self.device_name,
+            &spotify_target_sink(speakers),
+            &librespot_cache_dir(),
+        )
     }
 
     /// The sink the running subprocess feeds, or `None` while stopped.
@@ -168,7 +205,9 @@ impl SpotifyBackend {
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
-        let args = build_librespot_args(&self.device_name, &sink, &librespot_cache_dir());
+        // The argv comes from the same seam the tests pin, so the spawned
+        // process can never drift from `--name <configured name>`.
+        let args = self.librespot_args(speakers);
         let child = std::process::Command::new("librespot")
             .args(&args)
             .spawn()
@@ -345,5 +384,90 @@ mod tests {
     #[test]
     fn test_should_spawn_is_true_when_stopped() {
         assert!(should_spawn(SpotifyStatus::Stopped));
+    }
+
+    // Criterion (phase 6.2): `SpotifyBackend` advertises the *configured* name,
+    // not the constant — `SPOTIFY_DEVICE_NAME` is only the default.
+    #[test]
+    fn test_with_name_advertises_the_configured_name() {
+        let backend = SpotifyBackend::with_name("Salon");
+        assert_eq!(backend.device_name(), "Salon");
+        assert_eq!(backend.status().device_name, "Salon");
+    }
+
+    // Criterion (phase 6.2): a rename is adopted, so `GET /spotify/status`
+    // reports the name the app configured.
+    #[test]
+    fn test_set_device_name_replaces_the_advertised_name() {
+        let mut backend = SpotifyBackend::new();
+        assert_eq!(backend.device_name(), SPOTIFY_DEVICE_NAME);
+        backend.set_device_name("Bureau");
+        assert_eq!(backend.status().device_name, "Bureau");
+    }
+
+    // Criterion (phase 6.2): `SpotifyBackend` spawns `librespot --name <configured
+    // name>`, not the constant — the argv seam pins it without spawning.
+    #[test]
+    fn test_librespot_args_carry_the_configured_name() {
+        let backend = SpotifyBackend::with_name("Salon");
+        let args = backend.librespot_args(&[target(A)]);
+        let flag = args
+            .iter()
+            .position(|a| a == "--name")
+            .expect("argv must carry --name");
+        assert_eq!(
+            args.get(flag + 1).map(String::as_str),
+            Some("Salon"),
+            "--name must be followed by the configured name: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == SPOTIFY_DEVICE_NAME),
+            "the default name must not leak into the argv once renamed: {args:?}"
+        );
+    }
+
+    // Criterion (phase 6.2): the argv still points at the sink derived from the
+    // selection — renaming changes the name only.
+    #[test]
+    fn test_librespot_args_still_point_at_the_selection_sink() {
+        let backend = SpotifyBackend::with_name("Salon");
+        let args = backend.librespot_args(&[target(A), target(B)]);
+        assert!(
+            args.iter().any(|a| a == COMBINED_SINK_NAME),
+            "argv must point the output at the combined sink: {args:?}"
+        );
+    }
+
+    // Criterion (phase 6.2): changing the name while the Spotify backend runs
+    // restarts `librespot` — `--name` is bound at spawn.
+    #[test]
+    fn test_should_restart_for_rename_is_true_while_running_with_a_new_name() {
+        assert!(should_restart_for_rename(
+            SpotifyStatus::Running,
+            "blue2th-PC",
+            "Salon"
+        ));
+    }
+
+    // Criterion (phase 6.2): renaming to the same name restarts nothing (no
+    // gratuitous playback cut).
+    #[test]
+    fn test_should_restart_for_rename_is_false_when_the_name_is_unchanged() {
+        assert!(!should_restart_for_rename(
+            SpotifyStatus::Running,
+            "Salon",
+            "Salon"
+        ));
+    }
+
+    // Criterion (phase 6.2): renaming while Spotify is stopped stores the name and
+    // uses it at the next start — nothing to restart.
+    #[test]
+    fn test_should_restart_for_rename_is_false_while_stopped() {
+        assert!(!should_restart_for_rename(
+            SpotifyStatus::Stopped,
+            "blue2th-PC",
+            "Salon"
+        ));
     }
 }

@@ -350,6 +350,7 @@ dependencies = [
  "ndk-context",
  "reqwest",
  "rust-i18n",
+ "serde",
  "serde_json",
  "tokio",
 ]
