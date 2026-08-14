@@ -1,29 +1,72 @@
-# Review Report — Phase 5.2 — Spotify OAuth (PKCE) + Web API transport & now-playing over SSE
+# Review Report — Phase 6.1 — Remember each speaker's sync offset across restarts
 
 ## Affected Layers
-mobile, server, proto (all three reviewed)
+server (`blue2th-server`) — `blue2th-proto` untouched, mobile untouched.
 
 ## Issues Found & Fixed
-- [docs] `blue2th-server/src/spotify_auth.rs:10` — module doc still claimed the helper bodies were `todo!()` stubs "written test-first"; the helpers are fully implemented → removed the stale paragraph.
-- [convention] `blue2th-server/src/spotify_auth.rs:349,356` — two `String` clones (`access_token`, `refresh_token`) had no justification comment, which CLAUDE.md requires → added brief comments explaining each clone is necessary (returning owned data / reusing after `self.tokens` is reassigned).
-- [edge case] `parse_now_playing` mapped a body with no `item` and a malformed body to Idle, but neither path was covered → added `test_parse_now_playing_no_item_is_idle` and `test_parse_now_playing_malformed_body_is_idle`.
-- [build drift] `assets/tailwind.css` — 85-line regenerated Tailwind artifact (generic `absolute`/`grow`/`lowercase`/`filter`/`transition` utilities + `@property` blocks from a newer Tailwind); the phase 5.2 UI uses custom classes in `main.css`, none of these utilities → reverted to base (consistent with phase 4 / 5.1 reviews). Android build still succeeds with the base file.
-- [process] `graphify-out/` was bundled into the implementation commit; project convention regenerates the graph in a separate `chore(graph): …` commit during `/tdd done` → reset `graphify-out/` back to base so it regenerates cleanly on develop after merge.
+- [duplication] `blue2th-server/src/targets.rs:33` — `offsets_store_path()` duplicated
+  verbatim the XDG resolution of `spotify_auth::token_store_path()` (blank-value
+  filtering, `HOME` fallback, `blue2th/` scoping) → extracted into a new
+  `blue2th-server/src/state_store.rs` (`state_store_path(file)`), now used by both
+  stores, so the state-directory rules live in exactly one place.
+- [clippy] `blue2th-server/tests/offsets.rs:33` — the GREEN phase silenced
+  `clippy::expect_used` on the `targets_state` helper with an `#[allow]`. The lint
+  was indeed firing (`allow-expect-in-tests` does not cover a free helper in an
+  integration-test binary), but the `#[allow]` was not the right answer: the helper
+  now returns `Result<TargetsState, String>` and the two `#[tokio::test]` functions
+  assert with `expect`, which clippy allows. The `#[allow]` is gone and a decode
+  failure now reports which step failed.
+- [test isolation] `blue2th-server/src/targets.rs:496` —
+  `test_offsets_store_path_is_app_scoped_and_honours_xdg_state_home` asserted while
+  `XDG_STATE_HOME`/`HOME` were still overridden; a failing assertion would panic
+  before the restore block and leave the *whole* lib test binary running with a
+  bogus `HOME`, cascading unrelated failures. It now resolves the three paths,
+  restores the process env, and only then asserts.
+- [edge case] `save_offsets` never exercised its `create_dir_all` branch — every
+  test seeded an existing directory, so the real first-run case (`~/.local/state/blue2th`
+  does not exist yet) was untested → added
+  `test_save_offsets_creates_the_missing_store_directory`.
+- [edge case] nothing checked that persisting one speaker keeps the other speakers'
+  remembered offsets on disk (a plausible regression if `persist` ever wrote only the
+  current selection) → added `test_set_offset_keeps_the_remembered_offsets_of_other_speakers`.
+- [edge case] the "blank `XDG_STATE_HOME` falls back to `HOME`" branch of the path
+  resolution had no coverage → added a case to the single existing env-mutating test
+  (deliberately not a second test: env mutation is process-wide and two mutating
+  tests in one binary would race).
 
-## Security review (no code change needed — verified clean)
-- No client secret anywhere; only the public `client_id` (env-overridable) is used, consistent with the PKCE public-client flow.
-- `code_verifier` never leaves the server: minted in `authorize_url`, stored in `Pending`, sent only to the token endpoint; only the derived `code_challenge` is placed in the authorize URL.
-- CSRF `state` is validated on callback: `exchange_code` does `pending.take().filter(|p| p.state == state)`, rejecting a mismatch with a 502-mapped `Exchange` error and consuming the pending authorization.
-- Tokens are in-memory only (`Option<Tokens>`); dropping them on `disconnect()` returns to Disconnected.
-- No tokens/codes are logged: `SpotifyApiError`'s `Display` and the `Exchange(String)` payload carry only reqwest/status text, and `AppError::into_response` logs that message — never a token or code. No `tracing` call touches the code/token.
-- SSE resilience: `spotify_now_playing` ignores per-tick `Err` (incl. `NotConnected` while Disconnected) and keeps the stream alive via keep-alive; a dropped client just ends the stream. Note: the single `Arc<Mutex<SpotifyAuth>>` means a slow now-playing HTTP fetch briefly blocks a concurrent transport call for that request's duration — acceptable for this single-user backend and out of scope to redesign here.
+## Reviewed and deliberately left as-is
+- **Test isolation of `app()`**: the phase-6.1 unit test builds the real `app()`, which
+  loads the real `~/.local/state/blue2th/offsets.json` — same as the pre-existing health
+  test and `tests/transport.rs`/`tests/spotify.rs`, which already load the real Spotify
+  token store. It is read-only: a write only happens through `set_offset` on a *selected*
+  speaker, which requires a connected BlueZ device. Verified empirically — a full
+  `cargo test --workspace` neither creates `offsets.json` nor changes the token store's
+  checksum. Every route test that could write (`tests/offsets.rs`) uses the store-free
+  `app_with_auth`.
+- **Best-effort I/O**: `set_target_offset` returns `Json<TargetsState>` unconditionally and
+  `persist()` only logs a `tracing::warn!` — an unwritable store never turns
+  `POST /devices/{addr}/offset` into an error. Covered by
+  `test_set_offset_with_unwritable_store_still_applies_to_the_session`.
+- **Blocking `fs::write` inside the async handler** (under the `tokio::Mutex`): a sub-kilobyte
+  write per slider drag, and identical to the existing token-store pattern. Moving it to
+  `spawn_blocking` would add real complexity for no measurable gain.
+- **Non-atomic write / `HashMap` key ordering**: a torn write degrades to "nothing
+  remembered", which the design already tolerates by contract, and the file is
+  machine-written. Not worth diverging from the token-store pattern.
 
 ## New Tests Added
-- `test_parse_now_playing_no_item_is_idle`: a 200 `{}` body (no active track) maps to `NowPlayingState::Idle` with no title/artist.
-- `test_parse_now_playing_malformed_body_is_idle`: a non-JSON body is treated as Idle, so a transient bad payload cannot break the SSE feed.
+- `test_save_offsets_creates_the_missing_store_directory`: first run — the app-scoped
+  state directory (nested, possibly missing state home) is created rather than erroring.
+- `test_set_offset_keeps_the_remembered_offsets_of_other_speakers`: persisting speaker A's
+  offset preserves B's and C's seeded values on disk.
+- extended `test_offsets_store_path_is_app_scoped_and_honours_xdg_state_home`: a blank
+  `XDG_STATE_HOME` falls back to `HOME`, not to the filesystem root.
 
 ## Final Status
-- `cargo test --workspace`: ✅ all passed (server lib now 63, incl. 2 new)
-- `cargo fmt --check`: ✅ clean (only pre-existing nightly-only rustfmt option warnings)
-- `cargo clippy --workspace --all-targets -- -D warnings …`: ✅ clean
-- `dx build --platform android`: ✅ success
+- `cargo test --workspace`: ✅ 249 passed (0 failed, 1 ignored — the manual PipeWire test)
+- `cargo clippy --workspace`: ✅ clean (with `-D warnings -W clippy::unwrap_used
+  -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable
+  -W clippy::unimplemented`)
+- `cargo fmt --check`: ✅ clean
+- `cargo build --workspace`: ✅ exit 0
+- `dx build --platform android`: ⏭️ skipped (mobile not affected)
