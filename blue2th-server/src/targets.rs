@@ -24,29 +24,55 @@ pub fn clamp_offset(ms: u32) -> u32 {
     ms.min(MAX_OFFSET_MS)
 }
 
+/// File holding the remembered offsets, under the app's state directory.
+const OFFSETS_STORE_FILE: &str = "offsets.json";
+
 /// Path of the file remembering each speaker's tuned offset:
 /// `$XDG_STATE_HOME/blue2th/offsets.json` (or `~/.local/state/blue2th/offsets.json`).
 /// `None` when neither variable is set, in which case offsets stay in memory only.
-///
-/// STUB (phase 6.1 red): not implemented yet.
 pub fn offsets_store_path() -> Option<std::path::PathBuf> {
-    todo!("phase 6.1: derive the offsets store path from XDG_STATE_HOME / HOME")
+    let base = std::env::var("XDG_STATE_HOME")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|h| !h.trim().is_empty())
+                .map(|h| format!("{h}/.local/state"))
+        })?;
+    Some(
+        std::path::PathBuf::from(base)
+            .join("blue2th")
+            .join(OFFSETS_STORE_FILE),
+    )
 }
 
 /// Read the remembered `address → offset_ms` table. A missing, unreadable or
 /// malformed file simply means "nothing remembered yet" — never an error.
 ///
-/// STUB (phase 6.1 red): not implemented yet.
-fn load_offsets(_path: Option<&std::path::Path>) -> HashMap<String, u32> {
-    todo!("phase 6.1: read the remembered offsets, tolerating a missing/broken file")
+/// Values are clamped on the way in: a hand-edited file must not bypass the bound.
+fn load_offsets(path: Option<&std::path::Path>) -> HashMap<String, u32> {
+    let Some(path) = path else {
+        return HashMap::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let parsed: HashMap<String, u32> = serde_json::from_str(&raw).unwrap_or_default();
+    parsed
+        .into_iter()
+        .map(|(addr, ms)| (addr, clamp_offset(ms)))
+        .collect()
 }
 
 /// Persist the remembered `address → offset_ms` table. Failures are reported to
 /// the caller, which logs them: losing persistence must never break a slider drag.
-///
-/// STUB (phase 6.1 red): not implemented yet.
-fn save_offsets(_path: &std::path::Path, _offsets: &HashMap<String, u32>) -> std::io::Result<()> {
-    todo!("phase 6.1: write the remembered offsets to the store")
+fn save_offsets(path: &std::path::Path, offsets: &HashMap<String, u32>) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string(offsets).map_err(std::io::Error::other)?;
+    std::fs::write(path, body)
 }
 
 /// Why a `select` request was rejected. The route layer maps this to a 4xx.
@@ -80,15 +106,19 @@ impl SpeakerTargets {
     }
 
     /// A selection backed by a remembered-offsets store, loaded on construction.
-    ///
-    /// STUB (phase 6.1 red): not implemented yet.
-    pub fn with_store(_store: Option<std::path::PathBuf>) -> Self {
-        todo!("phase 6.1: build a selection that restores the remembered offsets")
+    /// Only the offsets are restored: the selection itself always starts empty.
+    pub fn with_store(store: Option<std::path::PathBuf>) -> Self {
+        Self {
+            speakers: Vec::new(),
+            remembered: load_offsets(store.as_deref()),
+            store,
+        }
     }
 
     /// Select `addr` as a playback target. Rejects an address that is not in
     /// `connected`, rejects a third selection (cap 2), and is idempotent for an
-    /// already-selected address. A freshly selected speaker starts at offset `0`.
+    /// already-selected address. A freshly selected speaker starts at its
+    /// remembered offset, or `0` when nothing was ever tuned for it.
     pub fn select(&mut self, addr: &str, connected: &[String]) -> Result<(), SelectError> {
         if self.speakers.iter().any(|s| s.address == addr) {
             // Idempotent: already selected.
@@ -100,9 +130,16 @@ impl SpeakerTargets {
         if self.speakers.len() >= MAX_TARGETS {
             return Err(SelectError::CapExceeded);
         }
+        // A hand-edited store could hold anything: clamp on restore too.
+        let offset_ms = self
+            .remembered
+            .get(addr)
+            .copied()
+            .map(clamp_offset)
+            .unwrap_or(0);
         self.speakers.push(SpeakerTarget {
             address: addr.to_string(),
-            offset_ms: 0,
+            offset_ms,
         });
         Ok(())
     }
@@ -113,10 +150,27 @@ impl SpeakerTargets {
     }
 
     /// Set the per-speaker offset (clamped to `0..=MAX_OFFSET_MS`). No-op if the
-    /// address is not currently selected.
+    /// address is not currently selected. The clamped value is remembered for that
+    /// address and persisted, so it survives a deselection and a restart.
     pub fn set_offset(&mut self, addr: &str, ms: u32) {
-        if let Some(target) = self.speakers.iter_mut().find(|s| s.address == addr) {
-            target.offset_ms = clamp_offset(ms);
+        let Some(target) = self.speakers.iter_mut().find(|s| s.address == addr) else {
+            return;
+        };
+        let offset_ms = clamp_offset(ms);
+        target.offset_ms = offset_ms;
+        self.remembered.insert(addr.to_string(), offset_ms);
+        self.persist();
+    }
+
+    /// Write the remembered offsets to the store, if this selection has one. A
+    /// failure is logged, never propagated: losing the tuning across a restart
+    /// must not turn a slider drag into an error response.
+    fn persist(&self) {
+        let Some(path) = self.store.as_deref() else {
+            return;
+        };
+        if let Err(e) = save_offsets(path, &self.remembered) {
+            tracing::warn!("could not persist the remembered speaker offsets: {e}");
         }
     }
 

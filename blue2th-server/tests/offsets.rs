@@ -28,6 +28,9 @@ fn build_app() -> axum::Router {
 }
 
 /// Read a `TargetsState` out of a route response body.
+// Test-only helper: clippy's `allow-expect-in-tests` only covers `#[test]`
+// functions and `#[cfg(test)]` modules, not a free helper in an integration test.
+#[allow(clippy::expect_used)]
 async fn targets_state(response: axum::response::Response) -> TargetsState {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await

@@ -86,21 +86,32 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// it in-process without binding a socket.
 pub fn app() -> Router {
     // The env-built driver restores the persisted refresh token, so a restart
-    // keeps the user logged in.
-    app_with_auth(SpotifyAuth::new())
+    // keeps the user logged in; the store-backed selection restores each
+    // speaker's tuned offset the same way.
+    app_with_auth_and_targets(
+        SpotifyAuth::new(),
+        SpeakerTargets::with_store(targets::offsets_store_path()),
+    )
 }
 
 /// Build the router around an explicit Spotify auth driver. Tests use this with
 /// `SpotifyAuth::with_config`, which never touches the on-disk token store — so a
-/// test run can neither read nor clobber the real user's credential.
+/// test run can neither read nor clobber the real user's credential. The selection
+/// is store-free for the same reason.
 pub fn app_with_auth(spotify_auth: SpotifyAuth) -> Router {
+    app_with_auth_and_targets(spotify_auth, SpeakerTargets::new())
+}
+
+/// Build the router around an explicit Spotify auth driver and an explicit
+/// playback selection, so the on-disk seams stay in the caller's hands.
+fn app_with_auth_and_targets(spotify_auth: SpotifyAuth, speaker_targets: SpeakerTargets) -> Router {
     let state = AppState {
         // Real playback output (rodio → PipeWire); the device is opened lazily on
         // the first `/play`, so building the router stays cheap and CI-safe.
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
             RodioOutput::new(),
         )))),
-        targets: Arc::new(Mutex::new(SpeakerTargets::new())),
+        targets: Arc::new(Mutex::new(speaker_targets)),
         connected: Arc::new(Mutex::new(Vec::new())),
         spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
         spotify_auth: Arc::new(Mutex::new(spotify_auth)),
