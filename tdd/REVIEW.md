@@ -1,72 +1,102 @@
-# Review Report — Phase 6.1 — Remember each speaker's sync offset across restarts
+# Review Report — Phase 6.2 — Settings page: manage backends and their name
 
 ## Affected Layers
-server (`blue2th-server`) — `blue2th-proto` untouched, mobile untouched.
+mobile, server, proto (proto reviewed only: no change needed — it stayed
+target-agnostic, serde-only, and the shared name rule is genuinely the single
+source of truth for both the app and the server).
 
 ## Issues Found & Fixed
-- [duplication] `blue2th-server/src/targets.rs:33` — `offsets_store_path()` duplicated
-  verbatim the XDG resolution of `spotify_auth::token_store_path()` (blank-value
-  filtering, `HOME` fallback, `blue2th/` scoping) → extracted into a new
-  `blue2th-server/src/state_store.rs` (`state_store_path(file)`), now used by both
-  stores, so the state-directory rules live in exactly one place.
-- [clippy] `blue2th-server/tests/offsets.rs:33` — the GREEN phase silenced
-  `clippy::expect_used` on the `targets_state` helper with an `#[allow]`. The lint
-  was indeed firing (`allow-expect-in-tests` does not cover a free helper in an
-  integration-test binary), but the `#[allow]` was not the right answer: the helper
-  now returns `Result<TargetsState, String>` and the two `#[tokio::test]` functions
-  assert with `expect`, which clippy allows. The `#[allow]` is gone and a decode
-  failure now reports which step failed.
-- [test isolation] `blue2th-server/src/targets.rs:496` —
-  `test_offsets_store_path_is_app_scoped_and_honours_xdg_state_home` asserted while
-  `XDG_STATE_HOME`/`HOME` were still overridden; a failing assertion would panic
-  before the restore block and leave the *whole* lib test binary running with a
-  bogus `HOME`, cascading unrelated failures. It now resolves the three paths,
-  restores the process env, and only then asserts.
-- [edge case] `save_offsets` never exercised its `create_dir_all` branch — every
-  test seeded an existing directory, so the real first-run case (`~/.local/state/blue2th`
-  does not exist yet) was untested → added
-  `test_save_offsets_creates_the_missing_store_directory`.
-- [edge case] nothing checked that persisting one speaker keeps the other speakers'
-  remembered offsets on disk (a plausible regression if `persist` ever wrote only the
-  current selection) → added `test_set_offset_keeps_the_remembered_offsets_of_other_speakers`.
-- [edge case] the "blank `XDG_STATE_HOME` falls back to `HOME`" branch of the path
-  resolution had no coverage → added a case to the single existing env-mutating test
-  (deliberately not a second test: env mutation is process-wide and two mutating
-  tests in one binary would race).
 
-## Reviewed and deliberately left as-is
-- **Test isolation of `app()`**: the phase-6.1 unit test builds the real `app()`, which
-  loads the real `~/.local/state/blue2th/offsets.json` — same as the pre-existing health
-  test and `tests/transport.rs`/`tests/spotify.rs`, which already load the real Spotify
-  token store. It is read-only: a write only happens through `set_offset` on a *selected*
-  speaker, which requires a connected BlueZ device. Verified empirically — a full
-  `cargo test --workspace` neither creates `offsets.json` nor changes the token store's
-  checksum. Every route test that could write (`tests/offsets.rs`) uses the store-free
-  `app_with_auth`.
-- **Best-effort I/O**: `set_target_offset` returns `Json<TargetsState>` unconditionally and
-  `persist()` only logs a `tracing::warn!` — an unwritable store never turns
-  `POST /devices/{addr}/offset` into an error. Covered by
-  `test_set_offset_with_unwritable_store_still_applies_to_the_session`.
-- **Blocking `fs::write` inside the async handler** (under the `tokio::Mutex`): a sub-kilobyte
-  write per slider drag, and identical to the existing token-store pattern. Moving it to
-  `spawn_blocking` would add real complexity for no measurable gain.
-- **Non-atomic write / `HashMap` key ordering**: a torn write degrades to "nothing
-  remembered", which the design already tolerates by contract, and the file is
-  machine-written. Not worth diverging from the token-store pattern.
+- [regression] `locales/en.yaml` / `locales/fr.yaml` — the phase added a **second
+  top-level `settings:` key**, so the per-device settings page lost every one of
+  its translations (`settings.volume`, `settings.alias`, `settings.forget`, … all
+  rendered as the raw key on the device), and `settings.title` collided with the
+  new page's title → the app-wide page now owns an `app_settings:` namespace, the
+  device page keeps `settings:`, and the 14 call sites in `src/main.rs` were
+  rewritten. Verified empirically (`rust_i18n::t!` resolution) before and after.
+- [logic] `src/backend.rs:activate_backend` — re-activating the backend already in
+  use paused it (`pause_at(previous)` fired with `previous == next`), i.e. the
+  opposite of what the tap asked for; only the UI guarded it → extracted the pure
+  `is_left_behind()` predicate, used before pausing, with three tests.
+- [logic] `src/backend.rs:activate_backend` — the name push went through
+  `set_config()`, which re-resolved the address from the *process-wide cache*; a
+  second switch landing meanwhile would have pushed the name to the wrong backend
+  → added `set_config_at(base, name)`, addressed with the URL captured from the
+  entry that was just activated.
+- [robustness] `src/backend.rs` — none of the settings-page calls had a timeout, and
+  `reqwest` has none by default: a mistyped LAN address that drops packets left the
+  `Test` button waiting forever and leaked one task per switch → bounded
+  `test_backend`, `pause_at` and the config push with `SETTINGS_CALL_TIMEOUT` (5 s).
+- [dead code] `src/backend.rs` — `get_config()` and the `set_config()` wrapper had
+  no caller; the Android build reported them as `dead_code` (host clippy hid them
+  behind `cfg_attr(not(android), allow(dead_code))`) → removed. `dx build` is now
+  warning-free.
+- [mobile/JNI] `src/settings.rs:read_stored` — unlike its sibling `write_stored`
+  and unlike `src/deep_link.rs`, the read seam returned `None` on a failed JNI call
+  **without clearing the pending exception**, which aborts the process on the next
+  JNI call → wrapped in the same closure + `exception_clear()` pattern, so a
+  failure really degrades to "nothing stored".
+- [error handling] `blue2th-server/src/lib.rs:set_config` — `let _ = spotify.stop();`
+  silently discarded the error before the rename restart → logged with
+  `tracing::warn!`, like the `start()` next to it.
+- [docs] `blue2th-server/src/spotify_auth.rs:408` — the new `set_device_name` was
+  inserted *under* `auth_state`'s doc comment, leaving `auth_state` undocumented and
+  `set_device_name` carrying an unrelated first line → doc comments reattached.
+- [duplication] `blue2th-server/src/spotify.rs` — `SpotifyBackend::new()` and
+  `with_name()` were two copies of the same struct literal → `new()` now delegates
+  to `with_name(SPOTIFY_DEVICE_NAME)`.
+- [ui state] `src/main.rs:BackendStatus` / `AppSettingsPage` — the entry lists took a
+  nested second `app_settings.read()` per row for the active index → one snapshot per
+  render, so names and the active marker can never come from different reads.
+- [ui state] `src/main.rs:AppSettingsPage` — `notice` ("backend answered") and `error`
+  were never cleared against each other, so a stale success sat next to a fresh
+  failure; and `next.activate(last)` after the first add swallowed its error with
+  `let _ =` → exactly one message is shown per action, and the activation failure is
+  surfaced.
+- [naming] `src/settings.rs:write_stored` — the local holding the write outcome was
+  called `stored` (copied from the read seam) → `written`.
+- [docs] `docs/ROADMAP.md` — the pending item still described `BLUE2TH_BACKEND_URL`
+  read via `option_env!` as the current state, which phase 6.2 removed → rewritten as
+  "mDNS discovery", the part that is actually left.
+
+### Checked, no change needed
+- **Test isolation** (verified empirically, not by reading): `~/.local/state/blue2th/`
+  was byte-identical (md5 + mtime) before and after a full `cargo test --workspace`,
+  and no `name.json` was created — `ServerName::new()`, `with_store(None)` and
+  `SpotifyAuth::with_config` all stay off-disk.
+- **The settings cache guard**: the process-wide cache is touched by exactly two
+  tests, both in `src/backend.rs`'s module, both taking `SETTINGS_GUARD`; the
+  integration binary `tests/settings.rs` is a separate process and only exercises the
+  pure functions. The `tokio::sync::Mutex` is the right choice (the guard is held
+  across `await`s) and the "assert nothing configured" test also resets the cache on
+  entry, so a failing peer cannot cascade into it.
+- **Activation ordering**: the local switch + persist happens before any network
+  step, and both remote steps are best-effort, so a failure can never leave the app
+  on a backend the user did not choose.
+- **Layer hygiene**: `blue2th-proto` gained only serde DTOs, two constants and a pure
+  validator — no platform or hardware dependency; `blue2th-server` re-validates with
+  that same rule; every `SPOTIFY_DEVICE_NAME` use left is a *default*, never a lookup
+  key (the Web API lookup now takes `&self.device_name`).
 
 ## New Tests Added
-- `test_save_offsets_creates_the_missing_store_directory`: first run — the app-scoped
-  state directory (nested, possibly missing state home) is created rather than erroring.
-- `test_set_offset_keeps_the_remembered_offsets_of_other_speakers`: persisting speaker A's
-  offset preserves B's and C's seeded values on disk.
-- extended `test_offsets_store_path_is_app_scoped_and_honours_xdg_state_home`: a blank
-  `XDG_STATE_HOME` falls back to `HOME`, not to the filesystem root.
+- `test_is_left_behind_is_true_for_another_backend`: switching to a different backend
+  quietens the one being left.
+- `test_is_left_behind_is_false_for_the_same_backend`: re-activating the current
+  backend must not pause it.
+- `test_is_left_behind_is_true_when_nothing_is_active`: with no target left, the
+  previous backend is still quietened.
+- `test_remove_unknown_index_is_refused`: deleting a row that is already gone (stale
+  render, double tap) is refused instead of panicking, on both a filled and an empty
+  list.
+- `test_add_accepts_a_name_freed_by_a_deletion`: the duplicate check looks at the
+  current list, not at a history of names.
+- `test_locales_carry_both_settings_pages_labels`: every `app_settings.*` **and**
+  `settings.*` key resolves in `en` and `fr` — the regression test for the duplicate
+  YAML key that silently un-translated the device page.
 
 ## Final Status
-- `cargo test --workspace`: ✅ 249 passed (0 failed, 1 ignored — the manual PipeWire test)
-- `cargo clippy --workspace`: ✅ clean (with `-D warnings -W clippy::unwrap_used
-  -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable
-  -W clippy::unimplemented`)
+- `cargo test --workspace`: ✅ 325 passed (316 before), 1 ignored (needs a live PipeWire daemon)
+- `cargo clippy --workspace`: ✅ clean (with `-D warnings` and the unwrap/expect/panic lints)
 - `cargo fmt --check`: ✅ clean
 - `cargo build --workspace`: ✅ exit 0
-- `dx build --platform android`: ⏭️ skipped (mobile not affected)
+- `dx build --platform android`: ✅ success, and now warning-free
