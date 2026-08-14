@@ -177,6 +177,99 @@ async fn test_post_config_rejects_a_malformed_body() {
     );
 }
 
+// ---- phase 6.3: the restore-during-playback setting ----
+
+// Criterion: `GET /config` reports the flag, with its default — a fresh server
+// restores a returning speaker even mid-playback until told otherwise.
+#[tokio::test]
+async fn test_get_config_on_a_fresh_router_reports_restoration_enabled() {
+    let config = get_config(build_app()).await.expect("GET /config");
+    assert!(config.restore_during_playback, "the setting defaults to on");
+}
+
+// Criterion: `POST /config` stores the flag and `GET /config` reflects it, in
+// both directions.
+#[tokio::test]
+async fn test_post_config_stores_the_restore_flag_and_get_reflects_it() {
+    // Cloned so both requests hit the same router state (oneshot consumes it).
+    let app = build_app();
+    let (status, body) = post_config(
+        app.clone(),
+        r#"{"name":"Salon","restore_during_playback":false}"#,
+    )
+    .await
+    .expect("POST /config");
+    assert_eq!(status, StatusCode::OK, "body was {body}");
+    let echoed: ServerConfig = serde_json::from_str(&body).expect("parse the POST response");
+    assert!(
+        !echoed.restore_during_playback,
+        "the response must echo what was stored"
+    );
+
+    let config = get_config(app.clone()).await.expect("GET /config");
+    assert_eq!(config.name, "Salon");
+    assert!(!config.restore_during_playback, "the flag must be stored");
+
+    let (status, _) = post_config(
+        app.clone(),
+        r#"{"name":"Salon","restore_during_playback":true}"#,
+    )
+    .await
+    .expect("POST /config");
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        get_config(app)
+            .await
+            .expect("GET /config")
+            .restore_during_playback,
+        "turning the setting back on must be stored too"
+    );
+}
+
+// Criterion (non-nominal: old client, new server): a body carrying only a name
+// is still accepted, and the flag falls back to its default rather than
+// silently disabling restoration.
+#[tokio::test]
+async fn test_post_config_with_only_a_name_still_succeeds() {
+    let app = build_app();
+    let (status, body) = post_config(app.clone(), r#"{"name":"Salon"}"#)
+        .await
+        .expect("POST /config");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a phase 6.2 client must keep working, got {status}: {body}"
+    );
+
+    let config = get_config(app).await.expect("GET /config");
+    assert_eq!(config.name, "Salon");
+    assert!(
+        config.restore_during_playback,
+        "a name-only push must leave restoration on (the default)"
+    );
+}
+
+// Criterion: a rejected name changes nothing at all — the flag carried by a
+// refused body must not be applied either.
+#[tokio::test]
+async fn test_rejected_config_body_does_not_apply_the_restore_flag() {
+    let app = build_app();
+    let (status, _) = post_config(
+        app.clone(),
+        r#"{"name":"2salon","restore_during_playback":false}"#,
+    )
+    .await
+    .expect("POST /config");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let config = get_config(app).await.expect("GET /config");
+    assert_eq!(config.name, DEFAULT_BACKEND_NAME);
+    assert!(
+        config.restore_during_playback,
+        "a refused body must leave the setting untouched"
+    );
+}
+
 // Criterion: no regression from threading the name through `transport()` — a
 // transport call while Disconnected still returns 409 (and never reaches the
 // network).

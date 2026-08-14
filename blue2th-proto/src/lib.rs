@@ -314,6 +314,13 @@ pub fn validate_backend_name(raw: &str) -> Result<String, NameError> {
 pub struct ServerConfig {
     /// The configured backend name (also its Spotify Connect device name).
     pub name: String,
+    /// Whether a remembered speaker that comes back mid-playback is re-selected
+    /// straight away (phase 6.3). Opting in accepts a brief cut, since moving the
+    /// target sink respawns `librespot`. Defaults to on.
+    // STUB (phase 6.3): the field exists so the tests compile; the default must
+    // become "on" and the flag must be carried end to end.
+    #[serde(default)]
+    pub restore_during_playback: bool,
 }
 
 /// Body of `POST /config` — the name the app pushes to the backend.
@@ -321,6 +328,11 @@ pub struct ServerConfig {
 pub struct ConfigRequest {
     /// The desired backend name; the server re-validates and trims it.
     pub name: String,
+    /// Whether the backend may restore a returning speaker while playback runs.
+    /// `serde(default)` keeps a phase 6.2 client (name only) working.
+    // STUB (phase 6.3): see `ServerConfig::restore_during_playback`.
+    #[serde(default)]
+    pub restore_during_playback: bool,
 }
 
 #[cfg(test)]
@@ -663,28 +675,79 @@ mod tests {
         assert_eq!(json, r#"{"presence":"background"}"#);
     }
 
-    // Criterion (phase 6.2): the config DTO (`ServerConfig`) round-trips through serde.
+    // Criterion (phase 6.2 + 6.3): the config DTO (`ServerConfig`) round-trips
+    // through serde, restore flag included.
     #[test]
     fn test_server_config_round_trips_through_json() {
         let original = ServerConfig {
             name: "Salon".to_string(),
+            restore_during_playback: false,
         };
         let json = serde_json::to_string(&original).expect("serialize ServerConfig");
         let parsed: ServerConfig = serde_json::from_str(&json).expect("deserialize ServerConfig");
         assert_eq!(original, parsed);
-        assert_eq!(json, r#"{"name":"Salon"}"#);
+        assert!(
+            json.contains("\"name\":\"Salon\""),
+            "the name must stay on the wire, got {json}"
+        );
+        assert!(
+            json.contains("\"restore_during_playback\":false"),
+            "the restore flag must be on the wire, got {json}"
+        );
     }
 
-    // Criterion (phase 6.2): the name request DTO (`ConfigRequest`) round-trips
-    // through serde — it is what the app pushes to `POST /config`.
+    // Criterion (phase 6.2 + 6.3): the config request DTO (`ConfigRequest`)
+    // round-trips through serde — it is what the app pushes to `POST /config`.
     #[test]
     fn test_config_request_round_trips_through_json() {
         let original = ConfigRequest {
             name: "blue2th-PC".to_string(),
+            restore_during_playback: true,
         };
         let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
         let parsed: ConfigRequest = serde_json::from_str(&json).expect("deserialize ConfigRequest");
         assert_eq!(original, parsed);
+        assert!(
+            parsed.restore_during_playback,
+            "the flag must survive the round-trip, got {json}"
+        );
+    }
+
+    // Criterion (phase 6.3): `ConfigRequest` gains `restore_during_playback` with
+    // `serde(default)` — a phase 6.2 client pushing only a name must still parse
+    // (non-nominal: old client, new server), and the default is **on**.
+    #[test]
+    fn test_config_request_without_the_flag_defaults_to_restoring() {
+        let parsed: ConfigRequest =
+            serde_json::from_str(r#"{"name":"Salon"}"#).expect("a name-only body must still parse");
+        assert_eq!(parsed.name, "Salon");
+        assert!(
+            parsed.restore_during_playback,
+            "the setting defaults to on, so a name-only body must not silently disable restoration"
+        );
+    }
+
+    // Criterion (phase 6.3): `ServerConfig` carries the same `serde(default)`, so
+    // a phase 6.2-era payload (or on-disk store) still decodes, restoration on.
+    #[test]
+    fn test_server_config_without_the_flag_defaults_to_restoring() {
+        let parsed: ServerConfig = serde_json::from_str(r#"{"name":"blue2th-PC"}"#)
+            .expect("a name-only payload must still parse");
+        assert_eq!(parsed.name, "blue2th-PC");
+        assert!(parsed.restore_during_playback, "the setting defaults to on");
+    }
+
+    // Criterion (phase 6.3): the flag is a real boolean on the wire — an explicit
+    // `false` is honoured and never overwritten by the default.
+    #[test]
+    fn test_config_request_explicit_false_is_honoured() {
+        let parsed: ConfigRequest =
+            serde_json::from_str(r#"{"name":"Salon","restore_during_playback":false}"#)
+                .expect("an explicit flag must parse");
+        assert!(
+            !parsed.restore_during_playback,
+            "an explicit false must survive the default"
+        );
     }
 
     // Criterion (phase 6.2): `validate_backend_name` accepts `Salon`, `blue2th-PC`,

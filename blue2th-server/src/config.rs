@@ -25,6 +25,9 @@ pub fn name_store_path() -> Option<std::path::PathBuf> {
 pub struct ServerName {
     /// The current name; the default until the app configures another one.
     name: String,
+    /// Whether a remembered speaker coming back mid-playback is re-selected
+    /// straight away (phase 6.3). Persisted next to the name; defaults to on.
+    restore_during_playback: bool,
     /// Where the name is persisted, or `None` to stay in memory only.
     store: Option<std::path::PathBuf>,
 }
@@ -47,6 +50,8 @@ fn save_name(path: &std::path::Path, name: &str) -> std::io::Result<()> {
     let body = serde_json::to_string(&ServerConfig {
         // Owned copy: `ServerConfig` is a plain DTO built for serialization.
         name: name.to_string(),
+        // STUB (phase 6.3): the flag must be persisted next to the name.
+        restore_during_playback: false,
     })
     .map_err(std::io::Error::other)?;
     std::fs::write(path, body)
@@ -58,6 +63,8 @@ impl ServerName {
     pub fn new() -> Self {
         Self {
             name: DEFAULT_BACKEND_NAME.to_string(),
+            // STUB (phase 6.3): the setting defaults to on.
+            restore_during_playback: false,
             store: None,
         }
     }
@@ -67,6 +74,8 @@ impl ServerName {
     pub fn with_store(store: Option<std::path::PathBuf>) -> Self {
         Self {
             name: load_name(store.as_deref()).unwrap_or_else(|| DEFAULT_BACKEND_NAME.to_string()),
+            // STUB (phase 6.3): reload the flag from the store here.
+            restore_during_playback: false,
             store,
         }
     }
@@ -74,6 +83,17 @@ impl ServerName {
     /// The current name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Whether a returning speaker may be restored while playback runs.
+    pub fn restore_during_playback(&self) -> bool {
+        self.restore_during_playback
+    }
+
+    /// Store and persist the restore-during-playback setting.
+    pub fn set_restore_during_playback(&mut self, _enabled: bool) {
+        // STUB (phase 6.3).
+        todo!("phase 6.3: store and persist the restore-during-playback setting")
     }
 
     /// Validate (shared proto rule), trim, store and persist a new name,
@@ -219,6 +239,98 @@ mod tests {
         let config = ServerName::with_store(None);
         assert!(config.store.is_none());
         assert_eq!(config.name(), DEFAULT_BACKEND_NAME);
+    }
+
+    // ---- phase 6.3: the restore-during-playback setting ----
+
+    // Criterion: the setting defaults to **on** — a fresh server restores a
+    // returning speaker even mid-playback until the user says otherwise.
+    #[test]
+    fn test_new_defaults_to_restoring_during_playback() {
+        assert!(ServerName::new().restore_during_playback());
+        assert!(ServerName::with_store(None).restore_during_playback());
+    }
+
+    // Criterion: `POST /config` stores the flag — the setter applies it.
+    #[test]
+    fn test_set_restore_during_playback_applies_the_value() {
+        let mut config = ServerName::new();
+        config.set_restore_during_playback(false);
+        assert!(!config.restore_during_playback());
+        config.set_restore_during_playback(true);
+        assert!(config.restore_during_playback());
+    }
+
+    // Criterion: the flag survives the store round-trip — it is persisted with
+    // the name and reloaded on restart.
+    #[test]
+    fn test_restore_flag_round_trips_through_the_store() {
+        let path = store_path("restore-roundtrip");
+        {
+            let mut config = ServerName::with_store(Some(path.clone()));
+            config.set_name("Salon").expect("store a valid name");
+            config.set_restore_during_playback(false);
+        }
+
+        let reloaded = ServerName::with_store(Some(path.clone()));
+        assert_eq!(reloaded.name(), "Salon", "the name must still round-trip");
+        assert!(
+            !reloaded.restore_during_playback(),
+            "the flag must be persisted next to the name"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: renaming after the flag was turned off must not resurrect it —
+    // both values share one store, so one write may not clobber the other.
+    #[test]
+    fn test_setting_the_name_keeps_the_stored_restore_flag() {
+        let path = store_path("restore-and-rename");
+        {
+            let mut config = ServerName::with_store(Some(path.clone()));
+            config.set_restore_during_playback(false);
+            config.set_name("Bureau").expect("store a valid name");
+        }
+
+        let reloaded = ServerName::with_store(Some(path.clone()));
+        assert_eq!(reloaded.name(), "Bureau");
+        assert!(!reloaded.restore_during_playback());
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a phase 6.2-era store (name only, no flag) loads
+    // without error and carries the default — restoration on.
+    #[test]
+    fn test_a_phase_6_2_store_loads_with_restoration_enabled() {
+        let path = store_path("legacy-6-2");
+        std::fs::write(&path, r#"{"name":"Salon"}"#).expect("write a phase 6.2-era store");
+
+        let config = ServerName::with_store(Some(path.clone()));
+        assert_eq!(config.name(), "Salon");
+        assert!(
+            config.restore_during_playback(),
+            "a name-only store must default the flag to on, not to off"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a malformed store yields the defaults for both
+    // values rather than failing the startup.
+    #[test]
+    fn test_malformed_store_yields_the_default_restore_flag() {
+        let path = store_path("malformed-restore");
+        for blob in ["", "not json", r#"{"name": "#, "{}"] {
+            std::fs::write(&path, blob).expect("write the test store");
+            assert!(
+                ServerName::with_store(Some(path.clone())).restore_during_playback(),
+                "blob {blob:?} must fall back to restoration on"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
     }
 
     // Criterion: the store is app-scoped, next to the other blue2th state files.

@@ -426,6 +426,8 @@ async fn pause_spotify_now(state: &AppState) {
 async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
     Json(ServerConfig {
         name: state.name.lock().await.name().to_string(),
+        // STUB (phase 6.3): report the stored restore-during-playback setting.
+        restore_during_playback: false,
     })
 }
 
@@ -473,7 +475,11 @@ async fn set_config(
         }
     }
 
-    Ok(Json(ServerConfig { name }))
+    Ok(Json(ServerConfig {
+        name,
+        // STUB (phase 6.3): store `req.restore_during_playback` and report it back.
+        restore_during_playback: false,
+    }))
 }
 
 /// `GET /health` — liveness probe carrying the backend version.

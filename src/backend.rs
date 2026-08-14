@@ -87,7 +87,11 @@ fn config_url(base: &str) -> String {
 /// Addressed explicitly rather than through `backend_base_url()`: the only caller
 /// is [`activate_backend`], which must reach the backend it *just* switched to
 /// even if a concurrent switch has already moved the resolved address on.
-async fn set_config_at(base: &str, name: &str) -> Result<ServerConfig, BackendError> {
+async fn set_config_at(
+    base: &str,
+    name: &str,
+    _restore_during_playback: bool,
+) -> Result<ServerConfig, BackendError> {
     let url = config_url(base);
     let response = reqwest::Client::new()
         .post(&url)
@@ -95,6 +99,8 @@ async fn set_config_at(base: &str, name: &str) -> Result<ServerConfig, BackendEr
         .json(&ConfigRequest {
             // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
             name: name.to_string(),
+            // STUB (phase 6.3): the pushed body must carry the caller's flag.
+            restore_during_playback: false,
         })
         .send()
         .await
@@ -135,7 +141,7 @@ pub async fn push_active_name() {
     let Some(entry) = settings.active_backend() else {
         return;
     };
-    let _ = set_config_at(&entry.url, &entry.name).await;
+    let _ = set_config_at(&entry.url, &entry.name, entry.restore_during_playback).await;
 }
 
 /// Whether the backend at `previous` is really being left behind by a switch to
@@ -173,20 +179,20 @@ pub async fn activate_backend(
     // and the address is the one to push to whatever the cache does meanwhile.
     let target = settings
         .active_backend()
-        .map(|b| (b.url.clone(), b.name.clone()));
+        .map(|b| (b.url.clone(), b.name.clone(), b.restore_during_playback));
 
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
     let mut failure = None;
     if let Some(base) = previous {
-        if is_left_behind(&base, target.as_ref().map(|(url, _)| url.as_str())) {
+        if is_left_behind(&base, target.as_ref().map(|(url, _, _)| url.as_str())) {
             if let Err(e) = pause_at(&base).await {
                 failure = Some(e);
             }
         }
     }
-    if let Some((base, name)) = target {
-        if let Err(e) = set_config_at(&base, &name).await {
+    if let Some((base, name, restore_during_playback)) = target {
+        if let Err(e) = set_config_at(&base, &name, restore_during_playback).await {
             failure = Some(e);
         }
     }
@@ -886,6 +892,113 @@ mod tests {
 
         // Leave the process-wide cache as we found it, as the guard's contract says.
         crate::settings::set_current(AppSettings::default());
+    }
+
+    // ---- phase 6.3: the config push carries the restore setting ----
+
+    /// Extract the body of a raw HTTP request, once it has fully arrived.
+    /// `None` means "keep reading". Fallible rather than asserting: `clippy`'s
+    /// `allow-expect-in-tests` does not excuse a helper from panicking, and the
+    /// test function is the right place to fail.
+    fn request_body(raw: &[u8]) -> Option<String> {
+        let text = String::from_utf8_lossy(raw).to_string();
+        let (head, body) = text.split_once("\r\n\r\n")?;
+        let length: usize = head.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())
+                .flatten()
+        })?;
+        (body.len() >= length).then(|| body[..length].to_string())
+    }
+
+    /// Run one `set_config_at` against a throwaway loopback listener and return
+    /// the JSON body it pushed. No real backend, no hardware: the point is what
+    /// goes on the wire.
+    async fn captured_config_push(
+        name: &str,
+        restore_during_playback: bool,
+    ) -> Result<serde_json::Value, String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("bind the test listener: {e}"))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| format!("read the test listener address: {e}"))?;
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .map_err(|e| format!("accept: {e}"))?;
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let body = loop {
+                match request_body(&raw) {
+                    Some(body) => break body,
+                    None => {
+                        let read = stream
+                            .read(&mut chunk)
+                            .await
+                            .map_err(|e| format!("read the request: {e}"))?;
+                        if read == 0 {
+                            return Err("the client closed before sending a body".to_string());
+                        }
+                        raw.extend_from_slice(&chunk[..read]);
+                    },
+                }
+            };
+            // A well-formed `ServerConfig` so the client's decode step succeeds.
+            let payload = r#"{"name":"Salon","restore_during_playback":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{payload}",
+                payload.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .map_err(|e| format!("write the response: {e}"))?;
+            let _ = stream.flush().await;
+            Ok::<String, String>(body)
+        });
+
+        let base = format!("http://{addr}");
+        let pushed = set_config_at(&base, name, restore_during_playback).await;
+        let body = server
+            .await
+            .map_err(|e| format!("join the test listener: {e}"))??;
+        pushed.map_err(|e| format!("set_config_at: {e}"))?;
+        serde_json::from_str(&body).map_err(|e| format!("parse the pushed body ({body}): {e}"))
+    }
+
+    // Criterion (phase 6.3): the config push carries the flag — `POST /config`
+    // sends `restore_during_playback` next to the name, in both states.
+    #[tokio::test]
+    async fn test_config_push_carries_the_restore_flag() {
+        let pushed = captured_config_push("Salon", true)
+            .await
+            .expect("push the config with the flag on");
+        assert_eq!(pushed.get("name").and_then(|v| v.as_str()), Some("Salon"));
+        assert_eq!(
+            pushed
+                .get("restore_during_playback")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "the pushed body must carry the caller's flag, got {pushed}"
+        );
+
+        let pushed = captured_config_push("Salon", false)
+            .await
+            .expect("push the config with the flag off");
+        assert_eq!(
+            pushed
+                .get("restore_during_playback")
+                .and_then(serde_json::Value::as_bool),
+            Some(false),
+            "turning the setting off must reach the backend, got {pushed}"
+        );
     }
 
     // Criterion (phase 6.2): switching backends quietens the one being left

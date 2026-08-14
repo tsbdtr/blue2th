@@ -24,6 +24,16 @@ pub fn clamp_offset(ms: u32) -> u32 {
     ms.min(MAX_OFFSET_MS)
 }
 
+/// Whether a returning speaker may be re-selected right now (phase 6.3).
+///
+/// Restoring mid-playback can move the target sink, which respawns `librespot`
+/// and cuts the sound for a moment: that is opt-in. With playback stopped the
+/// restoration is free and always allowed. Pure.
+pub fn should_restore(_playing: bool, _restore_during_playback: bool) -> bool {
+    // STUB (phase 6.3).
+    todo!("phase 6.3: gate the mid-playback restoration behind the setting")
+}
+
 /// File holding the remembered offsets, under the app's state directory.
 const OFFSETS_STORE_FILE: &str = "offsets.json";
 
@@ -78,6 +88,12 @@ pub enum SelectError {
 pub struct SpeakerTargets {
     /// Selected targets in selection order (capped at `MAX_TARGETS`).
     speakers: Vec<SpeakerTarget>,
+    /// The **intent**: addresses the user asked to play on, in the order they
+    /// were picked. Distinct from `speakers`, which is the live selection: losing
+    /// the radio prunes the latter and leaves this one alone, so a speaker that
+    /// comes back can be re-selected on its own (phase 6.3). Only an explicit
+    /// `deselect` clears an entry.
+    intended: Vec<String>,
     /// Last offset tuned for a speaker, by address — kept across deselection and
     /// (through `store`) across restarts. Not part of the API surface.
     remembered: HashMap<String, u32>,
@@ -97,9 +113,29 @@ impl SpeakerTargets {
     pub fn with_store(store: Option<std::path::PathBuf>) -> Self {
         Self {
             speakers: Vec::new(),
+            // STUB (phase 6.3): the remembered intent must be reloaded from the
+            // store here, so speakers that reconnect after a restart come back.
+            intended: Vec::new(),
             remembered: load_offsets(store.as_deref()),
             store,
         }
+    }
+
+    /// The remembered addresses that are connected again and not currently
+    /// selected, in remembered order, capped so the total selection never exceeds
+    /// [`MAX_TARGETS`]. Pure: it never evicts a speaker the user picked by hand.
+    pub fn restorable(&self, _connected: &[String]) -> Vec<String> {
+        // STUB (phase 6.3).
+        todo!("phase 6.3: derive the restorable addresses from the intent")
+    }
+
+    /// Re-select the remembered speakers that came back, returning whether the
+    /// selection actually changed. The caller re-routes only on `true`:
+    /// `sync_connected` runs on every `/devices` poll, so a second call with the
+    /// same input must report `false` rather than rebuild the PipeWire graph.
+    pub fn restore(&mut self, _connected: &[String]) -> bool {
+        // STUB (phase 6.3).
+        todo!("phase 6.3: restore the remembered speakers that are back")
     }
 
     /// Select `addr` as a playback target. Rejects an address that is not in
@@ -742,6 +778,458 @@ mod tests {
         assert_eq!(targets.speakers()[0].offset_ms, 330);
 
         let _ = std::fs::remove_file(&blocker);
+    }
+
+    // ---- phase 6.3: the intent, kept across a speaker going flat ----
+
+    /// The intent as a plain `Vec<&str>`-comparable list, for readable asserts.
+    fn intent(targets: &SpeakerTargets) -> Vec<String> {
+        // Clone: the assertions own their snapshot while the selection stays put.
+        targets.intended.clone()
+    }
+
+    /// The selected addresses, in selection order.
+    fn selected(targets: &SpeakerTargets) -> Vec<String> {
+        targets.speakers().into_iter().map(|s| s.address).collect()
+    }
+
+    // Criterion: `select` records the intent.
+    #[test]
+    fn test_select_records_the_intent() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        assert_eq!(
+            intent(&targets),
+            vec![A.to_string(), B.to_string()],
+            "the intent must follow the selection order"
+        );
+    }
+
+    // Criterion: `select` is idempotent for the intent too — re-selecting an
+    // already-selected speaker must not duplicate its address.
+    #[test]
+    fn test_reselect_does_not_duplicate_the_intent() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.select(A, &connected(&[A])).expect("re-select A");
+        assert_eq!(intent(&targets), vec![A.to_string()]);
+    }
+
+    // Criterion: a rejected `select` records nothing — a speaker that is not
+    // connected, or one over the cap, must not leave an intent behind.
+    #[test]
+    fn test_rejected_select_records_no_intent() {
+        let mut targets = SpeakerTargets::new();
+        assert_eq!(
+            targets.select(C, &connected(&[A])),
+            Err(SelectError::NotConnected)
+        );
+        targets.select(A, &connected(&[A, B, C])).expect("select A");
+        targets.select(B, &connected(&[A, B, C])).expect("select B");
+        assert_eq!(
+            targets.select(C, &connected(&[A, B, C])),
+            Err(SelectError::CapExceeded)
+        );
+        assert_eq!(intent(&targets), vec![A.to_string(), B.to_string()]);
+    }
+
+    // Criterion: `retain_connected` still prunes the selection but leaves the
+    // intent intact — a speaker going flat must not be forgotten.
+    #[test]
+    fn test_retain_connected_prunes_the_selection_but_keeps_the_intent() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+
+        // B goes flat: BlueZ drops it, the live selection loses it.
+        let mode = targets.retain_connected(&connected(&[A]));
+        assert_eq!(mode, RoutingMode::Single);
+        assert_eq!(selected(&targets), vec![A.to_string()]);
+        assert_eq!(
+            intent(&targets),
+            vec![A.to_string(), B.to_string()],
+            "a disconnection must not destroy the intent"
+        );
+    }
+
+    // Criterion: `deselect` clears the intent — the only thing that does.
+    #[test]
+    fn test_deselect_clears_the_intent() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.deselect(B);
+        assert_eq!(intent(&targets), vec![A.to_string()]);
+        assert!(
+            targets.restorable(&connected(&[A, B])).is_empty(),
+            "an explicitly deselected speaker must stay out when it reconnects"
+        );
+    }
+
+    // Criterion (non-nominal): nothing connected — nothing is restorable.
+    #[test]
+    fn test_restorable_with_nothing_connected_is_empty() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.retain_connected(&connected(&[]));
+        assert!(targets.restorable(&connected(&[])).is_empty());
+    }
+
+    // Criterion (non-nominal): nothing remembered — a connected speaker nobody
+    // ever picked is never restored.
+    #[test]
+    fn test_restorable_with_nothing_remembered_is_empty() {
+        let targets = SpeakerTargets::new();
+        assert!(targets.restorable(&connected(&[A, B])).is_empty());
+    }
+
+    // Criterion: one remembered speaker comes back — it is restorable.
+    #[test]
+    fn test_restorable_lists_a_remembered_speaker_that_came_back() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[A]));
+
+        assert_eq!(
+            targets.restorable(&connected(&[A, B])),
+            vec![B.to_string()],
+            "B is remembered, connected again and not selected"
+        );
+    }
+
+    // Criterion (non-nominal): both speakers come back at once — both are
+    // restorable, in the remembered order.
+    #[test]
+    fn test_restorable_lists_both_speakers_in_remembered_order() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.retain_connected(&connected(&[]));
+
+        assert_eq!(
+            targets.restorable(&connected(&[A, B])),
+            vec![B.to_string(), A.to_string()],
+            "the remembered order (B then A) must be honoured, not the connected one"
+        );
+    }
+
+    // Criterion: a remembered speaker that is already selected is not listed
+    // again (no duplicate).
+    #[test]
+    fn test_restorable_skips_an_already_selected_speaker() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A])).expect("select A");
+        assert!(
+            targets.restorable(&connected(&[A])).is_empty(),
+            "A is already selected: there is nothing to restore"
+        );
+    }
+
+    // Criterion (non-nominal): the speaker never comes back — a remembered
+    // address that is not connected is simply not restorable.
+    #[test]
+    fn test_restorable_skips_a_remembered_speaker_that_is_still_away() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[A]));
+
+        assert!(
+            targets.restorable(&connected(&[A])).is_empty(),
+            "B is remembered but still off: nothing to restore"
+        );
+    }
+
+    // Criterion (non-nominal): restoration would exceed the two-speaker cap
+    // because the user picked another speaker meanwhile — the manual selection
+    // wins, restoration is skipped entirely.
+    #[test]
+    fn test_restorable_never_evicts_a_manual_selection_at_the_cap() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        // B goes flat, and the user picks C instead: the cap is full again.
+        targets.retain_connected(&connected(&[A]));
+        targets.select(C, &connected(&[A, C])).expect("select C");
+
+        assert!(
+            targets.restorable(&connected(&[A, B, C])).is_empty(),
+            "the manual selection wins: restoration must never evict A or C"
+        );
+        assert_eq!(selected(&targets), vec![A.to_string(), C.to_string()]);
+    }
+
+    // Criterion: restoration fills the remaining slots only — with one slot free
+    // and two remembered speakers back, only the first remembered one fits.
+    #[test]
+    fn test_restorable_fills_only_the_remaining_slots() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        // Both go flat, then the user picks C by hand while they are away.
+        targets.retain_connected(&connected(&[]));
+        targets.select(C, &connected(&[C])).expect("select C");
+
+        assert_eq!(
+            targets.restorable(&connected(&[A, B, C])),
+            vec![A.to_string()],
+            "only one slot is free, so only the first remembered speaker fits"
+        );
+    }
+
+    // Criterion: `restore` reports that the selection actually changed, and
+    // re-selects the speaker that came back.
+    #[test]
+    fn test_restore_reselects_a_returning_speaker_and_reports_a_change() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[A]));
+
+        assert!(
+            targets.restore(&connected(&[A, B])),
+            "B came back: the selection changed, so the caller must re-route"
+        );
+        assert_eq!(selected(&targets), vec![A.to_string(), B.to_string()]);
+        assert_eq!(targets.routing_mode(), RoutingMode::Combined);
+    }
+
+    // Criterion (the hot-path trap): `sync_connected` runs on every `/devices`
+    // poll — a second `restore` with the same input must report `false`, or the
+    // combined sink would be torn down and rebuilt every couple of seconds.
+    #[test]
+    fn test_restore_is_idempotent_and_reports_no_change_the_second_time() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[A]));
+
+        assert!(
+            targets.restore(&connected(&[A, B])),
+            "first call restores B"
+        );
+        for tick in 0..5 {
+            assert!(
+                !targets.restore(&connected(&[A, B])),
+                "poll {tick}: nothing changed, so no re-route may be triggered"
+            );
+        }
+        assert_eq!(selected(&targets), vec![A.to_string(), B.to_string()]);
+    }
+
+    // Criterion: `restore` reports no change when there is nothing to restore —
+    // nothing remembered, nothing connected, or the speaker still away.
+    #[test]
+    fn test_restore_without_anything_to_restore_reports_no_change() {
+        let mut nothing = SpeakerTargets::new();
+        assert!(!nothing.restore(&connected(&[A, B])), "nothing remembered");
+
+        let mut away = SpeakerTargets::new();
+        away.select(A, &connected(&[A, B])).expect("select A");
+        away.select(B, &connected(&[A, B])).expect("select B");
+        away.retain_connected(&connected(&[A]));
+        assert!(!away.restore(&connected(&[A])), "B is still off");
+        assert_eq!(selected(&away), vec![A.to_string()]);
+    }
+
+    // Criterion (non-nominal): both speakers come back at once — one `restore`
+    // call reports a single change and selects both, so the routing is rebuilt
+    // once, not twice.
+    #[test]
+    fn test_restore_brings_both_speakers_back_in_one_change() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[]));
+        assert_eq!(targets.routing_mode(), RoutingMode::Idle);
+
+        assert!(targets.restore(&connected(&[A, B])), "both came back");
+        assert_eq!(selected(&targets), vec![A.to_string(), B.to_string()]);
+        assert!(
+            !targets.restore(&connected(&[A, B])),
+            "a single change: the second call must be a no-op"
+        );
+    }
+
+    // Criterion (non-nominal): restoration never evicts a manual selection —
+    // `restore` reports no change when the cap is already full.
+    #[test]
+    fn test_restore_at_the_cap_changes_nothing() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[A]));
+        targets.select(C, &connected(&[A, C])).expect("select C");
+
+        assert!(
+            !targets.restore(&connected(&[A, B, C])),
+            "the cap is full: nothing may change, so nothing may be re-routed"
+        );
+        assert_eq!(selected(&targets), vec![A.to_string(), C.to_string()]);
+    }
+
+    // Criterion (non-nominal): an explicitly deselected speaker stays out when it
+    // reconnects — `deselect` is the only thing that drops the intent.
+    #[test]
+    fn test_restore_ignores_an_explicitly_deselected_speaker() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.deselect(B);
+
+        assert!(!targets.restore(&connected(&[A, B])));
+        assert_eq!(selected(&targets), vec![A.to_string()]);
+    }
+
+    // Criterion: a restored speaker gets its remembered offset back (the phase
+    // 6.1 path), not a fresh 0.
+    #[test]
+    fn test_restore_gives_the_returning_speaker_its_remembered_offset_back() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.set_offset(B, 320);
+        targets.retain_connected(&connected(&[A]));
+
+        assert!(targets.restore(&connected(&[A, B])));
+        let restored = targets
+            .speakers()
+            .into_iter()
+            .find(|s| s.address == B)
+            .expect("B is back in the selection");
+        assert_eq!(restored.offset_ms, 320);
+    }
+
+    // Criterion: while playback runs, restoration only happens when the flag is
+    // on; with playback stopped it always happens.
+    #[test]
+    fn test_should_restore_follows_the_setting_only_while_playing() {
+        assert!(
+            should_restore(false, false),
+            "playback stopped: restoring cuts nothing, so it is always allowed"
+        );
+        assert!(should_restore(false, true), "playback stopped, setting on");
+        assert!(
+            should_restore(true, true),
+            "playing with the setting on: the user opted into the brief cut"
+        );
+        assert!(
+            !should_restore(true, false),
+            "playing with the setting off: no audio may be cut behind the user's back"
+        );
+    }
+
+    // Criterion: the intent is persisted alongside the offsets and reloaded on
+    // startup — the server restarts and a speaker that reconnects afterwards is
+    // selected without the app doing anything.
+    #[test]
+    fn test_intent_survives_a_restart_and_restores_on_reconnection() {
+        let path = store_path("intent-restart");
+        {
+            let mut first = SpeakerTargets::with_store(Some(path.clone()));
+            first.select(A, &connected(&[A, B])).expect("select A");
+            first.select(B, &connected(&[A, B])).expect("select B");
+            first.set_offset(B, 250);
+        }
+
+        let mut restarted = SpeakerTargets::with_store(Some(path.clone()));
+        assert!(
+            restarted.speakers().is_empty(),
+            "the live selection still starts empty; only the intent is reloaded"
+        );
+        assert!(
+            restarted.restore(&connected(&[A, B])),
+            "both speakers reconnect after the restart: the intent must be on disk"
+        );
+        assert_eq!(selected(&restarted), vec![A.to_string(), B.to_string()]);
+        let b = restarted
+            .speakers()
+            .into_iter()
+            .find(|s| s.address == B)
+            .expect("B is back");
+        assert_eq!(b.offset_ms, 250, "the 6.1 offset must come back with it");
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: `deselect` clears the intent *on disk* too — a restart must not
+    // resurrect a speaker the user explicitly dropped.
+    #[test]
+    fn test_deselect_clears_the_persisted_intent() {
+        let path = store_path("intent-deselect");
+        {
+            let mut first = SpeakerTargets::with_store(Some(path.clone()));
+            first.select(A, &connected(&[A, B])).expect("select A");
+            first.select(B, &connected(&[A, B])).expect("select B");
+            first.deselect(B);
+        }
+
+        let mut restarted = SpeakerTargets::with_store(Some(path.clone()));
+        assert!(restarted.restore(&connected(&[A, B])), "A is remembered");
+        assert_eq!(
+            selected(&restarted),
+            vec![A.to_string()],
+            "B was deselected: it must not come back after a restart"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a phase 6.1-era store on disk (offsets only, no
+    // intent) must load without error and simply carry no intent.
+    #[test]
+    fn test_a_phase_6_1_store_loads_with_no_intent() {
+        let path = store_path("legacy-6-1");
+        std::fs::write(&path, format!(r#"{{"{A}": 300, "{B}": 120}}"#))
+            .expect("write a phase 6.1-era store");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        assert!(
+            targets.restorable(&connected(&[A, B])).is_empty(),
+            "an offsets-only store carries no intent"
+        );
+        assert!(!targets.restore(&connected(&[A, B])));
+        // The offsets themselves must still be honoured.
+        targets.select(A, &connected(&[A])).expect("select A");
+        assert_eq!(targets.speakers()[0].offset_ms, 300);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a remembered speaker that was unpaired or
+    // forgotten never appears as connected, so the stale entry is harmless.
+    #[test]
+    fn test_a_forgotten_remembered_speaker_is_harmless() {
+        let path = store_path("forgotten");
+        {
+            let mut first = SpeakerTargets::with_store(Some(path.clone()));
+            first.select(A, &connected(&[A, B])).expect("select A");
+            first.select(B, &connected(&[A, B])).expect("select B");
+        }
+
+        // B was unpaired since: it will never show up as connected again.
+        let mut restarted = SpeakerTargets::with_store(Some(path.clone()));
+        assert!(restarted.restore(&connected(&[A])));
+        assert_eq!(selected(&restarted), vec![A.to_string()]);
+        assert!(
+            !restarted.restore(&connected(&[A])),
+            "the stale entry must not keep reporting a change on every poll"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a store-free selection keeps the intent in memory
+    // only — no test may read or write the real state directory.
+    #[test]
+    fn test_store_free_targets_keep_the_intent_in_memory_only() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.retain_connected(&connected(&[]));
+        assert!(targets.restore(&connected(&[A])), "A is back");
+        assert!(targets.store.is_none(), "new() must never gain a store");
     }
 
     // Criterion (non-nominal): a store-free selection (`new()`) behaves exactly as

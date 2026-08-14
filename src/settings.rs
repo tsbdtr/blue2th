@@ -40,6 +40,13 @@ pub struct BackendEntry {
     pub name: String,
     /// Base URL, e.g. `http://192.168.1.107:4000` (no trailing slash).
     pub url: String,
+    /// Whether that backend may re-select a returning speaker while playback
+    /// runs (phase 6.3). Pushed with the name over `POST /config`; defaults to
+    /// on, and `serde(default)` keeps a phase 6.2-era blob loadable.
+    // STUB (phase 6.3): the field exists so the tests compile; the default must
+    // become "on".
+    #[serde(default)]
+    pub restore_during_playback: bool,
 }
 
 /// Why a settings change was refused.
@@ -116,8 +123,25 @@ impl AppSettings {
         // Normalise before storing anything: a rejected entry must leave the list
         // untouched.
         let url = normalise_url(url)?;
-        self.backends.push(BackendEntry { name, url });
+        self.backends.push(BackendEntry {
+            name,
+            url,
+            // STUB (phase 6.3): a new backend starts with restoration on.
+            restore_during_playback: false,
+        });
         Ok(())
+    }
+
+    /// Toggle the restore-during-playback setting of the backend at `index`.
+    /// The app is the source of truth for it, exactly as for the name, and
+    /// pushes it over `POST /config`.
+    pub fn set_restore_during_playback(
+        &mut self,
+        _index: usize,
+        _enabled: bool,
+    ) -> Result<(), SettingsError> {
+        // STUB (phase 6.3).
+        todo!("phase 6.3: store the per-backend restore-during-playback setting")
     }
 
     /// Remove the backend at `index`. Removing the active one leaves no active
