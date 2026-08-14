@@ -6,6 +6,8 @@
 //! against the live connection state takes a slice of connected addresses passed
 //! by the route layer, and the actual PipeWire routing lives in `audio.rs`.
 
+use std::collections::HashMap;
+
 use blue2th_proto::{RoutingMode, SpeakerTarget, TargetsState};
 
 /// Maximum number of speakers that can be selected as playback targets at once.
@@ -20,6 +22,31 @@ pub const MAX_OFFSET_MS: u32 = 750;
 /// Clamp a requested per-speaker latency offset into `0..=MAX_OFFSET_MS` ms.
 pub fn clamp_offset(ms: u32) -> u32 {
     ms.min(MAX_OFFSET_MS)
+}
+
+/// Path of the file remembering each speaker's tuned offset:
+/// `$XDG_STATE_HOME/blue2th/offsets.json` (or `~/.local/state/blue2th/offsets.json`).
+/// `None` when neither variable is set, in which case offsets stay in memory only.
+///
+/// STUB (phase 6.1 red): not implemented yet.
+pub fn offsets_store_path() -> Option<std::path::PathBuf> {
+    todo!("phase 6.1: derive the offsets store path from XDG_STATE_HOME / HOME")
+}
+
+/// Read the remembered `address → offset_ms` table. A missing, unreadable or
+/// malformed file simply means "nothing remembered yet" — never an error.
+///
+/// STUB (phase 6.1 red): not implemented yet.
+fn load_offsets(_path: Option<&std::path::Path>) -> HashMap<String, u32> {
+    todo!("phase 6.1: read the remembered offsets, tolerating a missing/broken file")
+}
+
+/// Persist the remembered `address → offset_ms` table. Failures are reported to
+/// the caller, which logs them: losing persistence must never break a slider drag.
+///
+/// STUB (phase 6.1 red): not implemented yet.
+fn save_offsets(_path: &std::path::Path, _offsets: &HashMap<String, u32>) -> std::io::Result<()> {
+    todo!("phase 6.1: write the remembered offsets to the store")
 }
 
 /// Why a `select` request was rejected. The route layer maps this to a 4xx.
@@ -38,12 +65,25 @@ pub enum SelectError {
 pub struct SpeakerTargets {
     /// Selected targets in selection order (capped at `MAX_TARGETS`).
     speakers: Vec<SpeakerTarget>,
+    /// Last offset tuned for a speaker, by address — kept across deselection and
+    /// (through `store`) across restarts. Not part of the API surface.
+    remembered: HashMap<String, u32>,
+    /// Where the remembered offsets are persisted, or `None` to stay in memory.
+    store: Option<std::path::PathBuf>,
 }
 
 impl SpeakerTargets {
-    /// A fresh, empty selection (routing mode `Idle`).
+    /// A fresh, empty selection (routing mode `Idle`), with no store: it performs
+    /// no I/O, so a test run can never read or clobber the real user's file.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A selection backed by a remembered-offsets store, loaded on construction.
+    ///
+    /// STUB (phase 6.1 red): not implemented yet.
+    pub fn with_store(_store: Option<std::path::PathBuf>) -> Self {
+        todo!("phase 6.1: build a selection that restores the remembered offsets")
     }
 
     /// Select `addr` as a playback target. Rejects an address that is not in
@@ -327,5 +367,300 @@ mod tests {
     #[test]
     fn test_clamp_offset_boundary_is_kept() {
         assert_eq!(clamp_offset(MAX_OFFSET_MS), MAX_OFFSET_MS);
+    }
+
+    // ---- phase 6.1: remembered offsets across restarts ----
+
+    /// A private, per-test store path under the system temp dir. Never the real
+    /// user's file: the unit tests own the filesystem seam entirely.
+    fn store_path(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("blue2th-test-offsets-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the test store dir");
+        dir.join("offsets.json")
+    }
+
+    /// Build a remembered table from `(address, offset)` pairs.
+    fn table(entries: &[(&str, u32)]) -> HashMap<String, u32> {
+        entries
+            .iter()
+            .map(|(addr, ms)| ((*addr).to_string(), *ms))
+            .collect()
+    }
+
+    // Criterion: `save_offsets` then `load_offsets` on the same path round-trips
+    // the address → offset table.
+    #[test]
+    fn test_save_then_load_offsets_round_trips_the_table() {
+        let path = store_path("roundtrip");
+        let offsets = table(&[(A, 750), (B, 120)]);
+
+        save_offsets(&path, &offsets).expect("save the offsets");
+        assert_eq!(load_offsets(Some(&path)), offsets);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: `load_offsets` on a missing file (first run) yields an empty
+    // table rather than an error, and no path at all reads nothing.
+    #[test]
+    fn test_load_offsets_missing_file_is_empty() {
+        let path = store_path("missing");
+        let _ = std::fs::remove_file(&path);
+        assert!(load_offsets(Some(&path)).is_empty());
+        assert!(load_offsets(None).is_empty());
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: `load_offsets` on an empty, non-JSON or malformed file yields an
+    // empty table rather than an error (a hand-edited file must never fail a
+    // request or the server's startup).
+    #[test]
+    fn test_load_offsets_malformed_file_is_empty() {
+        let path = store_path("malformed");
+
+        std::fs::write(&path, "").expect("write the empty store");
+        assert!(load_offsets(Some(&path)).is_empty(), "empty file");
+
+        std::fs::write(&path, "not json").expect("write the non-json store");
+        assert!(load_offsets(Some(&path)).is_empty(), "non-json file");
+
+        std::fs::write(&path, r#"{"AA:BB:CC:DD:EE:FF": "#).expect("write the truncated store");
+        assert!(load_offsets(Some(&path)).is_empty(), "truncated file");
+
+        std::fs::write(&path, "{}").expect("write the empty object store");
+        assert!(load_offsets(Some(&path)).is_empty(), "empty object");
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: `offsets_store_path()` honours `XDG_STATE_HOME`, falls back to
+    // `~/.local/state`, is app-scoped (`blue2th/offsets.json`), and yields None
+    // when neither variable is set. Env vars are process-wide, so the three cases
+    // share one test rather than racing each other.
+    #[test]
+    fn test_offsets_store_path_is_app_scoped_and_honours_xdg_state_home() {
+        let previous_xdg = std::env::var("XDG_STATE_HOME").ok();
+        let previous_home = std::env::var("HOME").ok();
+
+        std::env::set_var("XDG_STATE_HOME", "/tmp/blue2th-xdg-state");
+        assert_eq!(
+            offsets_store_path(),
+            Some(std::path::PathBuf::from(
+                "/tmp/blue2th-xdg-state/blue2th/offsets.json"
+            )),
+            "XDG_STATE_HOME must win and be app-scoped"
+        );
+
+        std::env::remove_var("XDG_STATE_HOME");
+        std::env::set_var("HOME", "/tmp/blue2th-home");
+        assert_eq!(
+            offsets_store_path(),
+            Some(std::path::PathBuf::from(
+                "/tmp/blue2th-home/.local/state/blue2th/offsets.json"
+            )),
+            "HOME must fall back to ~/.local/state"
+        );
+
+        std::env::remove_var("HOME");
+        assert_eq!(
+            offsets_store_path(),
+            None,
+            "with neither variable set the backend stays in-memory only"
+        );
+
+        match previous_xdg {
+            Some(v) => std::env::set_var("XDG_STATE_HOME", v),
+            None => std::env::remove_var("XDG_STATE_HOME"),
+        }
+        match previous_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // Criterion: `SpeakerTargets::new()` performs no I/O and has no store, so a
+    // test run can never read or clobber the real user's file.
+    #[test]
+    fn test_new_has_no_store_and_no_remembered_offsets() {
+        let targets = SpeakerTargets::new();
+        assert!(targets.store.is_none(), "new() must stay off-disk");
+        assert!(targets.remembered.is_empty());
+    }
+
+    // Criterion: `with_store(None)` holds no store and reads nothing — the
+    // store-free constructor used by the test router.
+    #[test]
+    fn test_with_store_none_has_no_store() {
+        let targets = SpeakerTargets::with_store(None);
+        assert!(targets.store.is_none());
+        assert!(targets.remembered.is_empty());
+        assert!(targets.speakers().is_empty());
+    }
+
+    // Criterion: `SpeakerTargets::with_store(path)` loads the remembered offsets
+    // on construction.
+    #[test]
+    fn test_with_store_loads_remembered_offsets() {
+        let path = store_path("load-on-construction");
+        save_offsets(&path, &table(&[(A, 300)])).expect("seed the store");
+
+        let targets = SpeakerTargets::with_store(Some(path.clone()));
+        assert_eq!(targets.remembered.get(A), Some(&300));
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: selecting an address with a remembered offset restores it in the
+    // resulting `SpeakerTarget`, instead of the default 0.
+    #[test]
+    fn test_select_restores_remembered_offset_from_the_store() {
+        let path = store_path("restore-on-select");
+        save_offsets(&path, &table(&[(A, 750)])).expect("seed the store");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A])).expect("select A");
+        assert_eq!(targets.speakers()[0].offset_ms, 750);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: `set_offset` records the clamped value for that address and
+    // persists it, so a restart finds it on disk.
+    #[test]
+    fn test_set_offset_persists_the_clamped_value() {
+        let path = store_path("persist-on-set");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.set_offset(A, 250);
+        assert_eq!(load_offsets(Some(&path)).get(A), Some(&250));
+
+        // Out of range on the wire: the persisted value is the clamped one.
+        targets.set_offset(A, 5000);
+        assert_eq!(load_offsets(Some(&path)).get(A), Some(&MAX_OFFSET_MS));
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: deselecting keeps the remembered offset — deselect then
+    // re-select restores it (remembered per speaker, indefinitely).
+    #[test]
+    fn test_deselect_then_reselect_restores_the_remembered_offset() {
+        let path = store_path("deselect-reselect");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.set_offset(A, 420);
+        targets.deselect(A);
+        assert!(targets.speakers().is_empty());
+
+        targets.select(A, &connected(&[A])).expect("re-select A");
+        assert_eq!(targets.speakers()[0].offset_ms, 420);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: a remembered offset that survives a restart is restored — a new
+    // `with_store` over the same path re-selects the speaker at its tuned value.
+    #[test]
+    fn test_offset_survives_a_restart_of_the_selection() {
+        let path = store_path("restart");
+
+        let mut first = SpeakerTargets::with_store(Some(path.clone()));
+        first.select(A, &connected(&[A])).expect("select A");
+        first.set_offset(A, 600);
+        drop(first);
+
+        // A fresh backend: nothing selected yet, but the tuning is remembered.
+        let mut restarted = SpeakerTargets::with_store(Some(path.clone()));
+        assert!(
+            restarted.speakers().is_empty(),
+            "the selection itself is never restored"
+        );
+        restarted
+            .select(A, &connected(&[A]))
+            .expect("select A again");
+        assert_eq!(restarted.speakers()[0].offset_ms, 600);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: selecting a speaker with no remembered offset starts at 0.
+    #[test]
+    fn test_select_without_remembered_offset_starts_at_zero() {
+        let path = store_path("no-entry");
+        save_offsets(&path, &table(&[(B, 500)])).expect("seed the store");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A])).expect("select A");
+        assert_eq!(targets.speakers()[0].offset_ms, 0);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: a remembered offset out of range (hand-edited to 5000) is
+    // clamped to `0..=750` on restore, never trusted as-is.
+    #[test]
+    fn test_remembered_offset_out_of_range_is_clamped_on_restore() {
+        let path = store_path("out-of-range");
+        std::fs::write(&path, format!(r#"{{"{A}": 5000}}"#)).expect("hand-edit the store");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A])).expect("select A");
+        assert_eq!(targets.speakers()[0].offset_ms, MAX_OFFSET_MS);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: remembered offsets for unselected speakers never appear in
+    // `TargetsState` — the API keeps reporting only the current selection.
+    #[test]
+    fn test_remembered_offsets_of_unselected_speakers_stay_out_of_state() {
+        let path = store_path("unselected");
+        save_offsets(&path, &table(&[(A, 100), (B, 200), (C, 300)])).expect("seed the store");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A, B, C])).expect("select A");
+
+        let state = targets.state();
+        assert_eq!(state.routing, RoutingMode::Single);
+        let addrs: Vec<String> = state.speakers.into_iter().map(|s| s.address).collect();
+        assert_eq!(addrs, vec![A.to_string()]);
+        assert_eq!(targets.speakers().len(), 1);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a store that cannot be written (its parent is a
+    // regular file here) is logged and swallowed — the offset still applies to
+    // the running session and `set_offset` must not panic.
+    #[test]
+    fn test_set_offset_with_unwritable_store_still_applies_to_the_session() {
+        let blocker = std::env::temp_dir().join("blue2th-test-offsets-unwritable");
+        let _ = std::fs::remove_dir_all(&blocker);
+        std::fs::write(&blocker, "not a directory").expect("write the blocking file");
+        let path = blocker.join("offsets.json");
+
+        // Construction over an unusable path yields an empty table, not a panic.
+        let mut targets = SpeakerTargets::with_store(Some(path));
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.set_offset(A, 330);
+        assert_eq!(targets.speakers()[0].offset_ms, 330);
+
+        let _ = std::fs::remove_file(&blocker);
+    }
+
+    // Criterion (non-nominal): a store-free selection (`new()`) behaves exactly as
+    // before — offsets are remembered in memory but nothing is written anywhere.
+    #[test]
+    fn test_store_free_targets_remember_in_memory_only() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A])).expect("select A");
+        targets.set_offset(A, 200);
+        targets.deselect(A);
+        targets.select(A, &connected(&[A])).expect("re-select A");
+        assert_eq!(targets.speakers()[0].offset_ms, 200);
+        assert!(targets.store.is_none(), "new() must never gain a store");
     }
 }

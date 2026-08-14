@@ -739,6 +739,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use blue2th_proto::RoutingMode;
     use tower::ServiceExt;
 
     use super::*; // for `oneshot`
@@ -760,6 +761,32 @@ mod tests {
 
         assert_eq!(parsed.status, "ok");
         assert_eq!(parsed.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // Criterion (phase 6.1): `app()` builds its selection from the remembered
+    // offsets store and still serves `/targets`. Only the offsets are persisted,
+    // never the selection: a freshly built router reports nothing selected, since
+    // at startup no speaker is connected yet.
+    #[tokio::test]
+    async fn test_app_builds_with_the_offsets_store_and_restores_no_selection() {
+        let request = Request::builder()
+            .uri("/targets")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app().oneshot(request).await.expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let state: TargetsState = serde_json::from_slice(&bytes).expect("parse TargetsState");
+        assert!(
+            state.speakers.is_empty(),
+            "the selection itself must never be restored, got {:?}",
+            state.speakers
+        );
+        assert_eq!(state.routing, RoutingMode::Idle);
     }
 
     // Criterion: a `NoSpeakerSelected` error maps to a 400 (precondition failure),
