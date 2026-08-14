@@ -31,6 +31,7 @@ pub mod audio;
 mod bluetooth;
 pub mod spotify;
 pub mod spotify_auth;
+mod state_store;
 pub mod targets;
 pub mod watchdog;
 
@@ -86,21 +87,32 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// it in-process without binding a socket.
 pub fn app() -> Router {
     // The env-built driver restores the persisted refresh token, so a restart
-    // keeps the user logged in.
-    app_with_auth(SpotifyAuth::new())
+    // keeps the user logged in; the store-backed selection restores each
+    // speaker's tuned offset the same way.
+    app_with_auth_and_targets(
+        SpotifyAuth::new(),
+        SpeakerTargets::with_store(targets::offsets_store_path()),
+    )
 }
 
 /// Build the router around an explicit Spotify auth driver. Tests use this with
 /// `SpotifyAuth::with_config`, which never touches the on-disk token store — so a
-/// test run can neither read nor clobber the real user's credential.
+/// test run can neither read nor clobber the real user's credential. The selection
+/// is store-free for the same reason.
 pub fn app_with_auth(spotify_auth: SpotifyAuth) -> Router {
+    app_with_auth_and_targets(spotify_auth, SpeakerTargets::new())
+}
+
+/// Build the router around an explicit Spotify auth driver and an explicit
+/// playback selection, so the on-disk seams stay in the caller's hands.
+fn app_with_auth_and_targets(spotify_auth: SpotifyAuth, speaker_targets: SpeakerTargets) -> Router {
     let state = AppState {
         // Real playback output (rodio → PipeWire); the device is opened lazily on
         // the first `/play`, so building the router stays cheap and CI-safe.
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
             RodioOutput::new(),
         )))),
-        targets: Arc::new(Mutex::new(SpeakerTargets::new())),
+        targets: Arc::new(Mutex::new(speaker_targets)),
         connected: Arc::new(Mutex::new(Vec::new())),
         spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
         spotify_auth: Arc::new(Mutex::new(spotify_auth)),
@@ -739,6 +751,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use blue2th_proto::RoutingMode;
     use tower::ServiceExt;
 
     use super::*; // for `oneshot`
@@ -760,6 +773,32 @@ mod tests {
 
         assert_eq!(parsed.status, "ok");
         assert_eq!(parsed.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // Criterion (phase 6.1): `app()` builds its selection from the remembered
+    // offsets store and still serves `/targets`. Only the offsets are persisted,
+    // never the selection: a freshly built router reports nothing selected, since
+    // at startup no speaker is connected yet.
+    #[tokio::test]
+    async fn test_app_builds_with_the_offsets_store_and_restores_no_selection() {
+        let request = Request::builder()
+            .uri("/targets")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app().oneshot(request).await.expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let state: TargetsState = serde_json::from_slice(&bytes).expect("parse TargetsState");
+        assert!(
+            state.speakers.is_empty(),
+            "the selection itself must never be restored, got {:?}",
+            state.speakers
+        );
+        assert_eq!(state.routing, RoutingMode::Idle);
     }
 
     // Criterion: a `NoSpeakerSelected` error maps to a 400 (precondition failure),
