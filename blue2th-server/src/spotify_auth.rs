@@ -400,6 +400,19 @@ impl SpotifyAuth {
     }
 
     /// Coarse auth state observed by the app (Connected iff tokens are held).
+    /// Adopt the configured Connect device name (phase 6.2). The Web API device
+    /// lookup must search for the name `librespot` actually advertises: keeping
+    /// the constant here while the backend was renamed makes every transport
+    /// call fail with a 412 that blames the user for not starting the backend.
+    pub fn set_device_name(&mut self, _device_name: &str) {
+        todo!("phase 6.2: adopt the configured device name for the Web API lookup")
+    }
+
+    /// The Connect device name the Web API lookup matches on.
+    pub fn device_name(&self) -> &str {
+        todo!("phase 6.2: expose the device name used by the Web API lookup")
+    }
+
     pub fn auth_state(&self) -> SpotifyAuthState {
         let status = if self.tokens.is_some() {
             SpotifyAuthStatus::Connected
@@ -933,6 +946,43 @@ mod tests {
         assert_eq!(find_device(null_id, SPOTIFY_DEVICE_NAME), None);
         assert_eq!(find_device("not json", SPOTIFY_DEVICE_NAME), None);
         assert_eq!(find_device("{}", SPOTIFY_DEVICE_NAME), None);
+    }
+
+    // Criterion (phase 6.2): the Web API device lookup uses the *configured*
+    // name. A driver that never got configured still searches for the default.
+    #[test]
+    fn test_device_name_defaults_to_the_spotify_device_name() {
+        let auth = SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string());
+        assert_eq!(auth.device_name(), SPOTIFY_DEVICE_NAME);
+    }
+
+    // Criterion (phase 6.2): once the app renames the backend, the lookup follows.
+    // This is the 412 trap: `librespot` advertises `Salon` while a hard-coded
+    // lookup still searches for `blue2th-PC`, and transport silently fails.
+    #[test]
+    fn test_device_lookup_follows_the_configured_name() {
+        let mut auth = SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string());
+        auth.set_device_name("Salon");
+        assert_eq!(auth.device_name(), "Salon");
+
+        // What librespot advertises after the rename: only `Salon` is there.
+        let body = r#"{"devices":[
+            {"id":"phone-id","name":"Pixel 7","is_active":true,"type":"Smartphone"},
+            {"id":"pc-id","name":"Salon","is_active":false,"type":"Computer"}
+        ]}"#;
+        assert_eq!(
+            find_device(body, auth.device_name()),
+            Some(Device {
+                id: "pc-id".to_string(),
+                is_active: false,
+            }),
+            "the lookup must find the renamed Connect device"
+        );
+        assert_eq!(
+            find_device(body, SPOTIFY_DEVICE_NAME),
+            None,
+            "the constant must no longer be what transport searches for"
+        );
     }
 
     // Criterion: a saved refresh token is read back, so a server restart restores

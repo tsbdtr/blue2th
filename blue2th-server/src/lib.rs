@@ -29,6 +29,7 @@ use tracing_subscriber::EnvFilter;
 
 pub mod audio;
 mod bluetooth;
+pub mod config;
 pub mod spotify;
 pub mod spotify_auth;
 mod state_store;

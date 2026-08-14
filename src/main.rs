@@ -20,6 +20,7 @@ mod backend;
 mod bluetooth;
 mod deep_link;
 mod lifecycle;
+mod settings;
 
 #[cfg(target_os = "android")]
 use bluetooth::enable_bluetooth;
