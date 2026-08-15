@@ -1922,7 +1922,9 @@ fn AppSettingsPage() -> Element {
                             r#type: "checkbox",
                             checked: restoring,
                             onchange: move |e| {
-                                let enabled = e.value() == "true";
+                                // `checked()`, like the per-device toggles: the
+                                // box's state, not its (unset) `value` attribute.
+                                let enabled = e.checked();
                                 let mut next = app_settings.peek().clone();
                                 if let Err(err) = next.set_restore_during_playback(index, enabled) {
                                     *error.write() = Some(err.to_string());
@@ -1953,13 +1955,17 @@ fn AppSettingsPage() -> Element {
                 }
             }
 
-            div { class: "settings-section",
-
-                if let Some(message) = notice() {
-                    div { class: "settings-notice", "{message}" }
-                }
-                if let Some(message) = error() {
-                    div { class: "toast-error", "{message}" }
+            // Feedback for every section above, in its own card — rendered only
+            // when there is something to say, or an empty bordered box would sit
+            // under the page for the whole session.
+            if notice().is_some() || error().is_some() {
+                div { class: "settings-section",
+                    if let Some(message) = notice() {
+                        div { class: "settings-notice", "{message}" }
+                    }
+                    if let Some(message) = error() {
+                        div { class: "toast-error", "{message}" }
+                    }
                 }
             }
         }

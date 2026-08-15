@@ -443,7 +443,7 @@ async fn set_config(
     // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
     let req: ConfigRequest = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("invalid config body: {e}")))?;
-    let name = {
+    let (name, restore_during_playback) = {
         let mut stored = state.name.lock().await;
         let name = stored
             .set_name(&req.name)
@@ -451,7 +451,9 @@ async fn set_config(
         // Applied only once the name was accepted, so a rejected body changes
         // nothing at all.
         stored.set_restore_during_playback(req.restore_during_playback);
-        name
+        // Read back rather than echoed: the response reports what the backend
+        // actually holds, exactly as it does for the (trimmed) name.
+        (name, stored.restore_during_playback())
     };
 
     // The Web API lookup must follow the advertised name, or transport would 412
@@ -481,7 +483,7 @@ async fn set_config(
 
     Ok(Json(ServerConfig {
         name,
-        restore_during_playback: req.restore_during_playback,
+        restore_during_playback,
     }))
 }
 
@@ -512,10 +514,27 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
         .filter(|d| d.connected)
         .map(|d| d.address.clone())
         .collect();
+    // Clone: the cache owns one copy while the selection below is validated
+    // against the other.
     *state.connected.lock().await = connected.clone();
 
+    let anything_to_restore = {
+        let mut targets = state.targets.lock().await;
+        targets.retain_connected(&connected);
+        !targets.restorable(&connected).is_empty()
+    };
+    // The overwhelmingly common case: this runs on every `/devices` poll (a
+    // couple of seconds apart, per client), so a poll where nobody came back
+    // must end here — without polling the engine, the Spotify subprocess or the
+    // routing.
+    if !anything_to_restore {
+        return;
+    }
+
     // Whether restoring right now is allowed: mid-playback it is opt-in, since
-    // moving the target sink respawns `librespot` and cuts the sound.
+    // moving the target sink respawns `librespot` and cuts the sound. "Playing"
+    // covers both sources — the local tone and the Spotify backend — or the
+    // setting would be defeated by whichever one it ignored.
     let playing = {
         let mut engine = state.engine.lock().await;
         engine.poll_state().status == PlaybackStatus::Playing
@@ -523,21 +542,22 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
         let mut spotify = state.spotify.lock().await;
         spotify.poll_liveness().status == SpotifyStatus::Running
     };
-    let allowed =
-        targets::should_restore(playing, state.name.lock().await.restore_during_playback());
-
-    let changed = {
-        let mut targets = state.targets.lock().await;
-        targets.retain_connected(&connected);
-        // `restore` reports whether the selection really moved. This runs on
-        // every `/devices` poll, so re-routing unconditionally would tear the
-        // PipeWire graph down and rebuild it every couple of seconds.
-        allowed && targets.restore(&connected)
-    };
-    if changed {
-        let speakers = state.targets.lock().await.speakers();
-        apply_selection_change(state, &speakers).await;
+    if !targets::should_restore(playing, state.name.lock().await.restore_during_playback()) {
+        return;
     }
+
+    // `restore` reports whether the selection really moved; re-routing
+    // unconditionally would tear the PipeWire graph down and rebuild it on every
+    // poll. Every guard is released before `apply_selection_change`, which takes
+    // the engine and Spotify ones again.
+    let speakers = {
+        let mut targets = state.targets.lock().await;
+        if !targets.restore(&connected) {
+            return;
+        }
+        targets.speakers()
+    };
+    apply_selection_change(state, &speakers).await;
 }
 
 /// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its

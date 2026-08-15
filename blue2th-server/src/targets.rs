@@ -47,13 +47,11 @@ pub fn offsets_store_path() -> Option<std::path::PathBuf> {
 /// malformed file simply means "nothing remembered yet" — never an error.
 ///
 /// Values are clamped on the way in: a hand-edited file must not bypass the bound.
+/// Production reads the whole store in one go (see [`SpeakerTargets::with_store`]);
+/// this half-view exists for the tests that assert on the offsets alone.
+#[cfg(test)]
 fn load_offsets(path: Option<&std::path::Path>) -> HashMap<String, u32> {
     load_store(path).offsets
-}
-
-/// The playback intent read back from the store, or empty (phase 6.3).
-fn load_intent(path: Option<&std::path::Path>) -> Vec<String> {
-    load_store(path).intended
 }
 
 /// On-disk shape of the store: the tuned offsets plus the playback intent.
@@ -96,16 +94,17 @@ fn load_store(path: Option<&std::path::Path>) -> StoredTargets {
     stored
 }
 
-/// Persist the offsets alone, preserving the intent already on disk.
+/// Seed or update the offsets alone, preserving the intent already on disk.
 ///
-/// Production writes both halves in one go through [`save_store`]; this entry
-/// point exists for the phase 6.1 round-trip test, which pins the on-disk format
-/// against a bare `{address: ms}` map.
+/// Test-only: production always writes both halves at once through [`save_store`],
+/// which is exactly what this delegates to — so the on-disk format a test seeds is
+/// the one the server writes. The phase 6.1 shape is pinned separately, by the
+/// tests that hand-write a bare `{address: ms}` map.
 #[cfg(test)]
 fn save_offsets(path: &std::path::Path, offsets: &HashMap<String, u32>) -> std::io::Result<()> {
     // Preserve whatever intent is already on disk: the two halves share one file,
     // so writing offsets alone would drop it.
-    let intended = load_intent(Some(path));
+    let intended = load_store(Some(path)).intended;
     save_store(path, offsets, &intended)
 }
 
@@ -164,15 +163,18 @@ impl SpeakerTargets {
         Self::default()
     }
 
-    /// A selection backed by a remembered-offsets store, loaded on construction.
-    /// Only the offsets are restored: the selection itself always starts empty.
+    /// A selection backed by a store, loaded on construction: the tuned offsets
+    /// (phase 6.1) and the playback intent (phase 6.3), so a speaker reconnecting
+    /// after a restart is re-selected on its own. The live selection itself always
+    /// starts empty — nothing is connected yet at startup.
     pub fn with_store(store: Option<std::path::PathBuf>) -> Self {
+        // One read for both halves: they share a file, so reading it twice would
+        // double the startup I/O and could see two different versions of it.
+        let stored = load_store(store.as_deref());
         Self {
             speakers: Vec::new(),
-            // STUB (phase 6.3): the remembered intent must be reloaded from the
-            // store here, so speakers that reconnect after a restart come back.
-            intended: load_intent(store.as_deref()),
-            remembered: load_offsets(store.as_deref()),
+            intended: stored.intended,
+            remembered: stored.offsets,
             store,
         }
     }
@@ -196,16 +198,15 @@ impl SpeakerTargets {
     /// `sync_connected` runs on every `/devices` poll, so a second call with the
     /// same input must report `false` rather than rebuild the PipeWire graph.
     pub fn restore(&mut self, connected: &[String]) -> bool {
-        let restorable = self.restorable(connected);
-        if restorable.is_empty() {
-            return false;
-        }
-        for addr in restorable {
+        let mut changed = false;
+        for addr in self.restorable(connected) {
             // Already filtered by `restorable`, so this cannot be rejected; a
-            // failure would simply leave that speaker out rather than propagate.
-            let _ = self.select(&addr, connected);
+            // rejection would simply leave that speaker out rather than
+            // propagate — and must not claim a change that did not happen, since
+            // the caller rebuilds the whole PipeWire graph on `true`.
+            changed |= self.select(&addr, connected).is_ok();
         }
-        true
+        changed
     }
 
     /// Select `addr` as a playback target. Rejects an address that is not in
@@ -1060,6 +1061,63 @@ mod tests {
             vec![A.to_string()],
             "only one slot is free, so only the first remembered speaker fits"
         );
+    }
+
+    // Edge case: the intent outlives the selection, so it can grow past the cap —
+    // every speaker ever picked and never explicitly deselected stays in it.
+    // Restoration must still honour the cap, filling it in remembered order.
+    #[test]
+    fn test_restorable_caps_an_intent_longer_than_the_selection() {
+        let mut targets = SpeakerTargets::new();
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        // Both go flat, the user picks C meanwhile, then that one goes too:
+        // three addresses are wanted while none is selected.
+        targets.retain_connected(&connected(&[]));
+        targets.select(C, &connected(&[C])).expect("select C");
+        targets.retain_connected(&connected(&[]));
+        assert_eq!(
+            intent(&targets),
+            vec![A.to_string(), B.to_string(), C.to_string()]
+        );
+
+        assert!(
+            targets.restore(&connected(&[A, B, C])),
+            "all three are back"
+        );
+        assert_eq!(
+            selected(&targets),
+            vec![A.to_string(), B.to_string()],
+            "only two may come back, and in remembered order"
+        );
+        assert!(
+            !targets.restore(&connected(&[A, B, C])),
+            "the cap is full: the leftover intent must not keep reporting a change"
+        );
+    }
+
+    // Criterion (the hot-path trap, disk side): `restore` runs on every
+    // `/devices` poll, so it must not rewrite the store each time. A sentinel
+    // planted behind the selection's back is still there afterwards.
+    #[test]
+    fn test_restore_does_not_rewrite_the_store() {
+        const SENTINEL: &str = r#"{"offsets":{},"intended":["sentinel"]}"#;
+        let path = store_path("restore-no-write");
+
+        let mut targets = SpeakerTargets::with_store(Some(path.clone()));
+        targets.select(A, &connected(&[A, B])).expect("select A");
+        targets.select(B, &connected(&[A, B])).expect("select B");
+        targets.retain_connected(&connected(&[A]));
+
+        std::fs::write(&path, SENTINEL).expect("plant the sentinel");
+        assert!(targets.restore(&connected(&[A, B])), "B came back");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read the store back"),
+            SENTINEL,
+            "restoring must not touch the disk on the /devices hot path"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
     }
 
     // Criterion: `restore` reports that the selection actually changed, and
