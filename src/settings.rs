@@ -138,7 +138,13 @@ pub fn normalise_url(raw: &str) -> Result<String, SettingsError> {
     // `http://` alone carries a scheme but no host: it would build URLs that go
     // nowhere, so the host part must exist.
     let host = rest.trim_end_matches('/');
-    if scheme.is_empty() || host.is_empty() {
+    // …and so must the hostname *inside* it: a typo like `http://:4000` has a
+    // port and no host. reqwest refuses such a URL only when a call is built,
+    // with an opaque "URL scheme is not allowed" — catching it here is what lets
+    // the user read what they actually got wrong.
+    let authority = host.split(['/', '?', '#']).next().unwrap_or(host);
+    let hostname = authority.split(':').next().unwrap_or(authority);
+    if scheme.is_empty() || host.is_empty() || hostname.is_empty() {
         return Err(SettingsError::MalformedUrl);
     }
     Ok(format!("{scheme}://{host}"))

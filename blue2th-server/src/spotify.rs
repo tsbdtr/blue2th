@@ -64,6 +64,14 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str, cache_dir: &str)
         // credentials let librespot log in by itself on every later start.
         "--system-cache".to_string(),
         cache_dir.to_string(),
+        // Autoplay off, explicitly rather than following the account setting:
+        // Spotify refuses to hand librespot the `spotify:station:track:…`
+        // context it asks for at the end of a queue ("context is not available.
+        // type: Autoplay"), so the feature does not work — it only logs two
+        // errors and an invalid spirc state on every play. Off, the behaviour is
+        // the same and the log says what happened.
+        "--autoplay".to_string(),
+        "off".to_string(),
     ]
 }
 
@@ -286,6 +294,23 @@ mod tests {
         assert!(
             args.iter().any(|a| a.contains(COMBINED_SINK_NAME)),
             "argv must point the output at the sink: {args:?}"
+        );
+    }
+
+    // Criterion: autoplay is turned off explicitly. Spotify refuses librespot the
+    // station context it asks for at the end of a queue, so following the account
+    // setting only buys two errors and an invalid spirc state per play.
+    #[test]
+    fn test_build_librespot_args_turns_autoplay_off() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        let flag = args
+            .iter()
+            .position(|a| a == "--autoplay")
+            .expect("argv must carry --autoplay");
+        assert_eq!(
+            args.get(flag + 1).map(String::as_str),
+            Some("off"),
+            "--autoplay must be followed by off: {args:?}"
         );
     }
 

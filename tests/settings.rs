@@ -196,8 +196,19 @@ fn test_normalise_url_trims_a_trailing_slash() {
     );
 }
 
-// Criterion: `normalise_url` rejects a missing scheme, a blank value and
-// embedded spaces.
+// Criterion: an IPv6 literal is still accepted — the host check must read the
+// hostname, not merely everything before the first colon.
+#[test]
+fn test_normalise_url_accepts_an_ipv6_literal() {
+    assert_eq!(
+        settings::normalise_url("http://[::1]:4000"),
+        Ok("http://[::1]:4000".to_string())
+    );
+}
+
+// Criterion: `normalise_url` rejects a missing scheme, a blank value, embedded
+// spaces, and an address whose host is missing — `http://:4000` reaches reqwest
+// as "URL scheme is not allowed", a message that names nothing the user typed.
 #[test]
 fn test_normalise_url_rejects_malformed_addresses() {
     for raw in [
@@ -206,6 +217,8 @@ fn test_normalise_url_rejects_malformed_addresses() {
         "   ",
         "http://192.168.1.107 :4000",
         "http://",
+        "http://:4000",
+        "http://:4000/",
     ] {
         assert_eq!(
             settings::normalise_url(raw),
