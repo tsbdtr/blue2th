@@ -93,4 +93,4 @@ app_settings:
   url_placeholder: "http://192.168.1.10:4000"
   section_playback: "Lecture"
   restore_during_playback: "Réintégrer pendant la lecture"
-  restore_during_playback_hint: "Une enceinte qui revient est réutilisée aussitôt. Le son se coupe un instant quand le routage change."
+  restore_during_playback_hint: "Un appareil qui revient est réutilisé aussitôt. Le son se coupe un instant quand le routage change."

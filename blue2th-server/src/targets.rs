@@ -29,6 +29,17 @@ pub fn clamp_offset(ms: u32) -> u32 {
 /// Restoring mid-playback can move the target sink, which respawns `librespot`
 /// and cuts the sound for a moment: that is opt-in. With playback stopped the
 /// restoration is free and always allowed. Pure.
+/// Whether losing the last selected device should quieten the stream (phase 6.3).
+///
+/// Pruning the selection leaves the audio graph alone, and PipeWire re-attaches a
+/// returning device's sink, so a stream left running would resume on a device
+/// that is no longer selected. Quietening is skipped when the setting will bring
+/// the device back on its own: pausing then would leave it silent until the user
+/// pressed play. Pure.
+pub fn should_quieten_on_last_loss(lost_last_target: bool, restore_during_playback: bool) -> bool {
+    lost_last_target && !restore_during_playback
+}
+
 pub fn should_restore(playing: bool, restore_during_playback: bool) -> bool {
     !playing || restore_during_playback
 }
@@ -1241,6 +1252,30 @@ mod tests {
             .find(|s| s.address == B)
             .expect("B is back in the selection");
         assert_eq!(restored.offset_ms, 320);
+    }
+
+    // Criterion (phase 6.3): losing the last selected device quietens the stream,
+    // because nothing else will — the routing still points at its sink, and
+    // PipeWire re-attaches that sink when the device comes back.
+    #[test]
+    fn test_should_quieten_when_the_last_device_leaves_and_nothing_restores_it() {
+        assert!(should_quieten_on_last_loss(true, false));
+    }
+
+    // Criterion (phase 6.3): with restoration on, the device is re-selected on its
+    // own when it returns, so pausing would leave it silent until the user pressed
+    // play — the opposite of what that setting promises.
+    #[test]
+    fn test_should_not_quieten_when_the_setting_restores_the_device() {
+        assert!(!should_quieten_on_last_loss(true, true));
+    }
+
+    // Criterion (phase 6.3): a poll that did not empty the selection quietens
+    // nothing, whatever the setting says.
+    #[test]
+    fn test_should_not_quieten_while_a_target_remains() {
+        assert!(!should_quieten_on_last_loss(false, false));
+        assert!(!should_quieten_on_last_loss(false, true));
     }
 
     // Criterion: while playback runs, restoration only happens when the flag is

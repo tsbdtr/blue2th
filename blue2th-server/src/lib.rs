@@ -518,11 +518,31 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
     // against the other.
     *state.connected.lock().await = connected.clone();
 
-    let anything_to_restore = {
+    let (lost_last_target, anything_to_restore) = {
         let mut targets = state.targets.lock().await;
+        let had_targets = !targets.speakers().is_empty();
         targets.retain_connected(&connected);
-        !targets.restorable(&connected).is_empty()
+        (
+            had_targets && targets.speakers().is_empty(),
+            !targets.restorable(&connected).is_empty(),
+        )
     };
+
+    // The last selected device just dropped off. Pruning the selection does not
+    // touch the audio graph: the routing still points at that device's sink, and
+    // PipeWire re-attaches the sink when it comes back — so the stream would
+    // resume on a device blue2th no longer considers selected. Quieten it and
+    // tear the routing down.
+    //
+    // Skipped when the setting is on, because the device is then re-selected on
+    // its own when it returns: pausing here would leave it silent until the user
+    // pressed play, which is the opposite of what that setting promises.
+    if targets::should_quieten_on_last_loss(
+        lost_last_target,
+        state.name.lock().await.restore_during_playback(),
+    ) {
+        apply_selection_change(state, &[]).await;
+    }
     // The overwhelmingly common case: this runs on every `/devices` poll (a
     // couple of seconds apart, per client), so a poll where nobody came back
     // must end here — without polling the engine, the Spotify subprocess or the
