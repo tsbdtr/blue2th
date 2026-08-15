@@ -38,10 +38,12 @@ fn two_backends() -> AppSettings {
             BackendEntry {
                 name: "Salon".to_string(),
                 url: "http://192.168.1.107:4000".to_string(),
+                restore_during_playback: true,
             },
             BackendEntry {
                 name: "Bureau".to_string(),
                 url: "http://192.168.1.42:4000".to_string(),
+                restore_during_playback: false,
             },
         ],
         active: Some(0),
@@ -120,6 +122,8 @@ fn test_add_normalises_a_trailing_slash() {
         Some(&BackendEntry {
             name: "Salon".to_string(),
             url: "http://192.168.1.107:4000".to_string(),
+            // Phase 6.3: a new backend starts with restoration on.
+            restore_during_playback: true,
         })
     );
 }
@@ -365,6 +369,113 @@ fn test_load_repairs_an_out_of_range_active_index() {
     assert_eq!(loaded.active_label(), NO_BACKEND_LABEL);
 }
 
+// ---- phase 6.3: the restore-during-playback toggle ----
+
+// Criterion: the settings page's toggle is remembered per backend and survives
+// serde, in both states.
+#[test]
+fn test_backend_entry_round_trips_with_the_restore_flag() {
+    let original = two_backends();
+    let json = serde_json::to_string(&original).expect("serialize AppSettings");
+    let parsed: AppSettings = serde_json::from_str(&json).expect("deserialize AppSettings");
+    assert_eq!(original, parsed);
+    assert_eq!(
+        parsed
+            .backends
+            .iter()
+            .map(|b| b.restore_during_playback)
+            .collect::<Vec<bool>>(),
+        vec![true, false],
+        "each backend keeps its own setting"
+    );
+}
+
+// Criterion: the setting defaults to **on** — a freshly added backend restores
+// a returning speaker until the user says otherwise.
+#[test]
+fn test_add_starts_with_restoration_enabled() {
+    let mut settings = AppSettings::default();
+    settings
+        .add("Salon", "http://192.168.1.107:4000")
+        .expect("add Salon");
+    assert!(
+        settings
+            .backends
+            .first()
+            .is_some_and(|b| b.restore_during_playback),
+        "a new backend must start with restoration on"
+    );
+}
+
+// Criterion (non-nominal): a phase 6.2-era persisted blob (no flag) must load
+// without error, with restoration on rather than silently off.
+#[test]
+fn test_a_phase_6_2_blob_loads_with_restoration_enabled() {
+    let blob = r#"{"backends":[{"name":"Salon","url":"http://192.168.1.107:4000"}],"active":0}"#;
+    let loaded = settings::load(Some(blob));
+    assert_eq!(loaded.backends.len(), 1);
+    assert_eq!(loaded.active, Some(0));
+    assert!(
+        loaded
+            .active_backend()
+            .is_some_and(|b| b.restore_during_playback),
+        "an entry written before the flag existed must default to on"
+    );
+}
+
+// Criterion: the toggle is applied to the active backend and nothing else.
+#[test]
+fn test_set_restore_during_playback_updates_only_that_backend() {
+    let mut settings = two_backends();
+    settings
+        .set_restore_during_playback(0, false)
+        .expect("toggle the active backend off");
+    assert_eq!(
+        settings.backends.first().map(|b| b.restore_during_playback),
+        Some(false)
+    );
+    assert_eq!(
+        settings.backends.get(1).map(|b| b.restore_during_playback),
+        Some(false),
+        "the other backend must be left exactly as it was"
+    );
+
+    settings
+        .set_restore_during_playback(0, true)
+        .expect("toggle it back on");
+    assert_eq!(
+        settings.backends.first().map(|b| b.restore_during_playback),
+        Some(true)
+    );
+}
+
+// Criterion (non-nominal): a stale index is refused rather than panicking, like
+// every other index-taking settings operation.
+#[test]
+fn test_set_restore_during_playback_on_an_unknown_backend_is_refused() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.set_restore_during_playback(9, false),
+        Err(SettingsError::UnknownBackend)
+    );
+    assert_eq!(settings, two_backends(), "nothing may have changed");
+}
+
+// Criterion: the toggle survives the persistence round-trip, so the app still
+// knows what to push after a restart.
+#[test]
+fn test_restore_flag_survives_the_settings_blob_round_trip() {
+    let mut settings = two_backends();
+    settings
+        .set_restore_during_playback(0, false)
+        .expect("toggle Salon off");
+    let reloaded = settings::load(Some(&settings::save_blob(&settings)));
+    assert_eq!(
+        reloaded.backends.first().map(|b| b.restore_during_playback),
+        Some(false)
+    );
+}
+
 // Criterion: the settings page has labels, and adding them did not cost the
 // per-device settings page its own. `rust-i18n` resolves a missing key to the
 // key itself, and a second `settings:` mapping in a locale file drops the first
@@ -375,6 +486,13 @@ fn test_locales_carry_both_settings_pages_labels() {
     for locale in ["en", "fr"] {
         rust_i18n::set_locale(locale);
         for key in [
+            // The second section carrying the phase 6.3 toggle. It lives under
+            // the *same* `app_settings:` namespace on purpose: a second
+            // top-level `settings:` mapping is what silently un-translated the
+            // per-device page in 6.2.
+            "app_settings.section_playback",
+            "app_settings.restore_during_playback",
+            "app_settings.restore_during_playback_hint",
             // The app-wide settings page (phase 6.2).
             "app_settings.title",
             "app_settings.backends",

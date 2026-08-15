@@ -19,8 +19,8 @@ use axum::{
 };
 use blue2th_proto::{
     AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
-    HealthStatus, OffsetRequest, PlaybackState, PresenceRequest, ServerConfig, SpeakerTarget,
-    SpotifyAuthState, SpotifyState, SpotifyStatus, TargetsState, VolumeRequest,
+    HealthStatus, OffsetRequest, PlaybackState, PlaybackStatus, PresenceRequest, ServerConfig,
+    SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -424,8 +424,10 @@ async fn pause_spotify_now(state: &AppState) {
 
 /// `GET /config` — the backend's current name.
 async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
+    let stored = state.name.lock().await;
     Json(ServerConfig {
-        name: state.name.lock().await.name().to_string(),
+        name: stored.name().to_string(),
+        restore_during_playback: stored.restore_during_playback(),
     })
 }
 
@@ -441,11 +443,17 @@ async fn set_config(
     // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
     let req: ConfigRequest = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("invalid config body: {e}")))?;
-    let name = {
+    let (name, restore_during_playback) = {
         let mut stored = state.name.lock().await;
-        stored
+        let name = stored
             .set_name(&req.name)
-            .map_err(|e| AppError::bad_request(e.to_string()))?
+            .map_err(|e| AppError::bad_request(e.to_string()))?;
+        // Applied only once the name was accepted, so a rejected body changes
+        // nothing at all.
+        stored.set_restore_during_playback(req.restore_during_playback);
+        // Read back rather than echoed: the response reports what the backend
+        // actually holds, exactly as it does for the (trimmed) name.
+        (name, stored.restore_during_playback())
     };
 
     // The Web API lookup must follow the advertised name, or transport would 412
@@ -473,7 +481,10 @@ async fn set_config(
         }
     }
 
-    Ok(Json(ServerConfig { name }))
+    Ok(Json(ServerConfig {
+        name,
+        restore_during_playback,
+    }))
 }
 
 /// `GET /health` — liveness probe carrying the backend version.
@@ -503,8 +514,70 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
         .filter(|d| d.connected)
         .map(|d| d.address.clone())
         .collect();
+    // Clone: the cache owns one copy while the selection below is validated
+    // against the other.
     *state.connected.lock().await = connected.clone();
-    state.targets.lock().await.retain_connected(&connected);
+
+    let (lost_last_target, anything_to_restore) = {
+        let mut targets = state.targets.lock().await;
+        let had_targets = !targets.speakers().is_empty();
+        targets.retain_connected(&connected);
+        (
+            had_targets && targets.speakers().is_empty(),
+            !targets.restorable(&connected).is_empty(),
+        )
+    };
+
+    // The last selected device just dropped off. Pruning the selection does not
+    // touch the audio graph: the routing still points at that device's sink, and
+    // PipeWire re-attaches the sink when it comes back — so the stream would
+    // resume on a device blue2th no longer considers selected. Quieten it and
+    // tear the routing down.
+    //
+    // Skipped when the setting is on, because the device is then re-selected on
+    // its own when it returns: pausing here would leave it silent until the user
+    // pressed play, which is the opposite of what that setting promises.
+    if targets::should_quieten_on_last_loss(
+        lost_last_target,
+        state.name.lock().await.restore_during_playback(),
+    ) {
+        apply_selection_change(state, &[]).await;
+    }
+    // The overwhelmingly common case: this runs on every `/devices` poll (a
+    // couple of seconds apart, per client), so a poll where nobody came back
+    // must end here — without polling the engine, the Spotify subprocess or the
+    // routing.
+    if !anything_to_restore {
+        return;
+    }
+
+    // Whether restoring right now is allowed: mid-playback it is opt-in, since
+    // moving the target sink respawns `librespot` and cuts the sound. "Playing"
+    // covers both sources — the local tone and the Spotify backend — or the
+    // setting would be defeated by whichever one it ignored.
+    let playing = {
+        let mut engine = state.engine.lock().await;
+        engine.poll_state().status == PlaybackStatus::Playing
+    } || {
+        let mut spotify = state.spotify.lock().await;
+        spotify.poll_liveness().status == SpotifyStatus::Running
+    };
+    if !targets::should_restore(playing, state.name.lock().await.restore_during_playback()) {
+        return;
+    }
+
+    // `restore` reports whether the selection really moved; re-routing
+    // unconditionally would tear the PipeWire graph down and rebuild it on every
+    // poll. Every guard is released before `apply_selection_change`, which takes
+    // the engine and Spotify ones again.
+    let speakers = {
+        let mut targets = state.targets.lock().await;
+        if !targets.restore(&connected) {
+            return;
+        }
+        targets.speakers()
+    };
+    apply_selection_change(state, &speakers).await;
 }
 
 /// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its

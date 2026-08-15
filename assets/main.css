@@ -1419,3 +1419,35 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     color: #ffffff;
 }
 .backend-add:hover { background: #3b76f0; }
+
+/* ── Settings: playback section (phase 6.3) ──────────────────────────────── */
+
+/* A checkbox row: the label is clickable with the box, so the whole line is a
+   target on a phone rather than the 16px square alone. */
+.settings-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #2f3a4d;
+    border-radius: 10px;
+    background: #1b2130;
+    cursor: pointer;
+}
+.settings-toggle input {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    accent-color: #2563eb;
+    cursor: pointer;
+}
+.settings-toggle-label {
+    font-size: 0.9rem;
+    color: #e6ebf5;
+}
+/* The consequence of the toggle, stated where it is made. */
+.settings-hint {
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: #8b9cc8;
+}

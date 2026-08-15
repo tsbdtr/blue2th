@@ -40,6 +40,19 @@ pub struct BackendEntry {
     pub name: String,
     /// Base URL, e.g. `http://192.168.1.107:4000` (no trailing slash).
     pub url: String,
+    /// Whether that backend may re-select a returning speaker while playback
+    /// runs (phase 6.3). Pushed with the name over `POST /config`; defaults to
+    /// on, and `serde(default)` keeps a phase 6.2-era blob loadable.
+    #[serde(default = "restore_during_playback_default")]
+    pub restore_during_playback: bool,
+}
+
+/// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
+/// that comes back rejoins without the user doing anything — the point of the
+/// feature. A phase 6.2-era blob, which has no such field, therefore loads with
+/// restoration enabled rather than silently disabled.
+fn restore_during_playback_default() -> bool {
+    true
 }
 
 /// Why a settings change was refused.
@@ -116,7 +129,26 @@ impl AppSettings {
         // Normalise before storing anything: a rejected entry must leave the list
         // untouched.
         let url = normalise_url(url)?;
-        self.backends.push(BackendEntry { name, url });
+        self.backends.push(BackendEntry {
+            name,
+            url,
+            restore_during_playback: restore_during_playback_default(),
+        });
+        Ok(())
+    }
+
+    /// Toggle the restore-during-playback setting of the backend at `index`.
+    /// The app is the source of truth for it, exactly as for the name, and
+    /// pushes it over `POST /config`.
+    pub fn set_restore_during_playback(
+        &mut self,
+        index: usize,
+        enabled: bool,
+    ) -> Result<(), SettingsError> {
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.restore_during_playback = enabled;
         Ok(())
     }
 
