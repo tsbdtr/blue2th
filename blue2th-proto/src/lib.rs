@@ -13,16 +13,214 @@ pub struct HealthStatus {
     pub status: String,
     /// Backend crate version (its `CARGO_PKG_VERSION`).
     pub version: String,
+    /// Whether the backend requires `Authorization: Bearer <token>` on every
+    /// route but `/health` and `POST /pair` (phase 6.4).
+    ///
+    /// `/health` stays open precisely so the app can tell "not paired" from
+    /// "unreachable": a 200 here with `auth_required` set means the backend is
+    /// alive and the app simply has no (or a stale) token. `serde(default)`
+    /// keeps a pre-6.4 payload parsing, reading as "no authentication".
+    #[serde(default)]
+    pub auth_required: bool,
 }
 
 impl HealthStatus {
-    /// Build an `"ok"` status carrying the given backend version.
+    /// Build an `"ok"` status carrying the given backend version, with no
+    /// authentication announced.
     pub fn ok(version: impl Into<String>) -> Self {
         Self {
             status: "ok".to_string(),
             version: version.into(),
+            auth_required: false,
         }
     }
+
+    /// Announce whether the backend requires a bearer token.
+    pub fn with_auth_required(mut self, required: bool) -> Self {
+        self.auth_required = required;
+        self
+    }
+}
+
+/// Custom-scheme prefix of a pairing deep link (phase 6.4).
+///
+/// The server prints `blue2th://pair?url=…&name=…&code=…` as an ASCII QR; the
+/// phone's own camera app routes it to blue2th through the phase 5.2 intent
+/// filter, so no camera permission and no scanner live in the app.
+pub const PAIR_DEEP_LINK: &str = "blue2th://pair";
+
+/// Put a hand-typed pairing code in the form the server minted it in.
+///
+/// Codes are drawn from an upper-case alphabet, but Android capitalises only the
+/// first character of a text field: `K7m2qx` would otherwise burn one of the five
+/// attempts with nothing on screen explaining why. Shared rather than applied on
+/// one side only, so a client that skips it still pairs.
+pub fn normalize_pairing_code(input: &str) -> String {
+    input.trim().to_uppercase()
+}
+
+/// Body of `POST /pair` — the short-lived pairing code the operator read off the
+/// terminal (typed by hand) or that the QR carried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairRequest {
+    /// The armed pairing code. One-shot, rate limited and short-lived.
+    pub code: String,
+}
+
+/// Response of a successful `POST /pair` — the long-lived bearer token every
+/// other route requires.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairResponse {
+    /// The API token the app stores with the backend entry.
+    pub token: String,
+}
+
+/// What a `blue2th://pair?…` deep link carries.
+///
+/// It carries the **code**, never the token: the link travels through Android's
+/// intent system, where another app declaring the `blue2th` scheme could listen
+/// in. A one-shot code that expires makes such an interception worthless.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairLink {
+    /// Base URL of the backend, e.g. `http://192.168.1.107:4000`.
+    pub url: String,
+    /// The backend's own name, when the link carries one. Only `url` and `code`
+    /// are required, so a hand-built link without a name still parses.
+    pub name: Option<String>,
+    /// The short-lived pairing code to exchange on `POST /pair`.
+    pub code: String,
+}
+
+/// Build the pairing deep link the server renders as a QR. Pure.
+///
+/// Lives here, next to [`parse_pair_link`], so the server builds exactly what
+/// the app parses — the two could not drift apart even if they wanted to.
+pub fn pair_deep_link(url: &str, name: &str, code: &str) -> String {
+    format!(
+        "{PAIR_DEEP_LINK}?url={}&name={}&code={}",
+        percent_encode(url),
+        percent_encode(name),
+        percent_encode(code),
+    )
+}
+
+/// Percent-encode a query value, keeping only the unreserved set. Hand-written
+/// rather than pulled from a crate: this crate must stay target-agnostic and
+/// dependency-light, and the rule is three lines. Pure.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            },
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// Decode a percent-encoded query value: `%XX` escapes and `+` as a space.
+///
+/// Decoded from the raw bytes, never by re-slicing the `&str`: a `%` followed by
+/// a multi-byte character would split it and panic. An invalid escape is kept
+/// as-is rather than dropped, so a malformed value stays visible. Pure.
+///
+/// Public because the app's own deep-link parser (`src/deep_link.rs`) reads the
+/// Spotify OAuth redirect with exactly this rule: one decoder for both custom
+/// scheme links, so they cannot drift apart on a mangled escape. It is plain
+/// string handling — nothing platform-specific enters the crate with it.
+pub fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            },
+            b'%' if i + 2 < bytes.len() => {
+                match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                    (Some(high), Some(low)) => {
+                        out.push((high << 4) | low);
+                        i += 3;
+                    },
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    },
+                }
+            },
+            byte => {
+                out.push(byte);
+                i += 1;
+            },
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The value of a single ASCII hex digit, or `None` if it is not one.
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Whether a decoded address is usable as a backend base URL: a scheme, a host,
+/// and no embedded whitespace. A link carrying anything else is refused rather
+/// than stored as an address every later call would fail on. Pure.
+fn usable_backend_url(url: &str) -> bool {
+    if url.is_empty() || url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    match url.split_once("://") {
+        Some((scheme, rest)) => !scheme.is_empty() && !rest.trim_end_matches('/').is_empty(),
+        None => false,
+    }
+}
+
+/// Parse a `blue2th://pair?…` deep link. Pure.
+///
+/// `None` for anything that is not a pair link, and for a link missing `url` or
+/// `code` or carrying a URL with no scheme/host: a malformed link is ignored
+/// exactly as an unrelated intent is, never a crash and never a half-created
+/// backend entry.
+pub fn parse_pair_link(uri: &str) -> Option<PairLink> {
+    let rest = uri.strip_prefix(PAIR_DEEP_LINK)?;
+    // Tolerate a trailing slash before the query, as the OAuth callback does.
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    let query = rest.strip_prefix('?')?;
+    // A fragment is never part of the query.
+    let query = query.split('#').next().unwrap_or(query);
+
+    let mut url = None;
+    let mut name = None;
+    let mut code = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "url" => url = Some(percent_decode(value)),
+            "name" => name = Some(percent_decode(value)),
+            "code" => code = Some(percent_decode(value)),
+            _ => {},
+        }
+    }
+
+    let url = url.filter(|u| usable_backend_url(u))?;
+    let code = code.filter(|c| !c.is_empty())?;
+    Some(PairLink {
+        url,
+        // An empty name is no name: the app keeps whatever it already had.
+        name: name.filter(|n| !n.is_empty()),
+        code,
+    })
 }
 
 /// A Bluetooth adapter present on the backend host (e.g. `hci0`).
@@ -834,5 +1032,219 @@ mod tests {
             Ok(DEFAULT_BACKEND_NAME.to_string())
         );
         assert!(DEFAULT_BACKEND_NAME.len() <= MAX_BACKEND_NAME_LEN);
+    }
+
+    // ---- phase 6.4: authenticated LAN API with QR or code pairing ----
+
+    /// A well-formed link for the round-trip tests, built by hand rather than
+    /// through `pair_deep_link` so a fixture never depends on the function under
+    /// test.
+    const SAMPLE_URL: &str = "http://192.168.1.107:4000";
+    const SAMPLE_NAME: &str = "blue2th-PC";
+    const SAMPLE_CODE: &str = "K7M2QX";
+
+    // Criterion: proto — `HealthStatus` gains `auth_required`; it round-trips
+    // through serde with the flag set.
+    #[test]
+    fn test_health_status_round_trips_with_auth_required() {
+        let original = HealthStatus::ok("0.1.0").with_auth_required(true);
+        let json = serde_json::to_string(&original).expect("serialize HealthStatus");
+        assert!(
+            json.contains("\"auth_required\":true"),
+            "the flag must be on the wire, got {json}"
+        );
+        let parsed: HealthStatus = serde_json::from_str(&json).expect("deserialize HealthStatus");
+        assert_eq!(original, parsed);
+        assert!(parsed.auth_required);
+    }
+
+    // Criterion: `auth_required` carries `serde(default)` — an old (pre-6.4)
+    // `/health` payload must still parse, and read as "no authentication" rather
+    // than failing the app's reachability probe outright.
+    #[test]
+    fn test_health_status_without_auth_required_parses_an_old_payload() {
+        let parsed: HealthStatus = serde_json::from_str(r#"{"status":"ok","version":"0.1.0"}"#)
+            .expect("a pre-6.4 payload must still parse");
+        assert_eq!(parsed.status, "ok");
+        assert_eq!(parsed.version, "0.1.0");
+        assert!(
+            !parsed.auth_required,
+            "a payload that never mentioned authentication must not claim it"
+        );
+    }
+
+    // Criterion: proto — `PairRequest` round-trips through serde.
+    // Criterion: a hand-typed code survives the phone keyboard — Android
+    // capitalises the first character only, and the alphabet is upper-case.
+    #[test]
+    fn test_normalize_pairing_code_upper_cases_and_trims() {
+        for typed in [" k7m2qx ", "K7m2qx", "k7M2Qx\n", "K7M2QX"] {
+            assert_eq!(normalize_pairing_code(typed), "K7M2QX", "typed: {typed:?}");
+        }
+    }
+
+    #[test]
+    fn test_pair_request_round_trips_through_json() {
+        let original = PairRequest {
+            code: SAMPLE_CODE.to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize PairRequest");
+        assert_eq!(json, format!("{{\"code\":\"{SAMPLE_CODE}\"}}"));
+        let parsed: PairRequest = serde_json::from_str(&json).expect("deserialize PairRequest");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion: proto — `PairResponse` round-trips through serde.
+    #[test]
+    fn test_pair_response_round_trips_through_json() {
+        let original = PairResponse {
+            token: "3P0kq9-token-value_XyZ".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize PairResponse");
+        let parsed: PairResponse = serde_json::from_str(&json).expect("deserialize PairResponse");
+        assert_eq!(original, parsed);
+        assert!(json.contains("\"token\""), "got {json}");
+    }
+
+    // Criterion: `pair_deep_link(url, name, code)` builds the `blue2th://pair?…`
+    // URL, and `parse_pair_link` reads it back — the server builds exactly what
+    // the app parses.
+    #[test]
+    fn test_pair_deep_link_round_trips_through_parse_pair_link() {
+        let link = pair_deep_link(SAMPLE_URL, SAMPLE_NAME, SAMPLE_CODE);
+        assert!(
+            link.starts_with(PAIR_DEEP_LINK),
+            "the link must use the pair deep link prefix, got {link}"
+        );
+        assert_eq!(
+            parse_pair_link(&link),
+            Some(PairLink {
+                url: SAMPLE_URL.to_string(),
+                name: Some(SAMPLE_NAME.to_string()),
+                code: SAMPLE_CODE.to_string(),
+            })
+        );
+    }
+
+    // Criterion: the QR carries the **code**, never the token — the built link
+    // holds the code and nothing that looks like a long-lived credential.
+    #[test]
+    fn test_pair_deep_link_carries_the_code() {
+        let link = pair_deep_link(SAMPLE_URL, SAMPLE_NAME, SAMPLE_CODE);
+        assert!(
+            link.contains(SAMPLE_CODE),
+            "the link must carry the pairing code, got {link}"
+        );
+        assert!(
+            !link.contains("token"),
+            "the link must never carry a token, got {link}"
+        );
+    }
+
+    // Criterion: `parse_pair_link` rejects a link with no `code` — a malformed
+    // deep link is ignored, never half-applied.
+    #[test]
+    fn test_parse_pair_link_rejects_a_missing_code() {
+        let uri = format!("{PAIR_DEEP_LINK}?url=http%3A%2F%2F192.168.1.107%3A4000&name=blue2th-PC");
+        assert_eq!(parse_pair_link(&uri), None);
+    }
+
+    // Criterion: `parse_pair_link` rejects a link with no `url` — there would be
+    // no backend to pair with.
+    #[test]
+    fn test_parse_pair_link_rejects_a_missing_url() {
+        let uri = format!("{PAIR_DEEP_LINK}?name=blue2th-PC&code={SAMPLE_CODE}");
+        assert_eq!(parse_pair_link(&uri), None);
+    }
+
+    // Criterion (non-nominal): a bad URL is refused rather than stored as an
+    // address every later call would fail on.
+    #[test]
+    fn test_parse_pair_link_rejects_a_malformed_url() {
+        for bad in [
+            "192.168.1.107:4000",
+            "http%3A%2F%2F",
+            "%20",
+            "http%3A%2F%2F%2F",
+        ] {
+            let uri = format!("{PAIR_DEEP_LINK}?url={bad}&name=blue2th-PC&code={SAMPLE_CODE}");
+            assert_eq!(
+                parse_pair_link(&uri),
+                None,
+                "{bad} is not a usable backend address"
+            );
+        }
+    }
+
+    // Criterion (non-nominal): an unrelated intent — the OAuth callback, the bare
+    // scheme, the launcher intent — is not a pair link and yields `None`.
+    #[test]
+    fn test_parse_pair_link_ignores_an_unrelated_uri() {
+        for uri in [
+            "blue2th://spotify-callback?code=abc&state=xyz",
+            "blue2th://",
+            "https://example.com/pair?url=http://x&code=ABC123",
+            "",
+            "not a uri at all",
+        ] {
+            assert_eq!(parse_pair_link(uri), None, "{uri} must be ignored");
+        }
+    }
+
+    // Criterion: the link's values are percent-decoded, since that is how the
+    // server encodes a URL holding `:` and `/`.
+    #[test]
+    fn test_parse_pair_link_decodes_percent_encoded_values() {
+        let uri = format!(
+            "{PAIR_DEEP_LINK}?url=http%3A%2F%2F192.168.1.107%3A4000&name=blue2th-PC&code={SAMPLE_CODE}"
+        );
+        let link = parse_pair_link(&uri).expect("a percent-encoded link must parse");
+        assert_eq!(link.url, SAMPLE_URL);
+        assert_eq!(link.name.as_deref(), Some(SAMPLE_NAME));
+        assert_eq!(link.code, SAMPLE_CODE);
+    }
+
+    // Criterion (non-nominal): a hand-mangled escape must be survived, not
+    // panicked on. A `%` followed by a multi-byte character is the case that
+    // would panic if the decoder re-sliced the `&str` instead of reading bytes,
+    // and a truncated escape at the very end is the one that would index past it.
+    #[test]
+    fn test_parse_pair_link_survives_a_mangled_percent_escape() {
+        for name in ["%é", "%", "%4", "abc%", "%zz", "%C3%A9"] {
+            let uri = format!(
+                "{PAIR_DEEP_LINK}?url=http%3A%2F%2F192.168.1.107%3A4000&name={name}&code={SAMPLE_CODE}"
+            );
+            let parsed = parse_pair_link(&uri);
+            assert!(parsed.is_some(), "{name} must not stop the link parsing");
+            let link = parsed.expect("just asserted");
+            assert_eq!(link.url, SAMPLE_URL);
+            assert_eq!(link.code, SAMPLE_CODE);
+        }
+    }
+
+    // Criterion: a well-formed escape decodes to the character it stands for,
+    // multi-byte included — the backend name is free text.
+    #[test]
+    fn test_parse_pair_link_decodes_a_multibyte_name() {
+        let encoded = pair_deep_link(SAMPLE_URL, "Salon d'été", SAMPLE_CODE);
+        let link = parse_pair_link(&encoded).expect("an accented name must round-trip");
+        assert_eq!(link.name.as_deref(), Some("Salon d'été"));
+    }
+
+    // Criterion: only `url` and `code` are required — a link with no name still
+    // parses, and unknown parameters are ignored rather than refused.
+    #[test]
+    fn test_parse_pair_link_accepts_a_nameless_link_and_ignores_extras() {
+        let uri = format!(
+            "{PAIR_DEEP_LINK}?url=http%3A%2F%2F192.168.1.107%3A4000&code={SAMPLE_CODE}&v=2"
+        );
+        assert_eq!(
+            parse_pair_link(&uri),
+            Some(PairLink {
+                url: SAMPLE_URL.to_string(),
+                name: None,
+                code: SAMPLE_CODE.to_string(),
+            })
+        );
     }
 }

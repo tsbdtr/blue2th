@@ -72,6 +72,30 @@ struct SettingsState(Signal<settings::AppSettings>);
 /// How often the app reconciles the Spotify backend and OAuth states.
 const SPOTIFY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long the now-playing feed waits before resubscribing to a stream that
+/// ended (the backend went down, or restarted).
+const SSE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How often a feed stopped by a 401 looks for a token to try instead. The
+/// backend is never called meanwhile: this only reads the app's own settings.
+const PAIRING_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Wait until the active backend's token changes — the user paired again, or
+/// switched to another backend.
+///
+/// The now-playing feed parks here after a 401 (phase 6.4): retrying on a timer
+/// would hammer the backend with a credential it has already refused, and simply
+/// ending the task would leave the feed dead until the next app start.
+async fn await_new_token() {
+    let refused = settings::current().active_token();
+    loop {
+        tokio::time::sleep(PAIRING_RECHECK_INTERVAL).await;
+        if settings::current().active_token() != refused {
+            return;
+        }
+    }
+}
+
 /// Spotify state shared across the app, provided once by [`App`]: the status
 /// card, the login dialog and the transport bar must agree on whether the
 /// librespot backend runs and whether the OAuth login is done, and the polling
@@ -86,9 +110,11 @@ struct SpotifyUi {
     now_playing: Signal<Option<blue2th_proto::NowPlaying>>,
     /// Whether the login dialog is open.
     show_login: Signal<bool>,
-    /// Login failure raised by the background deep-link task, mirrored into the
-    /// screen's toast (the task has no access to that local signal).
-    login_error: Signal<Option<String>>,
+    /// Failure raised by a root background task — the deep-link poll (Spotify
+    /// login *and*, since phase 6.4, pairing) and the now-playing feed — mirrored
+    /// into the screen's toast, since those tasks run outside any screen and
+    /// cannot reach its local signal.
+    background_error: Signal<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,7 +274,7 @@ fn App() -> Element {
         connected: use_signal(|| false),
         now_playing: use_signal(|| None),
         show_login: use_signal(|| false),
-        login_error: use_signal(|| None),
+        background_error: use_signal(|| None),
     };
     use_context_provider(|| spotify_ui);
 
@@ -283,17 +309,32 @@ fn App() -> Element {
     // Now-playing snapshots pushed over SSE; re-subscribes if the stream ends.
     use_hook(|| {
         let mut now_playing = spotify_ui.now_playing;
+        let mut background_error = spotify_ui.background_error;
         spawn(async move {
             loop {
-                let _ = backend::subscribe_now_playing(|np| {
+                let outcome = backend::subscribe_now_playing(|np| {
                     *now_playing.write() = Some(np);
                 })
                 .await;
+                // A 401 is terminal for *this* token: reconnecting would spin the
+                // loop against a credential the backend has already refused. Say
+                // so once, then wait for a different token rather than exiting —
+                // the user's next move is to pair again, and a task that returned
+                // would only come back on an app restart.
+                if let Err(e) = &outcome {
+                    if e.is_not_paired() {
+                        *background_error.write() = Some(e.to_string());
+                        await_new_token().await;
+                        continue;
+                    }
+                }
                 // The stream closed (backend down or restarted); retry shortly.
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(SSE_RETRY_DELAY).await;
             }
         });
     });
+
+    let settings_state = use_context::<SettingsState>();
 
     // Consume the OAuth redirect Android routed to us and exchange its one-time
     // code for tokens. Whatever the outcome, the browser round-trip is over, so
@@ -301,13 +342,35 @@ fn App() -> Element {
     use_hook(|| {
         let mut connected = spotify_ui.connected;
         let mut show_login = spotify_ui.show_login;
-        let mut login_error = spotify_ui.login_error;
+        let mut background_error = spotify_ui.background_error;
+        let mut app_settings = settings_state.0;
         spawn(async move {
             loop {
                 tokio::time::sleep(DEEP_LINK_POLL_INTERVAL).await;
                 let Some(uri) = deep_link::take_pending_deep_link() else {
                     continue;
                 };
+
+                // A pairing QR and a Spotify redirect arrive through the same
+                // intent, so both are read here — the pair link first, since it
+                // is the one that can create the backend everything else needs.
+                if let Some(link) = blue2th_proto::parse_pair_link(&uri) {
+                    match backend::pair(&link.url, &link.code).await {
+                        Ok(token) => {
+                            let mut next = app_settings.peek().clone();
+                            match next.upsert_from_pair_link(&link, &token) {
+                                Ok(_) => {
+                                    settings::set_current(next.clone());
+                                    *app_settings.write() = next;
+                                },
+                                Err(e) => *background_error.write() = Some(e.to_string()),
+                            }
+                        },
+                        Err(e) => *background_error.write() = Some(e.to_string()),
+                    }
+                    continue;
+                }
+
                 match deep_link::parse_spotify_callback(&uri) {
                     Some(deep_link::SpotifyCallback::Authorized { code, state }) => {
                         match backend::spotify_auth_callback(&code, &state).await {
@@ -315,11 +378,11 @@ fn App() -> Element {
                                 *connected.write() = authorized.status
                                     == blue2th_proto::SpotifyAuthStatus::Connected;
                             },
-                            Err(e) => *login_error.write() = Some(e.to_string()),
+                            Err(e) => *background_error.write() = Some(e.to_string()),
                         }
                     },
                     Some(deep_link::SpotifyCallback::Denied(_)) => {
-                        *login_error.write() =
+                        *background_error.write() =
                             Some(rust_i18n::t!("spotify.login_cancelled").to_string());
                     },
                     // Not our callback (e.g. the plain launcher intent): ignore it.
@@ -1727,6 +1790,11 @@ fn AppSettingsPage() -> Element {
     let mut notice: Signal<Option<String>> = use_signal(|| None);
     let mut name_draft = use_signal(String::new);
     let mut url_draft = use_signal(String::new);
+    let mut code_draft = use_signal(String::new);
+    // A pairing exchange in flight. The armed code is one-shot and attempt
+    // capped, so a second tap could only ever spend an attempt and report a
+    // failure for a code that in fact just worked.
+    let pairing = use_signal(|| false);
 
     // One read for the whole list (see `BackendStatus`): names, addresses and the
     // active index all come from the same snapshot.
@@ -1738,6 +1806,16 @@ fn AppSettingsPage() -> Element {
                 .backends
                 .get(i)
                 .map(|b| (i, b.restore_during_playback))
+        })
+    };
+    // Pairing applies to the active backend too: it is the one the app talks to.
+    let active_pairing: Option<(usize, String, settings::PairingMethod, bool)> = {
+        let snapshot = app_settings.read();
+        snapshot.active.and_then(|i| {
+            snapshot
+                .backends
+                .get(i)
+                .map(|b| (i, b.url.clone(), b.pairing, b.token.is_some()))
         })
     };
     let entries: Vec<(usize, String, String, bool)> = {
@@ -1914,6 +1992,120 @@ fn AppSettingsPage() -> Element {
             }
 
             div { class: "settings-section",
+                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_pairing\")}" }
+
+                // Owned copy: the event closures below outlive this render, and
+                // the address must be the one the section was drawn for.
+                if let Some((index, url, method, paired)) = active_pairing.clone() {
+                    div { class: if paired { "settings-hint paired" } else { "settings-hint" },
+                        if paired {
+                            "{rust_i18n::t!(\"app_settings.paired_ok\")}"
+                        } else {
+                            "{rust_i18n::t!(\"app_settings.not_paired\")}"
+                        }
+                    }
+                    div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.pairing_method\")}" }
+                    div { class: "backend-form-actions",
+                        button {
+                            class: if method == settings::PairingMethod::Code { "backend-row-action active" } else { "backend-row-action" },
+                            onclick: move |_| {
+                                let mut next = app_settings.peek().clone();
+                                if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Code) {
+                                    *error.write() = Some(e.to_string());
+                                    return;
+                                }
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                            "{rust_i18n::t!(\"app_settings.pairing_method_code\")}"
+                        }
+                        button {
+                            class: if method == settings::PairingMethod::Qr { "backend-row-action active" } else { "backend-row-action" },
+                            onclick: move |_| {
+                                let mut next = app_settings.peek().clone();
+                                if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Qr) {
+                                    *error.write() = Some(e.to_string());
+                                    return;
+                                }
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                            "{rust_i18n::t!(\"app_settings.pairing_method_qr\")}"
+                        }
+                    }
+
+                    if method == settings::PairingMethod::Code {
+                        input {
+                            class: "backend-input",
+                            r#type: "text",
+                            placeholder: "{rust_i18n::t!(\"app_settings.pairing_code_placeholder\")}",
+                            value: "{code_draft}",
+                            oninput: move |e| *code_draft.write() = e.value(),
+                        }
+                        button {
+                            class: "backend-add",
+                            // Every submission spends one of the server's five
+                            // attempts, after which the armed code is dead: an
+                            // empty box, or a second tap while the first is still
+                            // in flight, must not cost the user a retry.
+                            disabled: pairing() || code_draft().trim().is_empty(),
+                            onclick: move |_| {
+                                // Normalised: the code is read off a terminal and
+                                // typed, so a stray space or Android's lower-case
+                                // tail is a failed attempt the user cannot see.
+                                let code = blue2th_proto::normalize_pairing_code(&code_draft());
+                                if code.is_empty() {
+                                    return;
+                                }
+                                let url = url.clone();
+                                let mut error = error;
+                                let mut notice = notice;
+                                let mut code_draft = code_draft;
+                                let mut pairing = pairing;
+                                *pairing.write() = true;
+                                spawn(async move {
+                                    // The one call that carries no bearer: the
+                                    // app has none until this succeeds.
+                                    let outcome = backend::pair(&url, &code).await;
+                                    *pairing.write() = false;
+                                    match outcome {
+                                        Ok(token) => {
+                                            let mut next = app_settings.peek().clone();
+                                            match next.set_token(index, Some(token)) {
+                                                Ok(()) => {
+                                                    settings::set_current(next.clone());
+                                                    *app_settings.write() = next;
+                                                    *code_draft.write() = String::new();
+                                                    *error.write() = None;
+                                                    *notice.write() = Some(
+                                                        rust_i18n::t!("app_settings.paired_ok").to_string(),
+                                                    );
+                                                },
+                                                Err(e) => *error.write() = Some(e.to_string()),
+                                            }
+                                        },
+                                        Err(e) => {
+                                            *notice.write() = None;
+                                            *error.write() = Some(e.to_string());
+                                        },
+                                    }
+                                });
+                            },
+                            "{rust_i18n::t!(\"app_settings.pair\")}"
+                        }
+                    } else {
+                        // Nothing to type on this path: the QR carries the code,
+                        // and the deep link brings it back into the app.
+                        div { class: "settings-hint",
+                            "{rust_i18n::t!(\"app_settings.pairing_qr_hint\")}"
+                        }
+                    }
+                } else {
+                    div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
+                }
+            }
+
+            div { class: "settings-section",
                 div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_playback\")}" }
 
                 if let Some((index, restoring)) = active_restore {
@@ -2039,11 +2231,11 @@ fn SpotifyLoginDialog(error: Signal<Option<String>>) -> Element {
     // Surface a login failure raised by the root deep-link task, which runs
     // outside this screen and cannot reach its toast signal.
     use_effect(move || {
-        if let Some(message) = (spotify.login_error)() {
+        if let Some(message) = (spotify.background_error)() {
             let mut error = error;
-            let mut login_error = spotify.login_error;
+            let mut background_error = spotify.background_error;
             *error.write() = Some(message);
-            *login_error.write() = None;
+            *background_error.write() = None;
         }
     });
 

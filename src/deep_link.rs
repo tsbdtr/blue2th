@@ -27,6 +27,11 @@
 //! On non-Android targets the reader yields `None` — there is no deep link to
 //! consume — while the parser stays available so the logic is testable on the PC.
 
+// The query decoder is shared with the pairing link (phase 6.4), which arrives
+// through the very same custom scheme: two copies of that rule would be two
+// chances to differ on a mangled escape.
+use blue2th_proto::percent_decode;
+
 /// The redirect URI registered with Spotify and declared as the app's custom
 /// scheme. Must stay in sync with the backend's `DEFAULT_REDIRECT_URI`.
 pub const SPOTIFY_CALLBACK_URI: &str = "blue2th://spotify-callback";
@@ -77,50 +82,6 @@ pub fn parse_spotify_callback(uri: &str) -> Option<SpotifyCallback> {
         code: code?,
         state: state?,
     })
-}
-
-/// Decode a URL query value: `%XX` escapes and `+` as a space. Invalid escapes
-/// are left as-is rather than dropped, so a malformed value stays visible.
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            },
-            // Decoded from the raw bytes, never by re-slicing the &str: a `%`
-            // followed by a multi-byte character would split it and panic.
-            b'%' if i + 2 < bytes.len() => match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2]))
-            {
-                (Some(high), Some(low)) => {
-                    out.push((high << 4) | low);
-                    i += 3;
-                },
-                _ => {
-                    out.push(b'%');
-                    i += 1;
-                },
-            },
-            byte => {
-                out.push(byte);
-                i += 1;
-            },
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// The value of a single ASCII hex digit, or `None` if it is not one.
-fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// Take the URI the app was opened with, if any, and clear it so the same

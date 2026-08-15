@@ -14,16 +14,25 @@ use axum::{
     http::{Request, StatusCode},
 };
 use blue2th_proto::{ServerConfig, DEFAULT_BACKEND_NAME, MAX_BACKEND_NAME_LEN};
-use blue2th_server::spotify_auth::SpotifyAuth;
+use blue2th_server::{auth::AuthStore, spotify_auth::SpotifyAuth};
 use tower::ServiceExt; // for `oneshot`
+
+/// The API token these tests pair with (phase 6.4). Held in memory only, so a
+/// test run can neither read nor rotate the operator's real one.
+const TOKEN: &str = "test-api-token";
+
+/// Add the bearer every guarded route requires (phase 6.4).
+fn authorized(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+    builder.header("authorization", format!("Bearer {TOKEN}"))
+}
 
 /// A router with an off-disk auth driver and a store-free server name, so no
 /// test can read or write the real `~/.local/state/blue2th/`.
 fn build_app() -> axum::Router {
-    blue2th_server::app_with_auth(SpotifyAuth::with_config(
-        None,
-        "blue2th://spotify-callback".to_string(),
-    ))
+    blue2th_server::app_with_auth_store(
+        SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+        AuthStore::with_token(TOKEN),
+    )
 }
 
 /// `GET /config` against `app`, returning the decoded payload.
@@ -33,7 +42,7 @@ fn build_app() -> axum::Router {
 /// functions are the right place to assert anyway — a decode failure then says
 /// which step broke.
 async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .uri("/config")
         .body(Body::empty())
         .map_err(|e| format!("build request: {e}"))?;
@@ -52,7 +61,7 @@ async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
 
 /// `POST /config` with a raw JSON body, returning the status and body text.
 async fn post_config(app: axum::Router, body: &str) -> Result<(StatusCode, String), String> {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .method("POST")
         .uri("/config")
         .header("content-type", "application/json")
@@ -146,7 +155,7 @@ async fn test_configured_name_becomes_the_spotify_connect_device_name() {
         .expect("POST /config");
     assert_eq!(status, StatusCode::OK);
 
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .uri("/spotify/status")
         .body(Body::empty())
         .expect("build request");
@@ -281,7 +290,7 @@ async fn test_transport_while_disconnected_still_returns_conflict() {
         "/spotify/next",
         "/spotify/previous",
     ] {
-        let request = Request::builder()
+        let request = authorized(Request::builder())
             .method("POST")
             .uri(path)
             .body(Body::empty())

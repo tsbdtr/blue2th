@@ -12,10 +12,25 @@ use axum::{
     http::{Request, StatusCode},
 };
 use blue2th_proto::{SpotifyState, SpotifyStatus};
+use blue2th_server::{auth::AuthStore, spotify_auth::SpotifyAuth};
 use tower::ServiceExt; // for `oneshot`
 
+/// The API token these tests pair with. Held in memory only: since phase 6.4 no
+/// test may build the router through `app()`, which reloads — and, on a
+/// malformed store, rotates — the operator's real API token.
+const TOKEN: &str = "test-api-token";
+
+/// Add the bearer every guarded route requires (phase 6.4).
+fn authorized(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+    builder.header("authorization", format!("Bearer {TOKEN}"))
+}
+
+/// The router under test: store-free, with a known API token.
 fn build_app() -> axum::Router {
-    blue2th_server::app()
+    blue2th_server::app_with_auth_store(
+        SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+        AuthStore::with_token(TOKEN),
+    )
 }
 
 // Criterion: `POST /spotify/start` with no target selected returns 400 and does
@@ -23,7 +38,7 @@ fn build_app() -> axum::Router {
 // but pins 400 exactly so an unwired 404 route still fails the test).
 #[tokio::test]
 async fn test_spotify_start_without_target_returns_bad_request() {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .method("POST")
         .uri("/spotify/start")
         .body(Body::empty())
@@ -41,7 +56,7 @@ async fn test_spotify_start_without_target_returns_bad_request() {
 // Criterion: `GET /spotify/status` on a fresh router returns `Stopped`.
 #[tokio::test]
 async fn test_spotify_status_on_fresh_server_is_stopped() {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .uri("/spotify/status")
         .body(Body::empty())
         .expect("build request");

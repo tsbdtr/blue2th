@@ -19,15 +19,16 @@ use axum::{
 };
 use blue2th_proto::{
     AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
-    HealthStatus, OffsetRequest, PlaybackState, PlaybackStatus, PresenceRequest, ServerConfig,
-    SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus, TargetsState, VolumeRequest,
+    HealthStatus, OffsetRequest, PairRequest, PairResponse, PlaybackState, PlaybackStatus,
+    PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus,
+    TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
-use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 pub mod audio;
+pub mod auth;
 mod bluetooth;
 pub mod config;
 pub mod spotify;
@@ -37,6 +38,7 @@ pub mod targets;
 pub mod watchdog;
 
 use audio::{AudioEngine, AudioError, RodioOutput};
+use auth::AuthStore;
 use spotify::{SpotifyBackend, SpotifyError};
 use spotify_auth::{SpotifyApiError, SpotifyAuth, Transport};
 use targets::{SelectError, SpeakerTargets};
@@ -68,24 +70,359 @@ struct AppState {
     /// device name `librespot` advertises *and* the name the Web API lookup
     /// matches on, so the two can never disagree.
     name: Arc<Mutex<config::ServerName>>,
+    /// The API token and the armed pairing code (phase 6.4). Read by
+    /// [`require_bearer`] on every guarded route and by the [`pair`] handler,
+    /// which is the only one allowed to hand the token out.
+    auth: Arc<Mutex<AuthStore>>,
 }
+
+/// One route the backend serves, as a (method, path template) pair plus whether
+/// it is reachable without a bearer token.
+///
+/// The point of naming the routes in data is the guard: [`ROUTES`] is the single
+/// source of truth the router is built from *and* the list the authentication
+/// tests iterate, so a route added later without the guard fails a test instead
+/// of quietly shipping an open door.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteSpec {
+    /// HTTP method, upper-case (`"GET"`, `"POST"`).
+    pub method: &'static str,
+    /// Axum path template, e.g. `/devices/{addr}/connect`.
+    pub path: &'static str,
+    /// Whether the route answers without `Authorization: Bearer <token>`.
+    /// Only `GET /health` and `POST /pair` may be public.
+    pub public: bool,
+}
+
+/// Every route the backend serves.
+///
+/// The router is built **from** this table, not alongside it: an axum `Router`
+/// cannot be enumerated, so a route mounted by hand next to the table would
+/// escape the guard tests entirely. Adding a route means adding a line here.
+pub const ROUTES: &[RouteSpec] = &[
+    RouteSpec {
+        method: "GET",
+        path: "/health",
+        public: true,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/pair",
+        public: true,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/adapters",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/devices",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/connect",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/disconnect",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/select",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/deselect",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/offset",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/targets",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/scan",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/play",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/pause",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/stop",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/volume",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/playback",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/start",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/stop",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/spotify/status",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/spotify/auth/url",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/auth/callback",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/spotify/auth/status",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/play",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/pause",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/next",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/previous",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/spotify/now-playing",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/client/presence",
+        public: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/config",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/config",
+        public: false,
+    },
+];
 
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
 const SCAN_DURATION: Duration = Duration::from_secs(20);
 
-/// Default bind address. `0.0.0.0` so the phone can reach the backend over the LAN.
+/// Bind address of last resort: every interface, used only when no LAN address
+/// can be resolved. Refusing to start would leave the operator with a backend
+/// that works everywhere except on the box whose interfaces are still coming up.
 const DEFAULT_BIND: &str = "0.0.0.0:4000";
+
+/// TCP port the backend listens on.
+const DEFAULT_PORT: u16 = 4000;
+
+/// Env var overriding the bind address; it always wins over the automatic LAN
+/// choice, so an operator can still ask for `0.0.0.0` (or a specific interface).
+const BIND_ENV: &str = "BLUE2TH_BIND";
 
 /// Run the backend: initialise tracing, bind the socket and serve the router.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
-    let addr = std::env::var("BLUE2TH_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_string());
+    // A pairing window is opened whenever nobody *can* be paired — a first run,
+    // but also a store that was missing, unreadable or malformed, since the token
+    // minted in its place has just invalidated every paired client — and
+    // otherwise only when the operator asks for one. Arming a code at every
+    // restart would leave the one open door ajar for no reason.
+    let pair_requested = std::env::args().any(|arg| arg == "--pair");
+
+    let mut auth_store = AuthStore::with_store(auth::auth_store_path());
+    let server_name = config::ServerName::with_store(config::name_store_path());
+    let addr = lan_bind_address();
+
+    if auth_store.minted_a_new_token() || pair_requested {
+        let code = auth_store.arm_pairing(std::time::SystemTime::now());
+        tracing::info!(
+            "{}",
+            pairing_banner(&advertised_url(&addr), server_name.name(), &code)
+        );
+    } else {
+        tracing::info!("this backend is already paired; run with --pair to arm a new code");
+    }
+
+    let router = app_with_auth_and_targets(
+        SpotifyAuth::new(),
+        SpeakerTargets::with_store(targets::offsets_store_path()),
+        server_name,
+        auth_store,
+    );
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("blue2th-server listening on http://{addr}");
 
-    axum::serve(listener, app()).await?;
+    axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// The address to advertise in the pairing QR, resolving the host's LAN address
+/// itself. See [`advertised_url_from`] for the rule.
+fn advertised_url(bind_addr: &str) -> String {
+    advertised_url_from(bind_addr, preferred_lan_ipv4(&host_ipv4_addresses()))
+}
+
+/// Pick the URL a pairing QR should carry for a backend bound to `bind_addr`.
+/// Pure, so the wildcard cases are testable without the host's interfaces.
+///
+/// A backend bound to every interface has no address of its own to hand out, so
+/// the detected LAN one is used: a QR carrying `0.0.0.0` would pair the phone
+/// with nothing. With no LAN address detected either, the bind address is
+/// advertised as-is — a QR that cannot work is still better than none, since the
+/// operator can read the code off the same banner and type it.
+fn advertised_url_from(bind_addr: &str, detected: Option<std::net::Ipv4Addr>) -> String {
+    let Some((host, port)) = bind_addr.rsplit_once(':') else {
+        return format!("http://{bind_addr}");
+    };
+    if host == "0.0.0.0" || host == "[::]" {
+        if let Some(lan) = detected {
+            return format!("http://{lan}:{port}");
+        }
+    }
+    format!("http://{bind_addr}")
+}
+
+/// The address the backend binds to: `BLUE2TH_BIND` when set, otherwise the
+/// host's LAN IPv4, otherwise every interface.
+///
+/// Binding to the LAN address is **defence in depth, not authentication**: it
+/// stops the API being served on other interfaces (a VPN, a laptop's public
+/// one). It does not restrict who on the LAN may connect — that is the bearer
+/// token's job.
+pub fn lan_bind_address() -> String {
+    bind_address(
+        std::env::var(BIND_ENV).ok().filter(|a| !a.is_empty()),
+        preferred_lan_ipv4(&host_ipv4_addresses()),
+    )
+}
+
+/// The host's IPv4 addresses, read from the interfaces the OS exposes.
+///
+/// Hardware/OS seam: which interfaces exist is host-dependent, so the *choice*
+/// among them is a pure function ([`preferred_lan_ipv4`]) and only the gathering
+/// lives here. A failure yields no candidate, which falls back to every
+/// interface rather than refusing to start.
+fn host_ipv4_addresses() -> Vec<std::net::Ipv4Addr> {
+    let Ok(output) = std::process::Command::new("hostname").arg("-I").output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .filter_map(|token| token.parse().ok())
+        .collect()
+}
+
+/// Pick the bind address from an explicit override and a detected LAN address.
+/// Pure, so the precedence is testable without touching the environment or the
+/// host's interfaces.
+fn bind_address(override_addr: Option<String>, detected: Option<std::net::Ipv4Addr>) -> String {
+    match (override_addr, detected) {
+        // An explicit override always wins: the operator knows their network
+        // better than a heuristic does.
+        (Some(addr), _) => addr,
+        (None, Some(lan)) => format!("{lan}:{DEFAULT_PORT}"),
+        // No routable address (no interface up): every interface, with the
+        // warning left to the caller. Refusing to start would be worse.
+        (None, None) => DEFAULT_BIND.to_string(),
+    }
+}
+
+/// The best LAN IPv4 among the host's addresses: a routable, non-loopback,
+/// non-link-local one. `None` when there is no such address (no interface up),
+/// in which case the caller falls back to every interface with a warning rather
+/// than refusing to start. Pure.
+pub fn preferred_lan_ipv4(candidates: &[std::net::Ipv4Addr]) -> Option<std::net::Ipv4Addr> {
+    candidates
+        .iter()
+        .find(|addr| {
+            // Loopback reaches nothing but this host; link-local (169.254/16)
+            // means DHCP failed, so it is not a LAN address either.
+            !addr.is_loopback() && !addr.is_link_local() && !addr.is_unspecified()
+        })
+        .copied()
+}
+
+/// The startup banner: the pairing code as text **and** as an ASCII QR of the
+/// `blue2th://pair?…` deep link, so the operator can either type six characters
+/// or point a phone camera at the terminal.
+pub fn pairing_banner(url: &str, name: &str, code: &str) -> String {
+    let link = blue2th_proto::pair_deep_link(url, name, code);
+    format!(
+        "\n{}\nPair this backend: scan the code above with the phone's camera, \
+         or type this pairing code in blue2th → Settings: {code}\n\
+         It is valid for {} minutes and works once.\n",
+        pairing_qr(&link),
+        auth::PAIRING_TTL.as_secs() / 60,
+    )
+}
+
+/// Render `link` as a QR code in text a terminal can show.
+pub fn pairing_qr(link: &str) -> String {
+    match qrcode::QrCode::new(link.as_bytes()) {
+        Ok(code) => code
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .quiet_zone(true)
+            .build(),
+        // A QR that cannot be built must not cost the operator the code itself:
+        // the banner still prints it as text, which is the other transport.
+        Err(e) => {
+            tracing::warn!("could not render the pairing QR: {e}");
+            String::new()
+        },
+    }
 }
 
 /// Build the application router. Kept separate from `run` so tests can exercise
@@ -100,18 +437,26 @@ pub fn app() -> Router {
         // Reloaded from disk so the Web API lookup keeps matching the running
         // librespot even before the app talks to us again.
         config::ServerName::with_store(config::name_store_path()),
+        // The real, persisted API token: **no test may call `app()`**, since
+        // minting or rotating this would unpair the operator's own phone.
+        AuthStore::with_store(auth::auth_store_path()),
     )
 }
 
-/// Build the router around an explicit Spotify auth driver. Tests use this with
-/// `SpotifyAuth::with_config`, which never touches the on-disk token store — so a
-/// test run can neither read nor clobber the real user's credential. The selection
-/// is store-free for the same reason.
-pub fn app_with_auth(spotify_auth: SpotifyAuth) -> Router {
+/// Build the router around an explicit Spotify auth driver **and an explicit API
+/// token** — the entry point every test uses, since it touches no store at all:
+/// a test that let the server mint or reload the real token would unpair the
+/// operator's phone (`AuthStore::with_token` keeps it in memory).
+///
+/// There is deliberately no variant that mints its own token: the caller could
+/// not know it, so every guarded route would answer 401 and the test would look
+/// broken for the wrong reason.
+pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router {
     app_with_auth_and_targets(
         spotify_auth,
         SpeakerTargets::new(),
         config::ServerName::new(),
+        auth,
     )
 }
 
@@ -121,6 +466,7 @@ fn app_with_auth_and_targets(
     mut spotify_auth: SpotifyAuth,
     speaker_targets: SpeakerTargets,
     server_name: config::ServerName,
+    auth: AuthStore,
 ) -> Router {
     // The auth driver and the subprocess must start out agreeing with the stored
     // name, or the very first transport call would look up a device nobody
@@ -139,42 +485,128 @@ fn app_with_auth_and_targets(
         spotify_auth: Arc::new(Mutex::new(spotify_auth)),
         sse_watch: Arc::new(watchdog::SseWatch::default()),
         name: Arc::new(Mutex::new(server_name)),
+        auth: Arc::new(Mutex::new(auth)),
     };
 
     spawn_idle_watchdog(state.clone());
 
-    Router::new()
-        .route("/health", get(health))
-        .route("/adapters", get(adapters))
-        .route("/devices", get(devices))
-        .route("/devices/{addr}/connect", post(connect))
-        .route("/devices/{addr}/disconnect", post(disconnect))
-        .route("/devices/{addr}/select", post(select_target))
-        .route("/devices/{addr}/deselect", post(deselect_target))
-        .route("/devices/{addr}/offset", post(set_target_offset))
-        .route("/targets", get(get_targets))
-        .route("/scan", get(scan))
-        .route("/play", post(play))
-        .route("/pause", post(pause))
-        .route("/stop", post(stop))
-        .route("/volume", post(volume))
-        .route("/playback", get(playback))
-        .route("/spotify/start", post(spotify_start))
-        .route("/spotify/stop", post(spotify_stop))
-        .route("/spotify/status", get(spotify_status))
-        .route("/spotify/auth/url", get(spotify_auth_url))
-        .route("/spotify/auth/callback", post(spotify_auth_callback))
-        .route("/spotify/auth/status", get(spotify_auth_status))
-        .route("/spotify/play", post(spotify_play))
-        .route("/spotify/pause", post(spotify_pause))
-        .route("/spotify/next", post(spotify_next))
-        .route("/spotify/previous", post(spotify_previous))
-        .route("/spotify/now-playing", get(spotify_now_playing))
-        .route("/client/presence", post(client_presence))
-        .route("/config", get(get_config).post(set_config))
-        // Permissive CORS for LAN development; tightened in a later phase.
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+    // Built from `ROUTES`, never alongside it: the guard is applied per entry,
+    // so a route can only exist here by being listed — and by declaring whether
+    // it is public.
+    let mut router = Router::new();
+    for spec in ROUTES {
+        let handler = route_handler(spec);
+        let handler = if spec.public {
+            handler
+        } else {
+            handler.layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                require_bearer,
+            ))
+        };
+        router = router.route(spec.path, handler);
+    }
+    // No CORS layer at all. The permissive one this replaces answered the
+    // preflight for any web page the user happened to open, which made a LAN
+    // service reachable from the internet by proxy. The app is not a browser.
+    router.with_state(state)
+}
+
+/// The handler behind one table entry.
+///
+/// A `match` rather than a registry: it is exhaustive by construction — a spec
+/// added to `ROUTES` without a handler fails to compile here, which is the point
+/// of building the router from the table.
+fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
+    match (spec.method, spec.path) {
+        ("GET", "/health") => get(health),
+        ("POST", "/pair") => post(pair),
+        ("GET", "/adapters") => get(adapters),
+        ("GET", "/devices") => get(devices),
+        ("POST", "/devices/{addr}/connect") => post(connect),
+        ("POST", "/devices/{addr}/disconnect") => post(disconnect),
+        ("POST", "/devices/{addr}/select") => post(select_target),
+        ("POST", "/devices/{addr}/deselect") => post(deselect_target),
+        ("POST", "/devices/{addr}/offset") => post(set_target_offset),
+        ("GET", "/targets") => get(get_targets),
+        ("GET", "/scan") => get(scan),
+        ("POST", "/play") => post(play),
+        ("POST", "/pause") => post(pause),
+        ("POST", "/stop") => post(stop),
+        ("POST", "/volume") => post(volume),
+        ("GET", "/playback") => get(playback),
+        ("POST", "/spotify/start") => post(spotify_start),
+        ("POST", "/spotify/stop") => post(spotify_stop),
+        ("GET", "/spotify/status") => get(spotify_status),
+        ("GET", "/spotify/auth/url") => get(spotify_auth_url),
+        ("POST", "/spotify/auth/callback") => post(spotify_auth_callback),
+        ("GET", "/spotify/auth/status") => get(spotify_auth_status),
+        ("POST", "/spotify/play") => post(spotify_play),
+        ("POST", "/spotify/pause") => post(spotify_pause),
+        ("POST", "/spotify/next") => post(spotify_next),
+        ("POST", "/spotify/previous") => post(spotify_previous),
+        ("GET", "/spotify/now-playing") => get(spotify_now_playing),
+        ("POST", "/client/presence") => post(client_presence),
+        ("GET", "/config") => get(get_config),
+        ("POST", "/config") => post(set_config),
+        // Unreachable in practice (the table above is the only source), but a
+        // 404 is the safe answer: never serve something unguarded by accident.
+        _ => get(unknown_route),
+    }
+}
+
+/// Answers a table entry with no handler. Reached only if `ROUTES` gains a line
+/// without one — a 404 rather than an unguarded surprise.
+async fn unknown_route() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+/// Reject a request whose `Authorization` header does not carry the API token.
+///
+/// Applied per route, to the guarded ones only: the public pair is `GET /health`
+/// (so the app can tell "not paired" from "unreachable") and `POST /pair`.
+async fn require_bearer(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if !state.auth.lock().await.authorises(header) {
+        return AppError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "not paired — pair this app with the backend first".to_string(),
+        }
+        .into_response();
+    }
+    next.run(request).await
+}
+
+/// `POST /pair` — exchange an armed pairing code for the API token.
+///
+/// **The one open door.** Everything protecting the API rests on the code being
+/// armed only briefly, one-shot and attempt-capped; every refusal answers the
+/// same 401 with the same message, so a caller cannot tell an unknown code from
+/// an expired or already-used one.
+async fn pair(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Json<PairResponse>, AppError> {
+    // A malformed body is a client error, not a refused code: nothing was
+    // guessed, so distinguishing the two leaks nothing an attacker could use.
+    let submitted = serde_json::from_slice::<PairRequest>(&body)
+        .map(|req| req.code)
+        .map_err(|e| AppError::bad_request(format!("invalid pair body: {e}")))?;
+    let mut auth = state.auth.lock().await;
+    match auth.redeem(&submitted, std::time::SystemTime::now()) {
+        Ok(token) => Ok(Json(PairResponse { token })),
+        Err(e) => Err(AppError {
+            status: StatusCode::UNAUTHORIZED,
+            message: e.to_string(),
+        }),
+    }
 }
 
 /// Start the idle watchdog: once the now-playing SSE feed has had no reader for
@@ -434,8 +866,8 @@ async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
 /// `POST /config` — set the backend's name, which becomes its Spotify Connect
 /// device name.
 ///
-/// The name is re-validated here rather than trusted: this route is reachable by
-/// anything on the LAN until the authenticated API lands.
+/// The name is re-validated here rather than trusted: a bearer says the caller
+/// is the paired app, not that what it sent is well formed.
 async fn set_config(
     State(state): State<AppState>,
     body: axum::body::Bytes,
@@ -489,7 +921,9 @@ async fn set_config(
 
 /// `GET /health` — liveness probe carrying the backend version.
 async fn health() -> Json<HealthStatus> {
-    Json(HealthStatus::ok(env!("CARGO_PKG_VERSION")))
+    // Deliberately public, and it says so: the app needs to tell "not paired"
+    // from "unreachable", which a 401 on the probe itself would hide.
+    Json(HealthStatus::ok(env!("CARGO_PKG_VERSION")).with_auth_required(true))
 }
 
 /// `GET /adapters` — Bluetooth adapters present on the host.
@@ -906,6 +1340,24 @@ mod tests {
 
     use super::*; // for `oneshot`
 
+    /// The API token these tests pair with. Held in memory only: after phase 6.4
+    /// no test may build the router through `app()`, which reloads (and, on a
+    /// malformed store, rotates) the operator's real token.
+    const TOKEN: &str = "test-api-token";
+
+    /// A store-free router with a known API token.
+    fn build_app() -> Router {
+        app_with_auth_store(
+            spotify_auth::SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+            AuthStore::with_token(TOKEN),
+        )
+    }
+
+    /// Add the bearer every guarded route requires.
+    fn authorized(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+        builder.header("authorization", format!("Bearer {TOKEN}"))
+    }
+
     #[tokio::test]
     async fn test_health_endpoint_returns_ok_status_and_version() {
         let request = Request::builder()
@@ -913,7 +1365,7 @@ mod tests {
             .body(Body::empty())
             .expect("build request");
 
-        let response = app().oneshot(request).await.expect("router response");
+        let response = build_app().oneshot(request).await.expect("router response");
         assert_eq!(response.status(), StatusCode::OK);
 
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -925,18 +1377,17 @@ mod tests {
         assert_eq!(parsed.version, env!("CARGO_PKG_VERSION"));
     }
 
-    // Criterion (phase 6.1): `app()` builds its selection from the remembered
-    // offsets store and still serves `/targets`. Only the offsets are persisted,
-    // never the selection: a freshly built router reports nothing selected, since
-    // at startup no speaker is connected yet.
+    // Criterion (phase 6.1, re-pointed in 6.4): the router still serves
+    // `/targets`, and only the offsets are ever persisted — never the selection,
+    // so a freshly built router reports nothing selected. Built store-free: the
+    // offsets store itself is unit-tested in `targets.rs` against a temp path.
     #[tokio::test]
     async fn test_app_builds_with_the_offsets_store_and_restores_no_selection() {
-        let request = Request::builder()
-            .uri("/targets")
+        let request = authorized(Request::builder().uri("/targets"))
             .body(Body::empty())
             .expect("build request");
 
-        let response = app().oneshot(request).await.expect("router response");
+        let response = build_app().oneshot(request).await.expect("router response");
         assert_eq!(response.status(), StatusCode::OK);
 
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -993,5 +1444,191 @@ mod tests {
     fn test_spotify_api_premium_required_maps_to_forbidden() {
         let err: AppError = SpotifyApiError::PremiumRequired.into();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    // ---- phase 6.4: LAN bind address and the pairing banner ----
+
+    // Criterion: `lan_bind_address()` yields to `BLUE2TH_BIND` — an operator who
+    // asked for a specific address (or for every interface) always wins.
+    #[test]
+    fn test_bind_address_prefers_the_env_override() {
+        assert_eq!(
+            bind_address(
+                Some("0.0.0.0:4000".to_string()),
+                Some(std::net::Ipv4Addr::new(192, 168, 1, 107))
+            ),
+            "0.0.0.0:4000"
+        );
+    }
+
+    // Criterion: without an override the backend binds its LAN address on the
+    // standard port, rather than every interface.
+    #[test]
+    fn test_bind_address_uses_the_detected_lan_address() {
+        assert_eq!(
+            bind_address(None, Some(std::net::Ipv4Addr::new(192, 168, 1, 107))),
+            format!("192.168.1.107:{DEFAULT_PORT}")
+        );
+    }
+
+    // Criterion (non-nominal): with no LAN address resolvable (no interface up)
+    // the server falls back to `0.0.0.0` rather than refusing to start.
+    #[test]
+    fn test_bind_address_falls_back_to_every_interface() {
+        assert_eq!(bind_address(None, None), DEFAULT_BIND);
+    }
+
+    // Criterion: `lan_bind_address()` prefers a non-loopback IPv4.
+    #[test]
+    fn test_preferred_lan_ipv4_skips_loopback_and_link_local() {
+        let candidates = [
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+            std::net::Ipv4Addr::new(169, 254, 3, 4),
+            std::net::Ipv4Addr::new(192, 168, 1, 107),
+        ];
+        assert_eq!(
+            preferred_lan_ipv4(&candidates),
+            Some(std::net::Ipv4Addr::new(192, 168, 1, 107))
+        );
+    }
+
+    // Criterion (non-nominal): loopback alone is no LAN address at all, so the
+    // caller falls back to every interface.
+    #[test]
+    fn test_preferred_lan_ipv4_without_a_routable_address_is_none() {
+        assert_eq!(
+            preferred_lan_ipv4(&[std::net::Ipv4Addr::new(127, 0, 0, 1)]),
+            None
+        );
+        assert_eq!(preferred_lan_ipv4(&[]), None);
+    }
+
+    // Criterion: `BLUE2TH_BIND` wins over the automatic choice, end to end.
+    // The single env-mutating test of this binary, like `targets`' XDG one.
+    #[test]
+    fn test_lan_bind_address_yields_to_the_bind_env_var() {
+        std::env::set_var(BIND_ENV, "10.1.2.3:4321");
+        let chosen = lan_bind_address();
+        std::env::remove_var(BIND_ENV);
+        assert_eq!(chosen, "10.1.2.3:4321");
+    }
+
+    // Criterion: the QR is rendered as text the terminal can show — a square
+    // block of lines, not the URL itself.
+    #[test]
+    fn test_pairing_qr_renders_a_text_block() {
+        let link =
+            blue2th_proto::pair_deep_link("http://192.168.1.107:4000", "blue2th-PC", "K7M2QX");
+        let rendered = pairing_qr(&link);
+        let lines: Vec<&str> = rendered.lines().filter(|l| !l.is_empty()).collect();
+        assert!(
+            lines.len() >= 21,
+            "a QR is at least 21 modules across, got {} lines",
+            lines.len()
+        );
+        assert!(
+            lines
+                .windows(2)
+                .all(|w| w[0].chars().count() == w[1].chars().count()),
+            "every QR row must be the same width"
+        );
+        assert!(
+            !rendered.contains(&link),
+            "the QR must encode the link, not print it"
+        );
+    }
+
+    // Criterion: the QR encodes *that* URL — the render is a function of the
+    // link and nothing else. Without a decoder here, the property is pinned the
+    // way it can break: two links must not render the same block, and one link
+    // must always render the same one.
+    #[test]
+    fn test_pairing_qr_encodes_the_link_it_is_given() {
+        let link =
+            blue2th_proto::pair_deep_link("http://192.168.1.107:4000", "blue2th-PC", "K7M2QX");
+        let other =
+            blue2th_proto::pair_deep_link("http://192.168.1.107:4000", "blue2th-PC", "AAAAAA");
+        assert_eq!(
+            pairing_qr(&link),
+            pairing_qr(&link),
+            "the same link must always render the same QR"
+        );
+        assert_ne!(
+            pairing_qr(&link),
+            pairing_qr(&other),
+            "a different pairing code must produce a different QR, or it encodes something else"
+        );
+    }
+
+    // Criterion: the QR carries the address the phone must call, so a backend
+    // bound to every interface advertises its LAN address instead of `0.0.0.0`.
+    #[test]
+    fn test_advertised_url_replaces_the_wildcard_with_the_lan_address() {
+        let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+        assert_eq!(
+            advertised_url_from(DEFAULT_BIND, lan),
+            "http://192.168.1.107:4000"
+        );
+        assert_eq!(
+            advertised_url_from("[::]:4000", lan),
+            "http://192.168.1.107:4000"
+        );
+    }
+
+    // Criterion: an address the operator chose is advertised as-is — resolving
+    // it again could hand out an interface they deliberately avoided.
+    #[test]
+    fn test_advertised_url_keeps_an_explicit_bind_address() {
+        assert_eq!(
+            advertised_url_from(
+                "10.1.2.3:4321",
+                Some(std::net::Ipv4Addr::new(192, 168, 1, 107))
+            ),
+            "http://10.1.2.3:4321"
+        );
+    }
+
+    // Criterion (non-nominal): with no LAN address to substitute, the wildcard
+    // is advertised as-is rather than crashing the banner — the printed code is
+    // the transport that still works.
+    #[test]
+    fn test_advertised_url_without_a_lan_address_keeps_the_bind_address() {
+        assert_eq!(
+            advertised_url_from(DEFAULT_BIND, None),
+            "http://0.0.0.0:4000"
+        );
+        assert_eq!(
+            advertised_url_from("no-port-here", None),
+            "http://no-port-here"
+        );
+    }
+
+    // Criterion: the startup banner shows the code as text *and* the deep link
+    // as a QR, so typing six characters and scanning are the same mechanism.
+    #[test]
+    fn test_pairing_banner_shows_the_code_and_the_qr() {
+        let banner = pairing_banner("http://192.168.1.107:4000", "blue2th-PC", "K7M2QX");
+        assert!(
+            banner.contains("K7M2QX"),
+            "the operator must be able to read the code, got {banner}"
+        );
+        assert!(
+            banner.lines().count() >= 21,
+            "the banner must carry the QR block, got {banner}"
+        );
+    }
+
+    // Criterion (security): the QR carries the **code**, never the token — the
+    // link travels through Android's intent system, which another app declaring
+    // the `blue2th` scheme could listen to.
+    #[test]
+    fn test_pairing_banner_never_prints_the_api_token() {
+        let mut store = AuthStore::with_token("super-secret-api-token");
+        let code = store.arm_pairing(std::time::SystemTime::now());
+        let banner = pairing_banner("http://192.168.1.107:4000", "blue2th-PC", &code);
+        assert!(
+            !banner.contains(store.token()),
+            "the banner must never show the API token"
+        );
     }
 }

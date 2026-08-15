@@ -26,11 +26,28 @@
 //! The *name* rule itself lives in `blue2th-proto`, shared with the server, which
 //! re-validates rather than trusting the client.
 
-use blue2th_proto::NameError;
+use blue2th_proto::{NameError, PairLink};
 use serde::{Deserialize, Serialize};
 
 /// What the status encart shows while no backend is configured.
 pub const NO_BACKEND_LABEL: &str = "-";
+
+/// How the user pairs with a given backend (phase 6.4).
+///
+/// One mechanism, two transports: the server mints one short-lived code and
+/// prints it as text *and* as a QR of `blue2th://pair?…`. This per-backend
+/// setting only selects what the settings page offers for an entry that already
+/// exists. Defaults to `Code`, which needs nothing but the terminal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PairingMethod {
+    /// Type the six characters shown in the server's terminal.
+    #[default]
+    Code,
+    /// Scan the terminal's QR with the phone's own camera app, which routes the
+    /// `blue2th://pair?…` deep link to the app.
+    Qr,
+}
 
 /// A backend the user configured: the name the app is the source of truth for,
 /// and the address every call goes to.
@@ -45,6 +62,15 @@ pub struct BackendEntry {
     /// on, and `serde(default)` keeps a phase 6.2-era blob loadable.
     #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
+    /// The API token obtained by pairing (phase 6.4), carried as
+    /// `Authorization: Bearer <token>` on every call to that backend. `None`
+    /// until the user pairs — the calls then fail fast as "not paired" rather
+    /// than each screen failing on its own.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// How the settings page offers to pair with this backend.
+    #[serde(default)]
+    pub pairing: PairingMethod,
 }
 
 /// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
@@ -133,8 +159,80 @@ impl AppSettings {
             name,
             url,
             restore_during_playback: restore_during_playback_default(),
+            // A backend is unpaired until the user runs the exchange, and the
+            // typed code is the transport that needs nothing but the terminal.
+            token: None,
+            pairing: PairingMethod::default(),
         });
         Ok(())
+    }
+
+    /// Store the API token obtained by pairing with the backend at `index`.
+    pub fn set_token(&mut self, index: usize, token: Option<String>) -> Result<(), SettingsError> {
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.token = token;
+        Ok(())
+    }
+
+    /// Choose how the user pairs with the backend at `index`.
+    pub fn set_pairing_method(
+        &mut self,
+        index: usize,
+        method: PairingMethod,
+    ) -> Result<(), SettingsError> {
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.pairing = method;
+        Ok(())
+    }
+
+    /// Apply a scanned `blue2th://pair?…` link: create the whole backend entry
+    /// (address, name, token) or update the one that already carries that URL,
+    /// and make it active. Returns its index.
+    ///
+    /// A URL the app already knows is **updated, never duplicated**, and its
+    /// locally chosen name survives: the user may have renamed it deliberately,
+    /// and the QR's name must not undo that.
+    pub fn upsert_from_pair_link(
+        &mut self,
+        link: &PairLink,
+        token: &str,
+    ) -> Result<usize, SettingsError> {
+        let url = normalise_url(&link.url)?;
+        if let Some(index) = self.backends.iter().position(|b| b.url == url) {
+            // Known address: only the token moves. The local name is kept — the
+            // user may have renamed this backend deliberately, and a QR must not
+            // undo that.
+            self.set_token(index, Some(token.to_string()))?;
+            self.activate(index)?;
+            return Ok(index);
+        }
+
+        // Creating needs a name, and it must not collide: both are the same
+        // rules `add` applies, so a link cannot smuggle in what typing cannot.
+        let name = link
+            .name
+            .as_deref()
+            .ok_or(SettingsError::Name(NameError::Empty))?;
+        self.add(name, &url)?;
+        let index = self.backends.len().saturating_sub(1);
+        self.set_token(index, Some(token.to_string()))?;
+        // The method is chosen when a backend is added, and this one was added by
+        // scanning: offering the QR again is what re-pairing it will most likely
+        // mean. Only on creation — for a known entry the user's own choice wins,
+        // exactly as their chosen name does.
+        self.set_pairing_method(index, PairingMethod::Qr)?;
+        self.activate(index)?;
+        Ok(index)
+    }
+
+    /// The active backend's API token, or `None` when nothing is active or the
+    /// active backend has not been paired yet.
+    pub fn active_token(&self) -> Option<String> {
+        self.active_backend().and_then(|b| b.token.clone())
     }
 
     /// Toggle the restore-during-playback setting of the backend at `index`.

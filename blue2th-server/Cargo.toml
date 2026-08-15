@@ -35,6 +35,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
+# Phase 6.4: the pairing QR, rendered as text a terminal can show. Default
+# features off on purpose — the `image`/`svg` renderers would drag a whole image
+# stack in for a backend that only ever prints characters.
+qrcode = { version = "0.14", default-features = false }
 url = "2"
 serde = { workspace = true }
 serde_json = "1"

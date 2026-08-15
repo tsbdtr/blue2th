@@ -20,8 +20,10 @@
 //! `settings::set_current` is an Android-only JNI seam, validated manually on a
 //! device — as is the settings page UI itself.
 
-use blue2th::settings::{self, AppSettings, BackendEntry, SettingsError, NO_BACKEND_LABEL};
-use blue2th_proto::{NameError, MAX_BACKEND_NAME_LEN};
+use blue2th::settings::{
+    self, AppSettings, BackendEntry, PairingMethod, SettingsError, NO_BACKEND_LABEL,
+};
+use blue2th_proto::{NameError, PairLink, MAX_BACKEND_NAME_LEN};
 
 // The settings page reads its labels from `locales/`, and a duplicated top-level
 // key there silently drops a whole block, so the keys are checked here.
@@ -39,11 +41,16 @@ fn two_backends() -> AppSettings {
                 name: "Salon".to_string(),
                 url: "http://192.168.1.107:4000".to_string(),
                 restore_during_playback: true,
+                // Phase 6.4: paired, with the typed-code transport.
+                token: Some("salon-token".to_string()),
+                pairing: PairingMethod::Code,
             },
             BackendEntry {
                 name: "Bureau".to_string(),
                 url: "http://192.168.1.42:4000".to_string(),
                 restore_during_playback: false,
+                token: None,
+                pairing: PairingMethod::Qr,
             },
         ],
         active: Some(0),
@@ -124,6 +131,9 @@ fn test_add_normalises_a_trailing_slash() {
             url: "http://192.168.1.107:4000".to_string(),
             // Phase 6.3: a new backend starts with restoration on.
             restore_during_playback: true,
+            // Phase 6.4: and unpaired, with the default pairing method.
+            token: None,
+            pairing: PairingMethod::Code,
         })
     );
 }
@@ -493,6 +503,16 @@ fn test_locales_carry_both_settings_pages_labels() {
             "app_settings.section_playback",
             "app_settings.restore_during_playback",
             "app_settings.restore_during_playback_hint",
+            // The pairing section (phase 6.4): the per-backend method, the code
+            // exchange and what a 401 reads as.
+            "app_settings.section_pairing",
+            "app_settings.pairing_method",
+            "app_settings.pairing_method_code",
+            "app_settings.pairing_method_qr",
+            "app_settings.pair",
+            "app_settings.pairing_code_placeholder",
+            "app_settings.paired_ok",
+            "app_settings.not_paired",
             // The app-wide settings page (phase 6.2).
             "app_settings.title",
             "app_settings.backends",
@@ -563,4 +583,291 @@ fn test_compile_time_backend_url_env_var_is_gone_from_the_codebase() {
         offenders.is_empty(),
         "{needle} must not appear in the codebase, found in {offenders:?}"
     );
+}
+
+// ---- phase 6.4: per-backend token and pairing method ----
+
+/// A pair link as the phone's camera app would deliver it.
+fn pair_link(url: &str, name: Option<&str>) -> PairLink {
+    PairLink {
+        url: url.to_string(),
+        name: name.map(str::to_string),
+        code: "K7M2QX".to_string(),
+    }
+}
+
+// Criterion: `BackendEntry` gains `token` and a `pairing` method, both persisted
+// — they survive the blob round-trip, per backend.
+#[test]
+fn test_token_and_pairing_method_round_trip_through_the_settings_blob() {
+    let original = two_backends();
+    let reloaded = settings::load(Some(&settings::save_blob(&original)));
+    assert_eq!(reloaded, original);
+    assert_eq!(
+        reloaded
+            .backends
+            .iter()
+            .map(|b| (b.token.clone(), b.pairing))
+            .collect::<Vec<(Option<String>, PairingMethod)>>(),
+        vec![
+            (Some("salon-token".to_string()), PairingMethod::Code),
+            (None, PairingMethod::Qr),
+        ],
+        "each backend keeps its own token and method"
+    );
+}
+
+// Criterion: the pairing method defaults to `Code` — the transport that needs
+// nothing but the terminal.
+#[test]
+fn test_pairing_method_defaults_to_code() {
+    assert_eq!(PairingMethod::default(), PairingMethod::Code);
+
+    let mut settings = AppSettings::default();
+    settings
+        .add("Salon", "http://192.168.1.107:4000")
+        .expect("add Salon");
+    let added = settings.backends.first().expect("the added backend");
+    assert_eq!(added.pairing, PairingMethod::Code);
+    assert_eq!(added.token, None, "a new backend starts unpaired");
+}
+
+// Criterion (non-nominal): a phase 6.3-era blob (no token, no method) still
+// loads — with the backend simply unpaired, which the settings page can act on.
+#[test]
+fn test_a_phase_6_3_blob_loads_unpaired_with_the_default_method() {
+    let blob = r#"{"backends":[{"name":"Salon","url":"http://192.168.1.107:4000","restore_during_playback":true}],"active":0}"#;
+    let loaded = settings::load(Some(blob));
+    let entry = loaded.active_backend().expect("the stored backend");
+    assert_eq!(entry.token, None);
+    assert_eq!(entry.pairing, PairingMethod::Code);
+}
+
+// Criterion: the pairing method is a **per-backend** setting the user can change
+// afterwards, and changing one leaves the other alone.
+#[test]
+fn test_set_pairing_method_updates_only_that_backend() {
+    let mut settings = two_backends();
+    settings
+        .set_pairing_method(0, PairingMethod::Qr)
+        .expect("switch Salon to QR");
+    assert_eq!(
+        settings.backends.first().map(|b| b.pairing),
+        Some(PairingMethod::Qr)
+    );
+    assert_eq!(
+        settings.backends.get(1).map(|b| b.pairing),
+        Some(PairingMethod::Qr),
+        "the other backend must be left exactly as it was"
+    );
+}
+
+// Criterion (non-nominal): a stale index is refused rather than panicking, like
+// every other index-taking settings operation.
+#[test]
+fn test_set_pairing_method_on_an_unknown_backend_is_refused() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.set_pairing_method(9, PairingMethod::Qr),
+        Err(SettingsError::UnknownBackend)
+    );
+    assert_eq!(settings, two_backends(), "nothing may have changed");
+}
+
+// Criterion: the token obtained by pairing is stored on that backend, and can be
+// cleared again (an unpaired backend is a normal state).
+#[test]
+fn test_set_token_stores_and_clears_the_token() {
+    let mut settings = two_backends();
+    settings
+        .set_token(1, Some("bureau-token".to_string()))
+        .expect("store the paired token");
+    assert_eq!(
+        settings.backends.get(1).and_then(|b| b.token.clone()),
+        Some("bureau-token".to_string())
+    );
+
+    settings.set_token(1, None).expect("clear the token");
+    assert_eq!(settings.backends.get(1).and_then(|b| b.token.clone()), None);
+}
+
+// Criterion (non-nominal): storing a token on a stale index is refused.
+#[test]
+fn test_set_token_on_an_unknown_backend_is_refused() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.set_token(9, Some("token".to_string())),
+        Err(SettingsError::UnknownBackend)
+    );
+    assert_eq!(settings, two_backends(), "nothing may have changed");
+}
+
+// Criterion: the app resolves the *active* backend's token, and reports none
+// while that backend is unpaired.
+#[test]
+fn test_active_token_follows_the_active_backend() {
+    let mut settings = two_backends();
+    assert_eq!(settings.active_token(), Some("salon-token".to_string()));
+
+    settings.activate(1).expect("switch to Bureau");
+    assert_eq!(
+        settings.active_token(),
+        None,
+        "Bureau has never been paired"
+    );
+
+    assert_eq!(AppSettings::default().active_token(), None);
+}
+
+// Criterion: scanning a pair link creates the whole entry — address, name and
+// token — and activates it. Nothing was typed.
+#[test]
+fn test_upsert_from_pair_link_creates_and_activates_the_backend() {
+    let mut settings = AppSettings::default();
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
+            "api-token",
+        )
+        .expect("a scanned link must create the backend");
+
+    assert_eq!(index, 0);
+    assert_eq!(settings.backends.len(), 1);
+    assert_eq!(
+        settings.active,
+        Some(0),
+        "the scanned backend becomes active"
+    );
+    let entry = settings.active_backend().expect("the created backend");
+    assert_eq!(entry.name, "blue2th-PC");
+    assert_eq!(entry.url, "http://192.168.1.107:4000");
+    assert_eq!(entry.token.as_deref(), Some("api-token"));
+}
+
+// Criterion: the pairing method is chosen when the backend is added, and a
+// scanned one was added by QR — so that is what its settings page offers next.
+#[test]
+fn test_upsert_from_pair_link_records_the_qr_as_the_new_backend_method() {
+    let mut settings = AppSettings::default();
+    settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
+            "api-token",
+        )
+        .expect("a scanned link must create the backend");
+    assert_eq!(
+        settings.backends.first().map(|b| b.pairing),
+        Some(PairingMethod::Qr)
+    );
+}
+
+// Criterion: for a backend the app already knows, the locally chosen pairing
+// method survives the scan exactly as the local name does.
+#[test]
+fn test_upsert_from_pair_link_keeps_the_method_of_a_known_backend() {
+    let mut settings = two_backends();
+    settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
+            "fresh-token",
+        )
+        .expect("a known URL must be updated");
+    assert_eq!(
+        settings.backends.first().map(|b| b.pairing),
+        Some(PairingMethod::Code),
+        "the user's own choice must not be overwritten by a scan"
+    );
+}
+
+// Criterion (non-nominal): a QR scanned for a URL the app already knows updates
+// the token rather than duplicating the entry — and the locally chosen name
+// survives, since the user may have renamed it deliberately.
+#[test]
+fn test_upsert_from_pair_link_updates_a_known_url_without_touching_its_name() {
+    let mut settings = two_backends();
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
+            "fresh-token",
+        )
+        .expect("a known URL must be updated");
+
+    assert_eq!(index, 0);
+    assert_eq!(settings.backends.len(), 2, "no duplicate entry");
+    let entry = settings.backends.first().expect("the known backend");
+    assert_eq!(entry.name, "Salon", "the local name must survive the scan");
+    assert_eq!(entry.token.as_deref(), Some("fresh-token"));
+    assert_eq!(settings.active, Some(0), "the re-paired backend is active");
+}
+
+// Criterion: the URL is normalised before it is matched, so the same backend
+// advertised with a trailing slash is still the same entry.
+#[test]
+fn test_upsert_from_pair_link_matches_a_known_url_across_a_trailing_slash() {
+    let mut settings = two_backends();
+    settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000/", Some("blue2th-PC")),
+            "fresh-token",
+        )
+        .expect("a trailing slash must not create a second entry");
+    assert_eq!(settings.backends.len(), 2);
+}
+
+// Criterion (non-nominal): a link carrying an address the app cannot use is
+// refused, and leaves no half-created entry behind.
+#[test]
+fn test_upsert_from_pair_link_refuses_a_malformed_url_and_stores_nothing() {
+    let mut settings = AppSettings::default();
+    assert_eq!(
+        settings.upsert_from_pair_link(&pair_link("192.168.1.107:4000", Some("blue2th-PC")), "t"),
+        Err(SettingsError::MalformedUrl)
+    );
+    assert!(settings.backends.is_empty());
+    assert_eq!(settings.active, None);
+}
+
+// Criterion (non-nominal): only `url` and `code` are required in a pair link, so
+// a nameless one cannot name a *new* backend — it is refused rather than stored
+// under an invented label.
+#[test]
+fn test_upsert_from_pair_link_refuses_to_create_a_nameless_backend() {
+    let mut settings = AppSettings::default();
+    assert_eq!(
+        settings.upsert_from_pair_link(&pair_link("http://192.168.1.107:4000", None), "t"),
+        Err(SettingsError::Name(NameError::Empty))
+    );
+    assert!(settings.backends.is_empty());
+}
+
+// Criterion: a nameless link for a URL the app already knows still works — the
+// name was never needed there, since the local one is kept anyway.
+#[test]
+fn test_upsert_from_pair_link_accepts_a_nameless_link_for_a_known_url() {
+    let mut settings = two_backends();
+    let index = settings
+        .upsert_from_pair_link(&pair_link("http://192.168.1.107:4000", None), "fresh-token")
+        .expect("a known URL needs no name");
+    assert_eq!(index, 0);
+    assert_eq!(
+        settings.backends.first().map(|b| b.name.as_str()),
+        Some("Salon")
+    );
+    assert_eq!(
+        settings.backends.first().and_then(|b| b.token.clone()),
+        Some("fresh-token".to_string())
+    );
+}
+
+// Criterion (non-nominal): a scanned name that collides with another backend is
+// refused rather than silently creating a second "Salon" — the status encart
+// could not tell the two apart. Nothing is stored.
+#[test]
+fn test_upsert_from_pair_link_refuses_a_name_another_backend_already_uses() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.upsert_from_pair_link(&pair_link("http://10.0.0.9:4000", Some("Salon")), "t"),
+        Err(SettingsError::DuplicateName)
+    );
+    assert_eq!(settings, two_backends(), "nothing may have changed");
 }

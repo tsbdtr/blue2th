@@ -1451,3 +1451,15 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     line-height: 1.4;
     color: #8b9cc8;
 }
+
+/* ── Settings: pairing section (phase 6.4) ───────────────────────────────── */
+
+/* The paired state is the one line the user looks for on this page. */
+.settings-hint.paired {
+    color: #22c55e;
+}
+/* The chosen pairing method, marked like the active backend row. */
+.backend-row-action.active {
+    border-color: #2563eb;
+    color: #e6ebf5;
+}

@@ -10,20 +10,26 @@ use axum::{
     http::{Request, StatusCode},
 };
 use blue2th_proto::{PlaybackState, RoutingMode, TargetsState};
+use blue2th_server::{auth::AuthStore, spotify_auth::SpotifyAuth};
 use tower::ServiceExt; // for `oneshot`
 
-/// The binary crate is not a library, so we rebuild the router here through the
-/// `bin` target by including the module under test is not possible; instead we
-/// hit the running router via the public test harness exposed by `main.rs`'s
-/// `app()`. Because `app()` is private, the integration test drives the same
-/// surface through a thin re-export added for tests.
-///
-/// NOTE: `app()` is `pub(crate)` in the binary; integration tests cannot call it
-/// directly. The test therefore relies on a small `pub fn test_app()` exported
-/// from the binary's library facade. The implementer must expose the router to
-/// integration tests (e.g. via a `lib.rs` or `#[cfg(test)]`-free `pub fn`).
+/// The API token these tests pair with. Held in memory only: since phase 6.4 no
+/// test may build the router through `app()`, which reloads — and, on a
+/// malformed store, rotates — the operator's real API token.
+const TOKEN: &str = "test-api-token";
+
+/// Add the bearer every guarded route requires (phase 6.4).
+fn authorized(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+    builder.header("authorization", format!("Bearer {TOKEN}"))
+}
+
+/// The router under test: store-free, with a known API token and an
+/// unconfigured Spotify auth driver.
 fn build_app() -> axum::Router {
-    blue2th_server::app()
+    blue2th_server::app_with_auth_store(
+        SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+        AuthStore::with_token(TOKEN),
+    )
 }
 
 /// Embedded test tone, read directly from the asset for the decode test.
@@ -32,7 +38,7 @@ const TEST_TONE_WAV: &[u8] = include_bytes!("../assets/test-tone.wav");
 // Criterion: `GET /playback` returns the current `PlaybackState`.
 #[tokio::test]
 async fn test_playback_endpoint_returns_state() {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .uri("/playback")
         .body(Body::empty())
         .expect("build request");
@@ -50,7 +56,7 @@ async fn test_playback_endpoint_returns_state() {
 // Criterion: `POST /volume` with a malformed body returns a 4xx (no panic).
 #[tokio::test]
 async fn test_volume_endpoint_rejects_malformed_body() {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .method("POST")
         .uri("/volume")
         .header("content-type", "application/json")
@@ -68,7 +74,7 @@ async fn test_volume_endpoint_rejects_malformed_body() {
 // Criterion: `/play` with no connected speaker returns a 4xx error (no panic).
 #[tokio::test]
 async fn test_play_without_connected_speaker_returns_client_error() {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .method("POST")
         .uri("/play")
         .body(Body::empty())
@@ -190,7 +196,7 @@ fn test_play_streams_running_output_node_to_pipewire() {
 #[tokio::test]
 async fn test_deselect_last_speaker_empties_the_selection() {
     let app = build_app();
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .method("POST")
         .uri("/devices/AA:BB:CC:DD:EE:FF/deselect")
         .body(Body::empty())
