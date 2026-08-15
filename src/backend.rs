@@ -34,23 +34,93 @@ const SCAN_WINDOW: Duration = Duration::from_secs(8);
 
 /// Error talking to the backend; surfaced to the UI as a string.
 #[derive(Debug, Clone)]
-pub struct BackendError(String);
+pub struct BackendError {
+    /// What to show the user.
+    message: String,
+    /// Whether the backend refused the app's credential (or it has none). Kept
+    /// apart from the message so the UI can point at pairing instead of showing
+    /// yet another network failure — "not paired" is not "unreachable".
+    not_paired: bool,
+}
 
 impl BackendError {
     fn new(msg: impl Into<String>) -> Self {
-        Self(msg.into())
+        Self {
+            message: msg.into(),
+            not_paired: false,
+        }
+    }
+
+    /// The typed "the app is not paired with this backend" failure: no token
+    /// stored, or the backend answered 401.
+    pub fn not_paired() -> Self {
+        Self {
+            message: NOT_PAIRED.to_string(),
+            not_paired: true,
+        }
+    }
+
+    /// Whether this failure means the app must pair (again) rather than that the
+    /// backend is unreachable.
+    pub fn is_not_paired(&self) -> bool {
+        self.not_paired
     }
 }
 
 impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
 /// Message carried by every call made while no backend is configured. The app
 /// fails fast with it instead of guessing an address and timing out.
 pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
+
+/// Message carried by every call made while the active backend has no token, or
+/// answered 401 (phase 6.4).
+pub const NOT_PAIRED: &str = "not paired";
+
+/// Build the `{base}/pair` URL, tolerating a trailing slash on the base.
+fn pair_url(_base: &str) -> String {
+    // STUB (phase 6.4).
+    todo!("phase 6.4: build the /pair URL")
+}
+
+/// The `Authorization` header value carrying `token`.
+fn auth_header_value(_token: &str) -> String {
+    // STUB (phase 6.4).
+    todo!("phase 6.4: build the bearer header value")
+}
+
+/// Map a failed backend response to a typed error. Pure.
+///
+/// A 401 becomes [`BackendError::not_paired`] whatever the body says; any other
+/// status keeps the backend's own message (which `error_for_status` would throw
+/// away, leaving the phone showing a bare status line).
+fn backend_error_for(_status: u16, _body: &str) -> BackendError {
+    // STUB (phase 6.4).
+    todo!("phase 6.4: map a failed response to a typed error, 401 = not paired")
+}
+
+/// The active backend's base URL **and** token, or a typed failure. Pure.
+///
+/// Nothing configured fails with [`NO_BACKEND_CONFIGURED`]; an active backend
+/// that was never paired fails with [`BackendError::not_paired`] — in both cases
+/// before any request is built, so an unpaired app never waits on a timeout.
+fn authed_base_from(_settings: &AppSettings) -> Result<(String, String), BackendError> {
+    // STUB (phase 6.4).
+    todo!("phase 6.4: resolve the active backend's base URL and bearer token")
+}
+
+/// `POST {base}/pair` — exchange a short-lived pairing code for the backend's
+/// long-lived API token. The one call that carries no bearer, since the app has
+/// none yet.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn pair(_base: &str, _code: &str) -> Result<String, BackendError> {
+    // STUB (phase 6.4).
+    todo!("phase 6.4: exchange the pairing code for the API token")
+}
 
 /// How long a settings-page call waits before giving up.
 ///
@@ -1159,5 +1229,335 @@ mod tests {
     fn test_sse_now_playing_payload_ignores_non_now_playing_and_comments() {
         assert!(sse_now_playing_payload("event:error\ndata:boom\n\n").is_none());
         assert!(sse_now_playing_payload(": keep-alive\n\n").is_none());
+    }
+
+    // ---- phase 6.4: the bearer on every call, and the pairing exchange ----
+
+    use crate::settings::{BackendEntry, PairingMethod};
+
+    /// Settings holding one active backend at `url`, paired or not.
+    ///
+    /// Built by hand rather than through `add`/`set_token`, so a fixture never
+    /// depends on the functions under test.
+    fn active_with_token(url: &str, token: Option<&str>) -> AppSettings {
+        AppSettings {
+            backends: vec![BackendEntry {
+                name: "Salon".to_string(),
+                url: url.to_string(),
+                restore_during_playback: true,
+                token: token.map(str::to_string),
+                pairing: PairingMethod::Code,
+            }],
+            active: Some(0),
+        }
+    }
+
+    /// The whole raw request once it has fully arrived (head, and body when a
+    /// `content-length` announces one). `None` means "keep reading".
+    fn request_complete(raw: &[u8]) -> Option<String> {
+        let text = String::from_utf8_lossy(raw).to_string();
+        let (head, body) = text.split_once("\r\n\r\n")?;
+        let length: usize = head
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        (body.len() >= length).then(|| text.clone())
+    }
+
+    /// Read a header value out of a raw request.
+    fn header_value(raw: &str, name: &str) -> Option<String> {
+        raw.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    }
+
+    /// Serve exactly one request on a throwaway loopback listener with a canned
+    /// reply, and hand back the base URL plus the raw request the client sent.
+    /// No real backend and no hardware: the point is what goes on the wire.
+    async fn canned_backend(
+        status_line: &'static str,
+        payload: &'static str,
+    ) -> Result<(String, tokio::task::JoinHandle<Result<String, String>>), String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("bind the test listener: {e}"))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| format!("read the test listener address: {e}"))?;
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .map_err(|e| format!("accept: {e}"))?;
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let request = loop {
+                match request_complete(&raw) {
+                    Some(request) => break request,
+                    None => {
+                        let read = stream
+                            .read(&mut chunk)
+                            .await
+                            .map_err(|e| format!("read the request: {e}"))?;
+                        if read == 0 {
+                            return Err("the client closed before sending a request".to_string());
+                        }
+                        raw.extend_from_slice(&chunk[..read]);
+                    },
+                }
+            };
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{payload}",
+                payload.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .map_err(|e| format!("write the response: {e}"))?;
+            let _ = stream.flush().await;
+            Ok::<String, String>(request)
+        });
+
+        Ok((format!("http://{addr}"), handle))
+    }
+
+    // Criterion: every backend call carries the bearer when the active entry has
+    // one — asserted on the wire, for a GET call.
+    #[tokio::test]
+    async fn test_backend_calls_carry_the_bearer_token() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("200 OK", r#"{"speakers":[],"routing":"idle"}"#)
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let outcome = fetch_targets().await;
+        let request = served
+            .await
+            .expect("join the test listener")
+            .expect("serve one request");
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(outcome.is_ok(), "the call must succeed: {outcome:?}");
+        assert_eq!(
+            header_value(&request, "authorization").as_deref(),
+            Some("Bearer tok-123"),
+            "every guarded call must carry the bearer, got {request}"
+        );
+    }
+
+    // Criterion: the same holds for the calls that push a body — the config push
+    // is the one the settings page and the reconnection both go through.
+    #[tokio::test]
+    async fn test_the_config_push_carries_the_bearer_token() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend(
+            "200 OK",
+            r#"{"name":"Salon","restore_during_playback":true}"#,
+        )
+        .await
+        .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let outcome = push_active_config().await;
+        let request = served
+            .await
+            .expect("join the test listener")
+            .expect("serve one request");
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(outcome.is_ok(), "the push must succeed: {outcome:?}");
+        assert_eq!(
+            header_value(&request, "authorization").as_deref(),
+            Some("Bearer tok-123")
+        );
+    }
+
+    // Criterion (non-nominal): with no token for the active backend the calls
+    // fail fast — the way an unconfigured backend does — instead of every screen
+    // failing on its own after a timeout.
+    #[tokio::test]
+    async fn test_a_call_without_a_token_fails_fast_as_not_paired() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        // Port 1 is never listening: reaching it at all would take a timeout.
+        crate::settings::set_current(active_with_token("http://127.0.0.1:1", None));
+
+        let started = std::time::Instant::now();
+        let error = fetch_targets()
+            .await
+            .expect_err("an unpaired app must not call the backend");
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(
+            error.is_not_paired(),
+            "the failure must point at pairing, got {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "no request may be attempted, so the call must return immediately"
+        );
+    }
+
+    // Criterion: `pair(base, code)` exchanges the code for the token — and sends
+    // no bearer, since the app has none yet.
+    #[tokio::test]
+    async fn test_pair_exchanges_the_code_for_the_token() {
+        let (base, served) = canned_backend("200 OK", r#"{"token":"api-token-value"}"#)
+            .await
+            .expect("start the canned backend");
+
+        let token = pair(&base, "K7M2QX").await;
+        let request = served
+            .await
+            .expect("join the test listener")
+            .expect("serve one request");
+
+        assert_eq!(
+            token.map_err(|e| e.to_string()),
+            Ok("api-token-value".to_string())
+        );
+        assert!(
+            request.starts_with("POST /pair "),
+            "the exchange must POST /pair, got {request}"
+        );
+        assert!(
+            request.contains("K7M2QX"),
+            "the submitted code must be on the wire, got {request}"
+        );
+        assert_eq!(
+            header_value(&request, "authorization"),
+            None,
+            "pairing is the one call made without a bearer"
+        );
+    }
+
+    // Criterion (non-nominal): a refused code reads as "not paired", distinct
+    // from an unreachable backend, so the settings page can say so.
+    #[tokio::test]
+    async fn test_pair_with_a_refused_code_reports_not_paired() {
+        let (base, served) = canned_backend("401 Unauthorized", "pairing refused")
+            .await
+            .expect("start the canned backend");
+
+        let error = pair(&base, "AAAAAA")
+            .await
+            .expect_err("a refused code must not yield a token");
+        let _ = served.await;
+
+        assert!(error.is_not_paired(), "got {error}");
+    }
+
+    // Criterion (non-nominal): the SSE feeds must treat a 401 as terminal rather
+    // than as a network blip — the subscription returns a "not paired" failure,
+    // which is what lets the reconnect loop stop instead of spinning forever.
+    #[tokio::test]
+    async fn test_now_playing_subscription_reports_not_paired_on_401() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("401 Unauthorized", "not paired")
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("stale-token")));
+
+        let error = subscribe_now_playing(|_| {})
+            .await
+            .expect_err("a 401 must end the subscription");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(error.is_not_paired(), "got {error}");
+    }
+
+    // Criterion: a 401 from any route maps to the typed "not paired" failure,
+    // whatever the backend wrote in the body.
+    #[test]
+    fn test_backend_error_for_401_is_not_paired() {
+        let error = backend_error_for(401, "some server wording");
+        assert!(error.is_not_paired());
+        assert!(
+            error.to_string().contains(NOT_PAIRED),
+            "the user must read that the app is not paired, got {error}"
+        );
+    }
+
+    // Criterion: any other failure keeps the backend's own message, which is the
+    // only thing telling the user what actually went wrong.
+    #[test]
+    fn test_backend_error_for_another_status_keeps_the_backend_message() {
+        let error = backend_error_for(503, "Spotify client id not configured");
+        assert!(!error.is_not_paired());
+        assert_eq!(error.to_string(), "Spotify client id not configured");
+
+        // An empty body still has to say something.
+        let bare = backend_error_for(500, "");
+        assert!(!bare.to_string().trim().is_empty());
+    }
+
+    // Criterion: the app resolves the active backend's address **and** token in
+    // one place, so no call site can forget the bearer.
+    #[test]
+    fn test_authed_base_from_returns_the_url_and_token() {
+        let settings = active_with_token("http://192.168.1.107:4000", Some("tok-123"));
+        assert_eq!(
+            authed_base_from(&settings).map_err(|e| e.to_string()),
+            Ok((
+                "http://192.168.1.107:4000".to_string(),
+                "tok-123".to_string()
+            ))
+        );
+    }
+
+    // Criterion (non-nominal): an active backend with no token is "not paired",
+    // not "no backend configured" — the two send the user to different places.
+    #[test]
+    fn test_authed_base_from_without_a_token_reports_not_paired() {
+        let settings = active_with_token("http://192.168.1.107:4000", None);
+        let error = authed_base_from(&settings).expect_err("an unpaired backend has no bearer");
+        assert!(error.is_not_paired(), "got {error}");
+    }
+
+    // Criterion: with nothing active the failure stays the phase 6.2 one.
+    #[test]
+    fn test_authed_base_from_without_an_active_backend_is_unconfigured() {
+        let error = authed_base_from(&AppSettings::default())
+            .expect_err("an unconfigured app must have no address");
+        assert!(
+            error.to_string().contains(NO_BACKEND_CONFIGURED),
+            "got {error}"
+        );
+        assert!(
+            !error.is_not_paired(),
+            "nothing configured is not the same as not paired"
+        );
+    }
+
+    // Criterion: the pairing exchange posts to `{base}/pair`, tolerating a
+    // trailing slash on the base like every other URL builder here.
+    #[test]
+    fn test_pair_url_appends_path() {
+        assert_eq!(
+            pair_url("http://10.0.0.5:4000"),
+            "http://10.0.0.5:4000/pair"
+        );
+        assert_eq!(
+            pair_url("http://10.0.0.5:4000/"),
+            "http://10.0.0.5:4000/pair"
+        );
+    }
+
+    // Criterion: the credential travels as a bearer, the scheme the server
+    // parses.
+    #[test]
+    fn test_auth_header_value_is_a_bearer() {
+        assert_eq!(auth_header_value("tok-123"), "Bearer tok-123");
     }
 }

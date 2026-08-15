@@ -13,18 +13,27 @@ use axum::{
     http::{Request, StatusCode},
 };
 use blue2th_proto::{RoutingMode, TargetsState};
-use blue2th_server::spotify_auth::SpotifyAuth;
+use blue2th_server::{auth::AuthStore, spotify_auth::SpotifyAuth};
 use tower::ServiceExt; // for `oneshot`
 
 const ADDR: &str = "AA:BB:CC:DD:EE:FF";
 
+/// The API token these tests pair with (phase 6.4). Held in memory only, so a
+/// test run can neither read nor rotate the operator's real one.
+const TOKEN: &str = "test-api-token";
+
+/// Add the bearer every guarded route requires (phase 6.4).
+fn authorized(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+    builder.header("authorization", format!("Bearer {TOKEN}"))
+}
+
 /// A router with an unconfigured, off-disk auth driver and a store-free
 /// selection: no hardware, no filesystem state shared with the developer's box.
 fn build_app() -> axum::Router {
-    blue2th_server::app_with_auth(SpotifyAuth::with_config(
-        None,
-        "blue2th://spotify-callback".to_string(),
-    ))
+    blue2th_server::app_with_auth_store(
+        SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+        AuthStore::with_token(TOKEN),
+    )
 }
 
 /// Read a `TargetsState` out of a route response body. Errors are propagated
@@ -42,7 +51,7 @@ async fn targets_state(response: axum::response::Response) -> Result<TargetsStat
 // error response.
 #[tokio::test]
 async fn test_offset_route_still_returns_targets_state() {
-    let request = Request::builder()
+    let request = authorized(Request::builder())
         .method("POST")
         .uri(format!("/devices/{ADDR}/offset"))
         .header("content-type", "application/json")
@@ -61,7 +70,7 @@ async fn test_offset_route_still_returns_targets_state() {
 async fn test_offset_route_on_unselected_speaker_reports_empty_selection() {
     let app = build_app();
 
-    let offset_request = Request::builder()
+    let offset_request = authorized(Request::builder())
         .method("POST")
         .uri(format!("/devices/{ADDR}/offset"))
         .header("content-type", "application/json")
@@ -74,7 +83,7 @@ async fn test_offset_route_on_unselected_speaker_reports_empty_selection() {
         .expect("router response");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let targets_request = Request::builder()
+    let targets_request = authorized(Request::builder())
         .uri("/targets")
         .body(Body::empty())
         .expect("build request");
