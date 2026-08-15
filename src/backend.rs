@@ -128,22 +128,15 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// none yet.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn pair(base: &str, code: &str) -> Result<String, BackendError> {
-    let response = reqwest::Client::new()
+    let request = reqwest::Client::new()
         .post(pair_url(base))
         .timeout(SETTINGS_CALL_TIMEOUT)
         .json(&PairRequest {
             // Owned copy: `PairRequest` is a plain DTO built for serialization.
             code: code.to_string(),
-        })
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    Ok(backend_error_message(response)
-        .await?
-        .json::<PairResponse>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .token)
+        });
+    let granted: PairResponse = send_json(request).await?;
+    Ok(granted.token)
 }
 
 /// How long a settings-page call waits before giving up.
@@ -154,12 +147,11 @@ pub async fn pair(base: &str, code: &str) -> Result<String, BackendError> {
 /// [`activate_backend`] would leak a task per switch.
 const SETTINGS_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The active backend's base URL, resolved at **runtime** from the app settings.
-///
-/// There is no compile-time address, no seeded default, not even a localhost
-/// fallback: an unconfigured app must attempt no network call at all, so this
-/// returns an error and every call site propagates it with `?`.
 /// An HTTP client carrying the active backend's bearer, plus its base URL.
+///
+/// The address is resolved at **runtime** from the app settings: there is no
+/// compile-time address, no seeded default, not even a localhost fallback, so an
+/// unconfigured app attempts no network call at all.
 ///
 /// Every guarded call goes through this: the token is a *default header* on the
 /// client rather than something each call site remembers to add, so a new call
@@ -175,6 +167,26 @@ fn authed_client() -> Result<(reqwest::Client, String), BackendError> {
         .build()
         .map_err(|e| BackendError::new(describe(&e)))?;
     Ok((client, base))
+}
+
+/// Send a prepared request and decode its JSON payload.
+///
+/// Every call goes through this rather than `error_for_status`, which flattens a
+/// refusal into a bare status line: a 401 must reach the UI as the typed
+/// [`BackendError::not_paired`], or a revoked token would read as one more
+/// network failure and the reconnect loops would retry it forever.
+async fn send_json<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T, BackendError> {
+    let response = request
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    backend_error_message(response)
+        .await?
+        .json::<T>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// Resolve the base URL from an explicit settings snapshot (pure, testable).
@@ -197,40 +209,40 @@ fn config_url(base: &str) -> String {
 /// even if a concurrent switch has already moved the resolved address on.
 async fn set_config_at(
     base: &str,
+    token: Option<&str>,
     name: &str,
     restore_during_playback: bool,
 ) -> Result<ServerConfig, BackendError> {
-    let url = config_url(base);
-    let mut request = reqwest::Client::new().post(&url);
-    // Addressed explicitly, authorised from the settings: both callers activate
-    // the entry before pushing to it, so the active token is the right one.
-    if let Some(token) = crate::settings::current().active_token() {
-        request = request.header(reqwest::header::AUTHORIZATION, auth_header_value(&token));
+    let request = bearing(reqwest::Client::new().post(config_url(base)), token);
+    send_json(request.timeout(SETTINGS_CALL_TIMEOUT).json(&ConfigRequest {
+        // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
+        name: name.to_string(),
+        restore_during_playback,
+    }))
+    .await
+}
+
+/// Add `token` as the bearer, when there is one.
+///
+/// For the calls addressed to an **explicit** backend rather than the active
+/// one: they cannot go through [`authed_client`], and the token they need is the
+/// one stored with *that* entry — the active one may already be another backend
+/// entirely (see [`activate_backend`], which quietens the backend it is leaving).
+fn bearing(request: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBuilder {
+    match token {
+        Some(token) => request.header(reqwest::header::AUTHORIZATION, auth_header_value(token)),
+        None => request,
     }
-    let response = request
-        .timeout(SETTINGS_CALL_TIMEOUT)
-        .json(&ConfigRequest {
-            // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
-            name: name.to_string(),
-            restore_during_playback,
-        })
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    backend_error_message(response)
-        .await?
-        .json::<ServerConfig>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
 }
 
 /// `POST {base}/spotify/pause` against an explicit address — used to quieten the
-/// backend being left behind, which is no longer the one `backend_base_url()`
-/// resolves to.
-async fn pause_at(base: &str) -> Result<(), BackendError> {
+/// backend being left behind, which is no longer the one the settings resolve to.
+///
+/// It carries *that* backend's token: the guard applies here like anywhere else,
+/// and the active token now belongs to the backend being switched to.
+async fn pause_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
     let url = format!("{}/spotify/pause", base.trim_end_matches('/'));
-    let response = reqwest::Client::new()
-        .post(&url)
+    let response = bearing(reqwest::Client::new().post(&url), token)
         .timeout(SETTINGS_CALL_TIMEOUT)
         .send()
         .await
@@ -261,7 +273,13 @@ pub async fn push_active_config() -> Result<(), BackendError> {
     let Some(entry) = settings.active_backend() else {
         return Err(BackendError::new(NO_BACKEND_CONFIGURED));
     };
-    set_config_at(&entry.url, &entry.name, entry.restore_during_playback).await?;
+    set_config_at(
+        &entry.url,
+        entry.token.as_deref(),
+        &entry.name,
+        entry.restore_during_playback,
+    )
+    .await?;
     Ok(())
 }
 
@@ -285,8 +303,11 @@ pub async fn activate_backend(
     index: usize,
 ) -> Result<(), BackendError> {
     // Captured before the switch: afterwards this address is no longer the one
-    // the app resolves, and it is the one that must be quietened.
-    let previous = settings.active_url();
+    // the app resolves, and it is the one that must be quietened — with its own
+    // token, which the switch is about to stop being the active one.
+    let previous = settings
+        .active_backend()
+        .map(|b| (b.url.clone(), b.token.clone()));
 
     // Switch locally first, and persist: a slow or dead backend must never hold
     // the app on a target the user has left.
@@ -298,22 +319,28 @@ pub async fn activate_backend(
 
     // Owned copy: the borrow of `settings` must not survive the awaits below,
     // and the address is the one to push to whatever the cache does meanwhile.
-    let target = settings
-        .active_backend()
-        .map(|b| (b.url.clone(), b.name.clone(), b.restore_during_playback));
+    let target = settings.active_backend().map(|b| {
+        (
+            b.url.clone(),
+            b.token.clone(),
+            b.name.clone(),
+            b.restore_during_playback,
+        )
+    });
 
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
     let mut failure = None;
-    if let Some(base) = previous {
-        if is_left_behind(&base, target.as_ref().map(|(url, _, _)| url.as_str())) {
-            if let Err(e) = pause_at(&base).await {
+    if let Some((base, token)) = previous {
+        if is_left_behind(&base, target.as_ref().map(|(url, ..)| url.as_str())) {
+            if let Err(e) = pause_at(&base, token.as_deref()).await {
                 failure = Some(e);
             }
         }
     }
-    if let Some((base, name, restore_during_playback)) = target {
-        if let Err(e) = set_config_at(&base, &name, restore_during_playback).await {
+    if let Some((base, token, name, restore_during_playback)) = target {
+        if let Err(e) = set_config_at(&base, token.as_deref(), &name, restore_during_playback).await
+        {
             failure = Some(e);
         }
     }
@@ -329,17 +356,12 @@ pub async fn activate_backend(
 pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
     // Bounded: a typo'd address that drops packets would otherwise leave the
     // `Test` button waiting forever with no answer either way.
-    let response = reqwest::Client::new()
-        .get(health_url(url))
-        .timeout(SETTINGS_CALL_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    backend_error_message(response)
-        .await?
-        .json::<HealthStatus>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(
+        reqwest::Client::new()
+            .get(health_url(url))
+            .timeout(SETTINGS_CALL_TIMEOUT),
+    )
+    .await
 }
 
 /// Build the `/health` URL from a base, tolerating a trailing slash.
@@ -363,21 +385,22 @@ fn describe(err: &reqwest::Error) -> String {
 }
 
 /// `GET {base}/health` and decode the backend's `HealthStatus`.
+///
+/// The one guard-free call besides [`pair`], and deliberately so: `/health` stays
+/// open on the backend precisely so an app holding no (or a stale) token can
+/// still tell "not paired" from "unreachable". Requiring a bearer here would
+/// paint an alive-but-unpaired backend as offline — the exact confusion the open
+/// probe exists to prevent. The bearer is still sent when there is one, so the
+/// request is identical for a paired app.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
-    let (client, base) = authed_client()?;
-    let url = health_url(&base);
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    response
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<HealthStatus>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    let settings = crate::settings::current();
+    let base = base_url_from(&settings)?;
+    let mut request = reqwest::Client::new().get(health_url(&base));
+    if let Some(token) = settings.active_token() {
+        request = request.header(reqwest::header::AUTHORIZATION, auth_header_value(&token));
+    }
+    send_json(request).await
 }
 
 /// Run a backend scan: consume the `/scan` SSE feed for `SCAN_WINDOW`, collecting
@@ -441,16 +464,7 @@ pub async fn disconnect_device(address: &str) -> Result<DeviceInfo, BackendError
 async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/devices/{address}/{action}", base.trim_end_matches('/'));
-    client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<DeviceInfo>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url)).await
 }
 
 /// `GET {base}/devices` — the backend's paired devices and their current state.
@@ -459,16 +473,7 @@ async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, B
 pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/devices", base.trim_end_matches('/'));
-    client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<Vec<DeviceInfo>>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.get(&url)).await
 }
 
 /// `POST {base}/play` — start (or resume) playback on the backend, returning the
@@ -495,16 +500,7 @@ pub async fn stop() -> Result<PlaybackState, BackendError> {
 pub async fn playback_state() -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/playback", base.trim_end_matches('/'));
-    client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<PlaybackState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.get(&url)).await
 }
 
 /// `POST {base}/volume` — set the connected speaker's PipeWire sink volume
@@ -513,33 +509,14 @@ pub async fn playback_state() -> Result<PlaybackState, BackendError> {
 pub async fn set_volume(level: f32) -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/volume", base.trim_end_matches('/'));
-    client
-        .post(&url)
-        .json(&VolumeRequest { level })
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<PlaybackState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url).json(&VolumeRequest { level })).await
 }
 
 /// POST `{base}/{action}` (no body) and decode the updated `PlaybackState`.
 async fn post_transport(action: &str) -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/{action}", base.trim_end_matches('/'));
-    client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<PlaybackState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url)).await
 }
 
 /// Build the `{base}/devices/{address}/{action}` URL for a target action
@@ -559,16 +536,7 @@ fn targets_url(base: &str) -> String {
 pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = device_action_url(&base, address, "select");
-    client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<TargetsState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url)).await
 }
 
 /// `POST {base}/devices/{address}/deselect` — drop a speaker from the playback
@@ -577,16 +545,7 @@ pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> 
 pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = device_action_url(&base, address, "deselect");
-    client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<TargetsState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url)).await
 }
 
 /// `POST {base}/devices/{address}/offset` — set a target speaker's latency offset
@@ -595,17 +554,7 @@ pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError
 pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = device_action_url(&base, address, "offset");
-    client
-        .post(&url)
-        .json(&OffsetRequest { offset_ms })
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<TargetsState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url).json(&OffsetRequest { offset_ms })).await
 }
 
 /// `GET {base}/targets` — the backend's current playback-target selection,
@@ -614,16 +563,7 @@ pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, B
 pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = targets_url(&base);
-    client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<TargetsState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.get(&url)).await
 }
 
 /// Build the `{base}/spotify/{action}` URL for a Spotify backend action
@@ -651,16 +591,7 @@ pub async fn stop_spotify() -> Result<SpotifyState, BackendError> {
 pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "status");
-    client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<SpotifyState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.get(&url)).await
 }
 
 /// POST `{base}/spotify/{action}` (no body) and decode the updated `SpotifyState`.
@@ -668,16 +599,7 @@ pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
 async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, action);
-    client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<SpotifyState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url)).await
 }
 
 /// Build the `{base}/spotify/now-playing` SSE URL, tolerating a trailing slash.
@@ -707,16 +629,7 @@ async fn backend_error_message(
 pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "auth/url");
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    backend_error_message(response)
-        .await?
-        .json::<AuthUrlResponse>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.get(&url)).await
 }
 
 /// `POST {base}/spotify/auth/callback` — hand the backend the authorization
@@ -730,20 +643,13 @@ pub async fn spotify_auth_callback(
 ) -> Result<SpotifyAuthState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "auth/callback");
-    let response = client
-        .post(&url)
-        .json(&AuthCallbackRequest {
-            code: code.to_string(),
-            state: state.to_string(),
-        })
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    backend_error_message(response)
-        .await?
-        .json::<SpotifyAuthState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.post(&url).json(&AuthCallbackRequest {
+        // Owned copies: `AuthCallbackRequest` is a plain DTO built for
+        // serialization.
+        code: code.to_string(),
+        state: state.to_string(),
+    }))
+    .await
 }
 
 /// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
@@ -751,16 +657,7 @@ pub async fn spotify_auth_callback(
 pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "auth/status");
-    client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .json::<SpotifyAuthState>()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))
+    send_json(client.get(&url)).await
 }
 
 /// `POST {base}/client/presence` — tell the backend whether the app is on screen,
@@ -1114,7 +1011,9 @@ mod tests {
         });
 
         let base = format!("http://{addr}");
-        let pushed = set_config_at(&base, name, restore_during_playback).await;
+        // No token: this fixture reads the *body* the push sends, and the canned
+        // listener answers whatever the header says.
+        let pushed = set_config_at(&base, None, name, restore_during_playback).await;
         let body = server
             .await
             .map_err(|e| format!("join the test listener: {e}"))??;
@@ -1548,6 +1447,106 @@ mod tests {
         assert!(error.is_not_paired(), "got {error}");
     }
 
+    // Criterion (non-nominal): `/health` answers while everything else 401s, so
+    // the probe must reach it **without** a token — an alive-but-unpaired
+    // backend has to read as "paired?", never as "offline".
+    #[tokio::test]
+    async fn test_ping_backend_reaches_health_without_a_token() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend(
+            "200 OK",
+            r#"{"status":"ok","version":"0.1.0","auth_required":true}"#,
+        )
+        .await
+        .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, None));
+
+        let health = ping_backend().await;
+        let request = served
+            .await
+            .expect("join the test listener")
+            .expect("serve one request");
+        crate::settings::set_current(AppSettings::default());
+
+        assert_eq!(
+            health.map(|h| h.auth_required).map_err(|e| e.to_string()),
+            Ok(true),
+            "an unpaired app must still be able to tell the backend is alive"
+        );
+        assert_eq!(
+            header_value(&request, "authorization"),
+            None,
+            "there is no token to send yet"
+        );
+    }
+
+    // Criterion: once paired, the probe carries the bearer like every other
+    // call — one code path, whether the app holds a token or not.
+    #[tokio::test]
+    async fn test_ping_backend_carries_the_bearer_once_paired() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend(
+            "200 OK",
+            r#"{"status":"ok","version":"0.1.0","auth_required":true}"#,
+        )
+        .await
+        .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let health = ping_backend().await;
+        let request = served
+            .await
+            .expect("join the test listener")
+            .expect("serve one request");
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(health.is_ok(), "the probe must succeed: {health:?}");
+        assert_eq!(
+            header_value(&request, "authorization").as_deref(),
+            Some("Bearer tok-123")
+        );
+    }
+
+    // Criterion: a 401 on a plain (non-SSE) call is surfaced as "not paired"
+    // too, not as a bare status line — a revoked token must read the same way
+    // whichever screen hits it first.
+    #[tokio::test]
+    async fn test_a_plain_call_reports_not_paired_on_401() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("401 Unauthorized", "not paired")
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("stale-token")));
+
+        let error = fetch_targets()
+            .await
+            .expect_err("a revoked token must not yield a selection");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(error.is_not_paired(), "got {error}");
+    }
+
+    // Criterion (non-nominal): the `/scan` feed treats a 401 as terminal in the
+    // same way `/spotify/now-playing` does — both SSE routes are guarded, so
+    // both must stop rather than retry a revoked token.
+    #[tokio::test]
+    async fn test_scan_reports_not_paired_on_401() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("401 Unauthorized", "not paired")
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("stale-token")));
+
+        let error = scan_devices()
+            .await
+            .expect_err("a 401 must end the scan feed");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(error.is_not_paired(), "got {error}");
+    }
+
     // Criterion: a 401 from any route maps to the typed "not paired" failure,
     // whatever the backend wrote in the body.
     #[test]
@@ -1571,6 +1570,44 @@ mod tests {
         // An empty body still has to say something.
         let bare = backend_error_for(500, "");
         assert!(!bare.to_string().trim().is_empty());
+    }
+
+    // Criterion: switching backends quietens the one being left behind with
+    // **its own** token — the active token is by then the other backend's, so
+    // sending that (or none) would have the pause refused with a 401.
+    #[tokio::test]
+    async fn test_activate_backend_pauses_the_previous_one_with_its_own_token() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (leaving, served) = canned_backend("204 No Content", "")
+            .await
+            .expect("start the canned backend");
+
+        let mut settings = active_with_token(&leaving, Some("leaving-token"));
+        settings
+            .add("Bureau", "http://127.0.0.1:2")
+            .expect("add the backend being switched to");
+        settings
+            .set_token(1, Some("arriving-token".to_string()))
+            .expect("pair the backend being switched to");
+
+        // Fails on the arriving backend (port 2 is never listening); the pause on
+        // the one being left is what this test reads.
+        let _ = activate_backend(&mut settings, 1).await;
+        let request = served
+            .await
+            .expect("join the test listener")
+            .expect("serve one request");
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(
+            request.starts_with("POST /spotify/pause "),
+            "the backend being left must be paused, got {request}"
+        );
+        assert_eq!(
+            header_value(&request, "authorization").as_deref(),
+            Some("Bearer leaving-token"),
+            "the pause must carry the leaving backend's own token, got {request}"
+        );
     }
 
     // Criterion: the app resolves the active backend's address **and** token in

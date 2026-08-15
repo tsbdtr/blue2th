@@ -269,6 +269,10 @@ pub struct AuthStore {
     pairing: Option<PairingCode>,
     /// Where the token is persisted, or `None` to stay in memory only.
     store: Option<PathBuf>,
+    /// Whether the token was minted rather than reloaded. A minted token
+    /// invalidates every paired client, so the caller must open a pairing window
+    /// — see [`AuthStore::minted_a_new_token`].
+    minted: bool,
 }
 
 impl AuthStore {
@@ -278,6 +282,7 @@ impl AuthStore {
             token: generate_token(),
             pairing: None,
             store: None,
+            minted: true,
         }
     }
 
@@ -288,6 +293,8 @@ impl AuthStore {
             token: token.into(),
             pairing: None,
             store: None,
+            // Handed in, not minted: nothing was invalidated.
+            minted: false,
         }
     }
 
@@ -301,18 +308,31 @@ impl AuthStore {
         // Missing, unreadable and malformed all take this one path: mint a new
         // token and persist it. Starting with no authentication because a file
         // could not be read would be the one unacceptable outcome.
-        let token = load_token(store.as_deref()).unwrap_or_else(|| {
-            let minted = generate_token();
+        let reloaded = load_token(store.as_deref());
+        let minted = reloaded.is_none();
+        let token = reloaded.unwrap_or_else(|| {
+            let fresh = generate_token();
             if let Some(path) = store.as_deref() {
-                persist_token(path, &minted);
+                persist_token(path, &fresh);
             }
-            minted
+            fresh
         });
         Self {
             token,
             pairing: None,
             store,
+            minted,
         }
+    }
+
+    /// Whether the token was minted rather than reloaded from the store.
+    ///
+    /// The caller **must** open a pairing window when this is true: a minted
+    /// token invalidates every paired client, and a store that was merely
+    /// unreadable looks exactly like a paired backend from the outside. Without
+    /// it the operator's phone would stop working with no code armed to fix it.
+    pub fn minted_a_new_token(&self) -> bool {
+        self.minted
     }
 
     /// The current API token.
@@ -699,6 +719,45 @@ mod tests {
             "the token must have been written to {path:?}"
         );
         let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a store that was reloaded reports no minting, so
+    // a plain restart leaves the one open door shut.
+    #[test]
+    fn test_auth_store_reloading_a_token_reports_no_minting() {
+        let path = temp_store("reloaded-not-minted");
+        let first = AuthStore::with_store(Some(path.clone()));
+        assert!(
+            first.minted_a_new_token(),
+            "the very first run has nobody paired and must offer a code"
+        );
+        assert!(
+            !AuthStore::with_store(Some(path.clone())).minted_a_new_token(),
+            "a restart that reloaded its token must not re-open pairing"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal, spec): a missing or malformed store mints a token
+    // and therefore *invalidates every paired client* — the caller has to know,
+    // or the operator's phone would stop working with no code armed to fix it.
+    #[test]
+    fn test_auth_store_reports_minting_when_the_store_is_unusable() {
+        for (name, body) in [
+            ("unusable-malformed", "{ not json at all"),
+            ("unusable-empty-token", r#"{"token":""}"#),
+        ] {
+            let path = temp_store(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create the store directory");
+            }
+            std::fs::write(&path, body).expect("write the unusable store");
+            assert!(
+                AuthStore::with_store(Some(path.clone())).minted_a_new_token(),
+                "{body} leaves every client unpaired, so pairing must re-open"
+            );
+            let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+        }
     }
 
     // Criterion (test isolation): `new()` is disk-free — two instances hold

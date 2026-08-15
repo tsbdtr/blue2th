@@ -70,13 +70,9 @@ struct AppState {
     /// device name `librespot` advertises *and* the name the Web API lookup
     /// matches on, so the two can never disagree.
     name: Arc<Mutex<config::ServerName>>,
-    /// The API token and the armed pairing code (phase 6.4).
-    ///
-    /// STUB (phase 6.4): held but not yet read — the guard rejecting a missing
-    /// or wrong bearer on every route but `/health` and `POST /pair`, the
-    /// `auth_required` flag on `/health` and the `POST /pair` handler are what
-    /// must consume it.
-    #[allow(dead_code)]
+    /// The API token and the armed pairing code (phase 6.4). Read by
+    /// [`require_bearer`] on every guarded route and by the [`pair`] handler,
+    /// which is the only one allowed to hand the token out.
     auth: Arc<Mutex<AuthStore>>,
 }
 
@@ -259,7 +255,9 @@ pub const ROUTES: &[RouteSpec] = &[
 /// Hard cap on a single scan so a forgotten client cannot keep discovery running.
 const SCAN_DURATION: Duration = Duration::from_secs(20);
 
-/// Default bind address. `0.0.0.0` so the phone can reach the backend over the LAN.
+/// Bind address of last resort: every interface, used only when no LAN address
+/// can be resolved. Refusing to start would leave the operator with a backend
+/// that works everywhere except on the box whose interfaces are still coming up.
 const DEFAULT_BIND: &str = "0.0.0.0:4000";
 
 /// TCP port the backend listens on.
@@ -273,19 +271,18 @@ const BIND_ENV: &str = "BLUE2TH_BIND";
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
-    // A pairing window is opened on the first run — when there is no token yet,
-    // so nobody could be paired — and otherwise only when the operator asks for
-    // one. Arming a code at every restart would leave the one open door ajar for
-    // no reason.
-    let store_path = auth::auth_store_path();
-    let first_run = store_path.as_deref().is_none_or(|path| !path.exists());
+    // A pairing window is opened whenever nobody *can* be paired — a first run,
+    // but also a store that was missing, unreadable or malformed, since the token
+    // minted in its place has just invalidated every paired client — and
+    // otherwise only when the operator asks for one. Arming a code at every
+    // restart would leave the one open door ajar for no reason.
     let pair_requested = std::env::args().any(|arg| arg == "--pair");
 
-    let mut auth_store = AuthStore::with_store(store_path);
+    let mut auth_store = AuthStore::with_store(auth::auth_store_path());
     let server_name = config::ServerName::with_store(config::name_store_path());
     let addr = lan_bind_address();
 
-    if first_run || pair_requested {
+    if auth_store.minted_a_new_token() || pair_requested {
         let code = auth_store.arm_pairing(std::time::SystemTime::now());
         tracing::info!(
             "{}",
@@ -309,17 +306,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The address to advertise in the pairing QR.
+/// The address to advertise in the pairing QR, resolving the host's LAN address
+/// itself. See [`advertised_url_from`] for the rule.
+fn advertised_url(bind_addr: &str) -> String {
+    advertised_url_from(bind_addr, preferred_lan_ipv4(&host_ipv4_addresses()))
+}
+
+/// Pick the URL a pairing QR should carry for a backend bound to `bind_addr`.
+/// Pure, so the wildcard cases are testable without the host's interfaces.
 ///
 /// A backend bound to every interface has no address of its own to hand out, so
 /// the detected LAN one is used: a QR carrying `0.0.0.0` would pair the phone
-/// with nothing.
-fn advertised_url(bind_addr: &str) -> String {
+/// with nothing. With no LAN address detected either, the bind address is
+/// advertised as-is — a QR that cannot work is still better than none, since the
+/// operator can read the code off the same banner and type it.
+fn advertised_url_from(bind_addr: &str, detected: Option<std::net::Ipv4Addr>) -> String {
     let Some((host, port)) = bind_addr.rsplit_once(':') else {
         return format!("http://{bind_addr}");
     };
     if host == "0.0.0.0" || host == "[::]" {
-        if let Some(lan) = preferred_lan_ipv4(&host_ipv4_addresses()) {
+        if let Some(lan) = detected {
             return format!("http://{lan}:{port}");
         }
     }
@@ -437,23 +443,14 @@ pub fn app() -> Router {
     )
 }
 
-/// Build the router around an explicit Spotify auth driver. Tests use this with
-/// `SpotifyAuth::with_config`, which never touches the on-disk token store — so a
-/// test run can neither read nor clobber the real user's credential. The selection
-/// is store-free for the same reason.
-pub fn app_with_auth(spotify_auth: SpotifyAuth) -> Router {
-    app_with_auth_and_targets(
-        spotify_auth,
-        SpeakerTargets::new(),
-        config::ServerName::new(),
-        AuthStore::new(),
-    )
-}
-
 /// Build the router around an explicit Spotify auth driver **and an explicit API
 /// token** — the entry point every test uses, since it touches no store at all:
 /// a test that let the server mint or reload the real token would unpair the
 /// operator's phone (`AuthStore::with_token` keeps it in memory).
+///
+/// There is deliberately no variant that mints its own token: the caller could
+/// not know it, so every guarded route would answer 401 and the test would look
+/// broken for the wrong reason.
 pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router {
     app_with_auth_and_targets(
         spotify_auth,
@@ -869,8 +866,8 @@ async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
 /// `POST /config` — set the backend's name, which becomes its Spotify Connect
 /// device name.
 ///
-/// The name is re-validated here rather than trusted: this route is reachable by
-/// anything on the LAN until the authenticated API lands.
+/// The name is re-validated here rather than trusted: a bearer says the caller
+/// is the paired app, not that what it sent is well formed.
 async fn set_config(
     State(state): State<AppState>,
     body: axum::body::Bytes,
@@ -1538,6 +1535,71 @@ mod tests {
         assert!(
             !rendered.contains(&link),
             "the QR must encode the link, not print it"
+        );
+    }
+
+    // Criterion: the QR encodes *that* URL — the render is a function of the
+    // link and nothing else. Without a decoder here, the property is pinned the
+    // way it can break: two links must not render the same block, and one link
+    // must always render the same one.
+    #[test]
+    fn test_pairing_qr_encodes_the_link_it_is_given() {
+        let link =
+            blue2th_proto::pair_deep_link("http://192.168.1.107:4000", "blue2th-PC", "K7M2QX");
+        let other =
+            blue2th_proto::pair_deep_link("http://192.168.1.107:4000", "blue2th-PC", "AAAAAA");
+        assert_eq!(
+            pairing_qr(&link),
+            pairing_qr(&link),
+            "the same link must always render the same QR"
+        );
+        assert_ne!(
+            pairing_qr(&link),
+            pairing_qr(&other),
+            "a different pairing code must produce a different QR, or it encodes something else"
+        );
+    }
+
+    // Criterion: the QR carries the address the phone must call, so a backend
+    // bound to every interface advertises its LAN address instead of `0.0.0.0`.
+    #[test]
+    fn test_advertised_url_replaces_the_wildcard_with_the_lan_address() {
+        let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+        assert_eq!(
+            advertised_url_from(DEFAULT_BIND, lan),
+            "http://192.168.1.107:4000"
+        );
+        assert_eq!(
+            advertised_url_from("[::]:4000", lan),
+            "http://192.168.1.107:4000"
+        );
+    }
+
+    // Criterion: an address the operator chose is advertised as-is — resolving
+    // it again could hand out an interface they deliberately avoided.
+    #[test]
+    fn test_advertised_url_keeps_an_explicit_bind_address() {
+        assert_eq!(
+            advertised_url_from(
+                "10.1.2.3:4321",
+                Some(std::net::Ipv4Addr::new(192, 168, 1, 107))
+            ),
+            "http://10.1.2.3:4321"
+        );
+    }
+
+    // Criterion (non-nominal): with no LAN address to substitute, the wildcard
+    // is advertised as-is rather than crashing the banner — the printed code is
+    // the transport that still works.
+    #[test]
+    fn test_advertised_url_without_a_lan_address_keeps_the_bind_address() {
+        assert_eq!(
+            advertised_url_from(DEFAULT_BIND, None),
+            "http://0.0.0.0:4000"
+        );
+        assert_eq!(
+            advertised_url_from("no-port-here", None),
+            "http://no-port-here"
         );
     }
 

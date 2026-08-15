@@ -220,6 +220,11 @@ impl AppSettings {
         self.add(name, &url)?;
         let index = self.backends.len().saturating_sub(1);
         self.set_token(index, Some(token.to_string()))?;
+        // The method is chosen when a backend is added, and this one was added by
+        // scanning: offering the QR again is what re-pairing it will most likely
+        // mean. Only on creation — for a known entry the user's own choice wins,
+        // exactly as their chosen name does.
+        self.set_pairing_method(index, PairingMethod::Qr)?;
         self.activate(index)?;
         Ok(index)
     }

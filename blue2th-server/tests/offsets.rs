@@ -2,8 +2,8 @@
 //! restarts): route-level non-regression around `POST /devices/{addr}/offset` and
 //! `GET /targets` once `SpeakerTargets` gained a remembered-offsets store.
 //!
-//! The router is always built with `app_with_auth`, the **store-free** entry
-//! point: a test run must never read or clobber the real user's
+//! The router is always built with `app_with_auth_store`, the **store-free**
+//! entry point: a test run must never read or clobber the real user's
 //! `~/.local/state/blue2th/offsets.json` (the lesson from the Spotify token
 //! store). The persistence itself is unit-tested in `src/targets.rs` against a
 //! temp path; selecting a *connected* speaker needs BlueZ and stays manual.

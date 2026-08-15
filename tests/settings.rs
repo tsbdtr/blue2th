@@ -744,6 +744,41 @@ fn test_upsert_from_pair_link_creates_and_activates_the_backend() {
     assert_eq!(entry.token.as_deref(), Some("api-token"));
 }
 
+// Criterion: the pairing method is chosen when the backend is added, and a
+// scanned one was added by QR — so that is what its settings page offers next.
+#[test]
+fn test_upsert_from_pair_link_records_the_qr_as_the_new_backend_method() {
+    let mut settings = AppSettings::default();
+    settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
+            "api-token",
+        )
+        .expect("a scanned link must create the backend");
+    assert_eq!(
+        settings.backends.first().map(|b| b.pairing),
+        Some(PairingMethod::Qr)
+    );
+}
+
+// Criterion: for a backend the app already knows, the locally chosen pairing
+// method survives the scan exactly as the local name does.
+#[test]
+fn test_upsert_from_pair_link_keeps_the_method_of_a_known_backend() {
+    let mut settings = two_backends();
+    settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
+            "fresh-token",
+        )
+        .expect("a known URL must be updated");
+    assert_eq!(
+        settings.backends.first().map(|b| b.pairing),
+        Some(PairingMethod::Code),
+        "the user's own choice must not be overwritten by a scan"
+    );
+}
+
 // Criterion (non-nominal): a QR scanned for a URL the app already knows updates
 // the token rather than duplicating the entry — and the locally chosen name
 // survives, since the user may have renamed it deliberately.

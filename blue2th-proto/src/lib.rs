@@ -115,7 +115,12 @@ fn percent_encode(value: &str) -> String {
 /// Decoded from the raw bytes, never by re-slicing the `&str`: a `%` followed by
 /// a multi-byte character would split it and panic. An invalid escape is kept
 /// as-is rather than dropped, so a malformed value stays visible. Pure.
-fn percent_decode(value: &str) -> String {
+///
+/// Public because the app's own deep-link parser (`src/deep_link.rs`) reads the
+/// Spotify OAuth redirect with exactly this rule: one decoder for both custom
+/// scheme links, so they cannot drift apart on a mangled escape. It is plain
+/// string handling — nothing platform-specific enters the crate with it.
+pub fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -1178,6 +1183,33 @@ mod tests {
         assert_eq!(link.url, SAMPLE_URL);
         assert_eq!(link.name.as_deref(), Some(SAMPLE_NAME));
         assert_eq!(link.code, SAMPLE_CODE);
+    }
+
+    // Criterion (non-nominal): a hand-mangled escape must be survived, not
+    // panicked on. A `%` followed by a multi-byte character is the case that
+    // would panic if the decoder re-sliced the `&str` instead of reading bytes,
+    // and a truncated escape at the very end is the one that would index past it.
+    #[test]
+    fn test_parse_pair_link_survives_a_mangled_percent_escape() {
+        for name in ["%é", "%", "%4", "abc%", "%zz", "%C3%A9"] {
+            let uri = format!(
+                "{PAIR_DEEP_LINK}?url=http%3A%2F%2F192.168.1.107%3A4000&name={name}&code={SAMPLE_CODE}"
+            );
+            let parsed = parse_pair_link(&uri);
+            assert!(parsed.is_some(), "{name} must not stop the link parsing");
+            let link = parsed.expect("just asserted");
+            assert_eq!(link.url, SAMPLE_URL);
+            assert_eq!(link.code, SAMPLE_CODE);
+        }
+    }
+
+    // Criterion: a well-formed escape decodes to the character it stands for,
+    // multi-byte included — the backend name is free text.
+    #[test]
+    fn test_parse_pair_link_decodes_a_multibyte_name() {
+        let encoded = pair_deep_link(SAMPLE_URL, "Salon d'été", SAMPLE_CODE);
+        let link = parse_pair_link(&encoded).expect("an accented name must round-trip");
+        assert_eq!(link.name.as_deref(), Some("Salon d'été"));
     }
 
     // Criterion: only `url` and `code` are required — a link with no name still
