@@ -1,7 +1,7 @@
 {
   "src/main.rs": {
-    "mtime": 1786833606.510745,
-    "ast_hash": "a3909c9928dced27308e92422d3df804",
+    "mtime": 1786812202.121727,
+    "ast_hash": "b11dc76d64b6f0a0ae26ed0b538df48d",
     "semantic_hash": ""
   },
   "AGENTS.md": {
@@ -60,13 +60,13 @@
     "semantic_hash": ""
   },
   "locales/en.yaml": {
-    "mtime": 1786833606.508745,
-    "ast_hash": "4d213f872b59799099ab5b38767e2fb9",
+    "mtime": 1786812202.120727,
+    "ast_hash": "a2a9253715a7e47f9cd4c43a23750adc",
     "semantic_hash": ""
   },
   "locales/fr.yaml": {
-    "mtime": 1786833606.509745,
-    "ast_hash": "af546a353b5c715da14aad2c9a38de15",
+    "mtime": 1786812202.120727,
+    "ast_hash": "c70a97930f15fa054ea574d34b26f679",
     "semantic_hash": ""
   },
   "tdd/README.md": {
@@ -75,7 +75,7 @@
     "semantic_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346"
   },
   "tdd/feature.md": {
-    "mtime": 1786833630.5335274,
+    "mtime": 1786812242.3132138,
     "ast_hash": "6f5a8051aefff5ca9f7435a8672a9122",
     "semantic_hash": ""
   },
@@ -95,8 +95,8 @@
     "semantic_hash": ""
   },
   "tdd/REVIEW.md": {
-    "mtime": 1786833606.510745,
-    "ast_hash": "8a0547f3363cfc67dcb8ba7d0a4644f5",
+    "mtime": 1786812202.122727,
+    "ast_hash": "01651a8d3068c77a196be48311fb1728",
     "semantic_hash": ""
   },
   "java/A2dpServiceListener.java": {
@@ -115,8 +115,8 @@
     "semantic_hash": ""
   },
   "blue2th-proto/src/lib.rs": {
-    "mtime": 1786833606.506745,
-    "ast_hash": "b705ff434dae35a4c57268d5d2cf4249",
+    "mtime": 1786812202.119727,
+    "ast_hash": "3d54fc75926dbf987150bc6e5ab830e2",
     "semantic_hash": ""
   },
   "blue2th-server/src/main.rs": {
@@ -125,8 +125,8 @@
     "semantic_hash": ""
   },
   "src/backend.rs": {
-    "mtime": 1786833606.509745,
-    "ast_hash": "712109fa67d4e20a65caad423eb9da7a",
+    "mtime": 1786812202.120727,
+    "ast_hash": "a81287f02f01039f3616bb859a1e5c2b",
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
@@ -145,13 +145,13 @@
     "semantic_hash": ""
   },
   "blue2th-server/src/lib.rs": {
-    "mtime": 1786833606.507745,
-    "ast_hash": "ea4f6b3ef30e1c0a5cc8cc586ce40822",
+    "mtime": 1786812202.119727,
+    "ast_hash": "4556b3d238d018a85eb627ab7b99de54",
     "semantic_hash": ""
   },
   "blue2th-server/tests/transport.rs": {
-    "mtime": 1786833606.508745,
-    "ast_hash": "3e49aee3245b8f58bd2ddbd09011aabc",
+    "mtime": 1786646364.735885,
+    "ast_hash": "c6fba230826b213b0eb45e0cfc5146a2",
     "semantic_hash": ""
   },
   "blue2th-server/assets/test-tone.wav": {
@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "blue2th-server/tests/spotify.rs": {
-    "mtime": 1786833606.508745,
-    "ast_hash": "1275e0f35b4572f735214f75b40c8583",
+    "mtime": 1783811739.379831,
+    "ast_hash": "e28c9f001cb0b06931c5fc6ed51bdc47",
     "semantic_hash": ""
   },
   "android/MainActivity.kt": {
@@ -190,13 +190,13 @@
     "semantic_hash": ""
   },
   "blue2th-server/tests/spotify_auth.rs": {
-    "mtime": 1786833606.508745,
-    "ast_hash": "8526ef209014f0ee6e9e693e48c64304",
+    "mtime": 1786646364.735885,
+    "ast_hash": "39864dff0e22cc61fdaea4041b30f5f2",
     "semantic_hash": ""
   },
   "src/deep_link.rs": {
-    "mtime": 1786833606.509745,
-    "ast_hash": "8d02f939d28ae58aa4e525f4560a87b6",
+    "mtime": 1786646364.735885,
+    "ast_hash": "7ee60e3eb5a83827f14970265f963573",
     "semantic_hash": ""
   },
   "src/lifecycle.rs": {
@@ -215,8 +215,8 @@
     "semantic_hash": ""
   },
   "blue2th-server/tests/offsets.rs": {
-    "mtime": 1786833606.508745,
-    "ast_hash": "737ee8e80032ac12983b905108dc90b6",
+    "mtime": 1786666953.8188136,
+    "ast_hash": "52d176181e7a35d39151eb2a5b5e59ab",
     "semantic_hash": ""
   },
   "build.rs": {
@@ -230,38 +230,23 @@
     "semantic_hash": ""
   },
   "blue2th-server/tests/config.rs": {
-    "mtime": 1786833606.507745,
-    "ast_hash": "d4c4d3bd78b3ae42951cc7e2a04d7913",
+    "mtime": 1786812202.120727,
+    "ast_hash": "c1d7a8926115f63a19234f310354ddab",
     "semantic_hash": ""
   },
   "src/settings.rs": {
-    "mtime": 1786833606.510745,
-    "ast_hash": "25e22e18c4ef97db9d9928f245ce8c34",
+    "mtime": 1786812202.121727,
+    "ast_hash": "f457e48b782eb3ff4c8b0cbf531634e8",
     "semantic_hash": ""
   },
   "tests/settings.rs": {
-    "mtime": 1786833606.510745,
-    "ast_hash": "f5de9aa87590446da4c8bbfaf336c29e",
+    "mtime": 1786812202.122727,
+    "ast_hash": "5ff5655d7d664cfa920e85550b598278",
     "semantic_hash": ""
   },
   "blue2th-server/tests/restore.rs": {
     "mtime": 1786812202.120727,
     "ast_hash": "301b585744c1b673d342ea433bcfb64e",
-    "semantic_hash": ""
-  },
-  "blue2th-server/src/auth.rs": {
-    "mtime": 1786833606.506745,
-    "ast_hash": "094f5e78398cb8e44cba024085e902f6",
-    "semantic_hash": ""
-  },
-  "blue2th-server/tests/auth.rs": {
-    "mtime": 1786833606.507745,
-    "ast_hash": "93428da8b24de113ca8b3cf9d51620c4",
-    "semantic_hash": ""
-  },
-  "blue2th-server/tests/pairing.rs": {
-    "mtime": 1786833606.508745,
-    "ast_hash": "2844a74906ee51403de0948fdf2297d6",
     "semantic_hash": ""
   }
 }
