@@ -2050,10 +2050,10 @@ fn AppSettingsPage() -> Element {
                             // in flight, must not cost the user a retry.
                             disabled: pairing() || code_draft().trim().is_empty(),
                             onclick: move |_| {
-                                // Trimmed: the code is read off a terminal and
-                                // typed, and a stray space is a failed attempt
-                                // the user cannot see.
-                                let code = code_draft().trim().to_string();
+                                // Normalised: the code is read off a terminal and
+                                // typed, so a stray space or Android's lower-case
+                                // tail is a failed attempt the user cannot see.
+                                let code = blue2th_proto::normalize_pairing_code(&code_draft());
                                 if code.is_empty() {
                                     return;
                                 }

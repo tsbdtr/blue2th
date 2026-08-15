@@ -49,6 +49,16 @@ impl HealthStatus {
 /// filter, so no camera permission and no scanner live in the app.
 pub const PAIR_DEEP_LINK: &str = "blue2th://pair";
 
+/// Put a hand-typed pairing code in the form the server minted it in.
+///
+/// Codes are drawn from an upper-case alphabet, but Android capitalises only the
+/// first character of a text field: `K7m2qx` would otherwise burn one of the five
+/// attempts with nothing on screen explaining why. Shared rather than applied on
+/// one side only, so a client that skips it still pairs.
+pub fn normalize_pairing_code(input: &str) -> String {
+    input.trim().to_uppercase()
+}
+
 /// Body of `POST /pair` — the short-lived pairing code the operator read off the
 /// terminal (typed by hand) or that the QR carried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1064,6 +1074,15 @@ mod tests {
     }
 
     // Criterion: proto — `PairRequest` round-trips through serde.
+    // Criterion: a hand-typed code survives the phone keyboard — Android
+    // capitalises the first character only, and the alphabet is upper-case.
+    #[test]
+    fn test_normalize_pairing_code_upper_cases_and_trims() {
+        for typed in [" k7m2qx ", "K7m2qx", "k7M2Qx\n", "K7M2QX"] {
+            assert_eq!(normalize_pairing_code(typed), "K7M2QX", "typed: {typed:?}");
+        }
+    }
+
     #[test]
     fn test_pair_request_round_trips_through_json() {
         let original = PairRequest {

@@ -205,3 +205,23 @@ async fn test_a_refused_pairing_never_leaks_the_token() {
         "a refusal must never carry the token, got {body}"
     );
 }
+
+// Criterion (usability, phase 6.4 review): the code is upper-case but Android
+// capitalises only the first character, so a lower-case tail must still pair —
+// otherwise the user spends an attempt with nothing on screen saying why.
+#[tokio::test]
+async fn test_pair_accepts_a_lower_case_code() {
+    let (app, code) = app_with_code_armed_at(SystemTime::now());
+    let (status, body) = post_pair(app, &code.to_lowercase())
+        .await
+        .expect("POST /pair");
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+}
+
+// …but normalising case must not turn a wrong code into a right one.
+#[tokio::test]
+async fn test_pair_still_refuses_a_wrong_code_whatever_its_case() {
+    let (app, _code) = app_with_code_armed_at(SystemTime::now());
+    let (status, _) = post_pair(app, "aaaaaa").await.expect("POST /pair");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

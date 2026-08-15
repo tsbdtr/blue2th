@@ -162,10 +162,11 @@ pub fn verify_code(
     // Every branch below returns the same error on purpose: telling "expired"
     // from "unknown" would help an attacker enumerate.
     let stored = stored.ok_or(PairError::Rejected)?;
+    let submitted = blue2th_proto::normalize_pairing_code(submitted);
     if stored.is_consumed()
         || stored.attempts() >= MAX_PAIRING_ATTEMPTS
         || now >= stored.expires_at()
-        || !constant_time_eq(stored.code(), submitted)
+        || !constant_time_eq(stored.code(), &submitted)
     {
         return Err(PairError::Rejected);
     }
@@ -498,15 +499,32 @@ mod tests {
     }
 
     // Criterion: only an *exactly* matching code is accepted — not a prefix, not
-    // a code with something appended, not a different one.
+    // a code with something appended, not a different one. Case and surrounding
+    // whitespace are the sole tolerance, and only because a phone keyboard adds
+    // them (see `test_verify_code_accepts_a_hand_typed_code`).
     #[test]
     fn test_verify_code_rejects_anything_but_an_exact_match() {
         let stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        for submitted in ["K7M2Q", "K7M2QX7", "AAAAAA", "", " K7M2QX"] {
+        for submitted in ["K7M2Q", "K7M2QX7", "AAAAAA", "", "K7M2 QX"] {
             assert_eq!(
                 verify_code(Some(&stored), submitted, t0()),
                 Err(PairError::Rejected),
                 "{submitted:?} is not the armed code"
+            );
+        }
+    }
+
+    // Criterion (usability): the code is typed on a phone, which capitalises the
+    // first character only and happily leaves a trailing space. Neither is a
+    // wrong code, and treating them as one spends a silent attempt.
+    #[test]
+    fn test_verify_code_accepts_a_hand_typed_code() {
+        let stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
+        for submitted in ["k7m2qx", "K7m2qx", " K7M2QX ", "K7M2QX\n"] {
+            assert_eq!(
+                verify_code(Some(&stored), submitted, t0()),
+                Ok(()),
+                "{submitted:?} is the armed code as a phone keyboard renders it"
             );
         }
     }

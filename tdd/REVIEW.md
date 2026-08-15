@@ -137,11 +137,15 @@ app. What *was* inconsistent is that the two parsers had a copy each of the same
 percent-decoder; they now share one.
 
 ## Left for a product decision (not changed)
-- **The typed code is case-sensitive.** `PAIRING_CODE_ALPHABET` is upper-case, and
-  Android will usually capitalise only the first character, so a user typing
-  `K7m2qx` burns an attempt with no visible reason. Options: upper-case the input
-  in the app, or compare case-insensitively server-side. Both narrow the code
-  space slightly; neither is obviously yours to choose.
+- ~~**The typed code is case-sensitive.**~~ **Decided and fixed**: a shared
+  `blue2th_proto::normalize_pairing_code` (trim + upper-case) is applied on both
+  sides — in the settings page before `POST /pair`, and on the submitted code in
+  `verify_code`, so a client that skips it still pairs. The armed code is never
+  normalised, and the alphabet was already upper-case only, so the code space is
+  unchanged. Pinned by `test_verify_code_accepts_a_hand_typed_code`,
+  `test_verify_code_rejects_anything_but_an_exact_match` (an *inner* space is
+  still a wrong code), `pairing.rs::test_pair_accepts_a_lower_case_code` and
+  `test_pair_still_refuses_a_wrong_code_whatever_its_case`.
 - **`NOT_PAIRED` ("not paired") is not localised**, while the settings page has a
   translated `app_settings.not_paired`. Backend error messages are not localised
   anywhere in the app today, so this follows the existing convention — but it is
