@@ -85,9 +85,88 @@ pub struct PairLink {
 ///
 /// Lives here, next to [`parse_pair_link`], so the server builds exactly what
 /// the app parses — the two could not drift apart even if they wanted to.
-pub fn pair_deep_link(_url: &str, _name: &str, _code: &str) -> String {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: build blue2th://pair?url=…&name=…&code=…")
+pub fn pair_deep_link(url: &str, name: &str, code: &str) -> String {
+    format!(
+        "{PAIR_DEEP_LINK}?url={}&name={}&code={}",
+        percent_encode(url),
+        percent_encode(name),
+        percent_encode(code),
+    )
+}
+
+/// Percent-encode a query value, keeping only the unreserved set. Hand-written
+/// rather than pulled from a crate: this crate must stay target-agnostic and
+/// dependency-light, and the rule is three lines. Pure.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            },
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// Decode a percent-encoded query value: `%XX` escapes and `+` as a space.
+///
+/// Decoded from the raw bytes, never by re-slicing the `&str`: a `%` followed by
+/// a multi-byte character would split it and panic. An invalid escape is kept
+/// as-is rather than dropped, so a malformed value stays visible. Pure.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            },
+            b'%' if i + 2 < bytes.len() => {
+                match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                    (Some(high), Some(low)) => {
+                        out.push((high << 4) | low);
+                        i += 3;
+                    },
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    },
+                }
+            },
+            byte => {
+                out.push(byte);
+                i += 1;
+            },
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The value of a single ASCII hex digit, or `None` if it is not one.
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Whether a decoded address is usable as a backend base URL: a scheme, a host,
+/// and no embedded whitespace. A link carrying anything else is refused rather
+/// than stored as an address every later call would fail on. Pure.
+fn usable_backend_url(url: &str) -> bool {
+    if url.is_empty() || url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    match url.split_once("://") {
+        Some((scheme, rest)) => !scheme.is_empty() && !rest.trim_end_matches('/').is_empty(),
+        None => false,
+    }
 }
 
 /// Parse a `blue2th://pair?…` deep link. Pure.
@@ -96,9 +175,37 @@ pub fn pair_deep_link(_url: &str, _name: &str, _code: &str) -> String {
 /// `code` or carrying a URL with no scheme/host: a malformed link is ignored
 /// exactly as an unrelated intent is, never a crash and never a half-created
 /// backend entry.
-pub fn parse_pair_link(_uri: &str) -> Option<PairLink> {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: read a pair deep link back into its url/name/code")
+pub fn parse_pair_link(uri: &str) -> Option<PairLink> {
+    let rest = uri.strip_prefix(PAIR_DEEP_LINK)?;
+    // Tolerate a trailing slash before the query, as the OAuth callback does.
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    let query = rest.strip_prefix('?')?;
+    // A fragment is never part of the query.
+    let query = query.split('#').next().unwrap_or(query);
+
+    let mut url = None;
+    let mut name = None;
+    let mut code = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "url" => url = Some(percent_decode(value)),
+            "name" => name = Some(percent_decode(value)),
+            "code" => code = Some(percent_decode(value)),
+            _ => {},
+        }
+    }
+
+    let url = url.filter(|u| usable_backend_url(u))?;
+    let code = code.filter(|c| !c.is_empty())?;
+    Some(PairLink {
+        url,
+        // An empty name is no name: the app keeps whatever it already had.
+        name: name.filter(|n| !n.is_empty()),
+        code,
+    })
 }
 
 /// A Bluetooth adapter present on the backend host (e.g. `hci0`).

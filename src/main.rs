@@ -285,15 +285,23 @@ fn App() -> Element {
         let mut now_playing = spotify_ui.now_playing;
         spawn(async move {
             loop {
-                let _ = backend::subscribe_now_playing(|np| {
+                let outcome = backend::subscribe_now_playing(|np| {
                     *now_playing.write() = Some(np);
                 })
                 .await;
+                // A 401 is terminal: retrying a revoked token would spin this
+                // loop forever, silently, until the app is restarted. Pairing
+                // again re-arms it, since the poll below wakes the whole app up.
+                if outcome.as_ref().err().is_some_and(|e| e.is_not_paired()) {
+                    return;
+                }
                 // The stream closed (backend down or restarted); retry shortly.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
     });
+
+    let settings_state = use_context::<SettingsState>();
 
     // Consume the OAuth redirect Android routed to us and exchange its one-time
     // code for tokens. Whatever the outcome, the browser round-trip is over, so
@@ -302,12 +310,34 @@ fn App() -> Element {
         let mut connected = spotify_ui.connected;
         let mut show_login = spotify_ui.show_login;
         let mut login_error = spotify_ui.login_error;
+        let mut app_settings = settings_state.0;
         spawn(async move {
             loop {
                 tokio::time::sleep(DEEP_LINK_POLL_INTERVAL).await;
                 let Some(uri) = deep_link::take_pending_deep_link() else {
                     continue;
                 };
+
+                // A pairing QR and a Spotify redirect arrive through the same
+                // intent, so both are read here — the pair link first, since it
+                // is the one that can create the backend everything else needs.
+                if let Some(link) = blue2th_proto::parse_pair_link(&uri) {
+                    match backend::pair(&link.url, &link.code).await {
+                        Ok(token) => {
+                            let mut next = app_settings.peek().clone();
+                            match next.upsert_from_pair_link(&link, &token) {
+                                Ok(_) => {
+                                    settings::set_current(next.clone());
+                                    *app_settings.write() = next;
+                                },
+                                Err(e) => *login_error.write() = Some(e.to_string()),
+                            }
+                        },
+                        Err(e) => *login_error.write() = Some(e.to_string()),
+                    }
+                    continue;
+                }
+
                 match deep_link::parse_spotify_callback(&uri) {
                     Some(deep_link::SpotifyCallback::Authorized { code, state }) => {
                         match backend::spotify_auth_callback(&code, &state).await {
@@ -1727,6 +1757,7 @@ fn AppSettingsPage() -> Element {
     let mut notice: Signal<Option<String>> = use_signal(|| None);
     let mut name_draft = use_signal(String::new);
     let mut url_draft = use_signal(String::new);
+    let mut code_draft = use_signal(String::new);
 
     // One read for the whole list (see `BackendStatus`): names, addresses and the
     // active index all come from the same snapshot.
@@ -1738,6 +1769,16 @@ fn AppSettingsPage() -> Element {
                 .backends
                 .get(i)
                 .map(|b| (i, b.restore_during_playback))
+        })
+    };
+    // Pairing applies to the active backend too: it is the one the app talks to.
+    let active_pairing: Option<(usize, String, settings::PairingMethod, bool)> = {
+        let snapshot = app_settings.read();
+        snapshot.active.and_then(|i| {
+            snapshot
+                .backends
+                .get(i)
+                .map(|b| (i, b.url.clone(), b.pairing, b.token.is_some()))
         })
     };
     let entries: Vec<(usize, String, String, bool)> = {
@@ -1911,6 +1952,103 @@ fn AppSettingsPage() -> Element {
                     }
                 }
 
+            }
+
+            div { class: "settings-section",
+                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_pairing\")}" }
+
+                if let Some((index, url, method, paired)) = active_pairing.clone() {
+                    div { class: if paired { "settings-hint paired" } else { "settings-hint" },
+                        if paired {
+                            "{rust_i18n::t!(\"app_settings.paired_ok\")}"
+                        } else {
+                            "{rust_i18n::t!(\"app_settings.not_paired\")}"
+                        }
+                    }
+                    div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.pairing_method\")}" }
+                    div { class: "backend-form-actions",
+                        button {
+                            class: if method == settings::PairingMethod::Code { "backend-row-action active" } else { "backend-row-action" },
+                            onclick: move |_| {
+                                let mut next = app_settings.peek().clone();
+                                if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Code) {
+                                    *error.write() = Some(e.to_string());
+                                    return;
+                                }
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                            "{rust_i18n::t!(\"app_settings.pairing_method_code\")}"
+                        }
+                        button {
+                            class: if method == settings::PairingMethod::Qr { "backend-row-action active" } else { "backend-row-action" },
+                            onclick: move |_| {
+                                let mut next = app_settings.peek().clone();
+                                if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Qr) {
+                                    *error.write() = Some(e.to_string());
+                                    return;
+                                }
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                            "{rust_i18n::t!(\"app_settings.pairing_method_qr\")}"
+                        }
+                    }
+
+                    if method == settings::PairingMethod::Code {
+                        input {
+                            class: "backend-input",
+                            r#type: "text",
+                            placeholder: "{rust_i18n::t!(\"app_settings.pairing_code_placeholder\")}",
+                            value: "{code_draft}",
+                            oninput: move |e| *code_draft.write() = e.value(),
+                        }
+                        button {
+                            class: "backend-add",
+                            onclick: move |_| {
+                                let code = code_draft();
+                                let url = url.clone();
+                                let mut error = error;
+                                let mut notice = notice;
+                                let mut code_draft = code_draft;
+                                spawn(async move {
+                                    // The one call that carries no bearer: the
+                                    // app has none until this succeeds.
+                                    match backend::pair(&url, &code).await {
+                                        Ok(token) => {
+                                            let mut next = app_settings.peek().clone();
+                                            match next.set_token(index, Some(token)) {
+                                                Ok(()) => {
+                                                    settings::set_current(next.clone());
+                                                    *app_settings.write() = next;
+                                                    *code_draft.write() = String::new();
+                                                    *error.write() = None;
+                                                    *notice.write() = Some(
+                                                        rust_i18n::t!("app_settings.paired_ok").to_string(),
+                                                    );
+                                                },
+                                                Err(e) => *error.write() = Some(e.to_string()),
+                                            }
+                                        },
+                                        Err(e) => {
+                                            *notice.write() = None;
+                                            *error.write() = Some(e.to_string());
+                                        },
+                                    }
+                                });
+                            },
+                            "{rust_i18n::t!(\"app_settings.pair\")}"
+                        }
+                    } else {
+                        // Nothing to type on this path: the QR carries the code,
+                        // and the deep link brings it back into the app.
+                        div { class: "settings-hint",
+                            "{rust_i18n::t!(\"app_settings.pairing_qr_hint\")}"
+                        }
+                    }
+                } else {
+                    div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
+                }
             }
 
             div { class: "settings-section",

@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use blue2th_proto::{
     AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo, HealthStatus,
-    NowPlaying, OffsetRequest, PlaybackState, PresenceRequest, ServerConfig, SpotifyAuthState,
-    SpotifyState, TargetsState, VolumeRequest,
+    NowPlaying, OffsetRequest, PairRequest, PairResponse, PlaybackState, PresenceRequest,
+    ServerConfig, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -82,15 +82,13 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 pub const NOT_PAIRED: &str = "not paired";
 
 /// Build the `{base}/pair` URL, tolerating a trailing slash on the base.
-fn pair_url(_base: &str) -> String {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: build the /pair URL")
+fn pair_url(base: &str) -> String {
+    format!("{}/pair", base.trim_end_matches('/'))
 }
 
 /// The `Authorization` header value carrying `token`.
-fn auth_header_value(_token: &str) -> String {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: build the bearer header value")
+fn auth_header_value(token: &str) -> String {
+    format!("Bearer {token}")
 }
 
 /// Map a failed backend response to a typed error. Pure.
@@ -98,9 +96,18 @@ fn auth_header_value(_token: &str) -> String {
 /// A 401 becomes [`BackendError::not_paired`] whatever the body says; any other
 /// status keeps the backend's own message (which `error_for_status` would throw
 /// away, leaving the phone showing a bare status line).
-fn backend_error_for(_status: u16, _body: &str) -> BackendError {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: map a failed response to a typed error, 401 = not paired")
+fn backend_error_for(status: u16, body: &str) -> BackendError {
+    if status == 401 {
+        // Typed, not textual: the UI must be able to tell an unpaired app from
+        // an unreachable one, and the backend's wording may change.
+        return BackendError::not_paired();
+    }
+    let message = body.trim();
+    if message.is_empty() {
+        BackendError::new(format!("HTTP {status}"))
+    } else {
+        BackendError::new(message)
+    }
 }
 
 /// The active backend's base URL **and** token, or a typed failure. Pure.
@@ -108,18 +115,35 @@ fn backend_error_for(_status: u16, _body: &str) -> BackendError {
 /// Nothing configured fails with [`NO_BACKEND_CONFIGURED`]; an active backend
 /// that was never paired fails with [`BackendError::not_paired`] — in both cases
 /// before any request is built, so an unpaired app never waits on a timeout.
-fn authed_base_from(_settings: &AppSettings) -> Result<(String, String), BackendError> {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: resolve the active backend's base URL and bearer token")
+fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendError> {
+    let base = base_url_from(settings)?;
+    let token = settings
+        .active_token()
+        .ok_or_else(BackendError::not_paired)?;
+    Ok((base, token))
 }
 
 /// `POST {base}/pair` — exchange a short-lived pairing code for the backend's
 /// long-lived API token. The one call that carries no bearer, since the app has
 /// none yet.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn pair(_base: &str, _code: &str) -> Result<String, BackendError> {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: exchange the pairing code for the API token")
+pub async fn pair(base: &str, code: &str) -> Result<String, BackendError> {
+    let response = reqwest::Client::new()
+        .post(pair_url(base))
+        .timeout(SETTINGS_CALL_TIMEOUT)
+        .json(&PairRequest {
+            // Owned copy: `PairRequest` is a plain DTO built for serialization.
+            code: code.to_string(),
+        })
+        .send()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    Ok(backend_error_message(response)
+        .await?
+        .json::<PairResponse>()
+        .await
+        .map_err(|e| BackendError::new(describe(&e)))?
+        .token)
 }
 
 /// How long a settings-page call waits before giving up.
@@ -135,8 +159,22 @@ const SETTINGS_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// There is no compile-time address, no seeded default, not even a localhost
 /// fallback: an unconfigured app must attempt no network call at all, so this
 /// returns an error and every call site propagates it with `?`.
-pub fn backend_base_url() -> Result<String, BackendError> {
-    base_url_from(&crate::settings::current())
+/// An HTTP client carrying the active backend's bearer, plus its base URL.
+///
+/// Every guarded call goes through this: the token is a *default header* on the
+/// client rather than something each call site remembers to add, so a new call
+/// cannot silently ship unauthenticated.
+fn authed_client() -> Result<(reqwest::Client, String), BackendError> {
+    let (base, token) = authed_base_from(&crate::settings::current())?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    let value = reqwest::header::HeaderValue::from_str(&auth_header_value(&token))
+        .map_err(|_| BackendError::not_paired())?;
+    headers.insert(reqwest::header::AUTHORIZATION, value);
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| BackendError::new(describe(&e)))?;
+    Ok((client, base))
 }
 
 /// Resolve the base URL from an explicit settings snapshot (pure, testable).
@@ -163,8 +201,13 @@ async fn set_config_at(
     restore_during_playback: bool,
 ) -> Result<ServerConfig, BackendError> {
     let url = config_url(base);
-    let response = reqwest::Client::new()
-        .post(&url)
+    let mut request = reqwest::Client::new().post(&url);
+    // Addressed explicitly, authorised from the settings: both callers activate
+    // the entry before pushing to it, so the active token is the right one.
+    if let Some(token) = crate::settings::current().active_token() {
+        request = request.header(reqwest::header::AUTHORIZATION, auth_header_value(&token));
+    }
+    let response = request
         .timeout(SETTINGS_CALL_TIMEOUT)
         .json(&ConfigRequest {
             // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
@@ -322,8 +365,11 @@ fn describe(err: &reqwest::Error) -> String {
 /// `GET {base}/health` and decode the backend's `HealthStatus`.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
-    let url = health_url(&backend_base_url()?);
-    let response = reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = health_url(&base);
+    let response = client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?;
     response
@@ -338,12 +384,16 @@ pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
 /// each discovered device (deduplicated by address).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
-    let url = format!("{}/scan", backend_base_url()?.trim_end_matches('/'));
-    let response = reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = format!("{}/scan", base.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
         .map_err(|e| BackendError::new(describe(&e)))?;
+    // Typed rather than `error_for_status`: the caller's reconnect loop must be
+    // able to stop on a 401 instead of retrying a revoked token forever.
+    let response = backend_error_message(response).await?;
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -389,11 +439,9 @@ pub async fn disconnect_device(address: &str) -> Result<DeviceInfo, BackendError
 
 /// POST `{base}/devices/{address}/{action}` and decode the updated `DeviceInfo`.
 async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, BackendError> {
-    let url = format!(
-        "{}/devices/{address}/{action}",
-        backend_base_url()?.trim_end_matches('/')
-    );
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = format!("{}/devices/{address}/{action}", base.trim_end_matches('/'));
+    client
         .post(&url)
         .send()
         .await
@@ -409,8 +457,11 @@ async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, B
 /// Used by the periodic poll to refresh `connected`/`rssi` without re-scanning.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
-    let url = format!("{}/devices", backend_base_url()?.trim_end_matches('/'));
-    reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = format!("{}/devices", base.trim_end_matches('/'));
+    client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?
         .error_for_status()
@@ -442,8 +493,11 @@ pub async fn stop() -> Result<PlaybackState, BackendError> {
 /// `GET {base}/playback` — the backend's current playback state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn playback_state() -> Result<PlaybackState, BackendError> {
-    let url = format!("{}/playback", backend_base_url()?.trim_end_matches('/'));
-    reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = format!("{}/playback", base.trim_end_matches('/'));
+    client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?
         .error_for_status()
@@ -457,8 +511,9 @@ pub async fn playback_state() -> Result<PlaybackState, BackendError> {
 /// (clamped server-side to `0.0..=1.0`), returning the new state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn set_volume(level: f32) -> Result<PlaybackState, BackendError> {
-    let url = format!("{}/volume", backend_base_url()?.trim_end_matches('/'));
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = format!("{}/volume", base.trim_end_matches('/'));
+    client
         .post(&url)
         .json(&VolumeRequest { level })
         .send()
@@ -473,8 +528,9 @@ pub async fn set_volume(level: f32) -> Result<PlaybackState, BackendError> {
 
 /// POST `{base}/{action}` (no body) and decode the updated `PlaybackState`.
 async fn post_transport(action: &str) -> Result<PlaybackState, BackendError> {
-    let url = format!("{}/{action}", backend_base_url()?.trim_end_matches('/'));
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = format!("{}/{action}", base.trim_end_matches('/'));
+    client
         .post(&url)
         .send()
         .await
@@ -501,8 +557,9 @@ fn targets_url(base: &str) -> String {
 /// playback target, returning the updated selection state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> {
-    let url = device_action_url(&backend_base_url()?, address, "select");
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = device_action_url(&base, address, "select");
+    client
         .post(&url)
         .send()
         .await
@@ -518,8 +575,9 @@ pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> 
 /// target selection, returning the updated selection state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError> {
-    let url = device_action_url(&backend_base_url()?, address, "deselect");
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = device_action_url(&base, address, "deselect");
+    client
         .post(&url)
         .send()
         .await
@@ -535,8 +593,9 @@ pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError
 /// (clamped server-side to `0..=750` ms), returning the updated selection state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, BackendError> {
-    let url = device_action_url(&backend_base_url()?, address, "offset");
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = device_action_url(&base, address, "offset");
+    client
         .post(&url)
         .json(&OffsetRequest { offset_ms })
         .send()
@@ -553,8 +612,11 @@ pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, B
 /// per-speaker offsets and routing mode.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
-    let url = targets_url(&backend_base_url()?);
-    reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = targets_url(&base);
+    client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?
         .error_for_status()
@@ -587,8 +649,11 @@ pub async fn stop_spotify() -> Result<SpotifyState, BackendError> {
 /// `GET {base}/spotify/status` — the Spotify backend's current state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
-    let url = spotify_url(&backend_base_url()?, "status");
-    reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = spotify_url(&base, "status");
+    client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?
         .error_for_status()
@@ -601,8 +666,9 @@ pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
 /// POST `{base}/spotify/{action}` (no body) and decode the updated `SpotifyState`.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
-    let url = spotify_url(&backend_base_url()?, action);
-    reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = spotify_url(&base, action);
+    client
         .post(&url)
         .send()
         .await
@@ -632,20 +698,18 @@ async fn backend_error_message(
         return Ok(response);
     }
     let body = response.text().await.unwrap_or_default();
-    let message = body.trim();
-    Err(BackendError::new(if message.is_empty() {
-        status.to_string()
-    } else {
-        message.to_string()
-    }))
+    Err(backend_error_for(status.as_u16(), &body))
 }
 
 /// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
 /// (PKCE) and the CSRF `state` to echo back on callback.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
-    let url = spotify_url(&backend_base_url()?, "auth/url");
-    let response = reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = spotify_url(&base, "auth/url");
+    let response = client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?;
     backend_error_message(response)
@@ -664,8 +728,9 @@ pub async fn spotify_auth_callback(
     code: &str,
     state: &str,
 ) -> Result<SpotifyAuthState, BackendError> {
-    let url = spotify_url(&backend_base_url()?, "auth/callback");
-    let response = reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = spotify_url(&base, "auth/callback");
+    let response = client
         .post(&url)
         .json(&AuthCallbackRequest {
             code: code.to_string(),
@@ -684,8 +749,11 @@ pub async fn spotify_auth_callback(
 /// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
-    let url = spotify_url(&backend_base_url()?, "auth/status");
-    reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = spotify_url(&base, "auth/status");
+    client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| BackendError::new(describe(&e)))?
         .error_for_status()
@@ -703,11 +771,9 @@ pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
 /// background listening session alive and pauses at once on a real exit.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn report_presence(presence: ClientPresence) -> Result<(), BackendError> {
-    let url = format!(
-        "{}/client/presence",
-        backend_base_url()?.trim_end_matches('/')
-    );
-    let response = reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = format!("{}/client/presence", base.trim_end_matches('/'));
+    let response = client
         .post(&url)
         .json(&PresenceRequest { presence })
         .send()
@@ -753,8 +819,9 @@ pub async fn spotify_transport(action: SpotifyAction) -> Result<(), BackendError
 /// replies 204 (no content) on success, so no body is decoded.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
-    let url = spotify_url(&backend_base_url()?, action);
-    let response = reqwest::Client::new()
+    let (client, base) = authed_client()?;
+    let url = spotify_url(&base, action);
+    let response = client
         .post(&url)
         .send()
         .await
@@ -771,12 +838,16 @@ pub async fn subscribe_now_playing<F>(mut on_event: F) -> Result<(), BackendErro
 where
     F: FnMut(NowPlaying),
 {
-    let url = now_playing_url(&backend_base_url()?);
-    let response = reqwest::get(&url)
+    let (client, base) = authed_client()?;
+    let url = now_playing_url(&base);
+    let response = client
+        .get(&url)
+        .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?
-        .error_for_status()
         .map_err(|e| BackendError::new(describe(&e)))?;
+    // Typed rather than `error_for_status`: the caller's reconnect loop must be
+    // able to stop on a 401 instead of retrying a revoked token forever.
+    let response = backend_error_message(response).await?;
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();

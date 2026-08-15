@@ -168,23 +168,25 @@ impl AppSettings {
     }
 
     /// Store the API token obtained by pairing with the backend at `index`.
-    pub fn set_token(
-        &mut self,
-        _index: usize,
-        _token: Option<String>,
-    ) -> Result<(), SettingsError> {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: store the paired token on that backend")
+    pub fn set_token(&mut self, index: usize, token: Option<String>) -> Result<(), SettingsError> {
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.token = token;
+        Ok(())
     }
 
     /// Choose how the user pairs with the backend at `index`.
     pub fn set_pairing_method(
         &mut self,
-        _index: usize,
-        _method: PairingMethod,
+        index: usize,
+        method: PairingMethod,
     ) -> Result<(), SettingsError> {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: store the per-backend pairing method")
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.pairing = method;
+        Ok(())
     }
 
     /// Apply a scanned `blue2th://pair?…` link: create the whole backend entry
@@ -196,18 +198,36 @@ impl AppSettings {
     /// and the QR's name must not undo that.
     pub fn upsert_from_pair_link(
         &mut self,
-        _link: &PairLink,
-        _token: &str,
+        link: &PairLink,
+        token: &str,
     ) -> Result<usize, SettingsError> {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: create or update the backend a pair link points at")
+        let url = normalise_url(&link.url)?;
+        if let Some(index) = self.backends.iter().position(|b| b.url == url) {
+            // Known address: only the token moves. The local name is kept — the
+            // user may have renamed this backend deliberately, and a QR must not
+            // undo that.
+            self.set_token(index, Some(token.to_string()))?;
+            self.activate(index)?;
+            return Ok(index);
+        }
+
+        // Creating needs a name, and it must not collide: both are the same
+        // rules `add` applies, so a link cannot smuggle in what typing cannot.
+        let name = link
+            .name
+            .as_deref()
+            .ok_or(SettingsError::Name(NameError::Empty))?;
+        self.add(name, &url)?;
+        let index = self.backends.len().saturating_sub(1);
+        self.set_token(index, Some(token.to_string()))?;
+        self.activate(index)?;
+        Ok(index)
     }
 
     /// The active backend's API token, or `None` when nothing is active or the
     /// active backend has not been paired yet.
     pub fn active_token(&self) -> Option<String> {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: resolve the active backend's token")
+        self.active_backend().and_then(|b| b.token.clone())
     }
 
     /// Toggle the restore-during-playback setting of the backend at `index`.

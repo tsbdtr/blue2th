@@ -1,6 +1,6 @@
 //! Authentication for the LAN API (phase 6.4).
 //!
-//! Until now anything on the LAN — and, through `CorsLayer::permissive()`, any
+//! Until now anything on the LAN — and, through the permissive CORS layer, any
 //! web page the user opened — could drive the backend. Every route now requires
 //! `Authorization: Bearer <token>`, except `GET /health` (so a wrong token reads
 //! as "not paired" rather than "offline") and `POST /pair`.
@@ -13,9 +13,12 @@
 //! real `~/.local/state/blue2th/`.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
+
+use base64::Engine as _;
+use rand::Rng as _;
 
 /// How long a minted pairing code stays armed. Short by design: the code is the
 /// only thing standing between the LAN and the API.
@@ -65,9 +68,15 @@ impl std::error::Error for PairError {}
 /// Mint a long-lived, URL-safe API token carrying at least
 /// [`TOKEN_ENTROPY_BYTES`] bytes of entropy, different on every call.
 pub fn generate_token() -> String {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: mint a URL-safe token from a CSPRNG")
+    let mut raw = [0u8; TOKEN_ENTROPY_BYTES];
+    rand::thread_rng().fill(&mut raw[..]);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
 }
+
+/// Alphabet of a typed pairing code: unambiguous on a terminal and in a deep
+/// link. `0`/`O` and `1`/`I`/`l` are left out — the code is read off a screen and
+/// typed on a phone, where a misread costs an attempt against the cap.
+const PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 /// A pairing code armed by the server: short, URL-safe (it rides in a deep link
 /// and is typed by hand), short-lived, one-shot and rate limited.
@@ -85,9 +94,16 @@ pub struct PairingCode {
 
 impl PairingCode {
     /// Mint a fresh code, armed for [`PAIRING_TTL`] from `now`.
-    pub fn mint(_now: SystemTime) -> Self {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: mint a short, URL-safe, short-lived pairing code")
+    pub fn mint(now: SystemTime) -> Self {
+        let mut rng = rand::thread_rng();
+        let code: String = (0..PAIRING_CODE_LEN)
+            .map(|_| {
+                let index = rng.gen_range(0..PAIRING_CODE_ALPHABET.len());
+                // Indexed inside its own length, so the byte is always there.
+                PAIRING_CODE_ALPHABET.get(index).copied().unwrap_or(b'A') as char
+            })
+            .collect();
+        Self::armed(code, now + PAIRING_TTL)
     }
 
     /// An explicitly armed code — the fixture constructor for the pure
@@ -139,27 +155,104 @@ impl PairingCode {
 /// unknown code, expired code, spent code, attempt cap reached — returns the
 /// same [`PairError`], on purpose.
 pub fn verify_code(
-    _stored: Option<&PairingCode>,
-    _submitted: &str,
-    _now: SystemTime,
+    stored: Option<&PairingCode>,
+    submitted: &str,
+    now: SystemTime,
 ) -> Result<(), PairError> {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: verify an armed pairing code without leaking why it failed")
+    // Every branch below returns the same error on purpose: telling "expired"
+    // from "unknown" would help an attacker enumerate.
+    let stored = stored.ok_or(PairError::Rejected)?;
+    if stored.is_consumed()
+        || stored.attempts() >= MAX_PAIRING_ATTEMPTS
+        || now >= stored.expires_at()
+        || !constant_time_eq(stored.code(), submitted)
+    {
+        return Err(PairError::Rejected);
+    }
+    Ok(())
+}
+
+/// Compare two secrets without an early exit on the first differing byte.
+///
+/// The pairing code is short-lived and attempt-capped, so a timing oracle is of
+/// little use against it — but the same helper guards the long-lived API token,
+/// where it matters, and one comparison for both leaves no wrong path to pick.
+fn constant_time_eq(expected: &str, presented: &str) -> bool {
+    let expected = expected.as_bytes();
+    let presented = presented.as_bytes();
+    // The length itself is not a secret; only the contents are compared blindly.
+    if expected.len() != presented.len() {
+        return false;
+    }
+    expected
+        .iter()
+        .zip(presented)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// Extract the credential from an `Authorization` header value. Pure.
 ///
 /// `None` for a missing header, a non-`Bearer` scheme or an empty credential.
 /// The scheme is compared case-insensitively, as HTTP requires.
-pub fn bearer_token(_header: Option<&str>) -> Option<&str> {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: parse `Bearer <token>` out of the Authorization header")
+pub fn bearer_token(header: Option<&str>) -> Option<&str> {
+    let (scheme, credential) = header?.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+    // Leading spaces are dropped — HTTP allows several between the scheme and
+    // the credential — but trailing ones are not: the token is opaque, so
+    // "s3cret " is a different credential from "s3cret" and must be refused
+    // rather than quietly repaired.
+    let credential = credential.trim_start();
+    (!credential.is_empty()).then_some(credential)
 }
 
 /// Whether an `Authorization` header carries exactly `expected`. Pure.
-pub fn is_authorised(_expected: &str, _header: Option<&str>) -> bool {
-    // STUB (phase 6.4).
-    todo!("phase 6.4: compare the presented bearer with the stored token")
+pub fn is_authorised(expected: &str, header: Option<&str>) -> bool {
+    bearer_token(header).is_some_and(|presented| constant_time_eq(expected, presented))
+}
+
+/// Read the persisted token. `None` for a missing, unreadable or malformed
+/// store — all three mean "no usable token", and the caller mints a new one.
+fn load_token(path: Option<&Path>) -> Option<String> {
+    let raw = std::fs::read_to_string(path?).ok()?;
+    let stored: StoredToken = serde_json::from_str(&raw).ok()?;
+    (!stored.token.is_empty()).then_some(stored.token)
+}
+
+/// Persist the token with owner-only permissions. A failure is logged, never
+/// propagated: the server still runs, it simply unpairs clients on restart.
+fn persist_token(path: &Path, token: &str) {
+    if let Err(e) = write_token(path, token) {
+        tracing::warn!("could not persist the API token: {e}");
+    }
+}
+
+fn write_token(path: &Path, token: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string(&StoredToken {
+        // Owned copy: the on-disk shape is serialized from its own value.
+        token: token.to_string(),
+    })
+    .map_err(std::io::Error::other)?;
+    std::fs::write(path, body)?;
+    // The token is a credential: keep it readable by its owner only, set after
+    // writing so it applies to an existing file too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// On-disk shape of the auth store.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredToken {
+    token: String,
 }
 
 /// The backend's API token and the pairing code currently armed, optionally
@@ -204,9 +297,22 @@ impl AuthStore {
     /// A missing, unreadable or malformed store mints (and persists) a new
     /// token, which invalidates existing clients — safer than starting with no
     /// authentication at all.
-    pub fn with_store(_store: Option<PathBuf>) -> Self {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: reload the persisted token, or mint and persist a new one")
+    pub fn with_store(store: Option<PathBuf>) -> Self {
+        // Missing, unreadable and malformed all take this one path: mint a new
+        // token and persist it. Starting with no authentication because a file
+        // could not be read would be the one unacceptable outcome.
+        let token = load_token(store.as_deref()).unwrap_or_else(|| {
+            let minted = generate_token();
+            if let Some(path) = store.as_deref() {
+                persist_token(path, &minted);
+            }
+            minted
+        });
+        Self {
+            token,
+            pairing: None,
+            store,
+        }
     }
 
     /// The current API token.
@@ -222,14 +328,21 @@ impl AuthStore {
     /// Mint a new API token, persist it and return it. Every paired client must
     /// pair again.
     pub fn rotate(&mut self) -> &str {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: mint, persist and return a new API token")
+        self.token = generate_token();
+        if let Some(path) = self.store.as_deref() {
+            persist_token(path, &self.token);
+        }
+        &self.token
     }
 
     /// Arm a fresh pairing code and return it, replacing any previous one.
-    pub fn arm_pairing(&mut self, _now: SystemTime) -> String {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: arm a fresh pairing code")
+    pub fn arm_pairing(&mut self, now: SystemTime) -> String {
+        let minted = PairingCode::mint(now);
+        // Owned copy: the code is handed to the operator while the store keeps
+        // its own to verify against.
+        let code = minted.code().to_string();
+        self.pairing = Some(minted);
+        code
     }
 
     /// Exchange a submitted code for the API token.
@@ -237,9 +350,27 @@ impl AuthStore {
     /// On success the code is consumed (one-shot); on failure the attempt is
     /// recorded, and reaching [`MAX_PAIRING_ATTEMPTS`] invalidates the armed
     /// code. Every failure returns the same [`PairError`].
-    pub fn redeem(&mut self, _submitted: &str, _now: SystemTime) -> Result<String, PairError> {
-        // STUB (phase 6.4).
-        todo!("phase 6.4: redeem a pairing code for the API token, one shot only")
+    pub fn redeem(&mut self, submitted: &str, now: SystemTime) -> Result<String, PairError> {
+        match verify_code(self.pairing.as_ref(), submitted, now) {
+            Ok(()) => {
+                if let Some(code) = self.pairing.as_mut() {
+                    // One-shot: a code that worked once must never work again.
+                    code.consume();
+                }
+                Ok(self.token.clone())
+            },
+            Err(err) => {
+                if let Some(code) = self.pairing.as_mut() {
+                    code.register_failure();
+                    // The cap is what makes a six-character secret viable at
+                    // all; past it the code is not merely refused, it is gone.
+                    if code.attempts() >= MAX_PAIRING_ATTEMPTS {
+                        self.pairing = None;
+                    }
+                }
+                Err(err)
+            },
+        }
     }
 
     /// Whether an `Authorization` header value authorises a guarded route.
