@@ -91,3 +91,6 @@ app_settings:
   test_ok: "Backend answered"
   name_placeholder: "Name (e.g. Salon)"
   url_placeholder: "http://192.168.1.10:4000"
+  section_playback: "Playback"
+  restore_during_playback: "Rejoin while playing"
+  restore_during_playback_hint: "A speaker that comes back is used again straight away. Playback cuts for a moment when the routing changes."

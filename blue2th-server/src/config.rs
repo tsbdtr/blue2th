@@ -32,26 +32,28 @@ pub struct ServerName {
     store: Option<std::path::PathBuf>,
 }
 
-/// Read the persisted name. A missing, unreadable, malformed — or invalid —
-/// blob simply means "never configured": a broken file must never prevent a
-/// start, and must never resurrect a name the shared rule would refuse.
-fn load_name(path: Option<&std::path::Path>) -> Option<String> {
+/// Read the persisted config, or `None` when there is nothing usable to read.
+/// The flag rides along, defaulted by the DTO — so a phase 6.2 store, which only
+/// carries a name, comes back with restoration on rather than silently off.
+fn load_config(path: Option<&std::path::Path>) -> Option<ServerConfig> {
     let raw = std::fs::read_to_string(path?).ok()?;
-    let config: ServerConfig = serde_json::from_str(&raw).ok()?;
-    blue2th_proto::validate_backend_name(&config.name).ok()
+    serde_json::from_str(&raw).ok()
 }
 
 /// Persist the configured name. Failures are reported to the caller, which logs
 /// them: losing persistence must never turn a rename into an error.
-fn save_name(path: &std::path::Path, name: &str) -> std::io::Result<()> {
+fn save_config(
+    path: &std::path::Path,
+    name: &str,
+    restore_during_playback: bool,
+) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let body = serde_json::to_string(&ServerConfig {
         // Owned copy: `ServerConfig` is a plain DTO built for serialization.
         name: name.to_string(),
-        // STUB (phase 6.3): the flag must be persisted next to the name.
-        restore_during_playback: false,
+        restore_during_playback,
     })
     .map_err(std::io::Error::other)?;
     std::fs::write(path, body)
@@ -63,8 +65,7 @@ impl ServerName {
     pub fn new() -> Self {
         Self {
             name: DEFAULT_BACKEND_NAME.to_string(),
-            // STUB (phase 6.3): the setting defaults to on.
-            restore_during_playback: false,
+            restore_during_playback: true,
             store: None,
         }
     }
@@ -72,10 +73,14 @@ impl ServerName {
     /// A name backed by a store, reloaded on construction so a restart keeps the
     /// configured name. A missing or malformed store yields the default.
     pub fn with_store(store: Option<std::path::PathBuf>) -> Self {
+        let stored = load_config(store.as_deref());
         Self {
-            name: load_name(store.as_deref()).unwrap_or_else(|| DEFAULT_BACKEND_NAME.to_string()),
-            // STUB (phase 6.3): reload the flag from the store here.
-            restore_during_playback: false,
+            name: stored
+                .as_ref()
+                .and_then(|c| blue2th_proto::validate_backend_name(&c.name).ok())
+                .unwrap_or_else(|| DEFAULT_BACKEND_NAME.to_string()),
+            // Absent from the store (phase 6.2 file) or unreadable: on, the default.
+            restore_during_playback: stored.map(|c| c.restore_during_playback).unwrap_or(true),
             store,
         }
     }
@@ -91,9 +96,20 @@ impl ServerName {
     }
 
     /// Store and persist the restore-during-playback setting.
-    pub fn set_restore_during_playback(&mut self, _enabled: bool) {
-        // STUB (phase 6.3).
-        todo!("phase 6.3: store and persist the restore-during-playback setting")
+    pub fn set_restore_during_playback(&mut self, enabled: bool) {
+        self.restore_during_playback = enabled;
+        self.persist();
+    }
+
+    /// Write name and flag together: they share one file, so a partial write
+    /// would drop whichever half it left out.
+    fn persist(&self) {
+        let Some(path) = self.store.as_deref() else {
+            return;
+        };
+        if let Err(e) = save_config(path, &self.name, self.restore_during_playback) {
+            tracing::warn!("could not persist the backend config: {e}");
+        }
     }
 
     /// Validate (shared proto rule), trim, store and persist a new name,
@@ -102,11 +118,7 @@ impl ServerName {
         let name = blue2th_proto::validate_backend_name(raw)?;
         // Owned copy: the validated value is both stored and handed back.
         self.name = name.clone();
-        if let Some(path) = self.store.as_deref() {
-            if let Err(e) = save_name(path, &self.name) {
-                tracing::warn!("could not persist the backend name: {e}");
-            }
-        }
+        self.persist();
         Ok(name)
     }
 }

@@ -29,9 +29,8 @@ pub fn clamp_offset(ms: u32) -> u32 {
 /// Restoring mid-playback can move the target sink, which respawns `librespot`
 /// and cuts the sound for a moment: that is opt-in. With playback stopped the
 /// restoration is free and always allowed. Pure.
-pub fn should_restore(_playing: bool, _restore_during_playback: bool) -> bool {
-    // STUB (phase 6.3).
-    todo!("phase 6.3: gate the mid-playback restoration behind the setting")
+pub fn should_restore(playing: bool, restore_during_playback: bool) -> bool {
+    !playing || restore_during_playback
 }
 
 /// File holding the remembered offsets, under the app's state directory.
@@ -49,26 +48,83 @@ pub fn offsets_store_path() -> Option<std::path::PathBuf> {
 ///
 /// Values are clamped on the way in: a hand-edited file must not bypass the bound.
 fn load_offsets(path: Option<&std::path::Path>) -> HashMap<String, u32> {
-    let Some(path) = path else {
-        return HashMap::new();
-    };
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return HashMap::new();
-    };
-    let parsed: HashMap<String, u32> = serde_json::from_str(&raw).unwrap_or_default();
-    parsed
-        .into_iter()
-        .map(|(addr, ms)| (addr, clamp_offset(ms)))
-        .collect()
+    load_store(path).offsets
 }
 
-/// Persist the remembered `address → offset_ms` table. Failures are reported to
-/// the caller, which logs them: losing persistence must never break a slider drag.
+/// The playback intent read back from the store, or empty (phase 6.3).
+fn load_intent(path: Option<&std::path::Path>) -> Vec<String> {
+    load_store(path).intended
+}
+
+/// On-disk shape of the store: the tuned offsets plus the playback intent.
+///
+/// A phase 6.1 store is a bare `{address: ms}` map and is still read: it is tried
+/// **first**, because serde ignores unknown fields, so that shape would otherwise
+/// deserialize into an all-default `StoredTargets` and silently lose every tuned
+/// offset.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct StoredTargets {
+    #[serde(default)]
+    offsets: HashMap<String, u32>,
+    #[serde(default)]
+    intended: Vec<String>,
+}
+
+/// Read the whole store. A missing, unreadable or malformed file simply means
+/// "nothing remembered yet" — never an error. Offsets are clamped on the way in:
+/// a hand-edited file must not bypass the bound.
+fn load_store(path: Option<&std::path::Path>) -> StoredTargets {
+    let Some(path) = path else {
+        return StoredTargets::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return StoredTargets::default();
+    };
+    let mut stored = match serde_json::from_str::<HashMap<String, u32>>(&raw) {
+        // Phase 6.1 shape: offsets only, no intent.
+        Ok(offsets) => StoredTargets {
+            offsets,
+            intended: Vec::new(),
+        },
+        Err(_) => serde_json::from_str::<StoredTargets>(&raw).unwrap_or_default(),
+    };
+    stored.offsets = stored
+        .offsets
+        .into_iter()
+        .map(|(addr, ms)| (addr, clamp_offset(ms)))
+        .collect();
+    stored
+}
+
+/// Persist the offsets alone, preserving the intent already on disk.
+///
+/// Production writes both halves in one go through [`save_store`]; this entry
+/// point exists for the phase 6.1 round-trip test, which pins the on-disk format
+/// against a bare `{address: ms}` map.
+#[cfg(test)]
 fn save_offsets(path: &std::path::Path, offsets: &HashMap<String, u32>) -> std::io::Result<()> {
+    // Preserve whatever intent is already on disk: the two halves share one file,
+    // so writing offsets alone would drop it.
+    let intended = load_intent(Some(path));
+    save_store(path, offsets, &intended)
+}
+
+/// Persist both halves of the store in one write, so neither can clobber the
+/// other.
+fn save_store(
+    path: &std::path::Path,
+    offsets: &HashMap<String, u32>,
+    intended: &[String],
+) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let body = serde_json::to_string(offsets).map_err(std::io::Error::other)?;
+    let stored = StoredTargets {
+        // Owned copies: the on-disk shape is serialized from its own values.
+        offsets: offsets.clone(),
+        intended: intended.to_vec(),
+    };
+    let body = serde_json::to_string(&stored).map_err(std::io::Error::other)?;
     std::fs::write(path, body)
 }
 
@@ -115,7 +171,7 @@ impl SpeakerTargets {
             speakers: Vec::new(),
             // STUB (phase 6.3): the remembered intent must be reloaded from the
             // store here, so speakers that reconnect after a restart come back.
-            intended: Vec::new(),
+            intended: load_intent(store.as_deref()),
             remembered: load_offsets(store.as_deref()),
             store,
         }
@@ -124,18 +180,32 @@ impl SpeakerTargets {
     /// The remembered addresses that are connected again and not currently
     /// selected, in remembered order, capped so the total selection never exceeds
     /// [`MAX_TARGETS`]. Pure: it never evicts a speaker the user picked by hand.
-    pub fn restorable(&self, _connected: &[String]) -> Vec<String> {
-        // STUB (phase 6.3).
-        todo!("phase 6.3: derive the restorable addresses from the intent")
+    pub fn restorable(&self, connected: &[String]) -> Vec<String> {
+        let free = MAX_TARGETS.saturating_sub(self.speakers.len());
+        self.intended
+            .iter()
+            .filter(|addr| connected.iter().any(|c| c == *addr))
+            .filter(|addr| !self.speakers.iter().any(|s| &&s.address == addr))
+            .take(free)
+            .cloned()
+            .collect()
     }
 
     /// Re-select the remembered speakers that came back, returning whether the
     /// selection actually changed. The caller re-routes only on `true`:
     /// `sync_connected` runs on every `/devices` poll, so a second call with the
     /// same input must report `false` rather than rebuild the PipeWire graph.
-    pub fn restore(&mut self, _connected: &[String]) -> bool {
-        // STUB (phase 6.3).
-        todo!("phase 6.3: restore the remembered speakers that are back")
+    pub fn restore(&mut self, connected: &[String]) -> bool {
+        let restorable = self.restorable(connected);
+        if restorable.is_empty() {
+            return false;
+        }
+        for addr in restorable {
+            // Already filtered by `restorable`, so this cannot be rejected; a
+            // failure would simply leave that speaker out rather than propagate.
+            let _ = self.select(&addr, connected);
+        }
+        true
     }
 
     /// Select `addr` as a playback target. Rejects an address that is not in
@@ -164,12 +234,25 @@ impl SpeakerTargets {
             address: addr.to_string(),
             offset_ms,
         });
+        // Record the intent: a speaker that later drops off the radio is pruned
+        // from the selection but must still be wanted when it comes back.
+        if !self.intended.iter().any(|a| a == addr) {
+            self.intended.push(addr.to_string());
+            self.persist();
+        }
         Ok(())
     }
 
     /// Remove `addr` from the selection (no-op if it was not selected).
     pub fn deselect(&mut self, addr: &str) {
         self.speakers.retain(|s| s.address != addr);
+        // The only thing that clears the intent: losing the radio must not, or a
+        // speaker going flat would be forgotten rather than restored.
+        let before = self.intended.len();
+        self.intended.retain(|a| a != addr);
+        if self.intended.len() != before {
+            self.persist();
+        }
     }
 
     /// Set the per-speaker offset (clamped to `0..=MAX_OFFSET_MS`). No-op if the
@@ -192,8 +275,8 @@ impl SpeakerTargets {
         let Some(path) = self.store.as_deref() else {
             return;
         };
-        if let Err(e) = save_offsets(path, &self.remembered) {
-            tracing::warn!("could not persist the remembered speaker offsets: {e}");
+        if let Err(e) = save_store(path, &self.remembered, &self.intended) {
+            tracing::warn!("could not persist the speaker targets: {e}");
         }
     }
 

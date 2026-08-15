@@ -91,3 +91,6 @@ app_settings:
   test_ok: "La backend a répondu"
   name_placeholder: "Nom (ex. Salon)"
   url_placeholder: "http://192.168.1.10:4000"
+  section_playback: "Lecture"
+  restore_during_playback: "Réintégrer pendant la lecture"
+  restore_during_playback_hint: "Une enceinte qui revient est réutilisée aussitôt. Le son se coupe un instant quand le routage change."

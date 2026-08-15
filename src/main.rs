@@ -1730,6 +1730,16 @@ fn AppSettingsPage() -> Element {
 
     // One read for the whole list (see `BackendStatus`): names, addresses and the
     // active index all come from the same snapshot.
+    // The toggle applies to the active backend: it is the one the app talks to.
+    let active_restore: Option<(usize, bool)> = {
+        let settings = app_settings.read();
+        settings.active.and_then(|i| {
+            settings
+                .backends
+                .get(i)
+                .map(|b| (i, b.restore_during_playback))
+        })
+    };
     let entries: Vec<(usize, String, String, bool)> = {
         let snapshot = app_settings.read();
         let active = snapshot.active;
@@ -1900,6 +1910,50 @@ fn AppSettingsPage() -> Element {
                         }
                     }
                 }
+
+            }
+
+            div { class: "settings-section",
+                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_playback\")}" }
+
+                if let Some((index, restoring)) = active_restore {
+                    label { class: "settings-toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: restoring,
+                            onchange: move |e| {
+                                let enabled = e.value() == "true";
+                                let mut next = app_settings.peek().clone();
+                                if let Err(err) = next.set_restore_during_playback(index, enabled) {
+                                    *error.write() = Some(err.to_string());
+                                    return;
+                                }
+                                // Owned copy: the cache keeps its own settings.
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                                let mut error = error;
+                                spawn(async move {
+                                    // The backend decides the restoration, so the
+                                    // toggle is meaningless until it knows.
+                                    if let Err(e) = backend::push_active_config().await {
+                                        *error.write() = Some(e.to_string());
+                                    }
+                                });
+                            },
+                        }
+                        span { class: "settings-toggle-label",
+                            "{rust_i18n::t!(\"app_settings.restore_during_playback\")}"
+                        }
+                    }
+                    div { class: "settings-hint",
+                        "{rust_i18n::t!(\"app_settings.restore_during_playback_hint\")}"
+                    }
+                } else {
+                    div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
+                }
+            }
+
+            div { class: "settings-section",
 
                 if let Some(message) = notice() {
                     div { class: "settings-notice", "{message}" }

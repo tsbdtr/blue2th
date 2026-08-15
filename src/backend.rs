@@ -90,7 +90,7 @@ fn config_url(base: &str) -> String {
 async fn set_config_at(
     base: &str,
     name: &str,
-    _restore_during_playback: bool,
+    restore_during_playback: bool,
 ) -> Result<ServerConfig, BackendError> {
     let url = config_url(base);
     let response = reqwest::Client::new()
@@ -99,8 +99,7 @@ async fn set_config_at(
         .json(&ConfigRequest {
             // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
             name: name.to_string(),
-            // STUB (phase 6.3): the pushed body must carry the caller's flag.
-            restore_during_playback: false,
+            restore_during_playback,
         })
         .send()
         .await
@@ -137,11 +136,20 @@ async fn pause_at(base: &str) -> Result<(), BackendError> {
 /// and there is no user action to prompt.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn push_active_name() {
+    let _ = push_active_config().await;
+}
+
+/// Push the active backend's whole config (name **and** settings), surfacing the
+/// failure. Used by the settings toggles, where the user is watching and deserves
+/// to be told; `push_active_name` is the same call made silently on reconnection.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn push_active_config() -> Result<(), BackendError> {
     let settings = crate::settings::current();
     let Some(entry) = settings.active_backend() else {
-        return;
+        return Err(BackendError::new(NO_BACKEND_CONFIGURED));
     };
-    let _ = set_config_at(&entry.url, &entry.name, entry.restore_during_playback).await;
+    set_config_at(&entry.url, &entry.name, entry.restore_during_playback).await?;
+    Ok(())
 }
 
 /// Whether the backend at `previous` is really being left behind by a switch to

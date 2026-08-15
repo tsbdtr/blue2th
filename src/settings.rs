@@ -43,10 +43,16 @@ pub struct BackendEntry {
     /// Whether that backend may re-select a returning speaker while playback
     /// runs (phase 6.3). Pushed with the name over `POST /config`; defaults to
     /// on, and `serde(default)` keeps a phase 6.2-era blob loadable.
-    // STUB (phase 6.3): the field exists so the tests compile; the default must
-    // become "on".
-    #[serde(default)]
+    #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
+}
+
+/// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
+/// that comes back rejoins without the user doing anything — the point of the
+/// feature. A phase 6.2-era blob, which has no such field, therefore loads with
+/// restoration enabled rather than silently disabled.
+fn restore_during_playback_default() -> bool {
+    true
 }
 
 /// Why a settings change was refused.
@@ -126,8 +132,7 @@ impl AppSettings {
         self.backends.push(BackendEntry {
             name,
             url,
-            // STUB (phase 6.3): a new backend starts with restoration on.
-            restore_during_playback: false,
+            restore_during_playback: restore_during_playback_default(),
         });
         Ok(())
     }
@@ -137,11 +142,14 @@ impl AppSettings {
     /// pushes it over `POST /config`.
     pub fn set_restore_during_playback(
         &mut self,
-        _index: usize,
-        _enabled: bool,
+        index: usize,
+        enabled: bool,
     ) -> Result<(), SettingsError> {
-        // STUB (phase 6.3).
-        todo!("phase 6.3: store the per-backend restore-during-playback setting")
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.restore_during_playback = enabled;
+        Ok(())
     }
 
     /// Remove the backend at `index`. Removing the active one leaves no active

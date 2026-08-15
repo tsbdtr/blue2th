@@ -317,10 +317,16 @@ pub struct ServerConfig {
     /// Whether a remembered speaker that comes back mid-playback is re-selected
     /// straight away (phase 6.3). Opting in accepts a brief cut, since moving the
     /// target sink respawns `librespot`. Defaults to on.
-    // STUB (phase 6.3): the field exists so the tests compile; the default must
-    // become "on" and the flag must be carried end to end.
-    #[serde(default)]
+    #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
+}
+
+/// The default for `restore_during_playback`: a returning speaker rejoins on its
+/// own, which is the point of the feature. A body that omits the field therefore
+/// opts **in**, not out — a bare `serde(default)` would have opted every phase 6.2
+/// client out without saying so.
+fn restore_during_playback_default() -> bool {
+    true
 }
 
 /// Body of `POST /config` — the name the app pushes to the backend.
@@ -329,9 +335,10 @@ pub struct ConfigRequest {
     /// The desired backend name; the server re-validates and trims it.
     pub name: String,
     /// Whether the backend may restore a returning speaker while playback runs.
-    /// `serde(default)` keeps a phase 6.2 client (name only) working.
-    // STUB (phase 6.3): see `ServerConfig::restore_during_playback`.
-    #[serde(default)]
+    /// The default keeps a phase 6.2 client (name only) working — and must be
+    /// **on**, since a bare `serde(default)` would yield `false` and silently
+    /// disable restoration for every such client.
+    #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
 }
 
