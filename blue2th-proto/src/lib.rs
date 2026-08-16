@@ -527,6 +527,51 @@ fn restore_during_playback_default() -> bool {
     true
 }
 
+// ── Phase 6.6: finding the backend on the network ────────────────────────────
+
+/// The mDNS service type the backend advertises and the app browses for.
+///
+/// Declared here, next to [`discovered_from_txt`], for the same reason
+/// `pair_deep_link`/`parse_pair_link` are: the server publishes exactly what the
+/// app looks for, so the two cannot drift apart.
+// TODO(phase 6.6): `_blue2th._tcp.local.`
+pub const SERVICE_TYPE: &str = "";
+
+/// TXT record key carrying the backend's stable id.
+// TODO(phase 6.6): `id`
+pub const TXT_KEY_ID: &str = "";
+
+/// TXT record key carrying the backend's configured name.
+// TODO(phase 6.6): `name`
+pub const TXT_KEY_NAME: &str = "";
+
+/// A backend found on the LAN over mDNS.
+///
+/// The `id` is what makes an entry survive a DHCP lease change: it identifies
+/// the *machine*, where the URL only says where it happened to answer. A service
+/// with no `id` (hand-rolled or pre-6.6 backend) is still a usable find — it just
+/// falls back to URL matching, exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredBackend {
+    /// The backend's stable id, when it advertises one.
+    pub id: Option<String>,
+    /// The advertised name, or [`DEFAULT_BACKEND_NAME`] when the record has none.
+    pub name: String,
+    /// Base URL built from the resolved host and port, e.g. `http://192.168.1.107:4000`.
+    pub url: String,
+}
+
+/// Build a [`DiscoveredBackend`] from the resolved base URL and the service's TXT
+/// records. Pure — plain string handling, nothing platform-specific.
+///
+/// A missing `name` falls back to [`DEFAULT_BACKEND_NAME`]; a missing, empty or
+/// blank `id` yields `None` rather than a rejection, since a backend without an
+/// id is still reachable and must not be mistaken for a new machine.
+pub fn discovered_from_txt(host_url: &str, txt: &[(&str, &str)]) -> DiscoveredBackend {
+    let _ = (host_url, txt);
+    todo!("phase 6.6: build the DTO from the TXT records")
+}
+
 /// Body of `POST /config` — the name the app pushes to the backend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigRequest {
@@ -1229,6 +1274,107 @@ mod tests {
         let encoded = pair_deep_link(SAMPLE_URL, "Salon d'été", SAMPLE_CODE);
         let link = parse_pair_link(&encoded).expect("an accented name must round-trip");
         assert_eq!(link.name.as_deref(), Some("Salon d'été"));
+    }
+
+    // ---- phase 6.6: find the backend on the network ----
+
+    // Criterion: proto — a `DiscoveredBackend { id, name, url }` DTO round-trips
+    // through JSON, with and without an id.
+    #[test]
+    fn test_discovered_backend_round_trips_through_json() {
+        let found = DiscoveredBackend {
+            id: Some("3P0kq9-XyZ_backend-id".to_string()),
+            name: "blue2th-PC".to_string(),
+            url: SAMPLE_URL.to_string(),
+        };
+        let json = serde_json::to_string(&found).expect("serialize DiscoveredBackend");
+        let parsed: DiscoveredBackend =
+            serde_json::from_str(&json).expect("deserialize DiscoveredBackend");
+        assert_eq!(found, parsed);
+
+        // A backend that advertises no id must round-trip too — it is a usable
+        // find, matched on its URL.
+        let anonymous = DiscoveredBackend { id: None, ..found };
+        let json = serde_json::to_string(&anonymous).expect("serialize idless DiscoveredBackend");
+        let parsed: DiscoveredBackend = serde_json::from_str(&json).expect("deserialize idless");
+        assert_eq!(anonymous, parsed);
+    }
+
+    // Criterion: `SERVICE_TYPE` (`_blue2th._tcp.local.`) and the TXT keys are
+    // declared once in proto, so server and app cannot drift apart.
+    #[test]
+    fn test_service_type_and_txt_keys_are_declared_once_in_proto() {
+        assert_eq!(SERVICE_TYPE, "_blue2th._tcp.local.");
+        assert_eq!(TXT_KEY_ID, "id");
+        assert_eq!(TXT_KEY_NAME, "name");
+    }
+
+    // Criterion: the pure TXT→DTO helper builds the DTO from the TXT records and
+    // the resolved host/port — the nominal record carries both keys.
+    #[test]
+    fn test_discovered_from_txt_reads_the_id_and_the_name() {
+        let found = discovered_from_txt(
+            SAMPLE_URL,
+            &[(TXT_KEY_ID, "backend-id-42"), (TXT_KEY_NAME, "Salon")],
+        );
+        assert_eq!(
+            found,
+            DiscoveredBackend {
+                id: Some("backend-id-42".to_string()),
+                name: "Salon".to_string(),
+                url: SAMPLE_URL.to_string(),
+            }
+        );
+    }
+
+    // Criterion: a missing `name` falls back to `DEFAULT_BACKEND_NAME` — a record
+    // without one is still listable, it just shows the default label.
+    #[test]
+    fn test_discovered_from_txt_falls_back_to_the_default_name() {
+        let found = discovered_from_txt(SAMPLE_URL, &[(TXT_KEY_ID, "backend-id-42")]);
+        assert_eq!(found.name, DEFAULT_BACKEND_NAME);
+        assert_eq!(found.id.as_deref(), Some("backend-id-42"));
+    }
+
+    // Criterion (non-nominal): a service with no `id` TXT record — hand-rolled or
+    // pre-6.6 — yields `id: None`, which is a fallback to URL matching, never a
+    // rejection of the find.
+    #[test]
+    fn test_discovered_from_txt_without_an_id_is_not_a_rejection() {
+        let found = discovered_from_txt(SAMPLE_URL, &[(TXT_KEY_NAME, "Salon")]);
+        assert_eq!(found.id, None);
+        assert_eq!(found.name, "Salon");
+        assert_eq!(found.url, SAMPLE_URL);
+    }
+
+    // Criterion: a blank/whitespace `id` is treated as absent — an empty string
+    // would otherwise match no entry and look like a brand new machine.
+    #[test]
+    fn test_discovered_from_txt_treats_a_blank_id_as_absent() {
+        for blank in ["", " ", "\t", "\n  "] {
+            let found = discovered_from_txt(
+                SAMPLE_URL,
+                &[(TXT_KEY_ID, blank), (TXT_KEY_NAME, SAMPLE_NAME)],
+            );
+            assert_eq!(found.id, None, "a blank id ({blank:?}) is no id at all");
+        }
+    }
+
+    // Criterion: a blank/whitespace `name` also falls back to the default label,
+    // and unknown TXT keys are ignored rather than refused.
+    #[test]
+    fn test_discovered_from_txt_ignores_extras_and_blank_names() {
+        let found = discovered_from_txt(
+            SAMPLE_URL,
+            &[
+                (TXT_KEY_NAME, "   "),
+                (TXT_KEY_ID, "backend-id-42"),
+                ("version", "0.1.0"),
+            ],
+        );
+        assert_eq!(found.name, DEFAULT_BACKEND_NAME);
+        assert_eq!(found.id.as_deref(), Some("backend-id-42"));
+        assert_eq!(found.url, SAMPLE_URL);
     }
 
     // Criterion: only `url` and `code` are required — a link with no name still

@@ -1217,8 +1217,12 @@ mod tests {
                 restore_during_playback: true,
                 token: token.map(str::to_string),
                 pairing: PairingMethod::Code,
+                // Phase 6.6: an entry that never met a discovered service.
+                id: None,
             }],
             active: Some(0),
+            auto_repair_url: true,
+            discovery_adds_backends: true,
         }
     }
 

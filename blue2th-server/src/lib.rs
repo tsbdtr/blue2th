@@ -31,6 +31,7 @@ pub mod audio;
 pub mod auth;
 mod bluetooth;
 pub mod config;
+pub mod identity;
 pub mod spotify;
 pub mod spotify_auth;
 mod state_store;
@@ -330,6 +331,33 @@ fn advertised_url_from(bind_addr: &str, detected: Option<std::net::Ipv4Addr>) ->
         }
     }
     format!("http://{bind_addr}")
+}
+
+/// What the backend publishes as `_blue2th._tcp.local.` (phase 6.6): the address
+/// the phone must call and the TXT records identifying the machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvertisedService {
+    /// Base URL the app will store, e.g. `http://192.168.1.107:4000`.
+    pub url: String,
+    /// TXT records, keyed by the shared `blue2th_proto` TXT keys.
+    pub txt: Vec<(String, String)>,
+}
+
+/// Build the mDNS record for a backend bound to `bind_addr`. Pure, so the
+/// wildcard-bind case is testable without the host's interfaces or a network.
+///
+/// The URL goes through [`advertised_url_from`] — the same rule the pairing QR
+/// uses — so a wildcard bind announces the LAN address rather than `0.0.0.0`,
+/// which no phone could ever call.
+#[allow(dead_code)]
+fn advertised_service_from(
+    bind_addr: &str,
+    detected: Option<std::net::Ipv4Addr>,
+    id: &str,
+    name: &str,
+) -> AdvertisedService {
+    let _ = (bind_addr, detected, id, name);
+    todo!("phase 6.6: build the advertised mDNS record")
 }
 
 /// The address the backend binds to: `BLUE2TH_BIND` when set, otherwise the
@@ -1600,6 +1628,73 @@ mod tests {
         assert_eq!(
             advertised_url_from("no-port-here", None),
             "http://no-port-here"
+        );
+    }
+
+    // Criterion (phase 6.6): the advertised record is built from the bound
+    // address via `advertised_url_from`, so the wildcard-bind case resolves to
+    // the LAN address, not `0.0.0.0` — a record no phone could ever call.
+    #[test]
+    fn test_advertised_service_resolves_the_wildcard_bind_to_the_lan_address() {
+        let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+        let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "blue2th-PC");
+        assert_eq!(record.url, "http://192.168.1.107:4000");
+        assert_eq!(
+            record.url,
+            advertised_url_from(DEFAULT_BIND, lan),
+            "the mDNS record and the pairing QR must advertise the same address"
+        );
+    }
+
+    // Criterion (phase 6.6): the record carries `id=<stable id>` and
+    // `name=<backend name>` under the TXT keys declared once in proto.
+    #[test]
+    fn test_advertised_service_carries_the_id_and_the_name_txt_records() {
+        let record = advertised_service_from(
+            "10.1.2.3:4321",
+            Some(std::net::Ipv4Addr::new(192, 168, 1, 107)),
+            "backend-id-42",
+            "Salon",
+        );
+        assert_eq!(
+            record.url, "http://10.1.2.3:4321",
+            "an explicit bind address is advertised as-is"
+        );
+        assert!(
+            record.txt.contains(&(
+                blue2th_proto::TXT_KEY_ID.to_string(),
+                "backend-id-42".to_string()
+            )),
+            "the id must be published, or the app cannot repair an address: {:?}",
+            record.txt
+        );
+        assert!(
+            record
+                .txt
+                .contains(&(blue2th_proto::TXT_KEY_NAME.to_string(), "Salon".to_string())),
+            "the configured name must be published: {:?}",
+            record.txt
+        );
+    }
+
+    // Criterion (phase 6.6): the published record round-trips through the shared
+    // proto helper — what the server announces is what the app reads back.
+    #[test]
+    fn test_advertised_service_round_trips_through_discovered_from_txt() {
+        let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+        let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "Salon");
+        let txt: Vec<(&str, &str)> = record
+            .txt
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            blue2th_proto::discovered_from_txt(&record.url, &txt),
+            blue2th_proto::DiscoveredBackend {
+                id: Some("backend-id-42".to_string()),
+                name: "Salon".to_string(),
+                url: "http://192.168.1.107:4000".to_string(),
+            }
         );
     }
 
