@@ -293,6 +293,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("this backend is already paired; run with --pair to arm a new code");
     }
 
+    // Published before the router takes ownership of the name, and held for the
+    // whole run: dropping the daemon would withdraw the announcement.
+    let identity = identity::BackendIdentity::with_store(identity::identity_store_path());
+    let record = advertised_service_from(
+        &addr,
+        preferred_lan_ipv4(&host_ipv4_addresses()),
+        identity.id(),
+        server_name.name(),
+    );
+    let _mdns = advertise(&record);
+
     let router = app_with_auth_and_targets(
         SpotifyAuth::new(),
         SpeakerTargets::with_store(targets::offsets_store_path()),
@@ -305,6 +316,53 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Publish `record` as `_blue2th._tcp.local.`, returning the daemon that must be
+/// kept alive for the announcement to stand.
+///
+/// Best effort by design: a host with no usable multicast interface still serves
+/// its API perfectly well, and the pairing QR plus manual entry remain the way
+/// in. Failing to announce must never stop the backend from starting.
+fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
+    let (host, port) = record.url.trim_start_matches("http://").rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    let properties: Vec<(&str, &str)> = record
+        .txt
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    let announce = || -> Result<mdns_sd::ServiceDaemon, Box<dyn std::error::Error>> {
+        let daemon = mdns_sd::ServiceDaemon::new()?;
+        let info = mdns_sd::ServiceInfo::new(
+            blue2th_proto::SERVICE_TYPE,
+            // The instance name is cosmetic: the app matches on the TXT id, so a
+            // rename never makes the machine look like a different one.
+            "blue2th",
+            &format!("{host}.local."),
+            host,
+            port,
+            &properties[..],
+        )?;
+        daemon.register(info)?;
+        Ok(daemon)
+    };
+
+    match announce() {
+        Ok(daemon) => {
+            tracing::info!(
+                "announcing {} on {}",
+                record.url,
+                blue2th_proto::SERVICE_TYPE
+            );
+            Some(daemon)
+        },
+        Err(e) => {
+            tracing::warn!("mDNS announcement unavailable ({e}); pair by QR or address instead");
+            None
+        },
+    }
 }
 
 /// The address to advertise in the pairing QR, resolving the host's LAN address
@@ -349,15 +407,19 @@ pub struct AdvertisedService {
 /// The URL goes through [`advertised_url_from`] — the same rule the pairing QR
 /// uses — so a wildcard bind announces the LAN address rather than `0.0.0.0`,
 /// which no phone could ever call.
-#[allow(dead_code)]
 fn advertised_service_from(
     bind_addr: &str,
     detected: Option<std::net::Ipv4Addr>,
     id: &str,
     name: &str,
 ) -> AdvertisedService {
-    let _ = (bind_addr, detected, id, name);
-    todo!("phase 6.6: build the advertised mDNS record")
+    AdvertisedService {
+        url: advertised_url_from(bind_addr, detected),
+        txt: vec![
+            (blue2th_proto::TXT_KEY_ID.to_string(), id.to_string()),
+            (blue2th_proto::TXT_KEY_NAME.to_string(), name.to_string()),
+        ],
+    }
 }
 
 /// The address the backend binds to: `BLUE2TH_BIND` when set, otherwise the

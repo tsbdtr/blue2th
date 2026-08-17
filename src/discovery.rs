@@ -57,8 +57,7 @@ pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whether the Search button is live, derived from the cached preflight verdict.
 /// Pure, so the disabled case is testable with no JNI at all.
 pub fn search_enabled(multicast_supported: bool) -> bool {
-    let _ = multicast_supported;
-    todo!("phase 6.6: derive the button state from the cached verdict")
+    multicast_supported
 }
 
 /// Whether the browse runs, given whether the multicast lock was acquired. Pure.
@@ -67,8 +66,11 @@ pub fn search_enabled(multicast_supported: bool) -> bool {
 /// multicast, and in hotspot mode the phone is the access point. Only the browse
 /// result decides what the user is told.
 pub fn browse_proceeds(lock_acquired: bool) -> bool {
+    // Deliberately ignores its input: the lock is an optimisation, not a
+    // precondition. Kept as a named function so the rule is pinned by a test
+    // rather than living as an implicit `if` inside `browse`.
     let _ = lock_acquired;
-    todo!("phase 6.6: a failed multicast lock never stops the browse")
+    true
 }
 
 /// Browse `_blue2th._tcp.local.` for `timeout`, holding the multicast lock for
@@ -80,8 +82,168 @@ pub fn browse_proceeds(lock_acquired: bool) -> bool {
 ///
 /// The network seam itself is validated by hand on a device.
 pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredBackend>, DiscoveryError> {
-    let _ = timeout;
-    todo!("phase 6.6: acquire the lock, browse with mdns-sd, release the lock")
+    if !crate::jni_util::multicast_supported() {
+        return Err(DiscoveryError::Unsupported);
+    }
+    // Best effort, and held for the whole browse: released when this guard drops.
+    // `browse_proceeds` states the rule a failed lock must obey.
+    let lock = MulticastGuard::acquire();
+    if !browse_proceeds(lock.is_some()) {
+        return Ok(Vec::new());
+    }
+
+    let daemon =
+        mdns_sd::ServiceDaemon::new().map_err(|e| DiscoveryError::Browse(e.to_string()))?;
+    let events = daemon
+        .browse(blue2th_proto::SERVICE_TYPE)
+        .map_err(|e| DiscoveryError::Browse(e.to_string()))?;
+
+    let mut found: Vec<DiscoveredBackend> = Vec::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    // Listening until the deadline rather than until the first answer: several
+    // backends may reply, and the caller lists them all.
+    while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, events.recv_async()).await {
+        let mdns_sd::ServiceEvent::ServiceResolved(service) = event else {
+            continue;
+        };
+        let Some(candidate) = resolved_to_backend(&service) else {
+            continue;
+        };
+        // The same instance resolves more than once on a busy network; a repeat
+        // is the same machine, not a second one.
+        if !found
+            .iter()
+            .any(|f| f.url == candidate.url && f.id == candidate.id)
+        {
+            found.push(candidate);
+        }
+    }
+    // Best effort: the browse already produced its result, and a daemon that
+    // refuses to stop must not turn a successful scan into an error.
+    let _ = daemon.shutdown();
+    Ok(found)
+}
+
+/// Turn a resolved mDNS service into the shared DTO, or `None` when it carries no
+/// usable IPv4 address. Address selection is `min` rather than "first" so a
+/// multi-homed backend resolves to the same URL on every scan — a `HashSet` has
+/// no order, and an unstable URL would look like a move on each browse.
+fn resolved_to_backend(service: &mdns_sd::ResolvedService) -> Option<DiscoveredBackend> {
+    let addr = service.get_addresses_v4().into_iter().min()?;
+    let url = format!("http://{addr}:{}", service.get_port());
+    // The DTO is built by proto from the TXT pairs, so the app reads exactly what
+    // the server writes.
+    let txt: Vec<(&str, &str)> = [blue2th_proto::TXT_KEY_ID, blue2th_proto::TXT_KEY_NAME]
+        .into_iter()
+        .filter_map(|key| service.get_property_val_str(key).map(|value| (key, value)))
+        .collect();
+    Some(blue2th_proto::discovered_from_txt(&url, &txt))
+}
+
+/// Holds Android's `WifiManager.MulticastLock` for as long as it lives.
+///
+/// Without it the Wi-Fi driver filters multicast frames to save power and the
+/// browse sees nothing. Acquiring it can still fail — and that is not fatal, see
+/// [`browse_proceeds`].
+#[cfg(target_os = "android")]
+struct MulticastGuard(jni::objects::GlobalRef);
+
+#[cfg(target_os = "android")]
+impl MulticastGuard {
+    /// Acquire the lock, or `None` if anything on the way refused.
+    fn acquire() -> Option<Self> {
+        use jni::objects::{JObject, JValue};
+
+        let ctx = ndk_context::android_context();
+        // SAFETY: `ndk_context` hands back the process-wide `JavaVM` and the
+        // current `Activity`, both installed by the Android runtime.
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+        let mut env = crate::jni_util::env(&vm).ok()?;
+        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+        let lock = (|| -> Result<jni::objects::GlobalRef, jni::errors::Error> {
+            // The application context, not the activity: a `WifiManager` bound to
+            // an activity leaks it, which Android has warned about since N.
+            let app_ctx = env
+                .call_method(
+                    &activity,
+                    "getApplicationContext",
+                    "()Landroid/content/Context;",
+                    &[],
+                )?
+                .l()?;
+            let service = env.new_string("wifi")?;
+            let wifi = env
+                .call_method(
+                    &app_ctx,
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[JValue::Object(&service)],
+                )?
+                .l()?;
+            if wifi.is_null() {
+                return Err(jni::errors::Error::NullPtr("no WifiManager on this device"));
+            }
+            let tag = env.new_string("blue2th-discovery")?;
+            let lock = env
+                .call_method(
+                    &wifi,
+                    "createMulticastLock",
+                    "(Ljava/lang/String;)Landroid/net/wifi/WifiManager$MulticastLock;",
+                    &[JValue::Object(&tag)],
+                )?
+                .l()?;
+            env.call_method(&lock, "acquire", "()V", &[])?;
+            // A global ref, because the lock must outlive this frame: it is
+            // released when the guard drops, at the end of the browse.
+            env.new_global_ref(&lock)
+        })();
+
+        match lock {
+            Ok(lock) => Some(Self(lock)),
+            Err(e) => {
+                // Through the shared helper, never a bare `exception_clear`: it
+                // captures the Java cause before clearing, and clearing is what
+                // keeps the next JNI call from aborting the process. The cause is
+                // dropped rather than surfaced on purpose — a refused lock is not
+                // a failed scan (see `browse_proceeds`), so there is nothing to
+                // tell the user yet.
+                let _ = crate::jni_util::err_clear(&mut env, e);
+                None
+            },
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Drop for MulticastGuard {
+    fn drop(&mut self) {
+        let ctx = ndk_context::android_context();
+        // SAFETY: see `acquire`.
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+            return;
+        };
+        let Ok(mut env) = crate::jni_util::env(&vm) else {
+            return;
+        };
+        if let Err(e) = env.call_method(self.0.as_obj(), "release", "()V", &[]) {
+            // Releasing an already-released lock throws; the radio filter is back
+            // on either way. Cleared through the shared helper so a pending
+            // exception cannot abort the next JNI call on this thread.
+            let _ = crate::jni_util::err_clear(&mut env, e);
+        }
+    }
+}
+
+/// No multicast filtering to lift off Android: the browse runs as-is.
+#[cfg(not(target_os = "android"))]
+struct MulticastGuard;
+
+#[cfg(not(target_os = "android"))]
+impl MulticastGuard {
+    fn acquire() -> Option<Self> {
+        Some(Self)
+    }
 }
 
 #[cfg(test)]

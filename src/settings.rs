@@ -121,7 +121,7 @@ impl std::error::Error for SettingsError {}
 
 /// The whole persisted app configuration: the known backends and which one is
 /// active. Exactly one backend is active at a time, or none at all.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Every backend the user configured, in the order they were added.
     pub backends: Vec<BackendEntry>,
@@ -129,17 +129,35 @@ pub struct AppSettings {
     pub active: Option<usize>,
     /// Whether a discovered backend whose id matches a known entry has its
     /// address repaired in place, with no question asked (phase 6.6).
-    // TODO(phase 6.6): must default to **on**, through an explicit default fn —
-    // a bare `serde(default)` yields `false` and silently opts every existing
-    // install out (the lesson recorded in `restore_during_playback_default`).
-    #[serde(default)]
+    ///
+    /// The default fn is explicit rather than a bare `serde(default)`: that
+    /// would yield `false` and silently opt every existing install out — the
+    /// lesson already recorded in `restore_during_playback_default`.
+    #[serde(default = "discovery_setting_default")]
     pub auto_repair_url: bool,
     /// Whether a discovered backend the app does not know can be added from the
     /// discovery list (phase 6.6). Adding never pairs: the six-character code is
     /// still required.
-    // TODO(phase 6.6): must default to **on**, through an explicit default fn.
-    #[serde(default)]
+    #[serde(default = "discovery_setting_default")]
     pub discovery_adds_backends: bool,
+}
+
+/// The default for both phase 6.6 discovery settings: **on**. Finding the
+/// backend by itself is the point of the feature, so a phase 6.4-era blob — which
+/// carries neither field — must load with them enabled.
+fn discovery_setting_default() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            backends: Vec::new(),
+            active: None,
+            auto_repair_url: discovery_setting_default(),
+            discovery_adds_backends: discovery_setting_default(),
+        }
+    }
 }
 
 /// What a discovered service means for the settings the app already holds.
@@ -183,8 +201,45 @@ pub fn reconcile(
     settings: &AppSettings,
     found: &blue2th_proto::DiscoveredBackend,
 ) -> DiscoveryAction {
-    let _ = (settings, found);
-    todo!("phase 6.6: classify a discovered backend")
+    // An address that cannot be used is worse than no find at all: storing it
+    // would swap a reachable entry for one every later call fails on.
+    let Ok(url) = normalise_url(&found.url) else {
+        return DiscoveryAction::Ignored;
+    };
+
+    // The id identifies the *machine*, so it wins over the address — that is the
+    // whole point of the phase. The URL is only a fallback, for a service that
+    // advertises no id or an entry that has not learnt one yet; a missing id must
+    // never, on its own, make a known machine look new.
+    let known = found
+        .id
+        .as_deref()
+        .and_then(|id| {
+            settings
+                .backends
+                .iter()
+                .position(|b| b.id.as_deref() == Some(id))
+        })
+        .or_else(|| settings.backends.iter().position(|b| b.url == url));
+
+    let Some(index) = known else {
+        return if settings.discovery_adds_backends {
+            DiscoveryAction::Addable
+        } else {
+            DiscoveryAction::Ignored
+        };
+    };
+
+    // Matched by URL, or by id at the address already stored: nothing moved, so
+    // nothing is written and nothing is said.
+    if settings.backends.get(index).map(|b| b.url.as_str()) == Some(url.as_str()) {
+        return DiscoveryAction::UpToDate;
+    }
+    if settings.auto_repair_url {
+        DiscoveryAction::Repair { index, url }
+    } else {
+        DiscoveryAction::ConfirmRepair { index, url }
+    }
 }
 
 /// Normalise a backend address: require a scheme, refuse blanks and embedded
@@ -247,8 +302,14 @@ impl AppSettings {
     /// restore-during-playback flag. That is what makes a DHCP lease change a
     /// non-event rather than a re-pairing.
     pub fn set_url(&mut self, index: usize, url: &str) -> Result<(), SettingsError> {
-        let _ = (index, url);
-        todo!("phase 6.6: repair a backend's address in place")
+        // Normalise before touching anything, exactly as `add` does: a rejected
+        // repair must leave the whole list as it was.
+        let url = normalise_url(url)?;
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.url = url;
+        Ok(())
     }
 
     /// Adopt the stable id of the backend at `index`, learnt from its mDNS record
@@ -258,8 +319,11 @@ impl AppSettings {
         index: usize,
         id: Option<String>,
     ) -> Result<(), SettingsError> {
-        let _ = (index, id);
-        todo!("phase 6.6: adopt a backend's stable id")
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.id = id;
+        Ok(())
     }
 
     /// Create an entry from a discovered service and return its index.
@@ -272,20 +336,25 @@ impl AppSettings {
         &mut self,
         found: &blue2th_proto::DiscoveredBackend,
     ) -> Result<usize, SettingsError> {
-        let _ = found;
-        todo!("phase 6.6: create an entry from a discovered service")
+        // Reusing `add` is what makes the rules identical to typing: one
+        // validator, one duplicate check, one normalisation. It pushes at the
+        // end, so the new entry is the last one.
+        self.add(&found.name, &found.url)?;
+        let index = self.backends.len().saturating_sub(1);
+        // Clone: the DTO is borrowed from the discovery list, which outlives this
+        // call and may still be redrawn, while the entry needs its own copy.
+        self.set_backend_id(index, found.id.clone())?;
+        Ok(index)
     }
 
     /// Whether a discovered backend that moved is repaired without asking.
     pub fn set_auto_repair_url(&mut self, enabled: bool) {
-        let _ = enabled;
-        todo!("phase 6.6: toggle the auto-repair setting")
+        self.auto_repair_url = enabled;
     }
 
     /// Whether the discovery list may create entries for unknown backends.
     pub fn set_discovery_adds_backends(&mut self, enabled: bool) {
-        let _ = enabled;
-        todo!("phase 6.6: toggle the add-new-backends setting")
+        self.discovery_adds_backends = enabled;
     }
 
     /// Store the API token obtained by pairing with the backend at `index`.

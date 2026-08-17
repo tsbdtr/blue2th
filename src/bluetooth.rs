@@ -1273,12 +1273,19 @@ mod tests {
         let en_result = std::fs::read_to_string("locales/en.yaml");
         assert!(en_result.is_ok(), "locales/en.yaml must exist");
         let content = en_result.unwrap();
+        // Scoped to the `scan.scanning` line the assertions name. Scanning the
+        // whole file made any other key carrying "Searching" fail this test —
+        // which phase 6.6's `app_settings.searching` promptly did.
+        let scanning = content
+            .lines()
+            .find(|line| line.trim_start().starts_with("scanning:"))
+            .unwrap_or_default();
         assert!(
-            content.contains("Loading"),
-            "locales/en.yaml scan.scanning must contain 'Loading', got:\n{content}"
+            scanning.contains("Loading"),
+            "locales/en.yaml scan.scanning must contain 'Loading', got:\n{scanning}"
         );
         assert!(
-            !content.contains("Searching"),
+            !scanning.contains("Searching"),
             "locales/en.yaml scan.scanning must not contain old label 'Searching'"
         );
     }

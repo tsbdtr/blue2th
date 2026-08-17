@@ -19,6 +19,8 @@ use dioxus::prelude::*;
 mod backend;
 mod bluetooth;
 mod deep_link;
+mod discovery;
+mod jni_util;
 mod lifecycle;
 mod settings;
 
@@ -1830,6 +1832,76 @@ fn AppSettingsPage() -> Element {
             .collect()
     };
 
+    // ── Discovery (phase 6.6) ────────────────────────────────────────────────
+    let mut scanning = use_signal(|| false);
+    let mut scanned = use_signal(|| false);
+    let mut found: Signal<Vec<blue2th_proto::DiscoveredBackend>> = use_signal(Vec::new);
+    // A ROM that cannot resolve `MulticastLock` renders the button disabled
+    // rather than failing on tap: the verdict is cached, so this costs no JNI.
+    let can_search = discovery::search_enabled(jni_util::multicast_supported());
+    let (auto_repair, adds_backends) = {
+        let snapshot = app_settings.read();
+        (snapshot.auto_repair_url, snapshot.discovery_adds_backends)
+    };
+    // Re-classified on every render against the current settings, so an entry
+    // repaired a moment ago immediately reads as up to date.
+    #[allow(clippy::type_complexity)]
+    let results: Vec<(
+        blue2th_proto::DiscoveredBackend,
+        String,
+        bool,
+        Option<(usize, String, String)>,
+    )> = {
+        let snapshot = app_settings.read();
+        found
+            .read()
+            .iter()
+            .map(|service| {
+                let (label, addable, confirm) = match settings::reconcile(&snapshot, service) {
+                    settings::DiscoveryAction::UpToDate => (
+                        rust_i18n::t!("app_settings.discovered_up_to_date").to_string(),
+                        false,
+                        None,
+                    ),
+                    // Auto-repairs are applied by the scan itself, so seeing one
+                    // here means the write is still pending this frame.
+                    settings::DiscoveryAction::Repair { .. } => (
+                        rust_i18n::t!("app_settings.discovered_known").to_string(),
+                        false,
+                        None,
+                    ),
+                    settings::DiscoveryAction::ConfirmRepair { index, url } => {
+                        // Built here rather than in the rsx: `t!` with named
+                        // arguments is not a formatted-segment expression.
+                        let prompt = rust_i18n::t!(
+                            "app_settings.confirm_repair",
+                            name = service.name.as_str(),
+                            url = url.as_str()
+                        )
+                        .to_string();
+                        (
+                            rust_i18n::t!("app_settings.discovered_known").to_string(),
+                            false,
+                            Some((index, url, prompt)),
+                        )
+                    },
+                    settings::DiscoveryAction::Addable => (
+                        rust_i18n::t!("app_settings.discovered_new").to_string(),
+                        true,
+                        None,
+                    ),
+                    settings::DiscoveryAction::Ignored => (
+                        rust_i18n::t!("app_settings.discovered_new").to_string(),
+                        false,
+                        None,
+                    ),
+                };
+                // Owned copy: the rsx below outlives this borrow of the signal.
+                (service.clone(), label, addable, confirm)
+            })
+            .collect()
+    };
+
     rsx! {
         div { class: "settings-page",
             div { class: "settings-header",
@@ -2144,6 +2216,155 @@ fn AppSettingsPage() -> Element {
                     }
                 } else {
                     div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
+                }
+            }
+
+            div { class: "settings-section",
+                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_discovery\")}" }
+
+                label { class: "settings-toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: auto_repair,
+                        onchange: move |e| {
+                            let mut next = app_settings.peek().clone();
+                            next.set_auto_repair_url(e.checked());
+                            // Owned copy: the cache keeps its own settings.
+                            settings::set_current(next.clone());
+                            *app_settings.write() = next;
+                        },
+                    }
+                    span { class: "settings-toggle-label",
+                        "{rust_i18n::t!(\"app_settings.auto_repair_url\")}"
+                    }
+                }
+                div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.auto_repair_url_hint\")}" }
+
+                label { class: "settings-toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: adds_backends,
+                        onchange: move |e| {
+                            let mut next = app_settings.peek().clone();
+                            next.set_discovery_adds_backends(e.checked());
+                            settings::set_current(next.clone());
+                            *app_settings.write() = next;
+                        },
+                    }
+                    span { class: "settings-toggle-label",
+                        "{rust_i18n::t!(\"app_settings.discovery_adds_backends\")}"
+                    }
+                }
+                div { class: "settings-hint",
+                    "{rust_i18n::t!(\"app_settings.discovery_adds_backends_hint\")}"
+                }
+
+                button {
+                    class: "settings-action",
+                    disabled: !can_search || scanning(),
+                    onclick: move |_| {
+                        if scanning() {
+                            return;
+                        }
+                        *scanning.write() = true;
+                        *scanned.write() = true;
+                        *error.write() = None;
+                        *notice.write() = None;
+                        spawn(async move {
+                            match discovery::browse(discovery::BROWSE_TIMEOUT).await {
+                                Ok(services) => {
+                                    // Every auto-repair lands in one write, so a
+                                    // scan finding two moved backends redraws once.
+                                    let mut next = app_settings.peek().clone();
+                                    let mut repaired = false;
+                                    for service in &services {
+                                        if let settings::DiscoveryAction::Repair { index, url } =
+                                            settings::reconcile(&next, service)
+                                        {
+                                            repaired |= next.set_url(index, &url).is_ok();
+                                        }
+                                    }
+                                    if repaired {
+                                        settings::set_current(next.clone());
+                                        *app_settings.write() = next;
+                                        *notice.write() = Some(
+                                            rust_i18n::t!("app_settings.address_repaired").to_string(),
+                                        );
+                                    }
+                                    *found.write() = services;
+                                },
+                                Err(e) => *error.write() = Some(e.to_string()),
+                            }
+                            *scanning.write() = false;
+                        });
+                    },
+                    if scanning() {
+                        "{rust_i18n::t!(\"app_settings.searching\")}"
+                    } else {
+                        "{rust_i18n::t!(\"app_settings.search_network\")}"
+                    }
+                }
+
+                if !can_search {
+                    div { class: "settings-hint",
+                        "{rust_i18n::t!(\"app_settings.discovery_unsupported\")}"
+                    }
+                }
+                // Finding nothing is a neutral state, never an error: a guest
+                // Wi-Fi, a filtered multicast or a backend that is simply down all
+                // look the same from here, and typing the address still works.
+                if scanned() && !scanning() && results.is_empty() {
+                    div { class: "settings-empty",
+                        "{rust_i18n::t!(\"app_settings.no_backend_found\")}"
+                    }
+                }
+
+                for (service, label, addable, confirm) in results {
+                    div { key: "{service.url}", class: "backend-row",
+                        div { class: "backend-row-main",
+                            span { class: "backend-name", "{service.name}" }
+                            span { class: "backend-url", "{service.url}" }
+                        }
+                        span { class: "settings-hint", "{label}" }
+                        if addable {
+                            button {
+                                class: "settings-action",
+                                onclick: move |_| {
+                                    let mut next = app_settings.peek().clone();
+                                    // Being found grants nothing: the entry is
+                                    // created unpaired and the code is still due.
+                                    match next.add_discovered(&service) {
+                                        Ok(_) => {
+                                            settings::set_current(next.clone());
+                                            *app_settings.write() = next;
+                                        },
+                                        Err(err) => *error.write() = Some(err.to_string()),
+                                    }
+                                },
+                                "{rust_i18n::t!(\"app_settings.add\")}"
+                            }
+                        }
+                        if let Some((index, url, prompt)) = confirm {
+                            button {
+                                class: "settings-action",
+                                onclick: move |_| {
+                                    let mut next = app_settings.peek().clone();
+                                    match next.set_url(index, &url) {
+                                        Ok(()) => {
+                                            settings::set_current(next.clone());
+                                            *app_settings.write() = next;
+                                            *notice.write() = Some(
+                                                rust_i18n::t!("app_settings.address_repaired")
+                                                    .to_string(),
+                                            );
+                                        },
+                                        Err(err) => *error.write() = Some(err.to_string()),
+                                    }
+                                },
+                                "{prompt}"
+                            }
+                        }
+                    }
                 }
             }
 

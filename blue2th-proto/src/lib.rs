@@ -534,16 +534,13 @@ fn restore_during_playback_default() -> bool {
 /// Declared here, next to [`discovered_from_txt`], for the same reason
 /// `pair_deep_link`/`parse_pair_link` are: the server publishes exactly what the
 /// app looks for, so the two cannot drift apart.
-// TODO(phase 6.6): `_blue2th._tcp.local.`
-pub const SERVICE_TYPE: &str = "";
+pub const SERVICE_TYPE: &str = "_blue2th._tcp.local.";
 
 /// TXT record key carrying the backend's stable id.
-// TODO(phase 6.6): `id`
-pub const TXT_KEY_ID: &str = "";
+pub const TXT_KEY_ID: &str = "id";
 
 /// TXT record key carrying the backend's configured name.
-// TODO(phase 6.6): `name`
-pub const TXT_KEY_NAME: &str = "";
+pub const TXT_KEY_NAME: &str = "name";
 
 /// A backend found on the LAN over mDNS.
 ///
@@ -568,8 +565,21 @@ pub struct DiscoveredBackend {
 /// blank `id` yields `None` rather than a rejection, since a backend without an
 /// id is still reachable and must not be mistaken for a new machine.
 pub fn discovered_from_txt(host_url: &str, txt: &[(&str, &str)]) -> DiscoveredBackend {
-    let _ = (host_url, txt);
-    todo!("phase 6.6: build the DTO from the TXT records")
+    let value = |key: &str| {
+        txt.iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.trim())
+            .filter(|v| !v.is_empty())
+    };
+    DiscoveredBackend {
+        // A blank id is no id at all: it would match no entry and make a known
+        // machine look brand new.
+        id: value(TXT_KEY_ID).map(str::to_string),
+        name: value(TXT_KEY_NAME)
+            .unwrap_or(DEFAULT_BACKEND_NAME)
+            .to_string(),
+        url: host_url.to_string(),
+    }
 }
 
 /// Body of `POST /config` — the name the app pushes to the backend.
