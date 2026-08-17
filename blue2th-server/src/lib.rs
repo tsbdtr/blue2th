@@ -325,8 +325,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// its API perfectly well, and the pairing QR plus manual entry remain the way
 /// in. Failing to announce must never stop the backend from starting.
 fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
-    let (host, port) = record.url.trim_start_matches("http://").rsplit_once(':')?;
-    let port = port.parse::<u16>().ok()?;
+    // Carried by the record rather than parsed back out of the assembled URL:
+    // the host and the port are what built it in the first place.
+    let Some((host, port)) = record.endpoint.as_ref() else {
+        tracing::warn!(
+            "no host/port to announce for {}; pair by QR or address instead",
+            record.url
+        );
+        return None;
+    };
+    let port = *port;
     let properties: Vec<(&str, &str)> = record
         .txt
         .iter()
@@ -341,7 +349,7 @@ fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
             // rename never makes the machine look like a different one.
             "blue2th",
             &format!("{host}.local."),
-            host,
+            host.as_str(),
             port,
             &properties[..],
         )?;
@@ -380,15 +388,33 @@ fn advertised_url(bind_addr: &str) -> String {
 /// advertised as-is — a QR that cannot work is still better than none, since the
 /// operator can read the code off the same banner and type it.
 fn advertised_url_from(bind_addr: &str, detected: Option<std::net::Ipv4Addr>) -> String {
-    let Some((host, port)) = bind_addr.rsplit_once(':') else {
-        return format!("http://{bind_addr}");
-    };
-    if host == "0.0.0.0" || host == "[::]" {
-        if let Some(lan) = detected {
-            return format!("http://{lan}:{port}");
-        }
+    match advertised_endpoint_from(bind_addr, detected) {
+        Some((host, port)) => format!("http://{host}:{port}"),
+        // No host/port pair to resolve (no port at all, or one that is not a
+        // number): the bind address is advertised verbatim, as before.
+        None => format!("http://{bind_addr}"),
     }
-    format!("http://{bind_addr}")
+}
+
+/// The host and TCP port a backend bound to `bind_addr` should be reached at, or
+/// `None` when the bind address carries no numeric port. Pure.
+///
+/// The single place the wildcard rule lives: both the pairing QR
+/// ([`advertised_url_from`]) and the mDNS record ([`advertised_service_from`])
+/// read it, so the announcement and the QR can never point at different hosts.
+fn advertised_endpoint_from(
+    bind_addr: &str,
+    detected: Option<std::net::Ipv4Addr>,
+) -> Option<(String, u16)> {
+    let (host, port) = bind_addr.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    // A backend bound to every interface has no address of its own to hand out,
+    // so the detected LAN one takes its place: `0.0.0.0` is something no phone
+    // could ever call. With none detected, the bind address stands as-is.
+    match (host, detected) {
+        ("0.0.0.0" | "[::]", Some(lan)) => Some((lan.to_string(), port)),
+        _ => Some((host.to_string(), port)),
+    }
 }
 
 /// What the backend publishes as `_blue2th._tcp.local.` (phase 6.6): the address
@@ -397,6 +423,11 @@ fn advertised_url_from(bind_addr: &str, detected: Option<std::net::Ipv4Addr>) ->
 pub struct AdvertisedService {
     /// Base URL the app will store, e.g. `http://192.168.1.107:4000`.
     pub url: String,
+    /// The same address as host and port, which is what `ServiceInfo` needs.
+    /// Carried here so publishing never parses them back out of `url`; `None`
+    /// when the bind address has no numeric port, which is nothing an mDNS
+    /// record could announce.
+    pub endpoint: Option<(String, u16)>,
     /// TXT records, keyed by the shared `blue2th_proto` TXT keys.
     pub txt: Vec<(String, String)>,
 }
@@ -415,6 +446,7 @@ fn advertised_service_from(
 ) -> AdvertisedService {
     AdvertisedService {
         url: advertised_url_from(bind_addr, detected),
+        endpoint: advertised_endpoint_from(bind_addr, detected),
         txt: vec![
             (blue2th_proto::TXT_KEY_ID.to_string(), id.to_string()),
             (blue2th_proto::TXT_KEY_NAME.to_string(), name.to_string()),
@@ -1706,6 +1738,45 @@ mod tests {
             advertised_url_from(DEFAULT_BIND, lan),
             "the mDNS record and the pairing QR must advertise the same address"
         );
+    }
+
+    // Criterion (phase 6.6): the record carries the very host and port
+    // `ServiceInfo` needs, so publishing never parses them back out of the URL
+    // it just assembled — and they agree with that URL.
+    #[test]
+    fn test_advertised_service_carries_the_host_and_port_it_announces() {
+        let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+        let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "blue2th-PC");
+        assert_eq!(
+            record.endpoint,
+            Some(("192.168.1.107".to_string(), 4000)),
+            "a wildcard bind announces the detected LAN host, not 0.0.0.0"
+        );
+        let (host, port) = record.endpoint.clone().expect("just asserted");
+        assert_eq!(record.url, format!("http://{host}:{port}"));
+
+        let explicit = advertised_service_from("10.1.2.3:4321", lan, "backend-id-42", "Salon");
+        assert_eq!(
+            explicit.endpoint,
+            Some(("10.1.2.3".to_string(), 4321)),
+            "an explicit bind address is announced as-is"
+        );
+    }
+
+    // Criterion (non-nominal, phase 6.6): a bind address with no port — or one
+    // that is not a number — leaves nothing an mDNS record could announce, so
+    // the endpoint is absent and `advertise` declines instead of guessing.
+    #[test]
+    fn test_advertised_service_without_a_usable_port_has_no_endpoint() {
+        for bind in ["no-port-here", "0.0.0.0:not-a-port"] {
+            let record = advertised_service_from(bind, None, "backend-id-42", "blue2th-PC");
+            assert_eq!(record.endpoint, None, "{bind} carries no port to announce");
+            assert_eq!(
+                record.url,
+                format!("http://{bind}"),
+                "{bind} is still shown verbatim in the banner"
+            );
+        }
     }
 
     // Criterion (phase 6.6): the record carries `id=<stable id>` and

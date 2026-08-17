@@ -404,6 +404,89 @@ fn test_a_repaired_backend_is_up_to_date_on_the_next_scan() {
     );
 }
 
+// Criterion (non-nominal): a pre-6.6 entry is matched on its URL alone, so it
+// must learn the id of the machine answering there — otherwise the *next* lease
+// change offers the backend the app already knows as a brand new one, which is
+// exactly the duplication this phase exists to stop.
+#[test]
+fn test_a_url_matched_entry_adopts_the_discovered_id() {
+    let mut settings = known_salon_without_id();
+    let service = found(Some(SALON_ID), "blue2th-PC", SALON_URL);
+
+    assert!(
+        settings.adopt_discovered_ids(std::slice::from_ref(&service)),
+        "a URL-matched entry with no id adopts the one it just saw"
+    );
+    let salon = settings.backends.first().expect("Salon is still there");
+    assert_eq!(salon.id.as_deref(), Some(SALON_ID));
+    assert_eq!(
+        salon.token.as_deref(),
+        Some("salon-token"),
+        "learning an id must never unpair the backend"
+    );
+    assert_eq!(salon.url, SALON_URL, "nothing but the id changes");
+    assert_eq!(settings.backends.len(), 1);
+
+    // …and the machine now survives its move, instead of looking new.
+    assert_eq!(
+        settings::reconcile(
+            &settings,
+            &found(Some(SALON_ID), "blue2th-PC", SALON_NEW_URL)
+        ),
+        DiscoveryAction::Repair {
+            index: 0,
+            url: SALON_NEW_URL.to_string(),
+        }
+    );
+}
+
+// Criterion: adoption is idempotent and never steals an id — a second scan
+// changes nothing, an entry that already carries an id keeps it, and a service
+// whose id another entry claims leaves both alone.
+#[test]
+fn test_adopting_ids_is_idempotent_and_never_reassigns_one() {
+    let mut settings = known_salon();
+    let service = found(Some(SALON_ID), "blue2th-PC", SALON_URL);
+    assert!(
+        !settings.adopt_discovered_ids(std::slice::from_ref(&service)),
+        "an entry that already carries the id has nothing to learn"
+    );
+
+    // Bureau is a pre-6.6 entry that happens to be found at its own address,
+    // announcing the id Salon already claims: the id must not move.
+    settings.backends.push(BackendEntry {
+        name: "Bureau".to_string(),
+        url: "http://192.168.1.42:4000".to_string(),
+        restore_during_playback: true,
+        token: None,
+        pairing: PairingMethod::Code,
+        id: None,
+    });
+    let impostor = found(Some(SALON_ID), "Bureau", "http://192.168.1.42:4000");
+    assert!(!settings.adopt_discovered_ids(std::slice::from_ref(&impostor)));
+    assert_eq!(
+        settings.backends.get(1).and_then(|b| b.id.as_deref()),
+        None,
+        "an id another entry already claims is never re-assigned"
+    );
+    assert_eq!(
+        settings.backends.first().and_then(|b| b.id.as_deref()),
+        Some(SALON_ID)
+    );
+}
+
+// Criterion (non-nominal): a service with no id, or one advertising an unusable
+// address, teaches an entry nothing — and never writes.
+#[test]
+fn test_adopting_ids_ignores_an_idless_or_malformed_service() {
+    let mut settings = known_salon_without_id();
+    let before = settings.clone();
+    assert!(!settings.adopt_discovered_ids(&[found(None, "blue2th-PC", SALON_URL)]));
+    assert!(!settings.adopt_discovered_ids(&[found(Some(SALON_ID), "blue2th-PC", "http://")]));
+    assert!(!settings.adopt_discovered_ids(&[]));
+    assert_eq!(settings, before, "nothing may have been written");
+}
+
 // ── The JNI/network boundary, from the outside ───────────────────────────────
 
 // Criterion: the Search button's enabled state is a pure function over the
@@ -424,6 +507,14 @@ fn test_jni_util_captures_the_exception_before_clearing_it() {
     let source = std::fs::read_to_string(&path)
         .map_err(|e| format!("read {path:?}: {e}"))
         .expect("the shared JNI seam must exist");
+    // Comments are stripped first: they document these very calls, and a doc
+    // line naming one would otherwise decide the order this test reads — which
+    // it once did.
+    let source: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let capture = source
         .find("exception_occurred")

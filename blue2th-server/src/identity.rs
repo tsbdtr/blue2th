@@ -29,12 +29,12 @@ pub fn identity_store_path() -> Option<PathBuf> {
 }
 
 /// The stable id this backend advertises, optionally persisted.
+///
+/// The store path is not kept: the id never changes once minted, so there is
+/// nothing left to write after construction.
 pub struct BackendIdentity {
     /// The current id: reloaded from the store, or freshly minted.
     id: String,
-    /// Where the id is persisted, or `None` to stay in memory only.
-    #[allow(dead_code)]
-    store: Option<PathBuf>,
     /// Whether the id was minted rather than reloaded.
     minted: bool,
 }
@@ -86,7 +86,6 @@ impl BackendIdentity {
     pub fn new() -> Self {
         Self {
             id: generate_id(),
-            store: None,
             minted: true,
         }
     }
@@ -104,7 +103,7 @@ impl BackendIdentity {
             }
             fresh
         });
-        Self { id, store, minted }
+        Self { id, minted }
     }
 
     /// The current stable id.

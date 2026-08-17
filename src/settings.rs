@@ -326,6 +326,37 @@ impl AppSettings {
         Ok(())
     }
 
+    /// Adopt the ids of discovered services that match a known entry by URL while
+    /// that entry carries none. Returns whether anything changed.
+    ///
+    /// This is what lets a **pre-6.6 entry** survive its next address change: it
+    /// is matched on its URL alone until it learns an id, so without this the
+    /// first lease change would offer the machine the app already knows as a
+    /// brand new one — the very duplication phase 6.6 exists to stop.
+    ///
+    /// An id another entry already claims is never re-assigned: two entries
+    /// answering to the same id would then both match every later find.
+    pub fn adopt_discovered_ids(&mut self, found: &[blue2th_proto::DiscoveredBackend]) -> bool {
+        let mut adopted = false;
+        for service in found {
+            let (Some(id), Ok(url)) = (service.id.as_deref(), normalise_url(&service.url)) else {
+                continue;
+            };
+            if self.backends.iter().any(|b| b.id.as_deref() == Some(id)) {
+                continue;
+            }
+            if let Some(entry) = self
+                .backends
+                .iter_mut()
+                .find(|b| b.url == url && b.id.is_none())
+            {
+                entry.id = Some(id.to_string());
+                adopted = true;
+            }
+        }
+        adopted
+    }
+
     /// Create an entry from a discovered service and return its index.
     ///
     /// Goes through the same rules as [`AppSettings::add`] — a service

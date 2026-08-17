@@ -1281,6 +1281,10 @@ mod tests {
             .find(|line| line.trim_start().starts_with("scanning:"))
             .unwrap_or_default();
         assert!(
+            !scanning.is_empty(),
+            "locales/en.yaml must still carry a scan.scanning key, got:\n{content}"
+        );
+        assert!(
             scanning.contains("Loading"),
             "locales/en.yaml scan.scanning must contain 'Loading', got:\n{scanning}"
         );

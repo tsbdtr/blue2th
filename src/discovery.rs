@@ -111,10 +111,7 @@ pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredBackend>, Discove
         };
         // The same instance resolves more than once on a busy network; a repeat
         // is the same machine, not a second one.
-        if !found
-            .iter()
-            .any(|f| f.url == candidate.url && f.id == candidate.id)
-        {
+        if is_new_find(&found, &candidate) {
             found.push(candidate);
         }
     }
@@ -122,6 +119,18 @@ pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredBackend>, Discove
     // refuses to stop must not turn a successful scan into an error.
     let _ = daemon.shutdown();
     Ok(found)
+}
+
+/// Whether `candidate` is a machine the browse has not already listed. Pure.
+///
+/// A repeat is anything answering at an address already listed, **or** carrying
+/// an id already listed: a multi-homed backend resolves once per interface, and
+/// listing it twice would show the same machine as two entries and make the scan
+/// repair it twice.
+pub fn is_new_find(found: &[DiscoveredBackend], candidate: &DiscoveredBackend) -> bool {
+    !found
+        .iter()
+        .any(|f| f.url == candidate.url || (candidate.id.is_some() && f.id == candidate.id))
 }
 
 /// Turn a resolved mDNS service into the shared DTO, or `None` when it carries no
@@ -193,10 +202,13 @@ impl MulticastGuard {
                     &[JValue::Object(&tag)],
                 )?
                 .l()?;
-            env.call_method(&lock, "acquire", "()V", &[])?;
             // A global ref, because the lock must outlive this frame: it is
-            // released when the guard drops, at the end of the browse.
-            env.new_global_ref(&lock)
+            // released when the guard drops, at the end of the browse. Taken
+            // *before* `acquire`, so a failure on the way out cannot leave the
+            // radio filter lifted with no guard left to release it.
+            let lock = env.new_global_ref(&lock)?;
+            env.call_method(lock.as_obj(), "acquire", "()V", &[])?;
+            Ok(lock)
         })();
 
         match lock {
@@ -271,6 +283,64 @@ mod tests {
             browse_proceeds(false),
             "a failed lock is not a failed scan: hotspot mode has the phone as AP"
         );
+    }
+
+    /// A discovered service, for the deduplication cases.
+    fn service(id: Option<&str>, url: &str) -> DiscoveredBackend {
+        DiscoveredBackend {
+            id: id.map(str::to_string),
+            name: "blue2th-PC".to_string(),
+            url: url.to_string(),
+        }
+    }
+
+    // Criterion (non-nominal): the same instance resolves more than once on a
+    // busy network — a repeat at the same address is the same machine.
+    #[test]
+    fn test_is_new_find_rejects_a_repeat_at_the_same_address() {
+        let found = vec![service(Some("salon-id"), "http://192.168.1.107:4000")];
+        assert!(!is_new_find(
+            &found,
+            &service(Some("salon-id"), "http://192.168.1.107:4000")
+        ));
+        // Even when the repeat lost its TXT id on the second resolution.
+        assert!(!is_new_find(
+            &found,
+            &service(None, "http://192.168.1.107:4000")
+        ));
+    }
+
+    // Criterion (non-nominal): a multi-homed backend resolves once per interface,
+    // at two different addresses — the id says it is one machine, and listing it
+    // twice would have the scan repair the same entry twice.
+    #[test]
+    fn test_is_new_find_rejects_the_same_id_at_another_address() {
+        let found = vec![service(Some("salon-id"), "http://192.168.1.107:4000")];
+        assert!(!is_new_find(
+            &found,
+            &service(Some("salon-id"), "http://10.0.0.5:4000")
+        ));
+    }
+
+    // Criterion: two genuinely different backends are both listed — including two
+    // that advertise no id at all, which then only differ by address.
+    #[test]
+    fn test_is_new_find_accepts_a_second_backend() {
+        let found = vec![service(Some("salon-id"), "http://192.168.1.107:4000")];
+        assert!(is_new_find(
+            &found,
+            &service(Some("bureau-id"), "http://192.168.1.42:4000")
+        ));
+        assert!(
+            is_new_find(&found, &service(None, "http://192.168.1.42:4000")),
+            "a service with no id is matched on its address alone"
+        );
+        let idless = vec![service(None, "http://192.168.1.107:4000")];
+        assert!(
+            is_new_find(&idless, &service(None, "http://192.168.1.42:4000")),
+            "two id-less backends are told apart by their addresses"
+        );
+        assert!(is_new_find(&[], &service(None, "http://192.168.1.42:4000")));
     }
 
     // Criterion: the scan is bounded (~5 s) so it cannot hold the settings page.

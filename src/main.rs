@@ -1780,6 +1780,31 @@ fn SettingsButton() -> Element {
     }
 }
 
+/// One row of the discovery list (phase 6.6): a service the browse found, ready
+/// to render — its classification already resolved into what the row shows and
+/// what it offers.
+struct DiscoveryRow {
+    /// The service as found. Owned, because the rsx outlives the borrow of the
+    /// signal the classification read from.
+    service: blue2th_proto::DiscoveredBackend,
+    /// Short status label: up to date, already known, or new.
+    label: String,
+    /// Whether the row offers to create an entry for this backend.
+    addable: bool,
+    /// A repair the user must confirm first, when auto-repair is off.
+    confirm: Option<PendingRepair>,
+}
+
+/// A move the app spotted but will not write until the user says so.
+struct PendingRepair {
+    /// Index of the known entry to move.
+    index: usize,
+    /// The normalised address it now answers at.
+    url: String,
+    /// The question to put on the button.
+    prompt: String,
+}
+
 /// The app settings page (phase 6.2). Built to grow: this slice ships only the
 /// **Backends** section — add, test, activate and delete the backends the app
 /// knows, one active at a time.
@@ -1845,13 +1870,7 @@ fn AppSettingsPage() -> Element {
     };
     // Re-classified on every render against the current settings, so an entry
     // repaired a moment ago immediately reads as up to date.
-    #[allow(clippy::type_complexity)]
-    let results: Vec<(
-        blue2th_proto::DiscoveredBackend,
-        String,
-        bool,
-        Option<(usize, String, String)>,
-    )> = {
+    let results: Vec<DiscoveryRow> = {
         let snapshot = app_settings.read();
         found
             .read()
@@ -1882,7 +1901,7 @@ fn AppSettingsPage() -> Element {
                         (
                             rust_i18n::t!("app_settings.discovered_known").to_string(),
                             false,
-                            Some((index, url, prompt)),
+                            Some(PendingRepair { index, url, prompt }),
                         )
                     },
                     settings::DiscoveryAction::Addable => (
@@ -1896,8 +1915,13 @@ fn AppSettingsPage() -> Element {
                         None,
                     ),
                 };
-                // Owned copy: the rsx below outlives this borrow of the signal.
-                (service.clone(), label, addable, confirm)
+                DiscoveryRow {
+                    // Owned copy: the rsx below outlives this borrow of the signal.
+                    service: service.clone(),
+                    label,
+                    addable,
+                    confirm,
+                }
             })
             .collect()
     };
@@ -2273,9 +2297,13 @@ fn AppSettingsPage() -> Element {
                         spawn(async move {
                             match discovery::browse(discovery::BROWSE_TIMEOUT).await {
                                 Ok(services) => {
-                                    // Every auto-repair lands in one write, so a
-                                    // scan finding two moved backends redraws once.
+                                    // Every change lands in one write, so a scan
+                                    // finding two moved backends redraws once.
                                     let mut next = app_settings.peek().clone();
+                                    // A pre-6.6 entry learns the id of the machine
+                                    // answering at its address, so the *next* lease
+                                    // change repairs it instead of offering it as new.
+                                    let mut changed = next.adopt_discovered_ids(&services);
                                     let mut repaired = false;
                                     for service in &services {
                                         if let settings::DiscoveryAction::Repair { index, url } =
@@ -2284,9 +2312,14 @@ fn AppSettingsPage() -> Element {
                                             repaired |= next.set_url(index, &url).is_ok();
                                         }
                                     }
-                                    if repaired {
+                                    changed |= repaired;
+                                    if changed {
                                         settings::set_current(next.clone());
                                         *app_settings.write() = next;
+                                    }
+                                    // Only a moved address is worth saying: adopting
+                                    // an id changes nothing the user can see.
+                                    if repaired {
                                         *notice.write() = Some(
                                             rust_i18n::t!("app_settings.address_repaired").to_string(),
                                         );
@@ -2319,7 +2352,7 @@ fn AppSettingsPage() -> Element {
                     }
                 }
 
-                for (service, label, addable, confirm) in results {
+                for DiscoveryRow { service, label, addable, confirm } in results {
                     div { key: "{service.url}", class: "backend-row",
                         div { class: "backend-row-main",
                             span { class: "backend-name", "{service.name}" }
@@ -2344,7 +2377,7 @@ fn AppSettingsPage() -> Element {
                                 "{rust_i18n::t!(\"app_settings.add\")}"
                             }
                         }
-                        if let Some((index, url, prompt)) = confirm {
+                        if let Some(PendingRepair { index, url, prompt }) = confirm {
                             button {
                                 class: "settings-action",
                                 onclick: move |_| {
