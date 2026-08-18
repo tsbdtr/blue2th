@@ -130,32 +130,69 @@ backend discovery, authenticated LAN-only control API.
 - ✅ **6.1 — Offset persistence** — each speaker's sync offset is remembered by MAC
   in `$XDG_STATE_HOME/blue2th/offsets.json` and restored when that speaker is
   selected again, including after a restart. **Validated on hardware.** Only the
-  offsets are persisted, never the selection: at startup no speaker is connected,
-  so a restored selection would be dropped immediately by `retain_connected` —
-  restoring it belongs with auto-reconnect below.
-- ⬜ **Auto-reconnect** — reconnect the remembered speakers on startup; this is what
-  would make restoring the *selection* meaningful.
-- ⬜ **mDNS discovery** — the backend address is no longer baked into the APK: phase
-  6.2 made it a runtime setting (the settings page keeps a list of named backends,
-  one active at a time, persisted in `SharedPreferences`), so sharing the app no
-  longer means sharing the repo. What is left is finding the PC by itself instead of
-  typing its LAN address.
-- ⬜ **Authenticated, LAN-only control API** — the router still runs
-  `CorsLayer::permissive()` with no authentication: anyone on the network can drive
-  the backend, Spotify transport included. Becomes necessary as soon as discovery
-  exists.
-- ⬜ **Background listening reliability** — Android freezes a backgrounded app, which
-  drops the now-playing SSE stream the backend uses as a liveness signal. Handled
-  today by presence reporting (`onStart`/`onStop`/`onTaskRemoved`) plus a 30-minute
-  grace period; a **foreground service** (with its permanent notification) is the
-  only way to stop the freeze outright, to be paid only if the compromise bites.
+  offsets were persisted, never the selection — 6.3 below closed that half.
+- ✅ **6.2 — Runtime backend configuration** — the backend address was resolved by
+  `option_env!`, i.e. at compile time, so the APK only worked for whoever built it.
+  `BLUE2TH_BACKEND_URL` is gone: the app holds a list of **named** backends, one
+  active at a time, persisted in `SharedPreferences`, switchable from the status
+  encart or the settings page (both go through `backend::activate_backend`, so they
+  cannot drift apart). Each entry's name is pushed to its backend, which adopts it
+  as its Spotify Connect device name — and as the name the Web API device lookup
+  matches on, which is what keeps transport working after a rename. Unconfigured
+  means unconfigured: no fallback address, calls fail fast instead of timing out
+  against localhost. **Validated on hardware.**
+- ✅ **6.3 — Selection restored when a speaker comes back** — `SpeakerTargets` now
+  separates the **intent** (the addresses the user asked to play on) from the live
+  selection: losing the radio prunes the latter and leaves the former alone, so
+  `sync_connected` re-selects a returning speaker instead of making the user press
+  `+` every time. Only an explicit deselect clears the intent, and the intent is
+  persisted next to the offsets, so it survives a restart too. `restore()` reports
+  whether the selection actually moved and the routing is rebuilt only then —
+  `sync_connected` runs on every `/devices` poll, so re-routing unconditionally
+  would tear the PipeWire graph down every couple of seconds. Reintegrating
+  mid-playback can move the target sink and respawn `librespot`, so it is gated by
+  a per-backend setting (default **on**), carried by `/config`. **Validated on
+  hardware.**
+- ✅ **6.4 — Authenticated, LAN-only control API** — `CorsLayer::permissive()` and
+  the open router are gone: every route but `/health` and `POST /pair` requires a
+  bearer token, and the server binds to its LAN address rather than `0.0.0.0`.
+  Pairing is armed on first run (or with `--pair`) and offered two ways, chosen per
+  backend: a six-character code typed into the app, or a QR whose `blue2th://` deep
+  link carries url, name and code in one scan. The code is one-shot, short-lived
+  and attempt-capped, and every refusal reads the same so the route cannot be used
+  to enumerate. The token is persisted `0600` server-side and per backend on the
+  phone; a 401 surfaces as "not paired", distinct from a backend that simply cannot
+  be reached. **Validated on hardware.**
+- ⬜ **6.5 — Auto-reconnect** — reconnect the remembered speakers on startup. 6.3
+  already restores the selection the moment a known speaker reappears, so this is
+  the remaining half: making it reappear without waiting for BlueZ (or the user) to
+  reconnect it by hand.
+- ✅ **6.6 — mDNS discovery** — a backend was identified by its URL, so a new DHCP
+  lease broke every call and re-pairing created a *second* entry for the same
+  machine. Identity moves to a stable id the server mints once
+  (`identity.json`, separate from the token) and publishes over
+  `_blue2th._tcp.local` with its name. **Search the network** in the settings page
+  browses for it and either repairs a known backend's address in place — token and
+  local name kept, no duplicate — or offers an unknown one for the normal pairing
+  flow: discovery announces, it never authenticates, and the 6.4 code is still due.
+  Both behaviours are per-app settings, on by default, and a pre-6.6 entry adopts
+  the id it is matched to by URL, so it survives its *next* move too. The JNI
+  surface is three synchronous calls for the multicast lock — `mdns-sd` browses in
+  pure Rust, no `NsdManager`, no second `.dex`. Finding nothing stays a neutral
+  state: manual entry and the QR remain the way out. **Validated on hardware.**
+- ⬜ **6.7 — Background listening reliability** — Android freezes a backgrounded app,
+  which drops the now-playing SSE stream the backend uses as a liveness signal.
+  Handled today by presence reporting (`onStart`/`onStop`/`onTaskRemoved`) plus a
+  30-minute grace period; a **foreground service** (with its permanent notification)
+  is the only way to stop the freeze outright, to be paid only if the compromise
+  bites.
 
 ## Cross-cutting concerns
 
 | Topic | Plan |
 |---|---|
-| Security | Authenticated + LAN-only control API; PKCE (no OAuth secret on mobile); never expose Spotify tokens |
-| Network discovery | Manual IP first → mDNS in phase 6 |
+| Security | ✅ Authenticated + LAN-only control API (6.4, bearer token + one-shot pairing code/QR); PKCE (no OAuth secret on mobile); never expose Spotify tokens |
+| Network discovery | ✅ Runtime-configured named backends (6.2) → mDNS browse + stable backend id (6.6) |
 | CI / tests | BlueZ/PipeWire/librespot are not CI-testable → pure logic unit-tested, hardware manual (same philosophy as the Android JNI path) |
 | Sync | Imperfect on classic A2DP (no shared clock) but tunable via latency offsets — manage expectations |
 | librespot | Unofficial, requires Premium, may break on Spotify updates |
