@@ -20,6 +20,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { workspace = true }
 serde_json = "1"
 futures = "0.3"
+# Phase 6.6: browsing `_blue2th._tcp.local.` on the LAN. See the workspace entry.
+mdns-sd = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
@@ -44,3 +46,8 @@ resolver = "2"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1" }
+# Phase 6.6: mDNS service discovery, shared by the backend (which publishes
+# `_blue2th._tcp.local.`) and the app (which browses for it). Pure Rust and
+# runtime-agnostic, so the same crate serves the Tokio backend and the Android
+# app — no Avahi on the PC, no `NsdManager` on the phone.
+mdns-sd = "0.21"

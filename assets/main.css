@@ -195,6 +195,13 @@ body {
     background: #1e222d;
     border: 1px solid #374151;
     border-radius: 8px;
+    /* Border-box so the height below is the height the row sees, borders
+       included — the gear next to it is sized the same way. */
+    box-sizing: border-box;
+    /* The encarts are as tall as the gear closing the row (34px + its border),
+       so the three controls read as one bar instead of three sizes. A minimum
+       rather than a fixed height: a wrapped label must still be able to grow. */
+    min-height: 36px;
 }
 
 .backend-status-label {
@@ -592,6 +599,22 @@ body {
 }
 
 /* Device list */
+/* Favourite mark: a device the backend is already bonded with. Absolutely
+   positioned in the row's corner so a favourite row lays out exactly like any
+   other — the icon, the name and the signal bars never shift. The row is
+   already `position: relative`, and its `overflow: hidden` is why the star sits
+   inside the corner rather than straddling it. */
+.device-favourite {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    color: #facc15;
+    font-size: 0.7rem;
+    line-height: 1;
+    /* Decoration only: the whole row is the tap target for connecting. */
+    pointer-events: none;
+}
+
 .device-icon {
     display: inline-block;
     margin-right: 6px;
@@ -1280,9 +1303,13 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
 /* Gear closing the status row, pushed against the right edge. */
 .settings-button {
     flex: 0 0 auto;
-    margin: 0 0 8px auto;
-    width: 34px;
-    height: 34px;
+    /* Only the auto left margin, which pushes the gear to the right edge: the
+       bottom margin is the row's to own, and here it offset the gear against
+       the encarts it is supposed to line up with. */
+    margin: 0 0 0 auto;
+    box-sizing: border-box;
+    width: 36px;
+    height: 36px;
     border: 1px solid #374151;
     border-radius: 8px;
     background: #1e222d;
@@ -1377,10 +1404,13 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     border: none;
     border-radius: 8px;
     background: transparent;
-    color: #9aa4b8;
+    /* Red at rest, not only on hover: deleting a backend now also quietens the
+       machine and stops its Spotify source, so the button must read as
+       destructive before it is touched — and a phone has no hover at all. */
+    color: #ef4444;
     cursor: pointer;
 }
-.backend-row-delete:hover { color: #ef4444; }
+.backend-row-delete:hover { color: #f87171; }
 
 .backend-form {
     display: flex;
@@ -1463,3 +1493,131 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     border-color: #2563eb;
     color: #e6ebf5;
 }
+
+/* ── Settings: discovery section (phase 6.6) ─────────────────────────────── */
+
+/* Actions in the discovery section: search the network, add a found backend,
+   confirm a move. Filled in the accent blue like `.backend-add`, and centred in
+   the section — the search button is the one thing this section is for, so it
+   sits on its own line rather than hugging an edge. */
+.settings-action {
+    align-self: center;
+    margin-top: 4px;
+    padding: 10px 14px;
+    border: none;
+    border-radius: 8px;
+    background: #2563eb;
+    color: #ffffff;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.settings-action:hover:not(:disabled) {
+    background: #3b76f0;
+}
+/* Disabled means "this ROM cannot search", which the hint below spells out —
+   so the button recedes instead of inviting a tap that would do nothing. */
+.settings-action:disabled {
+    background: #2a3140;
+    color: #6b7688;
+    cursor: default;
+}
+/* The search action and its results, framed as one block: the toggles above
+   configure discovery, this *is* discovery, and the results belong to the
+   button that fetched them. */
+.discovery-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 4px;
+    padding: 14px;
+    border: 1px solid #2c3040;
+    border-radius: 10px;
+    background: #141822;
+}
+
+/* One found backend: name, then address. Nothing else competes on the card —
+   the status lives in the corner badges, which overlap this box. */
+.discovery-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 14px;
+    /* Right padding leaves the corner badges a lane of their own, so a long
+       name can never run underneath them. */
+    padding-right: 52px;
+    border: 1px solid #2c3040;
+    border-radius: 10px;
+    background: #1b2029;
+}
+.discovery-card-name {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: #e6ebf5;
+}
+/* An IPv4 address plus a port is narrow, but a hostname need not be: wrap
+   anywhere rather than push the card wider than the screen. */
+.discovery-card-url {
+    font-size: 0.78rem;
+    color: #8b9cc8;
+    overflow-wrap: anywhere;
+}
+
+/* Pulled up and out so the badges sit on the card's edge rather than inside its
+   padding — the mark reads as applied to the card, not listed in it. */
+.discovery-card-badges {
+    position: absolute;
+    top: -10px;
+    right: -6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+/* Nothing to do: the app already knows this backend at this address. */
+.discovery-synced {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid #22c55e;
+    background: #171b26;
+    color: #22c55e;
+    font-size: 0.85rem;
+    line-height: 1;
+}
+/* Adding a found backend. A glyph, because the label it replaced could not fit
+   a card this narrow; the words survive as its tooltip and accessible name. */
+.discovery-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: #2563eb;
+    color: #ffffff;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.discovery-add:hover { background: #3b76f0; }
+
+/* The confirm-a-move question: a full sentence, so it wraps and sits under the
+   address rather than beside it. */
+.discovery-confirm {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border: 1px solid #2563eb;
+    border-radius: 8px;
+    background: transparent;
+    color: #e6ebf5;
+    font-size: 0.8rem;
+    text-align: left;
+    cursor: pointer;
+}
+.discovery-confirm:hover { background: rgba(37, 99, 235, 0.12); }

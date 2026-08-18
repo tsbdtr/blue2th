@@ -17,5 +17,7 @@
 pub mod backend;
 pub mod bluetooth;
 pub mod deep_link;
+pub mod discovery;
+pub mod jni_util;
 pub mod lifecycle;
 pub mod settings;

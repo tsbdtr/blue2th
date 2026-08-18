@@ -40,6 +40,9 @@ rand = "0.8"
 # stack in for a backend that only ever prints characters.
 qrcode = { version = "0.14", default-features = false }
 url = "2"
+# Phase 6.6: publishing `_blue2th._tcp.local.` so the app finds the backend
+# without the operator retyping its address. See the workspace entry.
+mdns-sd = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 

@@ -71,6 +71,12 @@ pub struct BackendEntry {
     /// How the settings page offers to pair with this backend.
     #[serde(default)]
     pub pairing: PairingMethod,
+    /// The backend's stable id, learnt from its mDNS record or its pairing
+    /// (phase 6.6). It is what identifies the *machine*, so a DHCP lease change
+    /// repairs this entry instead of creating a second one. `None` for a pre-6.6
+    /// entry, which keeps matching on its URL until an id is adopted.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
@@ -115,12 +121,153 @@ impl std::error::Error for SettingsError {}
 
 /// The whole persisted app configuration: the known backends and which one is
 /// active. Exactly one backend is active at a time, or none at all.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Every backend the user configured, in the order they were added.
     pub backends: Vec<BackendEntry>,
     /// Index into `backends` of the active one, or `None` when nothing is active.
     pub active: Option<usize>,
+    /// Whether a discovered backend whose id matches a known entry has its
+    /// address repaired in place, with no question asked (phase 6.6).
+    ///
+    /// The default fn is explicit rather than a bare `serde(default)`: that
+    /// would yield `false` and silently opt every existing install out — the
+    /// lesson already recorded in `restore_during_playback_default`.
+    #[serde(default = "discovery_setting_default")]
+    pub auto_repair_url: bool,
+    /// Whether a discovered backend the app does not know can be added from the
+    /// discovery list (phase 6.6). Adding never pairs: the six-character code is
+    /// still required.
+    #[serde(default = "discovery_setting_default")]
+    pub discovery_adds_backends: bool,
+}
+
+/// The default for both phase 6.6 discovery settings: **on**. Finding the
+/// backend by itself is the point of the feature, so a phase 6.4-era blob — which
+/// carries neither field — must load with them enabled.
+fn discovery_setting_default() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            backends: Vec::new(),
+            active: None,
+            auto_repair_url: discovery_setting_default(),
+            discovery_adds_backends: discovery_setting_default(),
+        }
+    }
+}
+
+/// How usable the active backend is, as the status dot reports it.
+///
+/// Three states rather than two, because "reachable" and "usable" stopped being
+/// the same thing in phase 6.4: a backend that answers but has never been paired
+/// refuses every route but `/health`, so a green dot over it would promise
+/// something the app cannot deliver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendHealth {
+    /// Nothing configured, or the active backend cannot be reached at all.
+    Offline,
+    /// Reachable, but no token: every call comes back 401 until the user pairs.
+    Unpaired,
+    /// Reachable and paired — the only fully working state.
+    Ready,
+}
+
+/// Classify the active backend for the status dot. Pure.
+///
+/// Unreachable wins over unpaired: pairing a backend the phone cannot even talk
+/// to is not the next step, reaching it is.
+pub fn backend_health(online: bool, paired: bool) -> BackendHealth {
+    match (online, paired) {
+        (false, _) => BackendHealth::Offline,
+        (true, false) => BackendHealth::Unpaired,
+        (true, true) => BackendHealth::Ready,
+    }
+}
+
+/// What a discovered service means for the settings the app already holds.
+///
+/// Pure classification, computed by [`reconcile`] with no network and no JNI: the
+/// UI only renders it and applies what the user (or the auto-repair setting)
+/// decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryAction {
+    /// A known backend answering at the address the app already has: nothing to
+    /// repair, no write, no toast.
+    UpToDate,
+    /// A known backend that moved, with auto-repair on: update the URL in place.
+    Repair {
+        /// Index of the known entry in `backends`.
+        index: usize,
+        /// The normalised address it now answers at.
+        url: String,
+    },
+    /// A known backend that moved, with auto-repair off: ask before writing.
+    ConfirmRepair {
+        /// Index of the known entry in `backends`.
+        index: usize,
+        /// The normalised address it now answers at.
+        url: String,
+    },
+    /// An unknown backend the user may add (then pair with, as usual).
+    Addable,
+    /// Found and listed, but not actionable — an unknown backend while
+    /// `discovery_adds_backends` is off, or an address that is not usable.
+    Ignored,
+}
+
+/// Classify a discovered service against the settings the app holds. Pure.
+///
+/// Matching is by **id** first — that is the whole point of phase 6.6 — and falls
+/// back to the URL when the service (or the entry) carries none, exactly as the
+/// app behaved before. A missing id must never, on its own, make a known machine
+/// look new.
+pub fn reconcile(
+    settings: &AppSettings,
+    found: &blue2th_proto::DiscoveredBackend,
+) -> DiscoveryAction {
+    // An address that cannot be used is worse than no find at all: storing it
+    // would swap a reachable entry for one every later call fails on.
+    let Ok(url) = normalise_url(&found.url) else {
+        return DiscoveryAction::Ignored;
+    };
+
+    // The id identifies the *machine*, so it wins over the address — that is the
+    // whole point of the phase. The URL is only a fallback, for a service that
+    // advertises no id or an entry that has not learnt one yet; a missing id must
+    // never, on its own, make a known machine look new.
+    let known = found
+        .id
+        .as_deref()
+        .and_then(|id| {
+            settings
+                .backends
+                .iter()
+                .position(|b| b.id.as_deref() == Some(id))
+        })
+        .or_else(|| settings.backends.iter().position(|b| b.url == url));
+
+    let Some(index) = known else {
+        return if settings.discovery_adds_backends {
+            DiscoveryAction::Addable
+        } else {
+            DiscoveryAction::Ignored
+        };
+    };
+
+    // Matched by URL, or by id at the address already stored: nothing moved, so
+    // nothing is written and nothing is said.
+    if settings.backends.get(index).map(|b| b.url.as_str()) == Some(url.as_str()) {
+        return DiscoveryAction::UpToDate;
+    }
+    if settings.auto_repair_url {
+        DiscoveryAction::Repair { index, url }
+    } else {
+        DiscoveryAction::ConfirmRepair { index, url }
+    }
 }
 
 /// Normalise a backend address: require a scheme, refuse blanks and embedded
@@ -169,8 +316,104 @@ impl AppSettings {
             // typed code is the transport that needs nothing but the terminal.
             token: None,
             pairing: PairingMethod::default(),
+            // Typing an address says nothing about which machine answers it; the
+            // id is adopted the first time that backend is discovered or paired.
+            id: None,
         });
         Ok(())
+    }
+
+    /// Repair the address of the backend at `index` (phase 6.6).
+    ///
+    /// The URL goes through [`normalise_url`], and **everything else is kept**:
+    /// the token, the locally chosen name, the pairing method and the
+    /// restore-during-playback flag. That is what makes a DHCP lease change a
+    /// non-event rather than a re-pairing.
+    pub fn set_url(&mut self, index: usize, url: &str) -> Result<(), SettingsError> {
+        // Normalise before touching anything, exactly as `add` does: a rejected
+        // repair must leave the whole list as it was.
+        let url = normalise_url(url)?;
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.url = url;
+        Ok(())
+    }
+
+    /// Adopt the stable id of the backend at `index`, learnt from its mDNS record
+    /// or its pairing. Never clears the token: the machine is the same one.
+    pub fn set_backend_id(
+        &mut self,
+        index: usize,
+        id: Option<String>,
+    ) -> Result<(), SettingsError> {
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.id = id;
+        Ok(())
+    }
+
+    /// Adopt the ids of discovered services that match a known entry by URL while
+    /// that entry carries none. Returns whether anything changed.
+    ///
+    /// This is what lets a **pre-6.6 entry** survive its next address change: it
+    /// is matched on its URL alone until it learns an id, so without this the
+    /// first lease change would offer the machine the app already knows as a
+    /// brand new one — the very duplication phase 6.6 exists to stop.
+    ///
+    /// An id another entry already claims is never re-assigned: two entries
+    /// answering to the same id would then both match every later find.
+    pub fn adopt_discovered_ids(&mut self, found: &[blue2th_proto::DiscoveredBackend]) -> bool {
+        let mut adopted = false;
+        for service in found {
+            let (Some(id), Ok(url)) = (service.id.as_deref(), normalise_url(&service.url)) else {
+                continue;
+            };
+            if self.backends.iter().any(|b| b.id.as_deref() == Some(id)) {
+                continue;
+            }
+            if let Some(entry) = self
+                .backends
+                .iter_mut()
+                .find(|b| b.url == url && b.id.is_none())
+            {
+                entry.id = Some(id.to_string());
+                adopted = true;
+            }
+        }
+        adopted
+    }
+
+    /// Create an entry from a discovered service and return its index.
+    ///
+    /// Goes through the same rules as [`AppSettings::add`] — a service
+    /// announcement cannot smuggle in a name typing would refuse — and leaves
+    /// `token: None`: discovery is **not** authentication, so the app still
+    /// reports "not paired" until the six-character code is exchanged.
+    pub fn add_discovered(
+        &mut self,
+        found: &blue2th_proto::DiscoveredBackend,
+    ) -> Result<usize, SettingsError> {
+        // Reusing `add` is what makes the rules identical to typing: one
+        // validator, one duplicate check, one normalisation. It pushes at the
+        // end, so the new entry is the last one.
+        self.add(&found.name, &found.url)?;
+        let index = self.backends.len().saturating_sub(1);
+        // Clone: the DTO is borrowed from the discovery list, which outlives this
+        // call and may still be redrawn, while the entry needs its own copy.
+        self.set_backend_id(index, found.id.clone())?;
+        Ok(index)
+    }
+
+    /// Whether a discovered backend that moved is repaired without asking.
+    pub fn set_auto_repair_url(&mut self, enabled: bool) {
+        self.auto_repair_url = enabled;
+    }
+
+    /// Whether the discovery list may create entries for unknown backends.
+    pub fn set_discovery_adds_backends(&mut self, enabled: bool) {
+        self.discovery_adds_backends = enabled;
     }
 
     /// Store the API token obtained by pairing with the backend at `index`.

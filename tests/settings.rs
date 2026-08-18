@@ -44,6 +44,9 @@ fn two_backends() -> AppSettings {
                 // Phase 6.4: paired, with the typed-code transport.
                 token: Some("salon-token".to_string()),
                 pairing: PairingMethod::Code,
+                // Phase 6.6: Salon knows which machine answers it, Bureau does
+                // not (a pre-6.6 entry, matched on its URL).
+                id: Some("salon-backend-id".to_string()),
             },
             BackendEntry {
                 name: "Bureau".to_string(),
@@ -51,9 +54,13 @@ fn two_backends() -> AppSettings {
                 restore_during_playback: false,
                 token: None,
                 pairing: PairingMethod::Qr,
+                id: None,
             },
         ],
         active: Some(0),
+        // Phase 6.6: both discovery settings ship enabled.
+        auto_repair_url: true,
+        discovery_adds_backends: true,
     }
 }
 
@@ -134,6 +141,9 @@ fn test_add_normalises_a_trailing_slash() {
             // Phase 6.4: and unpaired, with the default pairing method.
             token: None,
             pairing: PairingMethod::Code,
+            // Phase 6.6: typing an address says nothing about which machine
+            // answers it, so no id is adopted yet.
+            id: None,
         })
     );
 }
@@ -499,6 +509,188 @@ fn test_restore_flag_survives_the_settings_blob_round_trip() {
     );
 }
 
+// ---- phase 6.6: find the backend on the network ----
+
+// Criterion: applying a `Repair` updates the URL in place and never creates a
+// second entry; the token survives. This is the DHCP-lease-change case that used
+// to duplicate the backend.
+#[test]
+fn test_applying_a_repair_updates_the_url_in_place() {
+    let mut settings = two_backends();
+    settings
+        .set_url(0, "http://192.168.1.200:4000")
+        .expect("a known backend's address can always be repaired");
+
+    assert_eq!(settings.backends.len(), 2, "no second entry may be created");
+    let salon = settings.backends.first().expect("Salon is still there");
+    assert_eq!(salon.url, "http://192.168.1.200:4000");
+    assert_eq!(
+        salon.token.as_deref(),
+        Some("salon-token"),
+        "repairing an address must not unpair the backend"
+    );
+    assert_eq!(salon.name, "Salon", "the locally chosen name survives");
+    assert_eq!(salon.pairing, PairingMethod::Code);
+    assert!(salon.restore_during_playback);
+    assert_eq!(settings.active, Some(0), "the active entry does not move");
+}
+
+// Criterion: `set_url` normalises through `normalise_url` — a trailing slash is
+// trimmed exactly as `add` trims it.
+#[test]
+fn test_set_url_normalises_the_address() {
+    let mut settings = two_backends();
+    settings
+        .set_url(1, "  http://192.168.1.55:4000/  ")
+        .expect("a trailing slash and spaces around it are tolerated");
+    assert_eq!(
+        settings.backends.get(1).map(|b| b.url.as_str()),
+        Some("http://192.168.1.55:4000")
+    );
+}
+
+// Criterion: `set_url` refuses a malformed address, and refuses an unknown
+// index — a rejected repair must leave the whole list untouched.
+#[test]
+fn test_set_url_refuses_a_malformed_address_or_an_unknown_index() {
+    let mut settings = two_backends();
+    for bad in [
+        "",
+        "   ",
+        "192.168.1.107:4000",
+        "http://",
+        "http://:4000",
+        "http://a b",
+    ] {
+        assert_eq!(
+            settings.set_url(0, bad),
+            Err(SettingsError::MalformedUrl),
+            "{bad} is not a usable backend address"
+        );
+    }
+    assert_eq!(
+        settings.set_url(9, "http://192.168.1.200:4000"),
+        Err(SettingsError::UnknownBackend)
+    );
+    assert_eq!(settings, two_backends(), "nothing may have changed");
+}
+
+// Criterion: a repaired address survives the persistence round-trip — the point
+// of the repair is that the next start still reaches the backend.
+#[test]
+fn test_a_repaired_url_survives_the_settings_blob_round_trip() {
+    let mut settings = two_backends();
+    settings
+        .set_url(0, "http://192.168.1.200:4000")
+        .expect("repair Salon");
+    let reloaded = settings::load(Some(&settings::save_blob(&settings)));
+    assert_eq!(reloaded, settings);
+    assert_eq!(
+        reloaded.backends.first().map(|b| b.token.as_deref()),
+        Some(Some("salon-token"))
+    );
+}
+
+// Criterion: `BackendEntry` gains `id: Option<String>` with `serde(default)` — a
+// phase 6.4 blob loads with `id: None` and its token intact, and both new app
+// settings load **enabled**.
+#[test]
+fn test_a_phase_6_4_blob_loads_with_no_id_and_discovery_enabled() {
+    let blob = r#"{
+        "backends": [
+            {
+                "name": "Salon",
+                "url": "http://192.168.1.107:4000",
+                "restore_during_playback": true,
+                "token": "salon-token",
+                "pairing": "code"
+            }
+        ],
+        "active": 0
+    }"#;
+    let loaded = settings::load(Some(blob));
+
+    let salon = loaded.backends.first().expect("the entry must survive");
+    assert_eq!(salon.id, None, "a pre-6.6 entry simply has no id yet");
+    assert_eq!(
+        salon.token.as_deref(),
+        Some("salon-token"),
+        "loading a pre-6.6 blob must not unpair the backend"
+    );
+    assert!(
+        loaded.auto_repair_url,
+        "an existing install must not be silently opted out of auto-repair"
+    );
+    assert!(
+        loaded.discovery_adds_backends,
+        "an existing install must not be silently opted out of adding backends"
+    );
+}
+
+// Criterion: both settings default to **on** — a bare `serde(default)` would
+// yield `false` and opt every install out without saying so.
+#[test]
+fn test_both_discovery_settings_default_to_on() {
+    let fresh = AppSettings::default();
+    assert!(fresh.auto_repair_url);
+    assert!(fresh.discovery_adds_backends);
+
+    // An empty/absent blob takes the same path.
+    let loaded = settings::load(None);
+    assert!(loaded.auto_repair_url);
+    assert!(loaded.discovery_adds_backends);
+}
+
+// Criterion: both settings round-trip through the persisted blob, so a user who
+// turned one off finds it off after a restart.
+#[test]
+fn test_both_discovery_settings_round_trip_through_the_blob() {
+    let mut settings = two_backends();
+    settings.set_auto_repair_url(false);
+    settings.set_discovery_adds_backends(false);
+
+    let reloaded = settings::load(Some(&settings::save_blob(&settings)));
+    assert!(!reloaded.auto_repair_url);
+    assert!(!reloaded.discovery_adds_backends);
+
+    let mut back_on = reloaded;
+    back_on.set_auto_repair_url(true);
+    back_on.set_discovery_adds_backends(true);
+    let reloaded = settings::load(Some(&settings::save_blob(&back_on)));
+    assert!(reloaded.auto_repair_url);
+    assert!(reloaded.discovery_adds_backends);
+}
+
+// Criterion: the id is adopted the first time a backend is discovered, **without
+// clearing the token** — a pre-6.6 entry becomes id-matched without re-pairing.
+#[test]
+fn test_adopting_an_id_keeps_the_token_and_the_url() {
+    let mut settings = two_backends();
+    settings
+        .set_backend_id(1, Some("bureau-backend-id".to_string()))
+        .expect("Bureau adopts the id it just advertised");
+
+    let bureau = settings.backends.get(1).expect("Bureau is still there");
+    assert_eq!(bureau.id.as_deref(), Some("bureau-backend-id"));
+    assert_eq!(bureau.url, "http://192.168.1.42:4000");
+    assert_eq!(bureau.name, "Bureau");
+    assert_eq!(settings.backends.len(), 2);
+
+    // Adopting an id on a paired backend must never unpair it.
+    settings
+        .set_backend_id(0, Some("salon-backend-id".to_string()))
+        .expect("Salon re-confirms its id");
+    assert_eq!(
+        settings.backends.first().and_then(|b| b.token.as_deref()),
+        Some("salon-token")
+    );
+
+    assert_eq!(
+        settings.set_backend_id(9, Some("nope".to_string())),
+        Err(SettingsError::UnknownBackend)
+    );
+}
+
 // Criterion: the settings page has labels, and adding them did not cost the
 // per-device settings page its own. `rust-i18n` resolves a missing key to the
 // key itself, and a second `settings:` mapping in a locale file drops the first
@@ -526,6 +718,23 @@ fn test_locales_carry_both_settings_pages_labels() {
             "app_settings.pairing_code_placeholder",
             "app_settings.paired_ok",
             "app_settings.not_paired",
+            // The discovery section (phase 6.6): the two toggles, the search
+            // action and every state it can report — including the ones that are
+            // deliberately *not* errors (nothing found, already up to date).
+            "app_settings.section_discovery",
+            "app_settings.search_network",
+            "app_settings.searching",
+            "app_settings.no_backend_found",
+            "app_settings.discovery_unsupported",
+            "app_settings.auto_repair_url",
+            "app_settings.auto_repair_url_hint",
+            "app_settings.discovery_adds_backends",
+            "app_settings.discovery_adds_backends_hint",
+            "app_settings.discovered_known",
+            "app_settings.discovered_up_to_date",
+            "app_settings.discovered_new",
+            "app_settings.confirm_repair",
+            "app_settings.address_repaired",
             // The app-wide settings page (phase 6.2).
             "app_settings.title",
             "app_settings.backends",
@@ -883,4 +1092,47 @@ fn test_upsert_from_pair_link_refuses_a_name_another_backend_already_uses() {
         Err(SettingsError::DuplicateName)
     );
     assert_eq!(settings, two_backends(), "nothing may have changed");
+}
+
+// ── The status dot's three states (phase 6.6) ────────────────────────────────
+
+// Criterion: a backend that answers but was never paired is neither working nor
+// unreachable. It gets its own state, because a green dot over it would promise
+// something every route but `/health` refuses.
+#[test]
+fn test_backend_health_separates_unpaired_from_ready() {
+    assert_eq!(
+        settings::backend_health(true, true),
+        settings::BackendHealth::Ready
+    );
+    assert_eq!(
+        settings::backend_health(true, false),
+        settings::BackendHealth::Unpaired,
+        "reachable but tokenless is the in-between state, not a working one"
+    );
+}
+
+// Criterion: unreachable wins over unpaired — pairing a backend the phone cannot
+// talk to is not the next step, reaching it is.
+#[test]
+fn test_backend_health_reports_offline_whatever_the_pairing() {
+    for paired in [true, false] {
+        assert_eq!(
+            settings::backend_health(false, paired),
+            settings::BackendHealth::Offline,
+            "an unreachable backend is offline whether or not a token is held"
+        );
+    }
+}
+
+// Criterion: nothing configured reads as offline, not as unpaired — there is no
+// backend to pair with yet, so the settings page is the answer either way.
+#[test]
+fn test_backend_health_with_nothing_configured_is_offline() {
+    let empty = AppSettings::default();
+    assert_eq!(empty.active_token(), None);
+    assert_eq!(
+        settings::backend_health(false, empty.active_token().is_some()),
+        settings::BackendHealth::Offline
+    );
 }

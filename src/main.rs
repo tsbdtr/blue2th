@@ -19,6 +19,8 @@ use dioxus::prelude::*;
 mod backend;
 mod bluetooth;
 mod deep_link;
+mod discovery;
+mod jni_util;
 mod lifecycle;
 mod settings;
 
@@ -668,6 +670,19 @@ fn merge_devices(
     }
 }
 
+/// Order the scanned list: favourites first, then by signal strength.
+///
+/// A favourite is a device the backend is already bonded with (`paired`) — the
+/// user's own speaker, as opposed to every stranger the radio picks up. Burying
+/// it under a nearer unknown device is what makes the list unusable in a
+/// crowded place, so pairing outranks signal; RSSI only breaks ties inside each
+/// group, with an unknown RSSI last (`Reverse(None)` sorts after
+/// `Reverse(Some(_))`). Stable, so two equal devices keep the order the scan
+/// found them in.
+fn sort_scanned(devices: &mut [blue2th_proto::DeviceInfo]) {
+    devices.sort_by_key(|d| (std::cmp::Reverse(d.paired), std::cmp::Reverse(d.rssi)));
+}
+
 /// Replace the device with `info`'s address in `found` with its updated state.
 fn replace_device(
     found: &mut Signal<Vec<blue2th_proto::DeviceInfo>>,
@@ -695,6 +710,11 @@ fn BackendDeviceItem(
     let addr = device.address.clone();
     let connected = device.connected;
     let rssi = device.rssi;
+    // Bonded with the backend: one of the user's own devices, which the scanned
+    // list both marks and floats to the top (see `sort_scanned`). Only there —
+    // the pinned section holds exactly the connected devices, which are all
+    // bonded, so a star on every row would mark nothing.
+    let favourite = device.paired && !connected;
     let label = device
         .name
         .clone()
@@ -781,6 +801,15 @@ fn BackendDeviceItem(
                     });
                 }
             },
+            // Corner mark, out of the flow: the row lays out identically
+            // whether or not it carries the star.
+            if favourite {
+                span {
+                    class: "device-favourite",
+                    title: "{rust_i18n::t!(\"device.favourite\")}",
+                    "★"
+                }
+            }
             span { class: "{icon_class}", "{icon}" }
             span { class: "device-name", "{label}" }
             SignalBars { rssi, struck: is_unavailable }
@@ -1112,9 +1141,8 @@ fn BackendScan() -> Element {
             // Connected devices are pinned in an always-visible section at the top.
             let (connected, mut others): (Vec<_>, Vec<_>) =
                 devices.into_iter().partition(|d| d.connected);
-            // Sort the rest by signal strength: strongest (greenest) first, with
-            // unknown RSSI last (Reverse(None) sorts after Reverse(Some(_))).
-            others.sort_by_key(|d| std::cmp::Reverse(d.rssi));
+            // Favourites first, then strongest signal (see `sort_scanned`).
+            sort_scanned(&mut others);
             // A connected speaker is required for playback; the transport bar is
             // disabled otherwise.
             let has_speaker = !connected.is_empty();
@@ -1677,10 +1705,16 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
     let mut open = use_signal(|| false);
 
     let label = app_settings.read().active_label();
-    let tooltip = if backend_online() {
-        rust_i18n::t!("server.online")
-    } else {
-        rust_i18n::t!("server.offline")
+    // Reachable is not the same as usable since phase 6.4: an unpaired backend
+    // answers `/health` and 401s everything else.
+    let health = settings::backend_health(
+        backend_online(),
+        app_settings.read().active_token().is_some(),
+    );
+    let tooltip = match health {
+        settings::BackendHealth::Offline => rust_i18n::t!("server.offline"),
+        settings::BackendHealth::Unpaired => rust_i18n::t!("app_settings.not_paired"),
+        settings::BackendHealth::Ready => rust_i18n::t!("server.online"),
     };
     // One read for the whole list: the active index comes from the same snapshot
     // as the names, so the menu can never mark a row the list no longer holds.
@@ -1711,7 +1745,13 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
                     class: "backend-status-dot",
                     style: format!(
                         "display:inline-block;width:12px;height:12px;border-radius:50%;background:{};",
-                        if backend_online() { "#22c55e" } else { "#ef4444" },
+                        // Amber for the in-between state: reachable, but nothing
+                        // will work until the code is exchanged.
+                        match health {
+                            settings::BackendHealth::Offline => "#ef4444",
+                            settings::BackendHealth::Unpaired => "#f59e0b",
+                            settings::BackendHealth::Ready => "#22c55e",
+                        },
                     ),
                 }
             }
@@ -1778,6 +1818,37 @@ fn SettingsButton() -> Element {
     }
 }
 
+/// One row of the discovery list (phase 6.6): a service the browse found, ready
+/// to render — its classification already resolved into what the row shows and
+/// what it offers.
+struct DiscoveryRow {
+    /// The service as found. Owned, because the rsx outlives the borrow of the
+    /// signal the classification read from.
+    service: blue2th_proto::DiscoveredBackend,
+    /// What the corner badge means, as its tooltip. The status is shown as an
+    /// icon rather than a label: a word next to a name and an address is three
+    /// competing things on one card, and the address is the one that must stay
+    /// readable.
+    status_title: String,
+    /// Whether the card carries the "in sync" badge — the app already knows this
+    /// backend at this address, so there is nothing to do.
+    synced: bool,
+    /// Whether the card offers to create an entry for this backend.
+    addable: bool,
+    /// A repair the user must confirm first, when auto-repair is off.
+    confirm: Option<PendingRepair>,
+}
+
+/// A move the app spotted but will not write until the user says so.
+struct PendingRepair {
+    /// Index of the known entry to move.
+    index: usize,
+    /// The normalised address it now answers at.
+    url: String,
+    /// The question to put on the button.
+    prompt: String,
+}
+
 /// The app settings page (phase 6.2). Built to grow: this slice ships only the
 /// **Backends** section — add, test, activate and delete the backends the app
 /// knows, one active at a time.
@@ -1830,6 +1901,85 @@ fn AppSettingsPage() -> Element {
             .collect()
     };
 
+    // ── Discovery (phase 6.6) ────────────────────────────────────────────────
+    let mut scanning = use_signal(|| false);
+    let mut scanned = use_signal(|| false);
+    let mut found: Signal<Vec<blue2th_proto::DiscoveredBackend>> = use_signal(Vec::new);
+    // A ROM that cannot resolve `MulticastLock` renders the button disabled
+    // rather than failing on tap: the verdict is cached, so this costs no JNI.
+    let can_search = discovery::search_enabled(jni_util::multicast_supported());
+    let (auto_repair, adds_backends) = {
+        let snapshot = app_settings.read();
+        (snapshot.auto_repair_url, snapshot.discovery_adds_backends)
+    };
+    // Re-classified on every render against the current settings, so an entry
+    // repaired a moment ago immediately reads as up to date.
+    let results: Vec<DiscoveryRow> = {
+        let snapshot = app_settings.read();
+        found
+            .read()
+            .iter()
+            .map(|service| {
+                let (status_title, synced, addable, confirm) =
+                    match settings::reconcile(&snapshot, service) {
+                        settings::DiscoveryAction::UpToDate => (
+                            rust_i18n::t!("app_settings.discovered_up_to_date").to_string(),
+                            true,
+                            false,
+                            None,
+                        ),
+                        // Auto-repairs are applied by the scan itself, so seeing
+                        // one here means the write is still pending this frame:
+                        // the card already reads as settled.
+                        settings::DiscoveryAction::Repair { .. } => (
+                            rust_i18n::t!("app_settings.discovered_known").to_string(),
+                            true,
+                            false,
+                            None,
+                        ),
+                        settings::DiscoveryAction::ConfirmRepair { index, url } => {
+                            // Built here rather than in the rsx: `t!` with named
+                            // arguments is not a formatted-segment expression.
+                            let prompt = rust_i18n::t!(
+                                "app_settings.confirm_repair",
+                                name = service.name.as_str(),
+                                url = url.as_str()
+                            )
+                            .to_string();
+                            (
+                                rust_i18n::t!("app_settings.discovered_known").to_string(),
+                                false,
+                                false,
+                                Some(PendingRepair { index, url, prompt }),
+                            )
+                        },
+                        settings::DiscoveryAction::Addable => (
+                            rust_i18n::t!("app_settings.discovered_new").to_string(),
+                            false,
+                            true,
+                            None,
+                        ),
+                        // Found and listed, but nothing is offered: adding is off,
+                        // or the advertised address is unusable.
+                        settings::DiscoveryAction::Ignored => (
+                            rust_i18n::t!("app_settings.discovered_new").to_string(),
+                            false,
+                            false,
+                            None,
+                        ),
+                    };
+                DiscoveryRow {
+                    // Owned copy: the rsx below outlives this borrow of the signal.
+                    service: service.clone(),
+                    status_title,
+                    synced,
+                    addable,
+                    confirm,
+                }
+            })
+            .collect()
+    };
+
     rsx! {
         div { class: "settings-page",
             div { class: "settings-header",
@@ -1839,6 +1989,189 @@ fn AppSettingsPage() -> Element {
                     "‹"
                 }
                 span { class: "settings-title", "{rust_i18n::t!(\"app_settings.title\")}" }
+            }
+
+            div { class: "settings-section",
+                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_discovery\")}" }
+
+                label { class: "settings-toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: auto_repair,
+                        onchange: move |e| {
+                            let mut next = app_settings.peek().clone();
+                            next.set_auto_repair_url(e.checked());
+                            // Owned copy: the cache keeps its own settings.
+                            settings::set_current(next.clone());
+                            *app_settings.write() = next;
+                        },
+                    }
+                    span { class: "settings-toggle-label",
+                        "{rust_i18n::t!(\"app_settings.auto_repair_url\")}"
+                    }
+                }
+                div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.auto_repair_url_hint\")}" }
+
+                label { class: "settings-toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: adds_backends,
+                        onchange: move |e| {
+                            let mut next = app_settings.peek().clone();
+                            next.set_discovery_adds_backends(e.checked());
+                            settings::set_current(next.clone());
+                            *app_settings.write() = next;
+                        },
+                    }
+                    span { class: "settings-toggle-label",
+                        "{rust_i18n::t!(\"app_settings.discovery_adds_backends\")}"
+                    }
+                }
+                div { class: "settings-hint",
+                    "{rust_i18n::t!(\"app_settings.discovery_adds_backends_hint\")}"
+                }
+
+                // The search action and everything it produces live in one framed
+                // block: the two toggles above configure discovery, this is
+                // discovery itself, and the results belong to the button that
+                // fetched them.
+                div { class: "discovery-panel",
+                    button {
+                        class: "settings-action",
+                        disabled: !can_search || scanning(),
+                        onclick: move |_| {
+                            if scanning() {
+                                return;
+                            }
+                            *scanning.write() = true;
+                            *scanned.write() = true;
+                            *error.write() = None;
+                            *notice.write() = None;
+                            spawn(async move {
+                                match discovery::browse(discovery::BROWSE_TIMEOUT).await {
+                                    Ok(services) => {
+                                        // Every change lands in one write, so a scan
+                                        // finding two moved backends redraws once.
+                                        let mut next = app_settings.peek().clone();
+                                        // A pre-6.6 entry learns the id of the machine
+                                        // answering at its address, so the *next* lease
+                                        // change repairs it instead of offering it as new.
+                                        let mut changed = next.adopt_discovered_ids(&services);
+                                        let mut repaired = false;
+                                        for service in &services {
+                                            if let settings::DiscoveryAction::Repair { index, url } =
+                                                settings::reconcile(&next, service)
+                                            {
+                                                repaired |= next.set_url(index, &url).is_ok();
+                                            }
+                                        }
+                                        changed |= repaired;
+                                        if changed {
+                                            settings::set_current(next.clone());
+                                            *app_settings.write() = next;
+                                        }
+                                        // Only a moved address is worth saying: adopting
+                                        // an id changes nothing the user can see.
+                                        if repaired {
+                                            *notice.write() = Some(
+                                                rust_i18n::t!("app_settings.address_repaired").to_string(),
+                                            );
+                                        }
+                                        *found.write() = services;
+                                    },
+                                    Err(e) => *error.write() = Some(e.to_string()),
+                                }
+                                *scanning.write() = false;
+                            });
+                        },
+                        if scanning() {
+                            "{rust_i18n::t!(\"app_settings.searching\")}"
+                        } else {
+                            "{rust_i18n::t!(\"app_settings.search_network\")}"
+                        }
+                    }
+
+                    if !can_search {
+                        div { class: "settings-hint",
+                            "{rust_i18n::t!(\"app_settings.discovery_unsupported\")}"
+                        }
+                    }
+                    // Finding nothing is a neutral state, never an error: a guest
+                    // Wi-Fi, a filtered multicast or a backend that is simply down
+                    // all look the same from here, and typing the address still
+                    // works.
+                    if scanned() && !scanning() && results.is_empty() {
+                        div { class: "settings-empty",
+                            "{rust_i18n::t!(\"app_settings.no_backend_found\")}"
+                        }
+                    }
+
+                    for DiscoveryRow { service, status_title, synced, addable, confirm } in results {
+                        div { key: "{service.url}", class: "discovery-card",
+                            div { class: "discovery-card-name", "{service.name}" }
+                            div { class: "discovery-card-url", "{service.url}" }
+                            // Corner badges, overlapping the card's top edge so
+                            // they read as a mark on the card rather than a third
+                            // line competing with the name and the address. Last
+                            // in the DOM because the add button consumes
+                            // `service`, and absolutely positioned anyway, so the
+                            // order here says nothing about where they land.
+                            div { class: "discovery-card-badges",
+                                if synced {
+                                    span {
+                                        class: "discovery-synced",
+                                        title: "{status_title}",
+                                        "⟳"
+                                    }
+                                }
+                                if addable {
+                                    button {
+                                        class: "discovery-add",
+                                        // The only label this button gets: the
+                                        // glyph carries the meaning, the tooltip
+                                        // and the accessible name carry the words.
+                                        title: "{status_title}",
+                                        "aria-label": "{rust_i18n::t!(\"app_settings.add\")}",
+                                        onclick: move |_| {
+                                            let mut next = app_settings.peek().clone();
+                                            // Being found grants nothing: the entry
+                                            // is created unpaired and the code is
+                                            // still due.
+                                            match next.add_discovered(&service) {
+                                                Ok(_) => {
+                                                    settings::set_current(next.clone());
+                                                    *app_settings.write() = next;
+                                                },
+                                                Err(err) => *error.write() = Some(err.to_string()),
+                                            }
+                                        },
+                                        "+"
+                                    }
+                                }
+                            }
+                            if let Some(PendingRepair { index, url, prompt }) = confirm {
+                                button {
+                                    class: "discovery-confirm",
+                                    onclick: move |_| {
+                                        let mut next = app_settings.peek().clone();
+                                        match next.set_url(index, &url) {
+                                            Ok(()) => {
+                                                settings::set_current(next.clone());
+                                                *app_settings.write() = next;
+                                                *notice.write() = Some(
+                                                    rust_i18n::t!("app_settings.address_repaired")
+                                                        .to_string(),
+                                                );
+                                            },
+                                            Err(err) => *error.write() = Some(err.to_string()),
+                                        }
+                                    },
+                                    "{prompt}"
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             div { class: "settings-section",
@@ -1882,17 +2215,24 @@ fn AppSettingsPage() -> Element {
                             title: "{rust_i18n::t!(\"app_settings.delete\")}",
                             aria_label: "{rust_i18n::t!(\"app_settings.delete\")}",
                             onclick: move |_| {
-                                let mut next = app_settings.peek().clone();
-                                if let Err(e) = next.remove(index) {
-                                    *error.write() = Some(e.to_string());
-                                    return;
-                                }
-                                // Owned copy: the process-wide cache keeps its own
-                                // settings beyond this handler.
-                                settings::set_current(next.clone());
-                                *app_settings.write() = next;
                                 *notice.write() = None;
                                 *error.write() = None;
+                                spawn(async move {
+                                    let mut next = app_settings.peek().clone();
+                                    // Deleting a backend that is streaming must
+                                    // quieten it and stop its Spotify source:
+                                    // forgetting it locally would leave the PC
+                                    // playing to the speakers with no way left in
+                                    // the app to stop it.
+                                    let released = backend::remove_backend(&mut next, index).await;
+                                    // The local removal happened whatever the
+                                    // remote calls did, so the list is updated
+                                    // either way.
+                                    *app_settings.write() = next;
+                                    if let Err(e) = released {
+                                        *error.write() = Some(e.to_string());
+                                    }
+                                });
                             },
                             "✕"
                         }
@@ -2590,8 +2930,26 @@ fn DeviceSettings(name: String) -> Element {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_connection_status, reconcile_connection_status, signal_bars, ConnectionStatus,
+        merge_connection_status, reconcile_connection_status, signal_bars, sort_scanned,
+        ConnectionStatus,
     };
+
+    /// A scanned (disconnected) device. Built by hand: a fixture must not lean
+    /// on the code under test.
+    fn scanned(address: &str, paired: bool, rssi: Option<i16>) -> blue2th_proto::DeviceInfo {
+        blue2th_proto::DeviceInfo {
+            address: address.to_string(),
+            name: None,
+            paired,
+            connected: false,
+            rssi,
+        }
+    }
+
+    /// The list as the user reads it, top to bottom.
+    fn order(devices: &[blue2th_proto::DeviceInfo]) -> Vec<&str> {
+        devices.iter().map(|d| d.address.as_str()).collect()
+    }
 
     // AC: RSSI maps to a bar count (1..=4) and a colour, stronger = more bars/greener.
     #[test]
@@ -2755,5 +3113,64 @@ mod tests {
             ConnectionStatus::Disconnected,
             "a non-connecting device absent from the set must become Disconnected"
         );
+    }
+
+    // AC: a favourite — a device the backend is already bonded with — is listed
+    // above every stranger, however much stronger the stranger's signal. This is
+    // the whole point: in a crowded place the user's own speaker was buried.
+    #[test]
+    fn test_sort_scanned_puts_favourites_above_a_stronger_stranger() {
+        let mut devices = vec![
+            scanned("STRANGER", false, Some(-35)),
+            scanned("MINE", true, Some(-90)),
+        ];
+
+        sort_scanned(&mut devices);
+
+        assert_eq!(
+            order(&devices),
+            vec!["MINE", "STRANGER"],
+            "pairing must outrank signal strength"
+        );
+    }
+
+    // AC: signal strength still orders each group, unknown RSSI last.
+    #[test]
+    fn test_sort_scanned_orders_within_each_group_by_signal() {
+        let mut devices = vec![
+            scanned("KNOWN_WEAK", true, Some(-88)),
+            scanned("NEW_UNKNOWN_RSSI", false, None),
+            scanned("NEW_STRONG", false, Some(-40)),
+            scanned("KNOWN_UNKNOWN_RSSI", true, None),
+            scanned("KNOWN_STRONG", true, Some(-45)),
+        ];
+
+        sort_scanned(&mut devices);
+
+        assert_eq!(
+            order(&devices),
+            vec![
+                "KNOWN_STRONG",
+                "KNOWN_WEAK",
+                "KNOWN_UNKNOWN_RSSI",
+                "NEW_STRONG",
+                "NEW_UNKNOWN_RSSI",
+            ],
+            "favourites first, each group strongest first with an unknown RSSI last"
+        );
+    }
+
+    // AC: two devices the sort cannot tell apart keep the order the scan found
+    // them in — the list must not shuffle under the user on every poll.
+    #[test]
+    fn test_sort_scanned_is_stable_for_devices_it_cannot_tell_apart() {
+        let mut devices = vec![
+            scanned("FIRST", true, Some(-60)),
+            scanned("SECOND", true, Some(-60)),
+        ];
+
+        sort_scanned(&mut devices);
+
+        assert_eq!(order(&devices), vec!["FIRST", "SECOND"]);
     }
 }
