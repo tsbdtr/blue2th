@@ -241,7 +241,14 @@ fn bearing(request: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::Re
 /// It carries *that* backend's token: the guard applies here like anywhere else,
 /// and the active token now belongs to the backend being switched to.
 async fn pause_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
-    let url = format!("{}/spotify/pause", base.trim_end_matches('/'));
+    post_at(base, "spotify/pause", token).await
+}
+
+/// `POST {base}/{path}` against an explicit address, carrying *that* backend's
+/// token. The body-less counterpart of [`set_config_at`], for the calls aimed at
+/// a backend the app is leaving rather than the one it resolves to.
+async fn post_at(base: &str, path: &str, token: Option<&str>) -> Result<(), BackendError> {
+    let url = format!("{}/{path}", base.trim_end_matches('/'));
     let response = bearing(reqwest::Client::new().post(&url), token)
         .timeout(SETTINGS_CALL_TIMEOUT)
         .send()
@@ -249,6 +256,71 @@ async fn pause_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
         .map_err(|e| BackendError::new(describe(&e)))?;
     backend_error_message(response).await?;
     Ok(())
+}
+
+/// Hand a backend back: quieten whatever it is playing, then shut its Spotify
+/// source down.
+///
+/// The order is the point. Pausing first stops the audio while `librespot` is
+/// still alive to stop it cleanly; killing the subprocess first would leave the
+/// speakers on the last buffer it pushed. Stopping the source last is what frees
+/// the PC — a `librespot` left running keeps the Connect device advertised and
+/// the speakers claimed, on a machine the app no longer even lists.
+///
+/// Every step is best-effort and independent: a backend that is already down
+/// must not stop the app from letting go of the rest. The last failure is
+/// returned so the page can say something, but none of them is worth undoing.
+async fn release_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
+    let mut failure = None;
+    for path in ["spotify/pause", "stop", "spotify/stop"] {
+        if let Err(e) = post_at(base, path, token).await {
+            failure = Some(e);
+        }
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Whether `base` is now unreferenced — no remaining entry points at it.
+///
+/// Two entries may carry the same address under different names (only names are
+/// unique), so deleting one label must not silence a machine the app still
+/// drives through the other. Pure.
+fn is_last_reference(remaining: &[crate::settings::BackendEntry], base: &str) -> bool {
+    !remaining.iter().any(|b| b.url == base)
+}
+
+/// Delete a backend and hand it back: forget it locally, then quieten and shut
+/// down the machine it named, when nothing else still points at it.
+///
+/// The local removal always happens and is persisted first, exactly as
+/// [`activate_backend`] switches first: a backend that is slow or dead must
+/// never keep the user staring at an entry they have deleted. The remote release
+/// is best-effort on top.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<(), BackendError> {
+    // Captured before the removal: afterwards the entry is gone, and its own
+    // token is the only one that backend will accept.
+    let released = settings
+        .backends
+        .get(index)
+        .map(|b| (b.url.clone(), b.token.clone()));
+
+    settings
+        .remove(index)
+        .map_err(|e| BackendError::new(e.to_string()))?;
+    // Owned copy: the cache keeps its own settings beyond this borrow.
+    crate::settings::set_current(settings.clone());
+
+    let Some((base, token)) = released else {
+        return Ok(());
+    };
+    if !is_last_reference(&settings.backends, &base) {
+        return Ok(());
+    }
+    release_at(&base, token.as_deref()).await
 }
 
 /// Push the active backend's name to it, best-effort and silent.
@@ -1074,6 +1146,40 @@ mod tests {
     #[test]
     fn test_is_left_behind_is_true_when_nothing_is_active() {
         assert!(is_left_behind("http://127.0.0.1:1", None));
+    }
+
+    /// One entry at `url`, named `name`. Built by hand: a fixture must not
+    /// depend on the settings functions under test elsewhere.
+    fn entry(name: &str, url: &str) -> crate::settings::BackendEntry {
+        crate::settings::BackendEntry {
+            name: name.to_string(),
+            url: url.to_string(),
+            restore_during_playback: true,
+            token: None,
+            pairing: crate::settings::PairingMethod::Code,
+            id: None,
+        }
+    }
+
+    // Criterion: deleting the last entry pointing at a machine releases it —
+    // otherwise the PC keeps streaming with nothing left in the app to stop it.
+    #[test]
+    fn test_is_last_reference_is_true_when_nothing_points_at_it_any_more() {
+        let remaining = vec![entry("Bureau", "http://127.0.0.1:2")];
+        assert!(is_last_reference(&remaining, "http://127.0.0.1:1"));
+        assert!(is_last_reference(&[], "http://127.0.0.1:1"));
+    }
+
+    // Criterion (non-nominal): only *names* are unique, so two entries may carry
+    // the same address. Deleting one label must not silence a machine the app
+    // still drives through the other.
+    #[test]
+    fn test_is_last_reference_is_false_while_another_entry_shares_the_address() {
+        let remaining = vec![
+            entry("Bureau", "http://127.0.0.1:2"),
+            entry("Salon bis", "http://127.0.0.1:1"),
+        ];
+        assert!(!is_last_reference(&remaining, "http://127.0.0.1:1"));
     }
 
     #[test]

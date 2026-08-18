@@ -25,6 +25,7 @@ device:
   select_target: "Play on this device"
   deselect_target: "Remove this device"
   offset: "Offset"
+  favourite: "Known to the backend"
 
 transport:
   title: "Playback"

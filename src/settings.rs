@@ -160,6 +160,34 @@ impl Default for AppSettings {
     }
 }
 
+/// How usable the active backend is, as the status dot reports it.
+///
+/// Three states rather than two, because "reachable" and "usable" stopped being
+/// the same thing in phase 6.4: a backend that answers but has never been paired
+/// refuses every route but `/health`, so a green dot over it would promise
+/// something the app cannot deliver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendHealth {
+    /// Nothing configured, or the active backend cannot be reached at all.
+    Offline,
+    /// Reachable, but no token: every call comes back 401 until the user pairs.
+    Unpaired,
+    /// Reachable and paired — the only fully working state.
+    Ready,
+}
+
+/// Classify the active backend for the status dot. Pure.
+///
+/// Unreachable wins over unpaired: pairing a backend the phone cannot even talk
+/// to is not the next step, reaching it is.
+pub fn backend_health(online: bool, paired: bool) -> BackendHealth {
+    match (online, paired) {
+        (false, _) => BackendHealth::Offline,
+        (true, false) => BackendHealth::Unpaired,
+        (true, true) => BackendHealth::Ready,
+    }
+}
+
 /// What a discovered service means for the settings the app already holds.
 ///
 /// Pure classification, computed by [`reconcile`] with no network and no JNI: the

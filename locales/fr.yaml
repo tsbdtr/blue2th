@@ -25,6 +25,7 @@ device:
   select_target: "Diffuser sur cet appareil"
   deselect_target: "Retirer cet appareil"
   offset: "Décalage"
+  favourite: "Connu de la backend"
 
 transport:
   title: "Lecture"

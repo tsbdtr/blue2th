@@ -1093,3 +1093,46 @@ fn test_upsert_from_pair_link_refuses_a_name_another_backend_already_uses() {
     );
     assert_eq!(settings, two_backends(), "nothing may have changed");
 }
+
+// ── The status dot's three states (phase 6.6) ────────────────────────────────
+
+// Criterion: a backend that answers but was never paired is neither working nor
+// unreachable. It gets its own state, because a green dot over it would promise
+// something every route but `/health` refuses.
+#[test]
+fn test_backend_health_separates_unpaired_from_ready() {
+    assert_eq!(
+        settings::backend_health(true, true),
+        settings::BackendHealth::Ready
+    );
+    assert_eq!(
+        settings::backend_health(true, false),
+        settings::BackendHealth::Unpaired,
+        "reachable but tokenless is the in-between state, not a working one"
+    );
+}
+
+// Criterion: unreachable wins over unpaired — pairing a backend the phone cannot
+// talk to is not the next step, reaching it is.
+#[test]
+fn test_backend_health_reports_offline_whatever_the_pairing() {
+    for paired in [true, false] {
+        assert_eq!(
+            settings::backend_health(false, paired),
+            settings::BackendHealth::Offline,
+            "an unreachable backend is offline whether or not a token is held"
+        );
+    }
+}
+
+// Criterion: nothing configured reads as offline, not as unpaired — there is no
+// backend to pair with yet, so the settings page is the answer either way.
+#[test]
+fn test_backend_health_with_nothing_configured_is_offline() {
+    let empty = AppSettings::default();
+    assert_eq!(empty.active_token(), None);
+    assert_eq!(
+        settings::backend_health(false, empty.active_token().is_some()),
+        settings::BackendHealth::Offline
+    );
+}
