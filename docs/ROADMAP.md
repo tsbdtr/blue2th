@@ -163,10 +163,23 @@ backend discovery, authenticated LAN-only control API.
   to enumerate. The token is persisted `0600` server-side and per backend on the
   phone; a 401 surfaces as "not paired", distinct from a backend that simply cannot
   be reached. **Validated on hardware.**
-- ⬜ **6.5 — Auto-reconnect** — reconnect the remembered speakers on startup. 6.3
-  already restores the selection the moment a known speaker reappears, so this is
-  the remaining half: making it reappear without waiting for BlueZ (or the user) to
-  reconnect it by hand.
+- ✅ **6.5 — Auto-reconnect** — 6.3 restored the selection the moment a known
+  speaker reappeared, but something else had to bring it back first. The backend
+  now dials the remembered speakers itself: the persisted playback **intent** is
+  the list, and a paired-but-disconnected address is re-dialled at startup and
+  then on a per-address backoff (15 s → 30 s → 60 s → 120 s, then three attempts
+  at a 5-minute cap before it is given up on). It only *connects* — selection and
+  routing stay with 6.3's `sync_connected`, which picks the speaker up on the next
+  `/devices` poll, so the graph is never rebuilt twice. It also never **pairs**:
+  the pass dials through a paired-only call, so an address that lost its bond is
+  refused rather than bonded unattended. A `/disconnect` from the app **dismisses**
+  the address rather than forgetting it — the intent and its tuned offset are kept,
+  6.3 still restores it if it returns on its own, but the backend stops dialling
+  until the user selects or connects it again: it must not fight the user. The
+  policy is pure and clock-free (`Instant` comes in as a parameter), which is what
+  makes the retry ladder testable at all; the BlueZ dial itself is not. Like 6.3,
+  it is a per-backend setting carried by `/config`, default **on**. **Validated on
+  hardware.**
 - ✅ **6.6 — mDNS discovery** — a backend was identified by its URL, so a new DHCP
   lease broke every call and re-pairing created a *second* entry for the same
   machine. Identity moves to a stable id the server mints once

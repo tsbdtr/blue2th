@@ -28,6 +28,9 @@ pub struct ServerName {
     /// Whether a remembered speaker coming back mid-playback is re-selected
     /// straight away (phase 6.3). Persisted next to the name; defaults to on.
     restore_during_playback: bool,
+    /// Whether the backend dials a remembered-but-disconnected speaker back by
+    /// itself (phase 6.5). Persisted next to the name; defaults to on.
+    auto_reconnect: bool,
     /// Where the name is persisted, or `None` to stay in memory only.
     store: Option<std::path::PathBuf>,
 }
@@ -46,6 +49,7 @@ fn save_config(
     path: &std::path::Path,
     name: &str,
     restore_during_playback: bool,
+    auto_reconnect: bool,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -54,6 +58,7 @@ fn save_config(
         // Owned copy: `ServerConfig` is a plain DTO built for serialization.
         name: name.to_string(),
         restore_during_playback,
+        auto_reconnect,
     })
     .map_err(std::io::Error::other)?;
     std::fs::write(path, body)
@@ -66,6 +71,7 @@ impl ServerName {
         Self {
             name: DEFAULT_BACKEND_NAME.to_string(),
             restore_during_playback: true,
+            auto_reconnect: true,
             store: None,
         }
     }
@@ -80,7 +86,12 @@ impl ServerName {
                 .and_then(|c| blue2th_proto::validate_backend_name(&c.name).ok())
                 .unwrap_or_else(|| DEFAULT_BACKEND_NAME.to_string()),
             // Absent from the store (phase 6.2 file) or unreadable: on, the default.
-            restore_during_playback: stored.map(|c| c.restore_during_playback).unwrap_or(true),
+            restore_during_playback: stored
+                .as_ref()
+                .map(|c| c.restore_during_playback)
+                .unwrap_or(true),
+            // Absent from the store (a pre-6.5 file) or unreadable: on, the default.
+            auto_reconnect: stored.as_ref().map(|c| c.auto_reconnect).unwrap_or(true),
             store,
         }
     }
@@ -101,13 +112,29 @@ impl ServerName {
         self.persist();
     }
 
+    /// Whether the backend may dial a remembered speaker back by itself.
+    pub fn auto_reconnect(&self) -> bool {
+        self.auto_reconnect
+    }
+
+    /// Store and persist the auto-reconnect setting.
+    pub fn set_auto_reconnect(&mut self, enabled: bool) {
+        self.auto_reconnect = enabled;
+        self.persist();
+    }
+
     /// Write name and flag together: they share one file, so a partial write
     /// would drop whichever half it left out.
     fn persist(&self) {
         let Some(path) = self.store.as_deref() else {
             return;
         };
-        if let Err(e) = save_config(path, &self.name, self.restore_during_playback) {
+        if let Err(e) = save_config(
+            path,
+            &self.name,
+            self.restore_during_playback,
+            self.auto_reconnect,
+        ) {
             tracing::warn!("could not persist the backend config: {e}");
         }
     }
@@ -339,6 +366,110 @@ mod tests {
             assert!(
                 ServerName::with_store(Some(path.clone())).restore_during_playback(),
                 "blob {blob:?} must fall back to restoration on"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // ---- phase 6.5: the auto-reconnect setting ----
+
+    // Criterion: `ServerName` stores `auto_reconnect`, and it ships **on** — a
+    // fresh backend dials a remembered speaker back until the user says otherwise.
+    #[test]
+    fn test_new_defaults_to_auto_reconnect_enabled() {
+        assert!(ServerName::new().auto_reconnect());
+        assert!(ServerName::with_store(None).auto_reconnect());
+    }
+
+    // Criterion: `POST /config` stores the flag — the setter applies it, in both
+    // directions.
+    #[test]
+    fn test_set_auto_reconnect_applies_the_value() {
+        let mut config = ServerName::new();
+        config.set_auto_reconnect(false);
+        assert!(!config.auto_reconnect());
+        config.set_auto_reconnect(true);
+        assert!(config.auto_reconnect());
+    }
+
+    // Criterion: `ServerName` persists and reloads `auto_reconnect` — it survives
+    // the restart the whole feature is about.
+    #[test]
+    fn test_auto_reconnect_round_trips_through_the_store() {
+        let path = store_path("auto-reconnect-roundtrip");
+        {
+            let mut config = ServerName::with_store(Some(path.clone()));
+            config.set_name("Salon").expect("store a valid name");
+            config.set_auto_reconnect(false);
+        }
+
+        let reloaded = ServerName::with_store(Some(path.clone()));
+        assert_eq!(reloaded.name(), "Salon", "the name must still round-trip");
+        assert!(
+            reloaded.restore_during_playback(),
+            "the phase 6.3 flag must keep its own value"
+        );
+        assert!(
+            !reloaded.auto_reconnect(),
+            "the flag must be persisted next to the name"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: the three settings share one file, so writing one may not
+    // clobber the others.
+    #[test]
+    fn test_setting_the_name_keeps_the_stored_auto_reconnect_flag() {
+        let path = store_path("auto-reconnect-and-rename");
+        {
+            let mut config = ServerName::with_store(Some(path.clone()));
+            config.set_auto_reconnect(false);
+            config.set_restore_during_playback(false);
+            config.set_name("Bureau").expect("store a valid name");
+        }
+
+        let reloaded = ServerName::with_store(Some(path.clone()));
+        assert_eq!(reloaded.name(), "Bureau");
+        assert!(!reloaded.restore_during_playback());
+        assert!(!reloaded.auto_reconnect());
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: a store written before 6.5 (name + restore flag only) reloads
+    // with auto-reconnect **on**, never silently off.
+    #[test]
+    fn test_a_pre_6_5_store_loads_with_auto_reconnect_enabled() {
+        let path = store_path("legacy-6-3");
+        std::fs::write(&path, r#"{"name":"Salon","restore_during_playback":false}"#)
+            .expect("write a phase 6.3-era store");
+
+        let config = ServerName::with_store(Some(path.clone()));
+        assert_eq!(config.name(), "Salon");
+        assert!(
+            !config.restore_during_playback(),
+            "the stored phase 6.3 flag must still be honoured"
+        );
+        assert!(
+            config.auto_reconnect(),
+            "a store predating the field must default the flag to on, not to off"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a malformed store yields the default rather than
+    // failing the startup.
+    #[test]
+    fn test_malformed_store_yields_the_default_auto_reconnect_flag() {
+        let path = store_path("malformed-auto-reconnect");
+        for blob in ["", "not json", r#"{"name": "#, "{}"] {
+            std::fs::write(&path, blob).expect("write the test store");
+            assert!(
+                ServerName::with_store(Some(path.clone())).auto_reconnect(),
+                "blob {blob:?} must fall back to auto-reconnect on"
             );
         }
 

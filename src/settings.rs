@@ -62,6 +62,12 @@ pub struct BackendEntry {
     /// on, and `serde(default)` keeps a phase 6.2-era blob loadable.
     #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
+    /// Whether that backend dials a remembered-but-disconnected speaker back by
+    /// itself (phase 6.5). Pushed with the name over `POST /config`; defaults to
+    /// on, and `serde(default)` keeps an existing `SharedPreferences` payload
+    /// loadable — with the feature enabled, not silently off.
+    #[serde(default = "auto_reconnect_default")]
+    pub auto_reconnect: bool,
     /// The API token obtained by pairing (phase 6.4), carried as
     /// `Authorization: Bearer <token>` on every call to that backend. `None`
     /// until the user pairs — the calls then fail fast as "not paired" rather
@@ -84,6 +90,16 @@ pub struct BackendEntry {
 /// feature. A phase 6.2-era blob, which has no such field, therefore loads with
 /// restoration enabled rather than silently disabled.
 fn restore_during_playback_default() -> bool {
+    true
+}
+
+/// The default for [`BackendEntry::auto_reconnect`]: on, so the backend dials a
+/// remembered speaker back by itself — the point of the feature. A payload
+/// written before the field existed therefore loads with it enabled; a bare
+/// `serde(default)` would yield `false` and silently disable auto-reconnect for
+/// every install that upgraded, which is the lesson already recorded in
+/// [`restore_during_playback_default`].
+fn auto_reconnect_default() -> bool {
     true
 }
 
@@ -312,6 +328,7 @@ impl AppSettings {
             name,
             url,
             restore_during_playback: restore_during_playback_default(),
+            auto_reconnect: auto_reconnect_default(),
             // A backend is unpaired until the user runs the exchange, and the
             // typed code is the transport that needs nothing but the terminal.
             token: None,
@@ -496,6 +513,17 @@ impl AppSettings {
             return Err(SettingsError::UnknownBackend);
         };
         entry.restore_during_playback = enabled;
+        Ok(())
+    }
+
+    /// Toggle the auto-reconnect setting of the backend at `index`. The app is
+    /// the source of truth for it, exactly as for the name, and pushes it over
+    /// `POST /config`.
+    pub fn set_auto_reconnect(&mut self, index: usize, enabled: bool) -> Result<(), SettingsError> {
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.auto_reconnect = enabled;
         Ok(())
     }
 

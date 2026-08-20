@@ -95,6 +95,8 @@ app_settings:
   section_playback: "Lecture"
   restore_during_playback: "Réintégrer pendant la lecture"
   restore_during_playback_hint: "Un appareil qui revient est réutilisé aussitôt. Le son se coupe un instant quand le routage change."
+  auto_reconnect: "Reconnecter tout seul"
+  auto_reconnect_hint: "La backend rappelle un appareil mémorisé jusqu'à ce qu'il réponde, pour qu'il soit prêt sans que vous touchiez à rien."
   section_pairing: "Appairage"
   pairing_method: "Méthode d'appairage"
   pairing_method_code: "Saisir un code"

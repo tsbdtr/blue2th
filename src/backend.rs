@@ -207,19 +207,32 @@ fn config_url(base: &str) -> String {
 /// Addressed explicitly rather than through `backend_base_url()`: the only caller
 /// is [`activate_backend`], which must reach the backend it *just* switched to
 /// even if a concurrent switch has already moved the resolved address on.
+///
+/// The whole config travels as one `ConfigRequest` rather than as a growing list
+/// of positional booleans: two adjacent `bool` parameters would silently swap at
+/// a call site, and the app is the source of truth for every one of them.
 async fn set_config_at(
     base: &str,
     token: Option<&str>,
-    name: &str,
-    restore_during_playback: bool,
+    config: ConfigRequest,
 ) -> Result<ServerConfig, BackendError> {
     let request = bearing(reqwest::Client::new().post(config_url(base)), token);
-    send_json(request.timeout(SETTINGS_CALL_TIMEOUT).json(&ConfigRequest {
+    // Serialized as it came in: rebuilding it field by field here is how a
+    // setting added later reaches the wire everywhere but in this one call.
+    send_json(request.timeout(SETTINGS_CALL_TIMEOUT).json(&config)).await
+}
+
+/// The config body describing a backend entry, as the app holds it.
+///
+/// One place builds it, so a new setting reaches `POST /config` from every
+/// caller at once.
+fn config_body(entry: &crate::settings::BackendEntry) -> ConfigRequest {
+    ConfigRequest {
         // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
-        name: name.to_string(),
-        restore_during_playback,
-    }))
-    .await
+        name: entry.name.clone(),
+        restore_during_playback: entry.restore_during_playback,
+        auto_reconnect: entry.auto_reconnect,
+    }
 }
 
 /// Add `token` as the bearer, when there is one.
@@ -345,13 +358,7 @@ pub async fn push_active_config() -> Result<(), BackendError> {
     let Some(entry) = settings.active_backend() else {
         return Err(BackendError::new(NO_BACKEND_CONFIGURED));
     };
-    set_config_at(
-        &entry.url,
-        entry.token.as_deref(),
-        &entry.name,
-        entry.restore_during_playback,
-    )
-    .await?;
+    set_config_at(&entry.url, entry.token.as_deref(), config_body(entry)).await?;
     Ok(())
 }
 
@@ -391,14 +398,9 @@ pub async fn activate_backend(
 
     // Owned copy: the borrow of `settings` must not survive the awaits below,
     // and the address is the one to push to whatever the cache does meanwhile.
-    let target = settings.active_backend().map(|b| {
-        (
-            b.url.clone(),
-            b.token.clone(),
-            b.name.clone(),
-            b.restore_during_playback,
-        )
-    });
+    let target = settings
+        .active_backend()
+        .map(|b| (b.url.clone(), b.token.clone(), config_body(b)));
 
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
@@ -410,9 +412,8 @@ pub async fn activate_backend(
             }
         }
     }
-    if let Some((base, token, name, restore_during_playback)) = target {
-        if let Err(e) = set_config_at(&base, token.as_deref(), &name, restore_during_playback).await
-        {
+    if let Some((base, token, config)) = target {
+        if let Err(e) = set_config_at(&base, token.as_deref(), config).await {
             failure = Some(e);
         }
     }
@@ -1036,6 +1037,7 @@ mod tests {
     async fn captured_config_push(
         name: &str,
         restore_during_playback: bool,
+        auto_reconnect: bool,
     ) -> Result<serde_json::Value, String> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1069,7 +1071,8 @@ mod tests {
                 }
             };
             // A well-formed `ServerConfig` so the client's decode step succeeds.
-            let payload = r#"{"name":"Salon","restore_during_playback":true}"#;
+            let payload =
+                r#"{"name":"Salon","restore_during_playback":true,"auto_reconnect":true}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{payload}",
                 payload.len()
@@ -1085,7 +1088,17 @@ mod tests {
         let base = format!("http://{addr}");
         // No token: this fixture reads the *body* the push sends, and the canned
         // listener answers whatever the header says.
-        let pushed = set_config_at(&base, None, name, restore_during_playback).await;
+        let pushed = set_config_at(
+            &base,
+            None,
+            ConfigRequest {
+                // Owned copy: `ConfigRequest` is a plain DTO built for serialization.
+                name: name.to_string(),
+                restore_during_playback,
+                auto_reconnect,
+            },
+        )
+        .await;
         let body = server
             .await
             .map_err(|e| format!("join the test listener: {e}"))??;
@@ -1097,7 +1110,7 @@ mod tests {
     // sends `restore_during_playback` next to the name, in both states.
     #[tokio::test]
     async fn test_config_push_carries_the_restore_flag() {
-        let pushed = captured_config_push("Salon", true)
+        let pushed = captured_config_push("Salon", true, true)
             .await
             .expect("push the config with the flag on");
         assert_eq!(pushed.get("name").and_then(|v| v.as_str()), Some("Salon"));
@@ -1109,7 +1122,7 @@ mod tests {
             "the pushed body must carry the caller's flag, got {pushed}"
         );
 
-        let pushed = captured_config_push("Salon", false)
+        let pushed = captured_config_push("Salon", false, true)
             .await
             .expect("push the config with the flag off");
         assert_eq!(
@@ -1118,6 +1131,41 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(false),
             "turning the setting off must reach the backend, got {pushed}"
+        );
+    }
+
+    // Criterion (phase 6.5): `set_config_at` puts `auto_reconnect` in the pushed
+    // body, in both states — the toggle has to reach the backend to mean anything.
+    #[tokio::test]
+    async fn test_config_push_carries_the_auto_reconnect_flag() {
+        let pushed = captured_config_push("Salon", true, true)
+            .await
+            .expect("push the config with auto-reconnect on");
+        assert_eq!(pushed.get("name").and_then(|v| v.as_str()), Some("Salon"));
+        assert_eq!(
+            pushed
+                .get("auto_reconnect")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "the pushed body must carry the caller's flag, got {pushed}"
+        );
+
+        let pushed = captured_config_push("Salon", true, false)
+            .await
+            .expect("push the config with auto-reconnect off");
+        assert_eq!(
+            pushed
+                .get("auto_reconnect")
+                .and_then(serde_json::Value::as_bool),
+            Some(false),
+            "turning the setting off must reach the backend, got {pushed}"
+        );
+        assert_eq!(
+            pushed
+                .get("restore_during_playback")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "the phase 6.3 flag must keep its own value, got {pushed}"
         );
     }
 
@@ -1155,6 +1203,7 @@ mod tests {
             name: name.to_string(),
             url: url.to_string(),
             restore_during_playback: true,
+            auto_reconnect: true,
             token: None,
             pairing: crate::settings::PairingMethod::Code,
             id: None,
@@ -1321,6 +1370,7 @@ mod tests {
                 name: "Salon".to_string(),
                 url: url.to_string(),
                 restore_during_playback: true,
+                auto_reconnect: true,
                 token: token.map(str::to_string),
                 pairing: PairingMethod::Code,
                 // Phase 6.6: an entry that never met a discovered service.

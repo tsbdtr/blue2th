@@ -95,6 +95,8 @@ app_settings:
   section_playback: "Playback"
   restore_during_playback: "Rejoin while playing"
   restore_during_playback_hint: "A device that comes back is used again straight away. Playback cuts for a moment when the routing changes."
+  auto_reconnect: "Reconnect on its own"
+  auto_reconnect_hint: "The backend calls a remembered device back until it answers, so it is ready without you touching anything."
   section_pairing: "Pairing"
   pairing_method: "How to pair"
   pairing_method_code: "Type a code"

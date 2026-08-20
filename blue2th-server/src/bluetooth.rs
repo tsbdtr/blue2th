@@ -55,6 +55,27 @@ pub async fn connect_device(addr: Address) -> bluer::Result<DeviceInfo> {
     device_info(&device).await
 }
 
+/// Connect a device that is **already paired**, without ever pairing it.
+///
+/// The auto-reconnect pass (phase 6.5) dials remembered speakers unattended, so
+/// it must not create a bond: an address whose bond disappeared (unpaired from
+/// the desktop, adapter swapped) is refused rather than paired again behind the
+/// user's back. `/connect` keeps [`connect_device`] — there the user is asking.
+pub async fn connect_paired_device(addr: Address) -> bluer::Result<DeviceInfo> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    let device = adapter.device(addr)?;
+
+    if !device.is_paired().await.unwrap_or(false) {
+        return Err(bluer::Error {
+            kind: bluer::ErrorKind::NotFound,
+            message: format!("{addr} is not a paired device"),
+        });
+    }
+    device.connect().await?;
+    device_info(&device).await
+}
+
 /// Disconnect a device on the default adapter.
 pub async fn disconnect_device(addr: Address) -> bluer::Result<DeviceInfo> {
     let session = Session::new().await?;

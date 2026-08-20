@@ -303,3 +303,89 @@ async fn test_transport_while_disconnected_still_returns_conflict() {
         );
     }
 }
+
+// ---- phase 6.5: the auto-reconnect setting ----
+
+// Criterion: `GET /config` reports `auto_reconnect`, with its default — a fresh
+// backend dials a remembered speaker back until told otherwise.
+#[tokio::test]
+async fn test_get_config_on_a_fresh_router_reports_auto_reconnect_enabled() {
+    let config = get_config(build_app()).await.expect("GET /config");
+    assert!(config.auto_reconnect, "the setting defaults to on");
+}
+
+// Criterion: `POST /config` accepts `auto_reconnect`, stores it, and echoes back
+// what the backend actually holds; `GET /config` reports it.
+#[tokio::test]
+async fn test_post_config_stores_the_auto_reconnect_flag_and_get_reflects_it() {
+    // Cloned so both requests hit the same router state (oneshot consumes it).
+    let app = build_app();
+    let (status, body) = post_config(app.clone(), r#"{"name":"Salon","auto_reconnect":false}"#)
+        .await
+        .expect("POST /config");
+    assert_eq!(status, StatusCode::OK, "body was {body}");
+    let echoed: ServerConfig = serde_json::from_str(&body).expect("parse the POST response");
+    assert!(
+        !echoed.auto_reconnect,
+        "the response must echo what was stored"
+    );
+
+    let config = get_config(app.clone()).await.expect("GET /config");
+    assert_eq!(config.name, "Salon");
+    assert!(!config.auto_reconnect, "the flag must be stored");
+    assert!(
+        config.restore_during_playback,
+        "a body without the phase 6.3 flag must leave it on"
+    );
+
+    let (status, _) = post_config(app.clone(), r#"{"name":"Salon","auto_reconnect":true}"#)
+        .await
+        .expect("POST /config");
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        get_config(app).await.expect("GET /config").auto_reconnect,
+        "turning the setting back on must be stored too"
+    );
+}
+
+// Criterion (non-nominal: a phase 6.2/6.3 client pushes `/config`): a body with
+// no `auto_reconnect` field leaves the feature **on**, never silently disabled.
+#[tokio::test]
+async fn test_post_config_without_auto_reconnect_leaves_it_on() {
+    let app = build_app();
+    let (status, body) = post_config(
+        app.clone(),
+        r#"{"name":"Salon","restore_during_playback":false}"#,
+    )
+    .await
+    .expect("POST /config");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a phase 6.3 client must keep working, got {status}: {body}"
+    );
+
+    let config = get_config(app).await.expect("GET /config");
+    assert!(
+        config.auto_reconnect,
+        "an older client must not disable auto-reconnect by omission"
+    );
+}
+
+// Criterion: a rejected name changes nothing at all — the auto-reconnect flag
+// carried by a refused body must not be applied either.
+#[tokio::test]
+async fn test_rejected_config_body_does_not_apply_the_auto_reconnect_flag() {
+    let app = build_app();
+    let (status, _) = post_config(app.clone(), r#"{"name":"2salon","auto_reconnect":false}"#)
+        .await
+        .expect("POST /config");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let config = get_config(app).await.expect("GET /config");
+    assert_eq!(config.name, DEFAULT_BACKEND_NAME);
+    assert!(
+        config.auto_reconnect,
+        "a refused body must leave the setting untouched"
+    );
+}
