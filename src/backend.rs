@@ -217,12 +217,9 @@ async fn set_config_at(
     config: ConfigRequest,
 ) -> Result<ServerConfig, BackendError> {
     let request = bearing(reqwest::Client::new().post(config_url(base)), token);
-    send_json(request.timeout(SETTINGS_CALL_TIMEOUT).json(&ConfigRequest {
-        name: config.name,
-        restore_during_playback: config.restore_during_playback,
-        auto_reconnect: config.auto_reconnect,
-    }))
-    .await
+    // Serialized as it came in: rebuilding it field by field here is how a
+    // setting added later reaches the wire everywhere but in this one call.
+    send_json(request.timeout(SETTINGS_CALL_TIMEOUT).json(&config)).await
 }
 
 /// The config body describing a backend entry, as the app holds it.

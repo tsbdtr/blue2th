@@ -829,22 +829,34 @@ async fn auto_reconnect_pass(state: &AppState) {
             tracing::warn!("auto-reconnect skipping the malformed remembered address '{addr}'");
             continue;
         };
-        match bluetooth::connect_device(parsed).await {
-            Ok(device) => {
+        // Paired-only: the pass connects, it never bonds. The candidate was
+        // paired a moment ago, and BlueZ is asked to hold that.
+        let failure = match bluetooth::connect_paired_device(parsed).await {
+            Ok(device) if device.connected => {
                 tracing::info!("auto-reconnect brought {} back", device.address);
                 state.reconnect.lock().await.record_success(&device.address);
-            },
-            Err(e) => {
-                let mut tracker = state.reconnect.lock().await;
-                tracker.record_failure(&addr, std::time::Instant::now());
-                if tracker.given_up(&addr) {
-                    tracing::info!(
-                        "auto-reconnect gave up on {addr}: no answer after the last attempt"
-                    );
-                } else {
-                    tracing::warn!("auto-reconnect could not reach {addr}: {e}");
+                // The cache the next tick short-circuits on, and the one
+                // `/select` validates against: kept in step exactly as
+                // `/connect` does, rather than waiting for a `/devices` poll
+                // that only happens while the app is open.
+                let mut conn = state.connected.lock().await;
+                if !conn.iter().any(|a| a == &device.address) {
+                    conn.push(device.address);
                 }
+                continue;
             },
+            // BlueZ accepted the dial but the link is not up: counted as a
+            // failure, or the ladder would reset on every such pass and dial
+            // that speaker every tick for as long as it misbehaves.
+            Ok(_) => "the link did not come up".to_string(),
+            Err(e) => e.to_string(),
+        };
+        let mut tracker = state.reconnect.lock().await;
+        tracker.record_failure(&addr, std::time::Instant::now());
+        if tracker.given_up(&addr) {
+            tracing::info!("auto-reconnect gave up on {addr}: no answer after the last attempt");
+        } else {
+            tracing::warn!("auto-reconnect could not reach {addr}: {failure}");
         }
     }
 }
@@ -1116,7 +1128,7 @@ async fn set_config(
     // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
     let req: ConfigRequest = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("invalid config body: {e}")))?;
-    let (name, restore_during_playback, auto_reconnect) = {
+    let (name, restore_during_playback, auto_reconnect, resumed) = {
         let mut stored = state.name.lock().await;
         let name = stored
             .set_name(&req.name)
@@ -1124,6 +1136,10 @@ async fn set_config(
         // Applied only once the name was accepted, so a rejected body changes
         // nothing at all.
         stored.set_restore_during_playback(req.restore_during_playback);
+        // Only the off → on edge, never every push: the app re-pushes the whole
+        // config on activation, and re-arming there would reset a running
+        // backoff ladder on each one.
+        let resumed = !stored.auto_reconnect() && req.auto_reconnect;
         stored.set_auto_reconnect(req.auto_reconnect);
         // Read back rather than echoed: the response reports what the backend
         // actually holds, exactly as it does for the (trimmed) name.
@@ -1131,8 +1147,15 @@ async fn set_config(
             name,
             stored.restore_during_playback(),
             stored.auto_reconnect(),
+            resumed,
         )
     };
+    // Switching the setting back on is the user asking for their speakers now:
+    // a ladder that ran out (or a hang-up recorded) while it was off must not
+    // leave the toggle looking inert.
+    if resumed {
+        state.reconnect.lock().await.rearm_all();
+    }
 
     // The Web API lookup must follow the advertised name, or transport would 412
     // while blaming the user for not starting the backend.
@@ -1201,8 +1224,9 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
 
     // A remembered speaker that is connected again — whether the pass dialled it
     // or it came back on its own — clears its retry ladder, so a later loss
-    // starts over from the first backoff step.
-    {
+    // starts over from the first backoff step. Skipped outright when nothing is
+    // connected: this runs on every `/devices` poll of every client.
+    if !connected.is_empty() {
         let intended = state.targets.lock().await.intended();
         let mut tracker = state.reconnect.lock().await;
         for addr in intended.iter().filter(|a| connected.contains(a)) {

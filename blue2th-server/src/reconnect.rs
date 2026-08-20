@@ -138,10 +138,27 @@ impl ReconnectTracker {
         state.failures += 1;
     }
 
-    /// Record that the address is connected again: its state is cleared
-    /// entirely, so a later loss starts from the first backoff step.
+    /// Record that the address is connected again: its retry ladder is cleared,
+    /// so a later loss starts from the first backoff step.
+    ///
+    /// A **dismissal is kept**: only the user takes back a hang-up, through
+    /// [`rearm`](Self::rearm). Dropping it here would let a stale `/devices`
+    /// listing — one taken just before the disconnect landed — silently re-arm
+    /// the address the user has just hung up, and the pass would dial it
+    /// straight back.
     pub fn record_success(&mut self, addr: &str) {
-        self.states.remove(addr);
+        let Some(previous) = self.states.remove(addr) else {
+            return;
+        };
+        if previous.dismissed {
+            self.states.insert(
+                addr.to_string(),
+                AddressState {
+                    dismissed: true,
+                    ..AddressState::default()
+                },
+            );
+        }
     }
 
     /// The user disconnected this address from the app: stop dialling it, while
@@ -156,6 +173,14 @@ impl ReconnectTracker {
     /// again immediately.
     pub fn rearm(&mut self, addr: &str) {
         self.states.remove(addr);
+    }
+
+    /// The user switched auto-reconnect back on: every address gets a fresh
+    /// ladder, so nothing stays given up on or dismissed from before the setting
+    /// was turned off. Without it the toggle would look inert on exactly the
+    /// speaker the user turned it back on for.
+    pub fn rearm_all(&mut self) {
+        self.states.clear();
     }
 
     /// Whether the backend has stopped dialling this address.
@@ -487,6 +512,72 @@ mod tests {
             tracker.due(&addrs(&[A]), now),
             addrs(&[A]),
             "the user re-selected it, so the backend may dial it again"
+        );
+    }
+
+    // Criterion (non-nominal: the user disconnects a speaker from the app): a
+    // `/devices` listing taken just before the disconnect landed still reports
+    // the speaker as connected, and must not undo the dismissal — otherwise the
+    // pass dials back the speaker the user has just hung up.
+    #[test]
+    fn test_record_success_keeps_a_dismissal() {
+        let now = Instant::now();
+        let mut tracker = ReconnectTracker::new();
+        tracker.dismiss(A);
+        tracker.record_success(A);
+
+        assert!(
+            tracker.due(&addrs(&[A]), now).is_empty(),
+            "only the user takes a hang-up back"
+        );
+        tracker.rearm(A);
+        assert_eq!(
+            tracker.due(&addrs(&[A]), now),
+            addrs(&[A]),
+            "and `rearm` still does"
+        );
+    }
+
+    // Criterion: a dismissal survives a success without dragging the old backoff
+    // along — once re-armed the address starts from the first step again.
+    #[test]
+    fn test_record_success_clears_the_backoff_of_a_dismissed_address() {
+        let now = Instant::now();
+        let mut tracker = ReconnectTracker::new();
+        let now = fail_repeatedly(&mut tracker, A, 3, now);
+        tracker.dismiss(A);
+        tracker.record_success(A);
+        tracker.rearm(A);
+
+        tracker.record_failure(A, now);
+        assert!(tracker
+            .due(&addrs(&[A]), now + Duration::from_secs(14))
+            .is_empty());
+        assert_eq!(
+            tracker.due(&addrs(&[A]), now + Duration::from_secs(15)),
+            addrs(&[A]),
+            "the ladder restarts at its first step"
+        );
+    }
+
+    // Criterion (non-nominal: the setting is switched off and back on): the
+    // toggle must not look inert — a ladder that ran out, or a hang-up recorded
+    // while the feature was off, is cleared for every address at once.
+    #[test]
+    fn test_rearm_all_makes_every_address_due_again() {
+        let now = Instant::now();
+        let mut tracker = ReconnectTracker::new();
+        let attempts = BACKOFF_RAMP.len() + ATTEMPTS_AT_CAP + 1;
+        let now = fail_repeatedly(&mut tracker, A, attempts, now);
+        tracker.dismiss(B);
+        tracker.record_failure(C, now);
+
+        tracker.rearm_all();
+        assert!(!tracker.given_up(A));
+        assert_eq!(
+            tracker.due(&addrs(&[A, B, C]), now),
+            addrs(&[A, B, C]),
+            "the given-up, the dismissed and the mid-backoff are all due again"
         );
     }
 
