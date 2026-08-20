@@ -41,6 +41,7 @@ fn two_backends() -> AppSettings {
                 name: "Salon".to_string(),
                 url: "http://192.168.1.107:4000".to_string(),
                 restore_during_playback: true,
+                auto_reconnect: true,
                 // Phase 6.4: paired, with the typed-code transport.
                 token: Some("salon-token".to_string()),
                 pairing: PairingMethod::Code,
@@ -52,6 +53,7 @@ fn two_backends() -> AppSettings {
                 name: "Bureau".to_string(),
                 url: "http://192.168.1.42:4000".to_string(),
                 restore_during_playback: false,
+                auto_reconnect: false,
                 token: None,
                 pairing: PairingMethod::Qr,
                 id: None,
@@ -138,6 +140,8 @@ fn test_add_normalises_a_trailing_slash() {
             url: "http://192.168.1.107:4000".to_string(),
             // Phase 6.3: a new backend starts with restoration on.
             restore_during_playback: true,
+            // Phase 6.5: and dials a remembered speaker back by itself.
+            auto_reconnect: true,
             // Phase 6.4: and unpaired, with the default pairing method.
             token: None,
             pairing: PairingMethod::Code,
@@ -509,6 +513,115 @@ fn test_restore_flag_survives_the_settings_blob_round_trip() {
     );
 }
 
+// ---- phase 6.5: auto-reconnect the remembered speakers ----
+
+// Criterion: the setting defaults to **on** — a freshly added backend dials a
+// remembered speaker back until the user says otherwise.
+#[test]
+fn test_add_starts_with_auto_reconnect_enabled() {
+    let mut settings = AppSettings::default();
+    settings
+        .add("Salon", "http://192.168.1.107:4000")
+        .expect("add Salon");
+    assert!(
+        settings.backends.first().is_some_and(|b| b.auto_reconnect),
+        "a new backend must start with auto-reconnect on"
+    );
+}
+
+// Criterion (non-nominal): a blob written before the flag existed must load with
+// auto-reconnect **on** rather than silently off — a bare `serde(default)` would
+// yield `false` and disable the feature for every existing install.
+#[test]
+fn test_a_pre_6_5_blob_loads_with_auto_reconnect_enabled() {
+    let blob = r#"{
+        "backends": [
+            {
+                "name": "Salon",
+                "url": "http://192.168.1.107:4000",
+                "restore_during_playback": true,
+                "token": "salon-token",
+                "pairing": "code"
+            }
+        ],
+        "active": 0
+    }"#;
+    let loaded = settings::load(Some(blob));
+
+    let salon = loaded.active_backend().expect("the stored backend");
+    assert!(
+        salon.auto_reconnect,
+        "an entry written before the flag existed must default to on"
+    );
+    assert_eq!(
+        salon.token.as_deref(),
+        Some("salon-token"),
+        "loading a pre-6.5 blob must not unpair the backend"
+    );
+    assert!(
+        salon.restore_during_playback,
+        "the phase 6.3 flag must survive alongside the new one"
+    );
+}
+
+// Criterion: the toggle is applied to the named backend and nothing else.
+#[test]
+fn test_set_auto_reconnect_updates_only_that_backend() {
+    let mut settings = two_backends();
+    settings
+        .set_auto_reconnect(0, false)
+        .expect("toggle Salon off");
+    assert_eq!(
+        settings.backends.first().map(|b| b.auto_reconnect),
+        Some(false)
+    );
+    assert_eq!(
+        settings.backends.get(1).map(|b| b.auto_reconnect),
+        Some(false),
+        "the other backend must be left exactly as it was"
+    );
+
+    settings
+        .set_auto_reconnect(0, true)
+        .expect("toggle it back on");
+    assert_eq!(
+        settings.backends.first().map(|b| b.auto_reconnect),
+        Some(true)
+    );
+    assert_eq!(
+        settings.backends.first().map(|b| b.restore_during_playback),
+        Some(true),
+        "the phase 6.3 toggle is a separate setting and must not move"
+    );
+}
+
+// Criterion (non-nominal): a stale index is refused rather than panicking, like
+// every other index-taking settings operation.
+#[test]
+fn test_set_auto_reconnect_on_an_unknown_backend_is_refused() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.set_auto_reconnect(9, false),
+        Err(SettingsError::UnknownBackend)
+    );
+    assert_eq!(settings, two_backends(), "nothing may have changed");
+}
+
+// Criterion: the toggle survives the persistence round-trip, so the app still
+// knows what to push after a restart.
+#[test]
+fn test_auto_reconnect_survives_the_settings_blob_round_trip() {
+    let mut settings = two_backends();
+    settings
+        .set_auto_reconnect(0, false)
+        .expect("toggle Salon off");
+    let reloaded = settings::load(Some(&settings::save_blob(&settings)));
+    assert_eq!(
+        reloaded.backends.first().map(|b| b.auto_reconnect),
+        Some(false)
+    );
+}
+
 // ---- phase 6.6: find the backend on the network ----
 
 // Criterion: applying a `Repair` updates the URL in place and never creates a
@@ -708,6 +821,10 @@ fn test_locales_carry_both_settings_pages_labels() {
             "app_settings.section_playback",
             "app_settings.restore_during_playback",
             "app_settings.restore_during_playback_hint",
+            // The phase 6.5 toggle, in the same section: the backend dialling a
+            // remembered speaker back on its own.
+            "app_settings.auto_reconnect",
+            "app_settings.auto_reconnect_hint",
             // The pairing section (phase 6.4): the per-backend method, the code
             // exchange and what a 401 reads as.
             "app_settings.section_pairing",

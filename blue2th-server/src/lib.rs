@@ -32,6 +32,7 @@ pub mod auth;
 mod bluetooth;
 pub mod config;
 pub mod identity;
+pub mod reconnect;
 pub mod spotify;
 pub mod spotify_auth;
 mod state_store;
@@ -75,6 +76,10 @@ struct AppState {
     /// [`require_bearer`] on every guarded route and by the [`pair`] handler,
     /// which is the only one allowed to hand the token out.
     auth: Arc<Mutex<AuthStore>>,
+    /// The auto-reconnect retry ladder (phase 6.5): which remembered speaker is
+    /// due for a dial, and how long to wait after each failure. In memory only —
+    /// a restart is deliberately a clean slate, so nothing stays given up on.
+    reconnect: Arc<Mutex<reconnect::ReconnectTracker>>,
 }
 
 /// One route the backend serves, as a (method, path template) pair plus whether
@@ -608,9 +613,11 @@ fn app_with_auth_and_targets(
         sse_watch: Arc::new(watchdog::SseWatch::default()),
         name: Arc::new(Mutex::new(server_name)),
         auth: Arc::new(Mutex::new(auth)),
+        reconnect: Arc::new(Mutex::new(reconnect::ReconnectTracker::new())),
     };
 
     spawn_idle_watchdog(state.clone());
+    spawn_auto_reconnect(state.clone());
 
     // Built from `ROUTES`, never alongside it: the guard is applied per entry,
     // so a route can only exist here by being listed — and by declaring whether
@@ -728,6 +735,117 @@ async fn pair(
             status: StatusCode::UNAUTHORIZED,
             message: e.to_string(),
         }),
+    }
+}
+
+/// Start the auto-reconnect pass (phase 6.5): dial the remembered speakers back
+/// on a widening backoff until they answer or the ladder runs out.
+///
+/// The first pass runs immediately, which is the startup pass: a PC that boots
+/// with its speaker already on has it back without anybody opening the app.
+fn spawn_auto_reconnect(state: AppState) {
+    // A router built outside an async context (a bare unit test) has no runtime
+    // to spawn on — and a test must never dial the developer's own speakers.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            auto_reconnect_pass(&state).await;
+            tokio::time::sleep(reconnect::RECONNECT_TICK).await;
+        }
+    });
+}
+
+/// One reconnect pass: work out which remembered speakers are worth dialling
+/// right now, dial them, and record what happened.
+///
+/// This runs forever on an idle backend, so the guards are ordered by cost and
+/// every one of them returns **before** touching D-Bus. No lock is held across
+/// an `await` on BlueZ either: a dial can block for seconds, and `/devices` must
+/// not queue behind it.
+///
+/// It only connects. Re-selecting the speaker and rebuilding the routing belong
+/// to `sync_connected` (phase 6.3), which picks it up on the next `/devices`
+/// poll — doing both here would rebuild the PipeWire graph twice.
+async fn auto_reconnect_pass(state: &AppState) {
+    // Cheapest first: the setting the user can switch off.
+    if !reconnect::should_auto_reconnect(state.name.lock().await.auto_reconnect()) {
+        return;
+    }
+    let intended = state.targets.lock().await.intended();
+    if intended.is_empty() {
+        return;
+    }
+    // The connected cache answers "is anything even missing?" without a D-Bus
+    // round-trip. It can be stale, so it only ever short-circuits the pass — the
+    // live listing below is what the candidates are actually computed from.
+    let cached = state.connected.lock().await.clone();
+    let missing: Vec<String> = intended
+        .iter()
+        .filter(|addr| !cached.iter().any(|c| c == *addr))
+        .cloned()
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    // Nothing due yet (every missing speaker is mid-backoff, dismissed or given
+    // up on): the overwhelmingly common tick, and it ends here.
+    if state
+        .reconnect
+        .lock()
+        .await
+        .due(&missing, std::time::Instant::now())
+        .is_empty()
+    {
+        return;
+    }
+
+    let devices = match bluetooth::list_paired_devices().await {
+        Ok(devices) => devices,
+        // No adapter, no bluetoothd, no D-Bus: the server keeps serving and the
+        // next tick tries again. Nothing here has a caller to fail.
+        Err(e) => {
+            tracing::warn!("auto-reconnect could not list the paired devices: {e}");
+            return;
+        },
+    };
+    let paired: Vec<String> = devices.iter().map(|d| d.address.clone()).collect();
+    let connected: Vec<String> = devices
+        .iter()
+        .filter(|d| d.connected)
+        .map(|d| d.address.clone())
+        .collect();
+
+    let candidates = reconnect::reconnect_candidates(&intended, &paired, &connected);
+    let due = {
+        let tracker = state.reconnect.lock().await;
+        tracker.due(&candidates, std::time::Instant::now())
+    };
+
+    for addr in due {
+        let Ok(parsed) = addr.parse::<bluer::Address>() else {
+            // A hand-edited store can hold anything; it must not stop the pass.
+            tracing::warn!("auto-reconnect skipping the malformed remembered address '{addr}'");
+            continue;
+        };
+        match bluetooth::connect_device(parsed).await {
+            Ok(device) => {
+                tracing::info!("auto-reconnect brought {} back", device.address);
+                state.reconnect.lock().await.record_success(&device.address);
+            },
+            Err(e) => {
+                let mut tracker = state.reconnect.lock().await;
+                tracker.record_failure(&addr, std::time::Instant::now());
+                if tracker.given_up(&addr) {
+                    tracing::info!(
+                        "auto-reconnect gave up on {addr}: no answer after the last attempt"
+                    );
+                } else {
+                    tracing::warn!("auto-reconnect could not reach {addr}: {e}");
+                }
+            },
+        }
     }
 }
 
@@ -982,6 +1100,7 @@ async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
     Json(ServerConfig {
         name: stored.name().to_string(),
         restore_during_playback: stored.restore_during_playback(),
+        auto_reconnect: stored.auto_reconnect(),
     })
 }
 
@@ -997,7 +1116,7 @@ async fn set_config(
     // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
     let req: ConfigRequest = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("invalid config body: {e}")))?;
-    let (name, restore_during_playback) = {
+    let (name, restore_during_playback, auto_reconnect) = {
         let mut stored = state.name.lock().await;
         let name = stored
             .set_name(&req.name)
@@ -1005,9 +1124,14 @@ async fn set_config(
         // Applied only once the name was accepted, so a rejected body changes
         // nothing at all.
         stored.set_restore_during_playback(req.restore_during_playback);
+        stored.set_auto_reconnect(req.auto_reconnect);
         // Read back rather than echoed: the response reports what the backend
         // actually holds, exactly as it does for the (trimmed) name.
-        (name, stored.restore_during_playback())
+        (
+            name,
+            stored.restore_during_playback(),
+            stored.auto_reconnect(),
+        )
     };
 
     // The Web API lookup must follow the advertised name, or transport would 412
@@ -1038,6 +1162,7 @@ async fn set_config(
     Ok(Json(ServerConfig {
         name,
         restore_during_playback,
+        auto_reconnect,
     }))
 }
 
@@ -1073,6 +1198,17 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
     // Clone: the cache owns one copy while the selection below is validated
     // against the other.
     *state.connected.lock().await = connected.clone();
+
+    // A remembered speaker that is connected again — whether the pass dialled it
+    // or it came back on its own — clears its retry ladder, so a later loss
+    // starts over from the first backoff step.
+    {
+        let intended = state.targets.lock().await.intended();
+        let mut tracker = state.reconnect.lock().await;
+        for addr in intended.iter().filter(|a| connected.contains(a)) {
+            tracker.record_success(addr);
+        }
+    }
 
     let (lost_last_target, anything_to_restore) = {
         let mut targets = state.targets.lock().await;
@@ -1150,6 +1286,9 @@ async fn connect(
             conn.push(device.address.clone());
         }
     }
+    // The user acted on this speaker: clear any dismissal or give-up, so the
+    // pass dials it again the next time it drops off.
+    state.reconnect.lock().await.rearm(&device.address);
     Ok(Json(device))
 }
 
@@ -1166,6 +1305,10 @@ async fn disconnect(
         conn.clone()
     };
     state.targets.lock().await.retain_connected(&connected);
+    // The user hung this speaker up from the app: the intent (and its remembered
+    // offset) is kept, but auto-reconnect must not dial it straight back — the
+    // backend does not fight the user.
+    state.reconnect.lock().await.dismiss(&device.address);
     Ok(Json(device))
 }
 
@@ -1181,6 +1324,9 @@ async fn select_target(
         targets.select(&addr, &connected)?;
         (targets.speakers(), targets.state())
     };
+    // Selecting is the user asking for this speaker: re-arm it, exactly as
+    // `/connect` does.
+    state.reconnect.lock().await.rearm(&addr);
     // Symmetric with deselect: a speaker added mid-playback must be brought into
     // the routing, not just into the stored selection.
     apply_selection_change(&state, &speakers).await;

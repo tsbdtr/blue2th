@@ -517,6 +517,11 @@ pub struct ServerConfig {
     /// target sink respawns `librespot`. Defaults to on.
     #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
+    /// Whether the backend dials a remembered-but-disconnected speaker back on
+    /// its own (phase 6.5). Auto-reconnect only *connects*: the phase 6.3 restore
+    /// path re-selects and re-routes. Defaults to on.
+    #[serde(default = "auto_reconnect_default")]
+    pub auto_reconnect: bool,
 }
 
 /// The default for `restore_during_playback`: a returning speaker rejoins on its
@@ -524,6 +529,14 @@ pub struct ServerConfig {
 /// opts **in**, not out — a bare `serde(default)` would have opted every phase 6.2
 /// client out without saying so.
 fn restore_during_playback_default() -> bool {
+    true
+}
+
+/// The default for `auto_reconnect`: the backend dials a remembered speaker back
+/// on its own, which is the point of the feature. A body that omits the field
+/// therefore opts **in**, not out — a bare `serde(default)` would have silently
+/// disabled auto-reconnect for every pre-6.5 client.
+fn auto_reconnect_default() -> bool {
     true
 }
 
@@ -593,6 +606,12 @@ pub struct ConfigRequest {
     /// disable restoration for every such client.
     #[serde(default = "restore_during_playback_default")]
     pub restore_during_playback: bool,
+    /// Whether the backend may dial a remembered speaker back by itself. The
+    /// default keeps a phase 6.2/6.3 client (which never sends it) working — and
+    /// must be **on**, since a bare `serde(default)` would yield `false` and
+    /// silently disable auto-reconnect for every such client.
+    #[serde(default = "auto_reconnect_default")]
+    pub auto_reconnect: bool,
 }
 
 #[cfg(test)]
@@ -942,6 +961,7 @@ mod tests {
         let original = ServerConfig {
             name: "Salon".to_string(),
             restore_during_playback: false,
+            auto_reconnect: true,
         };
         let json = serde_json::to_string(&original).expect("serialize ServerConfig");
         let parsed: ServerConfig = serde_json::from_str(&json).expect("deserialize ServerConfig");
@@ -963,6 +983,7 @@ mod tests {
         let original = ConfigRequest {
             name: "blue2th-PC".to_string(),
             restore_during_playback: true,
+            auto_reconnect: true,
         };
         let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
         let parsed: ConfigRequest = serde_json::from_str(&json).expect("deserialize ConfigRequest");
@@ -1007,6 +1028,90 @@ mod tests {
         assert!(
             !parsed.restore_during_playback,
             "an explicit false must survive the default"
+        );
+    }
+
+    // ---- phase 6.5: auto-reconnect on the wire ----
+
+    // Criterion: `ServerConfig` carries `auto_reconnect` on the wire and
+    // round-trips through serde.
+    #[test]
+    fn test_server_config_round_trips_with_auto_reconnect() {
+        for auto_reconnect in [true, false] {
+            let original = ServerConfig {
+                name: "Salon".to_string(),
+                restore_during_playback: true,
+                auto_reconnect,
+            };
+            let json = serde_json::to_string(&original).expect("serialize ServerConfig");
+            let parsed: ServerConfig =
+                serde_json::from_str(&json).expect("deserialize ServerConfig");
+            assert_eq!(original, parsed);
+            assert!(
+                json.contains(&format!("\"auto_reconnect\":{auto_reconnect}")),
+                "the auto-reconnect flag must be on the wire, got {json}"
+            );
+        }
+    }
+
+    // Criterion: `ConfigRequest` carries `auto_reconnect` on the wire and
+    // round-trips through serde — it is what the app pushes to `POST /config`.
+    #[test]
+    fn test_config_request_round_trips_with_auto_reconnect() {
+        for auto_reconnect in [true, false] {
+            let original = ConfigRequest {
+                name: "Salon".to_string(),
+                restore_during_playback: false,
+                auto_reconnect,
+            };
+            let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
+            let parsed: ConfigRequest =
+                serde_json::from_str(&json).expect("deserialize ConfigRequest");
+            assert_eq!(original, parsed);
+            assert_eq!(
+                parsed.auto_reconnect, auto_reconnect,
+                "the flag must survive the round-trip, got {json}"
+            );
+        }
+    }
+
+    // Criterion (non-nominal: a phase 6.2/6.3 client pushes `/config`): a JSON
+    // body omitting the field deserializes to `true` — the feature must not
+    // silently disable itself for an older app.
+    #[test]
+    fn test_config_request_without_auto_reconnect_defaults_to_on() {
+        let parsed: ConfigRequest =
+            serde_json::from_str(r#"{"name":"Salon","restore_during_playback":false}"#)
+                .expect("a phase 6.3 body must still parse");
+        assert!(
+            parsed.auto_reconnect,
+            "a body with no auto_reconnect field must leave the feature on"
+        );
+    }
+
+    // Criterion: `ServerConfig` carries the same default, so a pre-6.5 payload
+    // (or on-disk store) decodes with auto-reconnect on.
+    #[test]
+    fn test_server_config_without_auto_reconnect_defaults_to_on() {
+        let parsed: ServerConfig = serde_json::from_str(r#"{"name":"blue2th-PC"}"#)
+            .expect("a name-only payload must still parse");
+        assert!(parsed.auto_reconnect, "the setting defaults to on");
+    }
+
+    // Criterion: the flag is a real boolean on the wire — an explicit `false`
+    // is honoured and never overwritten by the default.
+    #[test]
+    fn test_config_request_explicit_false_auto_reconnect_is_honoured() {
+        let parsed: ConfigRequest =
+            serde_json::from_str(r#"{"name":"Salon","auto_reconnect":false}"#)
+                .expect("an explicit flag must parse");
+        assert!(
+            !parsed.auto_reconnect,
+            "an explicit false must survive the default"
+        );
+        assert!(
+            parsed.restore_during_playback,
+            "the phase 6.3 flag keeps its own default"
         );
     }
 

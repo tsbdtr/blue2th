@@ -1879,6 +1879,15 @@ fn AppSettingsPage() -> Element {
                 .map(|b| (i, b.restore_during_playback))
         })
     };
+    // The phase 6.5 toggle sits in the same section and reads the same snapshot:
+    // both settings describe what the *active* backend does with a speaker that
+    // went away.
+    let active_auto_reconnect: Option<(usize, bool)> = {
+        let settings = app_settings.read();
+        settings
+            .active
+            .and_then(|i| settings.backends.get(i).map(|b| (i, b.auto_reconnect)))
+    };
     // Pairing applies to the active backend too: it is the one the app talks to.
     let active_pairing: Option<(usize, String, settings::PairingMethod, bool)> = {
         let snapshot = app_settings.read();
@@ -2484,6 +2493,42 @@ fn AppSettingsPage() -> Element {
                     }
                 } else {
                     div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
+                }
+
+                if let Some((index, reconnecting)) = active_auto_reconnect {
+                    label { class: "settings-toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: reconnecting,
+                            onchange: move |e| {
+                                // `checked()`, like every other toggle here: the
+                                // box's state, not its (unset) `value` attribute.
+                                let enabled = e.checked();
+                                let mut next = app_settings.peek().clone();
+                                if let Err(err) = next.set_auto_reconnect(index, enabled) {
+                                    *error.write() = Some(err.to_string());
+                                    return;
+                                }
+                                // Owned copy: the cache keeps its own settings.
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                                let mut error = error;
+                                spawn(async move {
+                                    // The backend does the dialling, so the toggle
+                                    // is meaningless until it knows.
+                                    if let Err(e) = backend::push_active_config().await {
+                                        *error.write() = Some(e.to_string());
+                                    }
+                                });
+                            },
+                        }
+                        span { class: "settings-toggle-label",
+                            "{rust_i18n::t!(\"app_settings.auto_reconnect\")}"
+                        }
+                    }
+                    div { class: "settings-hint",
+                        "{rust_i18n::t!(\"app_settings.auto_reconnect_hint\")}"
+                    }
                 }
             }
 
