@@ -21,6 +21,19 @@ A single **cargo workspace** with three layers (full vision in `docs/ROADMAP.md`
 A feature may touch one, two, or all three layers. Quality commands run across the
 whole workspace; the Android NDK build runs only when the mobile layer changed.
 
+### librespot stays a subprocess — never a crate
+
+`librespot` is **GPL-3.0**. The server spawns it as a child process (`librespot
+--name …` in argv, see `blue2th-server/src/config.rs`), so it sits behind a
+process boundary: nothing links it, and its licence does not reach our binary.
+
+That boundary is the only reason blue2th can be distributed under
+`MIT OR Apache-2.0`. **Never add `librespot` (or any GPL crate) to a
+`Cargo.toml`** — linking it would make the whole server binary GPL-3.0 and
+invalidate the project's licence. If a feature seems to need librespot as a
+library, say so and stop: it is a licensing decision, not an implementation
+detail.
+
 ## Quality Commands
 
 ```bash
