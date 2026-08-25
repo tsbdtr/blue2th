@@ -39,3 +39,4 @@ Thumbs.db
 *~
 # TDD worktree base-SHA marker (per-worktree, never commit)
 .tdd-base-sha
+graphify-out/20*/
