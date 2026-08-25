@@ -5,7 +5,7 @@ continuously integrated and installable. **This document holds findings, not
 tasks**: what was verified, what was decided, and what still has to be checked
 against the real toolchain. Anything with a closing condition lives in
 [the issue tracker](https://github.com/tsbdtr/blue2th/issues), under the
-`v0.2.0` and `public` milestones.
+`v0.1.0` and `public` milestones.
 
 Standing decisions:
 
@@ -112,7 +112,7 @@ breaking the build — the failure lands at runtime (#2).
 
 ## 03 — Release management
 
-A `v0.2.0` tag produces a signed APK and a server binary, attached to a GitHub
+A `v0.1.0` tag produces a signed APK and a server binary, attached to a GitHub
 Release.
 
 Two prerequisites are tracked separately: the version scheme (#1) and the
