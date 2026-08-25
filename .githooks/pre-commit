@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Pre-commit quality gate for blue2th.
 # Install once with: git config core.hooksPath .githooks
-set -e
+#
+# pipefail matters here: without it a `cmd | tail` pipeline reports tail's exit
+# status, so a failing gate would let the commit through unnoticed.
+set -euo pipefail
 
 echo "--- fmt ---"
 cargo fmt --check
 
 echo "--- clippy ---"
-cargo clippy -- \
+cargo clippy --workspace --all-targets -- \
   -D warnings \
   -W clippy::unwrap_used \
   -W clippy::expect_used \
@@ -17,6 +20,6 @@ cargo clippy -- \
   -W clippy::unimplemented
 
 echo "--- test ---"
-cargo test 2>&1 | tail -5
+cargo test --workspace
 
 echo "--- ok ---"
