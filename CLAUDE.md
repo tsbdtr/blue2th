@@ -126,6 +126,17 @@ only rebuilds the ABI it targets, so a stale sibling can look like a missing sym
 Every change reaches `develop` through a pull request; `main` only ever receives a
 delivery, tagged `vX.Y.Z`. The branching model is in `docs/PUBLISHING.md`.
 
+**Name the branch after what it delivers**, using the Conventional Commits type
+as the prefix: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`, `refactor/<slug>`, and
+so on. The authoritative list is the one `.githooks/commit-msg` accepts — `feat`,
+`fix`, `refactor`, `test`, `chore`, `docs`, `style`, `perf`, `build`, `ci`,
+`revert`. `hotfix/<slug>` is the single exception: it comes from the branching
+model, not from the commit spec, and it is the only prefix that branches off
+`main`.
+
+The prefix describes the branch, not each of its commits: a `feat/` branch
+normally carries a `test:` commit, then `feat:`, then `refactor:`.
+
 **Never merge a pull request.** Open it, report what it contains, and stop — no
 `gh pr merge`, no auto-merge, not even on a green CI run. The merge is where a
 human takes responsibility for the change. This is a governance rule, not a
