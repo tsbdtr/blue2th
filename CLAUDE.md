@@ -121,6 +121,34 @@ only rebuilds the ABI it targets, so a stale sibling can look like a missing sym
 - No `println!` or `dbg!` in production code
 - Use owned types (`String`, `Vec<T>`) for Dioxus props; use `&str`, `&[T]` in pure functions
 
+## Pull Requests
+
+Every change reaches `develop` through a pull request; `main` only ever receives a
+delivery, tagged `vX.Y.Z`. The branching model is in `docs/PUBLISHING.md`.
+
+**Never merge a pull request.** Open it, report what it contains, and stop — no
+`gh pr merge`, no auto-merge, not even on a green CI run. The merge is where a
+human takes responsibility for the change. This is a governance rule, not a
+statement about capability.
+
+**Keep a pull request reviewable.** Reviewing is the bottleneck here, not writing:
+a 2000-line diff produced in ten minutes costs hours to read honestly, and a
+reviewer who cannot read it honestly starts rubber-stamping — at which point the
+review guarantees nothing. One feature per pull request. If the work grows past
+its spec, say so and ask; never widen the branch silently.
+
+**Name what a diff hides.** A new dependency, a change to a public API or to a
+shared DTO, a file touched outside the stated scope, a test deleted rather than
+fixed — call these out in the pull request body. They are exactly what a reviewer
+scanning a green CI run will miss.
+
+**Answering review comments.** Say what changed and why; never just "done" — a
+reply that cannot be checked is worse than no reply. Making the symptom disappear
+instead of the cause is a regression dressed as a fix. A comment that changes
+behaviour goes back through the TDD cycle, with a failing test first, rather than
+being patched directly. And disagreement is allowed: when a comment is wrong,
+reply with the reason instead of complying. Compliance is not engineering.
+
 ## tdd
 - **tdd** (`.claude/skills/tdd/SKILL.md`) — orchestrate the TDD cycle (red/green/refactor). Trigger: `/tdd`
 - When a user describes a new feature, **before** filling `tdd/feature.md` and before running `/tdd`:
