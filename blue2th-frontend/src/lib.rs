@@ -15,7 +15,6 @@
 //! Library root — re-exports modules for integration testing.
 
 pub mod backend;
-pub mod bluetooth;
 pub mod deep_link;
 pub mod discovery;
 pub mod jni_util;
