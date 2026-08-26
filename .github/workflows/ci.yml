@@ -1,0 +1,103 @@
+name: CI
+
+# The local hooks in .githooks/ are opt-in (git config core.hooksPath .githooks),
+# so they guarantee nothing on a shared repository. This workflow replays the same
+# three gates unconditionally.
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A bare runner does not compile this workspace. Two families of native
+      # libraries are needed, and the failure lands at link time with a message
+      # that says very little:
+      #
+      #   - the server links D-Bus (bluer) and ALSA (rodio -> cpal);
+      #   - the mobile crate pulls dioxus-desktop -> wry on a host build, which
+      #     drags in the whole GTK/WebKit stack even though the app targets
+      #     Android. libxdo comes from muda (menus), libssl from tungstenite.
+      #
+      # The pkg-config names were read from the build script output, not guessed:
+      # webkit2gtk-4.1, javascriptcoregtk-4.1, libsoup-3.0.
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libxdo-dev \
+            libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The three commands from CLAUDE.md, verbatim. --workspace is not cosmetic:
+      # without it every blue2th-server test is silently skipped (281 tests run
+      # instead of 652).
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets -- \
+            -D warnings \
+            -W clippy::unwrap_used \
+            -W clippy::expect_used \
+            -W clippy::panic \
+            -W clippy::todo \
+            -W clippy::unreachable \
+            -W clippy::unimplemented
+
+      # assets/tailwind.css is generated and untracked, but build.rs creates an
+      # empty one when missing, so a fresh clone can run the tests as is.
+      # One test is #[ignore]d: it needs a live PipeWire daemon.
+      - name: test
+        run: cargo test --workspace
+
+  commit-convention:
+    name: PR title follows Conventional Commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pattern is read from .githooks/commit-msg rather than copied, so the
+      # hook and CI cannot drift apart — which is exactly how the test gate ended
+      # up skipping half the suite (see the history of .githooks/pre-commit).
+      - name: Validate title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          PATTERN=$(sed -n "s/^PATTERN='\(.*\)'$/\1/p" .githooks/commit-msg)
+          if [ -z "$PATTERN" ]; then
+            echo "Could not read PATTERN from .githooks/commit-msg"
+            exit 1
+          fi
+          if ! printf '%s' "$TITLE" | grep -qE "$PATTERN"; then
+            echo "PR title does not follow Conventional Commits."
+            echo "Expected: <type>(<scope>): <description>"
+            echo "Got: $TITLE"
+            exit 1
+          fi
