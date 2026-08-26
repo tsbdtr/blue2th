@@ -195,3 +195,10 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- **`graph.json` and `graph.html` are not tracked.** On a fresh clone they do not
+  exist, and `graphify query` has nothing to read until `graphify update .` has run
+  once — do that first rather than falling back to grep. They were untracked
+  deliberately: 3.6 MB of blob per regeneration, no consumer outside a local
+  session, and a 63k-line diff for a plain directory rename, which no pull request
+  can honestly carry. `GRAPH_REPORT.md` stays tracked — it is small and its diff is
+  readable.

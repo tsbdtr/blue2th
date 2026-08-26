@@ -1,9 +1,4 @@
 {
-  "src/main.rs": {
-    "mtime": 1787263695.1401892,
-    "ast_hash": "92335b18f89559646a91a00dbe57f834",
-    "semantic_hash": ""
-  },
   "AGENTS.md": {
     "mtime": 1780700012.0570335,
     "ast_hash": "1eedbc93d84b0536ce16c4b5ef092395",
@@ -14,104 +9,54 @@
     "ast_hash": "2ea1ef601d5e4451ffcb1a3be8ebb0ed",
     "semantic_hash": "2ea1ef601d5e4451ffcb1a3be8ebb0ed"
   },
-  "assets/header.svg": {
-    "mtime": 1780695970.782894,
-    "ast_hash": "ac6be5e654026ec7eb3a1544950eec7d",
-    "semantic_hash": "ac6be5e654026ec7eb3a1544950eec7d"
-  },
   ".githooks/commit-msg": {
     "mtime": 1780781662.564556,
     "ast_hash": "9db3f0bafc60604a7a7769a4da0ccb0b",
     "semantic_hash": "9db3f0bafc60604a7a7769a4da0ccb0b"
   },
   ".githooks/pre-commit": {
-    "mtime": 1780783265.894248,
-    "ast_hash": "b35610af8edead13d61e289ba1e731bf",
-    "semantic_hash": "b35610af8edead13d61e289ba1e731bf"
-  },
-  "src/bluetooth.rs": {
-    "mtime": 1787092216.4022713,
-    "ast_hash": "8846ad5a1d9605be79eb56cc72eb597f",
+    "mtime": 1787698232.3384619,
+    "ast_hash": "eb57734d87abc45cd310602bee651376",
     "semantic_hash": ""
   },
   ".claude/agents/tdd-implementer.md": {
-    "mtime": 1782147192.4545114,
-    "ast_hash": "10acd5bdfcdb0d539c53c1b0ba3a1856",
+    "mtime": 1787779782.0397933,
+    "ast_hash": "d9ddb7274a5081265a33a8d8bbe49060",
     "semantic_hash": ""
   },
   ".claude/agents/tdd-reviewer.md": {
-    "mtime": 1782147341.7710063,
-    "ast_hash": "de879813da5c3168302ff6c0309005f5",
+    "mtime": 1787779782.0397933,
+    "ast_hash": "461d97df0a647c03e8f0b38be799f86a",
     "semantic_hash": ""
   },
   ".claude/agents/tdd-test-writer.md": {
-    "mtime": 1782147134.0391192,
-    "ast_hash": "7185a48e691e98d5ecdc4fae98bfa99a",
+    "mtime": 1787779782.0397933,
+    "ast_hash": "defed02833f4501decc3a923f6f23778",
     "semantic_hash": ""
   },
   ".claude/skills/tdd/SKILL.md": {
-    "mtime": 1782322828.637911,
-    "ast_hash": "d0317561d02155958ee2437a0f35e517",
+    "mtime": 1787779782.0397933,
+    "ast_hash": "aad1490ebd47ceec063788a5de3481b4",
     "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1786646743.7202144,
-    "ast_hash": "91f5c8ca2862f937dc43f668f6f08b59",
-    "semantic_hash": ""
-  },
-  "locales/en.yaml": {
-    "mtime": 1787263695.1381893,
-    "ast_hash": "d72bcd0b6d4e9c1cb9c111724f45df95",
-    "semantic_hash": ""
-  },
-  "locales/fr.yaml": {
-    "mtime": 1787263695.1381893,
-    "ast_hash": "6f9a2c62517c48a36ff96ce11265f35c",
+    "mtime": 1787779782.0397933,
+    "ast_hash": "59d90411c623d8c65d9752ab3baa13f8",
     "semantic_hash": ""
   },
   "tdd/README.md": {
-    "mtime": 1780770913.9918928,
-    "ast_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346",
-    "semantic_hash": "6e52bbb67d77d3ae7edd9d8af4bb3346"
+    "mtime": 1787779782.0428848,
+    "ast_hash": "1ddd894f6836028cd3622a6dcb7d694f",
+    "semantic_hash": ""
   },
   "tdd/feature.md": {
-    "mtime": 1787263750.6454504,
-    "ast_hash": "6f5a8051aefff5ca9f7435a8672a9122",
-    "semantic_hash": ""
-  },
-  "assets/bluetooth.svg": {
-    "mtime": 1780704962.405288,
-    "ast_hash": "e4f03da13eae6b381ded1e989ee3345f",
-    "semantic_hash": "e4f03da13eae6b381ded1e989ee3345f"
-  },
-  "src/lib.rs": {
-    "mtime": 1787092216.4032712,
-    "ast_hash": "fd636a6f6da1a6ed406166357c8979b8",
-    "semantic_hash": ""
-  },
-  "tests/bluetooth_integration.rs": {
-    "mtime": 1781132156.729798,
-    "ast_hash": "ad9fd018f6cdb7bd6aa9f27bb6f80596",
+    "mtime": 1787779782.0428848,
+    "ast_hash": "0abc9c5946e74022d3ef61526b40ca33",
     "semantic_hash": ""
   },
   "tdd/REVIEW.md": {
     "mtime": 1787263695.1401892,
     "ast_hash": "ca049082fd5c22f449c793bc067540ec",
-    "semantic_hash": ""
-  },
-  "java/A2dpServiceListener.java": {
-    "mtime": 1781544389.70115,
-    "ast_hash": "84888ce9fa30680e62e6401a902978be",
-    "semantic_hash": ""
-  },
-  "java/build-dex.sh": {
-    "mtime": 1781544389.701496,
-    "ast_hash": "8a45abb3e394a613968c6e44e1c37c16",
-    "semantic_hash": ""
-  },
-  "tests/a2dp_dex_listener.rs": {
-    "mtime": 1781544389.701496,
-    "ast_hash": "2a85b929c3b8f687283271fb6177f2e8",
     "semantic_hash": ""
   },
   "blue2th-proto/src/lib.rs": {
@@ -122,11 +67,6 @@
   "blue2th-server/src/main.rs": {
     "mtime": 1782084415.994437,
     "ast_hash": "7fe3aceeffe593161d4e1de52af93c1c",
-    "semantic_hash": ""
-  },
-  "src/backend.rs": {
-    "mtime": 1787263695.1391892,
-    "ast_hash": "4609a81d220931ee2e7e8840f05450c4",
     "semantic_hash": ""
   },
   "docs/ROADMAP.md": {
@@ -174,11 +114,6 @@
     "ast_hash": "1275e0f35b4572f735214f75b40c8583",
     "semantic_hash": ""
   },
-  "android/MainActivity.kt": {
-    "mtime": 1786646364.7351134,
-    "ast_hash": "c01f2a1286cc952e30a6bb3896bc9c2d",
-    "semantic_hash": ""
-  },
   "blue2th-server/src/spotify_auth.rs": {
     "mtime": 1786744313.70854,
     "ast_hash": "9382bdf4c2f7709544bfa20fce3637cd",
@@ -194,21 +129,6 @@
     "ast_hash": "8526ef209014f0ee6e9e693e48c64304",
     "semantic_hash": ""
   },
-  "src/deep_link.rs": {
-    "mtime": 1786833606.509745,
-    "ast_hash": "8d02f939d28ae58aa4e525f4560a87b6",
-    "semantic_hash": ""
-  },
-  "src/lifecycle.rs": {
-    "mtime": 1786646364.7368848,
-    "ast_hash": "0d89ad3d95dc460029f62cbc11f6285c",
-    "semantic_hash": ""
-  },
-  "tests/spotify_deep_link.rs": {
-    "mtime": 1786646364.7368848,
-    "ast_hash": "0616b3dc26c6dd3a205f77eceb96b81e",
-    "semantic_hash": ""
-  },
   "blue2th-server/src/state_store.rs": {
     "mtime": 1786666953.8188136,
     "ast_hash": "3d1c1553b91073168933a415f176708d",
@@ -219,11 +139,6 @@
     "ast_hash": "737ee8e80032ac12983b905108dc90b6",
     "semantic_hash": ""
   },
-  "build.rs": {
-    "mtime": 1786646708.6408818,
-    "ast_hash": "82a7a5387173c85c39b1e36709630e70",
-    "semantic_hash": ""
-  },
   "blue2th-server/src/config.rs": {
     "mtime": 1787263695.1351893,
     "ast_hash": "7e6bb83e5678a28876315e1f36ba9818",
@@ -232,16 +147,6 @@
   "blue2th-server/tests/config.rs": {
     "mtime": 1787263695.1371894,
     "ast_hash": "ace2c21c382791fc097a25cc17d58a00",
-    "semantic_hash": ""
-  },
-  "src/settings.rs": {
-    "mtime": 1787263695.1401892,
-    "ast_hash": "e6b0bab858242dc9ea1786af543e7772",
-    "semantic_hash": ""
-  },
-  "tests/settings.rs": {
-    "mtime": 1787263695.1411893,
-    "ast_hash": "1bbc6800b6de165e54d8890ce2b75417",
     "semantic_hash": ""
   },
   "blue2th-server/tests/restore.rs": {
@@ -269,24 +174,129 @@
     "ast_hash": "317963a182b1866f7b9762b395cb0dfb",
     "semantic_hash": ""
   },
-  "src/discovery.rs": {
-    "mtime": 1787092216.4032712,
-    "ast_hash": "670662c63f34015d396b2ed20f05f08b",
-    "semantic_hash": ""
-  },
-  "src/jni_util.rs": {
-    "mtime": 1787092216.4032712,
-    "ast_hash": "587038c6145ec87f340a3da1a308ba41",
-    "semantic_hash": ""
-  },
-  "tests/discovery.rs": {
-    "mtime": 1787263695.1411893,
-    "ast_hash": "2896637c0922f6aff23e2aed7b219c6b",
-    "semantic_hash": ""
-  },
   "blue2th-server/src/reconnect.rs": {
     "mtime": 1787263695.1361892,
     "ast_hash": "3ec865dda3caa1661018f6a7ac3e2fee",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/android/MainActivity.kt": {
+    "mtime": 1787779782.041306,
+    "ast_hash": "c20ef544873fd24c51dda4426b7d8101",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/build.rs": {
+    "mtime": 1787779782.041306,
+    "ast_hash": "82a7a5387173c85c39b1e36709630e70",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/java/A2dpServiceListener.java": {
+    "mtime": 1787779782.041306,
+    "ast_hash": "84888ce9fa30680e62e6401a902978be",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/java/build-dex.sh": {
+    "mtime": 1787779782.0417144,
+    "ast_hash": "8a45abb3e394a613968c6e44e1c37c16",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/backend.rs": {
+    "mtime": 1787779782.0418153,
+    "ast_hash": "4609a81d220931ee2e7e8840f05450c4",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/bluetooth.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "8846ad5a1d9605be79eb56cc72eb597f",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/deep_link.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "8d02f939d28ae58aa4e525f4560a87b6",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/discovery.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "670662c63f34015d396b2ed20f05f08b",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/jni_util.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "587038c6145ec87f340a3da1a308ba41",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/lib.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "fd636a6f6da1a6ed406166357c8979b8",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/lifecycle.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "0d89ad3d95dc460029f62cbc11f6285c",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/main.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "92335b18f89559646a91a00dbe57f834",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/src/settings.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "e6b0bab858242dc9ea1786af543e7772",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/tests/a2dp_dex_listener.rs": {
+    "mtime": 1787779782.0420725,
+    "ast_hash": "09f7b9287d70b1619ac4b4c4cbef39b6",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/tests/bluetooth_integration.rs": {
+    "mtime": 1787779782.0428848,
+    "ast_hash": "9bf6b450fea2635c226438116888667f",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/tests/discovery.rs": {
+    "mtime": 1787779782.0428848,
+    "ast_hash": "da49c528010d19a02897fcc42577ce7a",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/tests/settings.rs": {
+    "mtime": 1787779782.0428848,
+    "ast_hash": "98e6566d055fb8978fd83bae365dba58",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/tests/spotify_deep_link.rs": {
+    "mtime": 1787779782.0428848,
+    "ast_hash": "9cae5e480b9799eb591da4361821aead",
+    "semantic_hash": ""
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1787777343.9176612,
+    "ast_hash": "8bda200842d13942c58f9e3fc1a06afb",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/locales/en.yaml": {
+    "mtime": 1787779782.0417144,
+    "ast_hash": "d72bcd0b6d4e9c1cb9c111724f45df95",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/locales/fr.yaml": {
+    "mtime": 1787779782.0418153,
+    "ast_hash": "6f9a2c62517c48a36ff96ce11265f35c",
+    "semantic_hash": ""
+  },
+  "docs/PUBLISHING.md": {
+    "mtime": 1787779782.0428848,
+    "ast_hash": "e6735f000655487b19f04efd87ed6164",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/assets/bluetooth.svg": {
+    "mtime": 1787779782.041306,
+    "ast_hash": "e4f03da13eae6b381ded1e989ee3345f",
+    "semantic_hash": ""
+  },
+  "blue2th-frontend/assets/header.svg": {
+    "mtime": 1787779782.041306,
+    "ast_hash": "ac6be5e654026ec7eb3a1544950eec7d",
     "semantic_hash": ""
   }
 }
