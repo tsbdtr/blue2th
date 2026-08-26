@@ -73,7 +73,10 @@ Why each is frozen — keep the delta this small:
 - **manifest**: declares `Blue2thPresenceService` (see below) and adds
   `android:launchMode="singleTop"` (no dx config key for it), without
   which the Spotify OAuth redirect stacks a second activity instead of reaching
-  `onNewIntent`. Also carries the permissions and the `blue2th://` intent-filter, since
+  `onNewIntent`. It also carries `android:label` as a **literal**: dx regenerates
+  `res/values/strings.xml` on every build and derives `app_name` from the cargo
+  package name, and `[application] name` in `Dioxus.toml` — despite being
+  documented as the display name — does not reach the Android resources. Also carries the permissions and the `blue2th://` intent-filter, since
   `[android.raw]` and `[deep_links]` are inert while a custom manifest is set.
 - **MainActivity.kt**: adds `onNewIntent` → `setIntent`, without which the base
   `Activity` leaves `getIntent()` on the launcher intent and `blue2th-frontend/src/deep_link.rs` never
