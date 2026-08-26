@@ -7,21 +7,16 @@ server:
   offline: "Backend unreachable"
 
 bt:
-  enable: "Enable Bluetooth"
   confirm_title: "Enable Bluetooth?"
   confirm_subtitle: "Bluetooth will be enabled on this device."
   confirm_yes: "Yes, enable"
 
 common:
   no: "No"
-  back: "← Back"
 
 device:
   disconnect: "Disconnect"
   empty: "No devices found"
-  connected_count: "%{count}/2"
-  connect_failed: "Failed to connect to %{name}"
-  disconnect_failed: "Failed to disconnect from %{name}"
   select_target: "Play on this device"
   deselect_target: "Remove this device"
   offset: "Offset"
@@ -65,21 +60,11 @@ spotify:
   next: "Next"
   previous: "Previous"
 
-settings:
-  title: "⚙ %{name}"
-  section_general: "General"
-  alias: "Custom name"
-  auto_reconnect: "Auto reconnect"
-  trusted: "Trusted device"
-  section_audio: "Audio"
-  codec: "Audio codec"
-  volume: "Volume (%{volume} %)"
-  section_danger: "Danger zone"
-  forget: "Forget device"
-
-# The app-wide settings page (phase 6.2). A namespace of its own: `settings.*`
-# already belongs to the per-device page above, and a second `settings:` key
-# would silently drop one of the two blocks.
+# The app-wide settings page (phase 6.2). The name comes from a bug: a `settings:`
+# block held the per-device settings, and a second `settings:` key silently
+# dropped one of the two. That per-device page went with the on-phone Bluetooth
+# stack, but the prefix stays — renaming it would break every translation for
+# nothing.
 app_settings:
   title: "Settings"
   backends: "Backends"

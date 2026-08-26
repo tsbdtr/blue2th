@@ -38,21 +38,30 @@ Speakers pair with the **PC**, not the phone. The PC owns the audio source
    - `blue2th` — existing Dioxus app (mobile remote).
    - `blue2th-server` — Axum backend on the Linux PC.
    - `blue2th-proto` — DTOs shared between mobile and server (typed contract).
-2. **Phone role** — **remote** for the new audio path. The existing Android BT
-   JNI/A2DP code is **kept as legacy** (see below), not deleted.
+2. **Phone role** — **remote** for the new audio path. The on-phone Android BT
+   JNI/A2DP code was kept as legacy through the transition, then deleted once the
+   backend path was proven (see below).
 3. **Control transport** — **REST first**; **SSE/WebSocket** for the live scan
    stream (phase 1).
 4. **Spotify** — `librespot` (PC = Connect endpoint) + Web API control with
    **OAuth Authorization Code + PKCE** (no client secret on mobile). Amazon Music
    is **out of scope** (no public playback API).
 
-## Legacy: existing Android Bluetooth code
+## Legacy: the on-phone Android Bluetooth code, removed
 
-The current on-phone Bluetooth stack (scan, pair, multi-profile connect/disconnect
-via JNI + reflection on hidden A2DP/HFP APIs) is **retained**. The phone no longer
-needs it for the PC-backend path, but it is the foundation for a possible future
-**on-phone LE Audio** feature if/when Android third-party LE Audio support
-improves. Keep it building and tested; gate the new path behind the backend.
+The on-phone Bluetooth stack (scan, pair, multi-profile connect/disconnect via JNI
++ reflection on hidden A2DP/HFP APIs) was **retained through the transition**,
+hidden behind a flag, in case it became the foundation for an on-phone **LE Audio**
+feature.
+
+It was **deleted** once the backend path was proven on hardware: 2579 lines that
+compiled on every build, were partly live, and that nobody was going to revive —
+Android still does not expose third-party LE Audio, and the phone is a remote now.
+Should LE Audio ever land, it would be a new stack against a new API, not this one.
+
+The JNI that remains in the app is unrelated to audio: `jni_util.rs` (the multicast
+lock for mDNS, phase 6.6) and `lifecycle.rs` (the presence hooks the watchdog
+reads).
 
 ## Phases (each ships something testable end-to-end)
 

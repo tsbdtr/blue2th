@@ -99,7 +99,7 @@ pub fn take_pending_deep_link() -> Option<String> {
     // Rust code runs; it stays valid for the process lifetime.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
     // Never attach_current_thread(): its guard detaches a Java thread on drop, which
-    // aborts the process on the next JNI call (see `bluetooth::android_jni_env`).
+    // aborts the process on the next JNI call (see `jni_util::env`).
     let mut env = vm
         .get_env()
         .or_else(|_| vm.attach_current_thread_permanently())

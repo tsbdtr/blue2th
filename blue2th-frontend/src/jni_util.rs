@@ -14,9 +14,10 @@
 
 //! The shared JNI seam (phase 6.6).
 //!
-//! `src/bluetooth.rs` grew its own `android_jni_env` / `bt_err_clear`; the
-//! multicast lock needs exactly the same two disciplines, so they are lifted here
-//! with a generic error type rather than copied:
+//! The now-deleted on-phone Bluetooth stack grew its own attach and
+//! exception-clearing helpers; the multicast lock needs exactly the same two
+//! disciplines, so they live here with a generic error type. This module is the
+//! only JNI seam left in the crate:
 //!
 //! - **never** the plain `attach_current_thread` call: its `AttachGuard` detaches
 //!   on drop and the next `FindClass` on that thread aborts the process. Attach
@@ -32,8 +33,7 @@
 /// A JNI failure, carrying the Java exception's own message when there was one.
 ///
 /// Only ever built on Android, where the JNI calls live; the desktop build keeps
-/// the type so the error path compiles and stays testable, exactly as
-/// `src/bluetooth.rs` does for its own Android-only helpers.
+/// the type so the error path compiles and stays testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub struct JniError(String);
@@ -67,7 +67,7 @@ pub fn env(vm: &jni::JavaVM) -> Result<jni::JNIEnv<'_>, JniError> {
 }
 
 /// Capture a pending Java exception's `toString()` **before** clearing it, and
-/// return it as a [`JniError`]. Mirrors `bt_err_clear` in `src/bluetooth.rs`.
+/// return it as a [`JniError`].
 ///
 /// The order is the whole point: an uncleared exception aborts the process at the
 /// next JNI call, and reading it after the clear yields nothing, so the error

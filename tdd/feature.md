@@ -43,7 +43,7 @@ PENDING
 - PENDING
 
 ### API / functions needed
-<!-- Per layer: mobile async fns + dispatcher (bluetooth.rs), server Axum routes/handlers + audio/transport logic, proto DTOs -->
+<!-- Per layer: mobile async fns + UI state (backend.rs for HTTP, jni_util.rs for any JNI), server Axum routes/handlers + audio/transport logic, proto DTOs -->
 - PENDING
 
 ## Test Strategy

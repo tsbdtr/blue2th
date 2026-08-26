@@ -804,20 +804,22 @@ fn test_adopting_an_id_keeps_the_token_and_the_url() {
     );
 }
 
-// Criterion: the settings page has labels, and adding them did not cost the
-// per-device settings page its own. `rust-i18n` resolves a missing key to the
-// key itself, and a second `settings:` mapping in a locale file drops the first
-// one wholesale — which is exactly how this page silently un-translated the
-// device page.
+// Criterion: the app-wide settings page has every label it renders. `rust-i18n`
+// resolves a missing key to the key itself, so an absent translation shows as raw
+// `app_settings.foo` on screen rather than failing anywhere.
+//
+// The `app_settings.` prefix is not cosmetic: a second top-level `settings:`
+// mapping in a locale file drops the first one wholesale, which is how this page
+// once silently un-translated the per-device one in 6.2. That per-device page is
+// gone with the on-phone Bluetooth stack, but the prefix stays — the trap comes
+// back the day a second page is added under a bare `settings:`.
 #[test]
-fn test_locales_carry_both_settings_pages_labels() {
+fn test_locales_carry_the_settings_page_labels() {
     for locale in ["en", "fr"] {
         rust_i18n::set_locale(locale);
         for key in [
             // The second section carrying the phase 6.3 toggle. It lives under
-            // the *same* `app_settings:` namespace on purpose: a second
-            // top-level `settings:` mapping is what silently un-translated the
-            // per-device page in 6.2.
+            // the *same* `app_settings:` namespace on purpose — see above.
             "app_settings.section_playback",
             "app_settings.restore_during_playback",
             "app_settings.restore_during_playback_hint",
@@ -864,15 +866,6 @@ fn test_locales_carry_both_settings_pages_labels() {
             "app_settings.test_ok",
             "app_settings.name_placeholder",
             "app_settings.url_placeholder",
-            // The per-device settings page, which must keep its own namespace.
-            "settings.section_general",
-            "settings.alias",
-            "settings.auto_reconnect",
-            "settings.trusted",
-            "settings.section_audio",
-            "settings.codec",
-            "settings.section_danger",
-            "settings.forget",
         ] {
             let translated = rust_i18n::t!(key);
             assert_ne!(
