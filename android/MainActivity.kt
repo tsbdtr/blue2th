@@ -26,7 +26,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 
-typealias BuildConfig = com.example.Blue2Th.BuildConfig
+typealias BuildConfig = io.github.tsbdtr.blue2th.BuildConfig
 
 class MainActivity : WryActivity() {
     override fun onCreate(savedInstanceState: android.os.Bundle?) {

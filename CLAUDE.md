@@ -95,6 +95,19 @@ nm -D --defined-only target/dx/blue2th/debug/android/app/app/src/main/jniLibs/<a
   | grep Java_dev_dioxus_main_MainActivity
 ```
 
+### The application identifier is frozen
+
+`Dioxus.toml` pins `[android] identifier = "io.github.tsbdtr.blue2th"`. **Never
+change it, and never let a refactor change it.** Android tells applications apart
+by this string: a different identifier is a different app, so existing installs
+can no longer be updated and their `SharedPreferences` — the paired backends and
+their tokens — are lost. It has the same one-way property as the signing key.
+
+It is pinned because it used to be implicit: `dx` derived it from the cargo
+package name, which made renaming the crate a silent, irreversible break. The
+`typealias BuildConfig = <namespace>.BuildConfig` line in `MainActivity.kt` must
+match it.
+
 Watch the `typealias BuildConfig = <namespace>.BuildConfig` line in `MainActivity.kt`:
 the namespace comes from the bundle identifier in the generated `build.gradle.kts`, and
 the wry Kotlin glue needs it. Check the `<abi>` directory is the one just rebuilt — dx

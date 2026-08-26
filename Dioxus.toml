@@ -1,3 +1,16 @@
+# ── Android application identity ─────────────────────────────────────────────
+# The application identifier is what Android uses to tell one app from another.
+# Left implicit, dx derives it from the cargo package name — which made renaming
+# the crate a silent, irreversible break: a different identifier is a different
+# app, so existing installs can no longer be updated and their SharedPreferences
+# (the paired backends and their tokens) are lost.
+#
+# Pinned here so the identifier never follows a refactor again. It must not
+# change once anyone has installed the app. `[android]` is a top-level section:
+# `[bundle] identifier` is only the cross-platform fallback.
+[android]
+identifier = "io.github.tsbdtr.blue2th"
+
 [application]
 
 # Stock Dioxus/wry activity plus an onNewIntent override, so the Spotify OAuth
