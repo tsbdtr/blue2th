@@ -75,6 +75,29 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  licence-headers:
+    name: Every .rs carries the SPDX header
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The current split existed because the header was applied by hand: a whole
+      # crate had none, plus one stray file that did. Without a gate it drifts back.
+      - name: Check the header is the first line of every tracked .rs
+        run: |
+          expected='// SPDX-License-Identifier: MIT OR Apache-2.0'
+          missing=$(git ls-files '*.rs' | while read -r f; do
+            head -1 "$f" | grep -qxF "$expected" || echo "  $f"
+          done)
+          if [ -n "$missing" ]; then
+            echo "Missing or misplaced SPDX header — it must be the first line:"
+            echo "$missing"
+            echo
+            echo "Expected exactly: $expected"
+            exit 1
+          fi
+
   commit-convention:
     name: PR title follows Conventional Commits
     runs-on: ubuntu-latest

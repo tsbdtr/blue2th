@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! PC backend audio engine: rodio sink lifecycle (play/pause/stop), PipeWire
 //! sink volume, and the shared playback state.
 //!

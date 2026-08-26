@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 6.1 (remember each speaker's sync offset across
 //! restarts): route-level non-regression around `POST /devices/{addr}/offset` and
 //! `GET /targets` once `SpeakerTargets` gained a remembered-offsets store.

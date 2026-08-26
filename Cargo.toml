@@ -12,6 +12,12 @@
 members = ["blue2th-frontend", "blue2th-proto", "blue2th-server"]
 resolver = "2"
 
+# The licence is a property of the product, not of each crate: the app, the
+# backend and the shared DTOs ship together. Hoisted so the three cannot drift.
+# `version` belongs here too — see #1.
+[workspace.package]
+license = "MIT OR Apache-2.0"
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1" }

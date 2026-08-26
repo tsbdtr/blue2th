@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 5.2 (Spotify OAuth + Web API transport & SSE):
 //! route wiring for `/spotify/auth/{url,callback,status}` and the transport
 //! endpoints `/spotify/{play,pause,next,previous}`.

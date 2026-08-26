@@ -25,6 +25,7 @@ Read the **Affected Layers** section of your prompt — review only those layers
 - **proto** — `blue2th-proto`. **Must stay target-agnostic** — no platform/hardware deps.
 
 ## Rules
+- **Check every new `.rs` file opens with `// SPDX-License-Identifier: MIT OR Apache-2.0`** on its first line — CI rejects it otherwise, and it is the kind of thing a red build catches too late.
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Feature Name**, **Affected Layers** and **Acceptance Criteria** sections to understand the intent.
 3. Read the **Changes Since Branch Creation** section to identify which files to review. If you received `--stat` only, read each listed file individually.

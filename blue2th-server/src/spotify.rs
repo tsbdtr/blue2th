@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Spotify source backend (phase 5.1): manage a `librespot` **subprocess** that
 //! advertises the PC as a Spotify Connect device (`blue2th-PC`) and feeds its
 //! PipeWire output into the existing audio graph.

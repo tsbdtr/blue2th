@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 6.4 — `POST /pair`, the one open door.
 //!
 //! Everything protecting the API rests on this route: the code is armed only

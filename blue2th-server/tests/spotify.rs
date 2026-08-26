@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 5.1 (Spotify source backend): route wiring for
 //! `/spotify/start` and `/spotify/status`.
 //!

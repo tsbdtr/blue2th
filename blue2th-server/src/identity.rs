@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The backend's stable identity (phase 6.6).
 //!
 //! A backend used to be identified by its URL alone, so a DHCP lease change made

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for the phase 3 transport feature: route wiring,
 //! embedded-file decoding, and the gated PipeWire hardware test.
 //!

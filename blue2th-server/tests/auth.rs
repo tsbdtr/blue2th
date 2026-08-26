@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 6.4 — the authenticated LAN API.
 //!
 //! The guard is asserted **route by route, driven from `blue2th_server::ROUTES`**

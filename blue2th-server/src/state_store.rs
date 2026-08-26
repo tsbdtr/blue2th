@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Where the backend keeps its small pieces of persistent state.
 //!
 //! The Spotify refresh token (`spotify_auth.rs`) and the remembered speaker

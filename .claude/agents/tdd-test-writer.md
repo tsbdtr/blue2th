@@ -46,6 +46,8 @@ agents and to CI. **Never write a test that requires real hardware.**
   the hardware boundary to manual testing (note it in your summary), per `docs/ROADMAP.md`.
 
 ## Rules
+- **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. CI rejects a file without it.
+
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Affected Layers** and **Feature Specification** sections (do not re-read the spec file separately).
 3. Read relevant existing source files for context before writing tests.
