@@ -15,7 +15,7 @@
 //! Integration tests for the real Bluetooth adapter state detection feature.
 //! These tests exercise the async inner logic of `enable_bluetooth_inner` directly.
 
-use blue2th::bluetooth::{
+use blue2th_frontend::bluetooth::{
     connected_device_names, enable_bluetooth_inner, request_enable_bluetooth,
     request_enable_bluetooth_inner, scan_devices, scan_devices_inner,
 };

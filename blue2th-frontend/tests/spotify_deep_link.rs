@@ -15,7 +15,9 @@
 //! Tests for the Spotify OAuth redirect parsing (phase 5.2). The JNI reader is
 //! Android-only and manual; the parsing it feeds is pure and covered here.
 
-use blue2th::deep_link::{parse_spotify_callback, take_pending_deep_link, SpotifyCallback};
+use blue2th_frontend::deep_link::{
+    parse_spotify_callback, take_pending_deep_link, SpotifyCallback,
+};
 
 #[test]
 fn test_parse_spotify_callback_extracts_code_and_state() {

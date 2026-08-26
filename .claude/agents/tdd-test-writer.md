@@ -16,14 +16,15 @@ Tests must **compile but FAIL** at the end of your work (red phase).
 Read the **Affected Layers** section of your prompt — only write tests for the
 layers listed there.
 
-- **mobile** — `blue2th` (root crate, Dioxus 0.7 `mobile` feature, no cx/Scope/use_state).
+- **mobile** — `blue2th-frontend` (Dioxus 0.7 `mobile` feature, no cx/Scope/use_state).
   - `src/bluetooth.rs` — Android JNI: `scan_devices()` (dispatcher → `scan_devices_inner()`
     on Android, simulation fallback elsewhere), `connect_device(name)`, `disconnect_device(name)`,
     `enable_bluetooth()`, `request_enable_bluetooth()`. Custom error: `BluetoothError`.
     JNI helpers to reuse (never recreate): `android_jni_env(vm)`, `bt_err_clear(env, e)`.
-  - `src/` also holds the backend HTTP client (`reqwest`) and Dioxus UI/state
+  - `blue2th-frontend/src/` also holds the backend HTTP client (`reqwest`) and Dioxus UI/state
     (`Signal<T>`, `use_context_provider`, `ConnectionStatus` enum).
-  - Unit tests → `#[cfg(test)]` in the relevant `src/*.rs`. Integration tests → top-level `tests/`.
+  - Unit tests → `#[cfg(test)]` in the relevant `blue2th-frontend/src/*.rs`.
+    Integration tests → `blue2th-frontend/tests/`.
 - **server** — `blue2th-server` (Axum 0.8 / Tokio). `src/{lib,main,bluetooth,audio}.rs`.
   - Drives **BlueZ** via `bluer` and audio via `rodio`/PipeWire; exposes REST routes
     + the transport playback state machine (`audio.rs`).

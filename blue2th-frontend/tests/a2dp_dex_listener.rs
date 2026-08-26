@@ -23,7 +23,7 @@
 
 use std::path::Path;
 
-use blue2th::bluetooth::{connect_device, disconnect_device};
+use blue2th_frontend::bluetooth::{connect_device, disconnect_device};
 
 // ── Artifact contract ────────────────────────────────────────────────────────
 

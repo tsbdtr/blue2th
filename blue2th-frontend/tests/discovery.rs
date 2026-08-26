@@ -23,8 +23,8 @@
 //! The mDNS announcement, the browse itself and Android's `MulticastLock` are a
 //! manual-test boundary, exactly as BlueZ and PipeWire are on the backend.
 
-use blue2th::discovery;
-use blue2th::settings::{
+use blue2th_frontend::discovery;
+use blue2th_frontend::settings::{
     self, AppSettings, BackendEntry, DiscoveryAction, PairingMethod, SettingsError,
 };
 use blue2th_proto::{DiscoveredBackend, NameError};

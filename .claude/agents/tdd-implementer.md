@@ -15,7 +15,7 @@ No gold-plating, no premature abstractions — just enough to go green.
 ## Workspace layers
 Read the **Affected Layers** section of your prompt — implement only in those layers.
 
-- **mobile** — `blue2th` (root crate, Dioxus 0.7 `mobile`, no cx/Scope/use_state).
+- **mobile** — `blue2th-frontend` (Dioxus 0.7 `mobile`, no cx/Scope/use_state).
   - `src/bluetooth.rs`: Android JNI behind the **dispatcher pattern** — a public
     `async fn foo()` delegating to `foo_inner()` gated with `#[cfg(target_os = "android")]`,
     plus a non-Android fallback. Reuse JNI helpers `android_jni_env(vm)`, `bt_err_clear(env, e)`.
@@ -51,12 +51,12 @@ Add dependencies to the correct manifest: shared versions in the root
 - `cargo build --workspace 2>&1 | tail -20` — must exit 0.
 
 **Only if `mobile` is in the Affected Layers** (Android NDK cross-build is slow; skip it for server-/proto-only features):
-- `dx build --platform android 2>&1 | tail -40` — must exit 0. Verifies the
+- `dx build --platform android --package blue2th-frontend 2>&1 | tail -40` — must exit 0. Verifies the
   `#[cfg(target_os = "android")]` code compiles for the real target.
 
 9. Commit all implementation changes: `git add -A && git commit -m "feat(<scope>): <description>"`.
 10. Output a summary: what you implemented (per layer), the final `cargo test --workspace` output,
-    and — if mobile was affected — whether `dx build --platform android` succeeded.
+    and — if mobile was affected — whether `dx build --platform android --package blue2th-frontend` succeeded.
 
 ## What you must NOT do
 - Do not refactor code beyond what tests require.

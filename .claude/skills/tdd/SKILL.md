@@ -4,7 +4,8 @@ Orchestrates the Red → Green → Refactor TDD cycle using three sub-agents,
 each working in an isolated git worktree and receiving only the context relevant to its phase.
 
 This is a **cargo workspace** with three layers (see `docs/ROADMAP.md`):
-- **mobile** — `blue2th` (Dioxus/Android app, the root crate): `src/`, `tests/`, `assets/`, `locales/`.
+- **mobile** — `blue2th-frontend` (Dioxus/Android app): `blue2th-frontend/`. The
+  workspace root holds no package of its own.
 - **server** — `blue2th-server` (Axum/Tokio Linux backend, BlueZ + PipeWire): `blue2th-server/`.
 - **proto** — `blue2th-proto` (serde DTOs shared by both, target-agnostic): `blue2th-proto/`.
 
@@ -86,7 +87,7 @@ Build a `LAYERS` set from `tdd/feature.md`:
 2. Cross-check against the **Technical Scope** file paths, mapping each path to a layer:
    - `blue2th-server/...` → **server**
    - `blue2th-proto/...` → **proto**
-   - `src/...`, top-level `tests/...`, `assets/...`, `locales/...` → **mobile**
+   - `blue2th-frontend/...` → **mobile**
 3. If the two disagree, trust the file paths and warn the user.
 4. If nothing is decidable, default to all three layers (safest).
 

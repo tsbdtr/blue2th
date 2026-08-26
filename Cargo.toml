@@ -1,46 +1,15 @@
-[package]
-name = "blue2th"
-version = "0.1.0"
-authors = ["tsbdtr"]
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-dioxus = { version = "0.7.10", features = ["mobile", "router"] }
-rust-i18n = "3"
-tokio = { version = "1", features = ["time", "rt"] }
-blue2th-proto = { path = "blue2th-proto" }
-# No TLS backend: the backend is reached over plain HTTP on the LAN (a TLS option
-# can be added later). `json` pulls in serde_json for response decoding; `stream`
-# enables `bytes_stream()` for consuming the /scan SSE feed.
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
-# The persisted app settings (phase 6.2) are serde types owned by the app, not
-# shared DTOs, so the derive lives here rather than in `blue2th-proto`.
-serde = { workspace = true }
-serde_json = "1"
-futures = "0.3"
-# Phase 6.6: browsing `_blue2th._tcp.local.` on the LAN. See the workspace entry.
-mdns-sd = { workspace = true }
-
-[target.'cfg(target_os = "android")'.dependencies]
-jni = { version = "0.21", default-features = false }
-ndk-context = "0.1"
-
-[dev-dependencies]
-tokio = { version = "1", features = ["full"] }
-
-[features]
-default = ["mobile"]
-mobile = ["dioxus/mobile"]
-
 # ── Workspace ────────────────────────────────────────────────────────────────
-# The root `blue2th` package (the Dioxus mobile app) is the workspace root and an
-# implicit member. Backend crates for the PC audio engine live alongside it; see
-# docs/ROADMAP.md. resolver = "2" preserves the single-crate feature unification
-# (notably the app's target-specific `cfg(target_os = "android")` deps).
+# Three layers, one workspace; the full vision is in docs/ROADMAP.md.
+#
+#   blue2th-frontend — the Dioxus 0.7 Android remote
+#   blue2th-server   — the Axum/Tokio backend driving BlueZ and audio
+#   blue2th-proto    — the serde DTOs shared by both
+#
+# resolver = "2" is explicit because a virtual manifest defaults to "1", which
+# would change feature unification — notably the app's target-specific
+# `cfg(target_os = "android")` dependencies.
 [workspace]
-members = ["blue2th-proto", "blue2th-server"]
+members = ["blue2th-frontend", "blue2th-proto", "blue2th-server"]
 resolver = "2"
 
 [workspace.dependencies]
