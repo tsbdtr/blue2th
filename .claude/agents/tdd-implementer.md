@@ -16,10 +16,13 @@ No gold-plating, no premature abstractions — just enough to go green.
 Read the **Affected Layers** section of your prompt — implement only in those layers.
 
 - **mobile** — `blue2th-frontend` (Dioxus 0.7 `mobile`, no cx/Scope/use_state).
-  - `src/bluetooth.rs`: Android JNI behind the **dispatcher pattern** — a public
-    `async fn foo()` delegating to `foo_inner()` gated with `#[cfg(target_os = "android")]`,
-    plus a non-Android fallback. Reuse JNI helpers `android_jni_env(vm)`, `bt_err_clear(env, e)`.
-    Custom error type: `BluetoothError`. New UI state follows the `Signal<T>` /
+  - Drives no Bluetooth: the backend does. The app talks HTTP through
+    `src/backend.rs`, and the only JNI left is `src/jni_util.rs` (multicast lock for
+    mDNS) and `src/lifecycle.rs` (presence hooks). Any new JNI follows the
+    **dispatcher pattern** — a public `async fn foo()` delegating to `foo_inner()`
+    gated with `#[cfg(target_os = "android")]`, plus a non-Android fallback — and
+    reuses `jni_util::env(vm)` and its exception-clearing helper rather than
+    recreating them. Error type: `JniError`. New UI state follows the `Signal<T>` /
     `use_context_provider` pattern.
 - **server** — `blue2th-server` (Axum 0.8 / Tokio). `src/{lib,main,bluetooth,audio}.rs`.
   - Axum handlers return a `Result`/`IntoResponse`; propagate errors with `?`, never panic.

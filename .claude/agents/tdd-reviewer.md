@@ -15,9 +15,10 @@ Review the implementation, improve code quality, and surface missing edge cases 
 ## Workspace layers
 Read the **Affected Layers** section of your prompt — review only those layers.
 
-- **mobile** — `blue2th-frontend` (Dioxus 0.7). `blue2th-frontend/{src,tests}/`. JNI dispatcher
-  pattern (`foo()` → `foo_inner()` `#[cfg(target_os = "android")]` + non-Android
-  fallback); reuse `android_jni_env()`, `bt_err_clear()`; error type `BluetoothError`.
+- **mobile** — `blue2th-frontend` (Dioxus 0.7). `blue2th-frontend/{src,tests}/`. Drives
+  no Bluetooth; the backend does. Any JNI follows the dispatcher pattern (`foo()` →
+  `foo_inner()` `#[cfg(target_os = "android")]` + non-Android fallback) and reuses
+  `jni_util::env()` and its exception-clearing helper; error type `JniError`.
 - **server** — `blue2th-server` (Axum/Tokio). `src/{lib,main,bluetooth,audio}.rs`,
   `tests/`. `bluer`/PipeWire/`rodio` are hardware-bound; the `audio.rs` no-op test
   output must keep working. Handlers propagate errors with `?`, never panic.

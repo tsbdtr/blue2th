@@ -501,9 +501,9 @@ fn test_search_button_state_derives_from_the_preflight_verdict() {
 }
 
 // Criterion: a shared JNI helper captures the Java exception's `toString()`
-// **before** clearing it, mirroring `bt_err_clear`. Asserted on the source, the
-// way the `.dex` contract is: the behaviour itself only exists on a device, but
-// leaving the capture after the clear is an ART abort no test could catch.
+// **before** clearing it. Asserted on the source rather than on behaviour: the
+// behaviour itself only exists on a device, but leaving the capture after the
+// clear is an ART abort no test could catch.
 #[test]
 fn test_jni_util_captures_the_exception_before_clearing_it() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/jni_util.rs");
@@ -539,7 +539,7 @@ fn test_jni_util_captures_the_exception_before_clearing_it() {
     );
     assert!(
         source.contains("attach_current_thread_permanently"),
-        "the env helper must attach permanently, as src/bluetooth.rs documents"
+        "the env helper must attach permanently, or the next FindClass aborts the process"
     );
 }
 

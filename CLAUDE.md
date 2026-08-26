@@ -12,9 +12,10 @@ A single **cargo workspace** with three layers (full vision in `docs/ROADMAP.md`
 
 - **mobile** — `blue2th-frontend`: Dioxus 0.7 Android remote. Code in
   `blue2th-frontend/src/`, tests in `blue2th-frontend/tests/`. Talks to the
-  backend over HTTP (`reqwest`). The Android Bluetooth JNI stack in
-  `blue2th-frontend/src/bluetooth.rs` is kept as legacy. The workspace root holds
-  no package of its own — it is a virtual manifest.
+  backend over HTTP (`reqwest`). It drives no Bluetooth of its own: the on-phone
+  JNI/A2DP stack was deleted once the backend took the audio path over. The only
+  JNI left is `jni_util.rs` (multicast lock) and `lifecycle.rs` (presence hooks).
+  The workspace root holds no package of its own — it is a virtual manifest.
 - **server** — `blue2th-server`: Axum/Tokio backend on the Linux PC. Drives BlueZ
   (`bluer`) and audio (`rodio`/PipeWire). This is where the audio engine lives.
 - **proto** — `blue2th-proto`: serde DTOs shared by mobile and server. **Must stay

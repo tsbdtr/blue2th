@@ -17,10 +17,11 @@ Read the **Affected Layers** section of your prompt — only write tests for the
 layers listed there.
 
 - **mobile** — `blue2th-frontend` (Dioxus 0.7 `mobile` feature, no cx/Scope/use_state).
-  - `src/bluetooth.rs` — Android JNI: `scan_devices()` (dispatcher → `scan_devices_inner()`
-    on Android, simulation fallback elsewhere), `connect_device(name)`, `disconnect_device(name)`,
-    `enable_bluetooth()`, `request_enable_bluetooth()`. Custom error: `BluetoothError`.
-    JNI helpers to reuse (never recreate): `android_jni_env(vm)`, `bt_err_clear(env, e)`.
+  - No on-phone Bluetooth: the backend owns it. Device scanning and
+    connect/disconnect are HTTP calls in `src/backend.rs`. The remaining JNI is
+    `src/jni_util.rs` (multicast lock, error type `JniError`) and `src/lifecycle.rs`
+    (presence hooks); reuse `jni_util::env(vm)` and its exception-clearing helper,
+    never recreate them.
   - `blue2th-frontend/src/` also holds the backend HTTP client (`reqwest`) and Dioxus UI/state
     (`Signal<T>`, `use_context_provider`, `ConnectionStatus` enum).
   - Unit tests → `#[cfg(test)]` in the relevant `blue2th-frontend/src/*.rs`.
