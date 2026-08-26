@@ -7,21 +7,16 @@ server:
   offline: "Backend injoignable"
 
 bt:
-  enable: "Activer Bluetooth"
   confirm_title: "Activer le Bluetooth ?"
   confirm_subtitle: "Le Bluetooth sera activé sur cet appareil."
   confirm_yes: "Oui, activer"
 
 common:
   no: "Non"
-  back: "← Retour"
 
 device:
   disconnect: "Déconnecter"
   empty: "Aucun appareil trouvé"
-  connected_count: "%{count}/2"
-  connect_failed: "Échec de connexion à %{name}"
-  disconnect_failed: "Échec de déconnexion de %{name}"
   select_target: "Diffuser sur cet appareil"
   deselect_target: "Retirer cet appareil"
   offset: "Décalage"
@@ -65,21 +60,11 @@ spotify:
   next: "Suivant"
   previous: "Précédent"
 
-settings:
-  title: "⚙ %{name}"
-  section_general: "Général"
-  alias: "Nom personnalisé"
-  auto_reconnect: "Reconnexion automatique"
-  trusted: "Appareil de confiance"
-  section_audio: "Audio"
-  codec: "Codec audio"
-  volume: "Volume (%{volume} %)"
-  section_danger: "Zone de danger"
-  forget: "Oublier l'appareil"
-
-# La page de réglages de l'application (phase 6.2). Espace de noms distinct :
-# `settings.*` appartient déjà à la page par appareil ci-dessus, et une seconde
-# clé `settings:` ferait disparaître silencieusement l'un des deux blocs.
+# La page de réglages de l'application (phase 6.2). Le nom vient d'un bug : un
+# bloc `settings:` portait les réglages par appareil, et une seconde clé
+# `settings:` faisait disparaître l'un des deux en silence. La page par appareil
+# a été supprimée avec la pile Bluetooth embarquée, mais le préfixe reste — le
+# renommer casserait toutes les traductions pour un gain nul.
 app_settings:
   title: "Réglages"
   backends: "Backends"
