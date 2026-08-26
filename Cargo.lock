@@ -340,7 +340,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "blue2th"
+name = "blue2th-frontend"
 version = "0.1.0"
 dependencies = [
  "blue2th-proto",

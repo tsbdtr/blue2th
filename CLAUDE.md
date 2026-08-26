@@ -10,9 +10,11 @@ Common types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `style`, `perf
 
 A single **cargo workspace** with three layers (full vision in `docs/ROADMAP.md`):
 
-- **mobile** — `blue2th` (root crate): Dioxus 0.7 Android remote. Code in `src/`,
-  tests in top-level `tests/`. Talks to the backend over HTTP (`reqwest`). The
-  Android Bluetooth JNI stack in `src/bluetooth.rs` is kept as legacy.
+- **mobile** — `blue2th-frontend`: Dioxus 0.7 Android remote. Code in
+  `blue2th-frontend/src/`, tests in `blue2th-frontend/tests/`. Talks to the
+  backend over HTTP (`reqwest`). The Android Bluetooth JNI stack in
+  `blue2th-frontend/src/bluetooth.rs` is kept as legacy. The workspace root holds
+  no package of its own — it is a virtual manifest.
 - **server** — `blue2th-server`: Axum/Tokio backend on the Linux PC. Drives BlueZ
   (`bluer`) and audio (`rodio`/PipeWire). This is where the audio engine lives.
 - **proto** — `blue2th-proto`: serde DTOs shared by mobile and server. **Must stay
@@ -48,20 +50,21 @@ and `blue2th-proto` — it silently skips every `blue2th-server` test.
 When the **mobile** layer changed, also cross-compile for the real target:
 
 ```bash
-dx build --platform android
+dx build --platform android --package blue2th-frontend
 ```
 
 Install the pre-commit hook once with: `git config core.hooksPath .githooks`
 
-`assets/tailwind.css` is **generated, not tracked**: `dx` rebuilds it from the root
-`tailwind.css` on every Android build. `build.rs` creates an empty one when it is
-missing, because `asset!("/assets/tailwind.css")` fails at macro expansion — without
-it a fresh clone could not even run `cargo test`. Never commit that file.
+`blue2th-frontend/assets/tailwind.css` is **generated, not tracked**: `dx` rebuilds
+it from `blue2th-frontend/tailwind.css` on every Android build.
+`blue2th-frontend/build.rs` creates an empty one when it is missing, because
+`asset!("/assets/tailwind.css")` fails at macro expansion — without it a fresh clone
+could not even run `cargo test`. Never commit that file.
 
 ### After a Dioxus / `dx` upgrade — re-diff the frozen Android files
 
-`android/AndroidManifest.xml` and `android/MainActivity.kt` are **copies of dx's own
-templates**, declared in `Dioxus.toml` (`[application] android_manifest` /
+`blue2th-frontend/android/AndroidManifest.xml` and
+`blue2th-frontend/android/MainActivity.kt` are **copies of dx's own templates**, declared in `Dioxus.toml` (`[application] android_manifest` /
 `android_main_activity`). dx **replaces** rather than merges them, so they no longer
 follow template changes — and a stale copy fails at runtime, not at build time
 (missing permission, `UnsatisfiedLinkError`, dead deep link).
@@ -73,9 +76,9 @@ Why each is frozen — keep the delta this small:
   `onNewIntent`. Also carries the permissions and the `blue2th://` intent-filter, since
   `[android.raw]` and `[deep_links]` are inert while a custom manifest is set.
 - **MainActivity.kt**: adds `onNewIntent` → `setIntent`, without which the base
-  `Activity` leaves `getIntent()` on the launcher intent and `src/deep_link.rs` never
+  `Activity` leaves `getIntent()` on the launcher intent and `blue2th-frontend/src/deep_link.rs` never
   sees the OAuth redirect; plus `onStart`/`onStop`/`onDestroy` → the
-  `nativeOn{Foreground,Background,Gone}` JNI hooks in `src/lifecycle.rs`, which tell
+  `nativeOn{Foreground,Background,Gone}` JNI hooks in `blue2th-frontend/src/lifecycle.rs`, which tell
   the backend a frozen app from a dead one (see the watchdog in
   `blue2th-server/src/watchdog.rs`). It also carries `Blue2thPresenceService`, whose
   `onTaskRemoved` is the only reliable signal for a swipe out of recents — dx copies
@@ -86,12 +89,12 @@ Checklist after bumping `dioxus` or `dx`:
 
 ```bash
 # 1. See what dx generates now: comment out both keys in [application], then
-dx build --platform android
-diff android/AndroidManifest.xml target/dx/blue2th/debug/android/app/app/src/main/AndroidManifest.xml
-diff android/MainActivity.kt     target/dx/blue2th/debug/android/app/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt
+dx build --platform android --package blue2th-frontend
+diff blue2th-frontend/android/AndroidManifest.xml target/dx/blue2th-frontend/debug/android/app/app/src/main/AndroidManifest.xml
+diff blue2th-frontend/android/MainActivity.kt target/dx/blue2th-frontend/debug/android/app/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt
 # 2. Port any template change into our copies, restore the keys, rebuild.
 # 3. The JNI symbols must be exported, or the app crashes on background/redirect:
-nm -D --defined-only target/dx/blue2th/debug/android/app/app/src/main/jniLibs/<abi>/libmain.so \
+nm -D --defined-only target/dx/blue2th-frontend/debug/android/app/app/src/main/jniLibs/<abi>/libmain.so \
   | grep Java_dev_dioxus_main_MainActivity
 ```
 

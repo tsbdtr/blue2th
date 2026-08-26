@@ -51,6 +51,6 @@ git worktree remove ../blue2th-<slug>                  # clean up when merged
 
 - Async tests: `#[tokio::test]` (add `tokio` to dev-dependencies if needed)
 - Unit tests: `#[cfg(test)]` module inside the source file
-- Integration tests: in `tests/`
+- Integration tests: in each crate's `tests/`
 - Server functions: testable without the Dioxus runtime
 - Run with: `cargo test --no-default-features --features server`

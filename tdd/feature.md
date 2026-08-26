@@ -28,7 +28,7 @@ PENDING
 ## Layers touched
 <!-- Source of truth for which crates the TDD agents build/test. Check all that apply. -->
 <!-- mobile = blue2th (Dioxus/Android, src/) · server = blue2th-server (Axum/PipeWire) · proto = blue2th-proto (shared serde DTOs) -->
-- [ ] mobile (`blue2th` — `src/`, `tests/`, `assets/`, `locales/`)
+- [ ] mobile (`blue2th-frontend`)
 - [ ] server (`blue2th-server/`)
 - [ ] proto (`blue2th-proto/`)
 
@@ -61,6 +61,6 @@ PENDING
 <!-- Technical constraints, edge cases to handle -->
 - Must pass `cargo test --workspace`
 - Must pass `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented`
-- If the **mobile** layer is touched: must pass `dx build --platform android`
+- If the **mobile** layer is touched: must pass `dx build --platform android --package blue2th-frontend`
 - Mobile code follows Dioxus 0.7 patterns (no cx/Scope/use_state); `blue2th-proto` stays target-agnostic
 - PENDING

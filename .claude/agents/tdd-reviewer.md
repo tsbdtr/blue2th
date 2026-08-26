@@ -15,7 +15,7 @@ Review the implementation, improve code quality, and surface missing edge cases 
 ## Workspace layers
 Read the **Affected Layers** section of your prompt — review only those layers.
 
-- **mobile** — `blue2th` (root crate, Dioxus 0.7). `src/`, `tests/`. JNI dispatcher
+- **mobile** — `blue2th-frontend` (Dioxus 0.7). `blue2th-frontend/{src,tests}/`. JNI dispatcher
   pattern (`foo()` → `foo_inner()` `#[cfg(target_os = "android")]` + non-Android
   fallback); reuse `android_jni_env()`, `bt_err_clear()`; error type `BluetoothError`.
 - **server** — `blue2th-server` (Axum/Tokio). `src/{lib,main,bluetooth,audio}.rs`,
@@ -47,7 +47,7 @@ Read the **Affected Layers** section of your prompt — review only those layers
 - `cargo build --workspace 2>&1 | tail -20` — must exit 0.
 
 **Only if `mobile` is in the Affected Layers** (skip otherwise — the Android NDK build is slow and irrelevant for server-/proto-only features):
-- `dx build --platform android 2>&1 | tail -40` — must exit 0.
+- `dx build --platform android --package blue2th-frontend 2>&1 | tail -40` — must exit 0.
 
 10. Re-run the applicable gates at the end; all must be green.
 11. Commit all code changes first (before the report): `git add -A -- ':!tdd/REVIEW.md' && git commit -m "refactor(<scope>): <description>"`. Skip this commit if there are no code changes.
@@ -71,7 +71,7 @@ Read the **Affected Layers** section of your prompt — review only those layers
 ## Final Status
 - `cargo test --workspace`: <✅ N passed | ❌ failed>
 - `cargo clippy --workspace`: <✅ clean | ❌ N warnings>
-- `dx build --platform android`: <✅ success | ⏭️ skipped (mobile not affected) | ❌ failed>
+- `dx build --platform android --package blue2th-frontend`: <✅ success | ⏭️ skipped (mobile not affected) | ❌ failed>
 ```
 
 13. Commit the report: `git add tdd/REVIEW.md && git commit -m "docs(tdd): add review report"`.

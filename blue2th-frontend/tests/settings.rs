@@ -20,7 +20,7 @@
 //! `settings::set_current` is an Android-only JNI seam, validated manually on a
 //! device — as is the settings page UI itself.
 
-use blue2th::settings::{
+use blue2th_frontend::settings::{
     self, AppSettings, BackendEntry, PairingMethod, SettingsError, NO_BACKEND_LABEL,
 };
 use blue2th_proto::{NameError, PairLink, MAX_BACKEND_NAME_LEN};
@@ -890,10 +890,20 @@ fn test_locales_carry_both_settings_pages_labels() {
 #[test]
 fn test_compile_time_backend_url_env_var_is_gone_from_the_codebase() {
     let needle = concat!("BLUE2TH_", "BACKEND_URL");
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Anchored on the workspace root, one level above this crate, because the
+    // scan spans all three crates. CARGO_MANIFEST_DIR alone would resolve the
+    // sibling crates under blue2th-frontend/ and fail on a missing directory.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("blue2th-frontend sits one level below the workspace root");
     let mut offenders = Vec::new();
 
-    for dir in ["src", "tests", "blue2th-server/src", "blue2th-proto/src"] {
+    for dir in [
+        "blue2th-frontend/src",
+        "blue2th-frontend/tests",
+        "blue2th-server/src",
+        "blue2th-proto/src",
+    ] {
         let dir = root.join(dir);
         // Mapped to a String so the failure names the directory without a
         // `panic!`, which clippy forbids even in tests here.
@@ -908,7 +918,7 @@ fn test_compile_time_backend_url_env_var_is_gone_from_the_codebase() {
             let source = std::fs::read_to_string(&path).unwrap_or_default();
             // Skip this very file: it names the variable to assert its absence.
             if path.file_name().and_then(|n| n.to_str()) == Some("settings.rs")
-                && path.starts_with(root.join("tests"))
+                && path.starts_with(root.join("blue2th-frontend/tests"))
             {
                 continue;
             }

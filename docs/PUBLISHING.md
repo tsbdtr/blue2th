@@ -89,7 +89,7 @@ invocation with its full set of forbidden lints, and `cargo test --workspace`.
 The `--workspace` flag is not cosmetic: without it every `blue2th-server` test is
 silently skipped. The local pre-commit hook currently gets this wrong (#4).
 
-- **Nothing to arrange for `assets/tailwind.css`.** The file is generated and
+- **Nothing to arrange for `blue2th-frontend/assets/tailwind.css`.** The file is generated and
   untracked, but `build.rs` creates an empty one when it is missing — precisely so
   a fresh clone can run `cargo test`. CI is already covered.
 - **One ignored test** (`blue2th-server/tests/transport.rs:130`, needs a live
@@ -100,7 +100,8 @@ silently skipped. The local pre-commit hook currently gets this wrong (#4).
 
 ### The Android case
 
-`dx build --platform android` needs the NDK *and* `dx` itself (installable through
+`dx build --platform android --package blue2th-frontend` needs the NDK *and* `dx`
+itself (installable through
 `cargo-binstall dioxus-cli`). Budget several minutes of setup per run. Keep it out
 of the PR pipeline and reserve it for the release tag, with a `workflow_dispatch`
 entry point for the times a PR touches the mobile layer.
@@ -125,7 +126,7 @@ keystore (#3). The keystore is the only irreversible item in the whole plan.
   with the same system packages as CI. The direction of glibc compatibility works
   in our favour — built on Ubuntu 24.04 (glibc 2.39), the binary runs on the target
   Fedora 43 (glibc 2.42); the reverse would have broken. Ship a `.tar.gz`.
-- **APK**: `dx build --platform android --release`, signed with the decoded
+- **APK**: `dx build --platform android --package blue2th-frontend --release`, signed with the decoded
   keystore, then `zipalign`/`apksigner` depending on what `dx` actually emits.
 - **Publish**: `gh release create` with both artifacts and release notes.
 
