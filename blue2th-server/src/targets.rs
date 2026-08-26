@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Pure playback-target selection model for phase 4 (fan-out to two speakers).
 //!
 //! `SpeakerTargets` tracks which connected speakers the user picked as playback

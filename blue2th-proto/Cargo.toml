@@ -2,6 +2,7 @@
 name = "blue2th-proto"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 # Shared data-transfer types for the mobile app <-> PC backend contract.
 # Must stay target-agnostic: it compiles both for the Android app and the Linux

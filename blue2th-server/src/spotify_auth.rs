@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Spotify OAuth (Authorization Code + PKCE) and Web API transport (phase 5.2).
 //!
 //! The server holds the tokens (in memory), refreshes them silently and drives

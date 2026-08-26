@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared data-transfer types for the blue2th mobile app <-> PC backend contract.
 //!
 //! Keep this crate target-agnostic (no platform-specific deps): it is compiled

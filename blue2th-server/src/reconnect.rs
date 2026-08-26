@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Auto-reconnect policy for remembered speakers (phase 6.5).
 //!
 //! Phase 6.3 restores the *selection* when a remembered speaker reappears; this

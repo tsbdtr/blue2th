@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! blue2th PC backend library facade.
 //!
 //! Exposes the Axum router (`app()`) and the server entry point (`run()`) so

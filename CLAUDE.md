@@ -122,6 +122,27 @@ only rebuilds the ABI it targets, so a stale sibling can look like a missing sym
 
 ## Code Guidelines
 
+### Licence header
+
+**Every `.rs` file starts with exactly this line, and it must be the first line:**
+
+```rust
+// SPDX-License-Identifier: MIT OR Apache-2.0
+```
+
+No copyright block, no Apache boilerplate — the full texts live in
+`LICENSE-APACHE` and `LICENSE-MIT`, and the manifests declare
+`license.workspace = true`. A new file without it fails the `licence-headers` job
+in CI.
+
+The project is dual-licensed `MIT OR Apache-2.0`, the Rust ecosystem convention:
+MIT is short and familiar, Apache-2.0 carries an explicit patent grant, and the
+user picks. This is only possible because `librespot` runs as a subprocess rather
+than a linked crate — see the architecture section above.
+
+Config files, the frozen `android/` templates and Markdown carry no header: the
+templates are dx's code, not ours.
+
 ### Error Handling
 - **No `unwrap()` or `expect()` outside `#[cfg(test)]`** — use `?` to propagate, or handle `None`/`Err` explicitly
 - **Server (Axum) handlers** return `Result<Json<T>, AppError>` (`AppError: IntoResponse`); internal logic uses typed errors (`bluer::Result<_>`, `Result<_, AudioError>`). Propagate with `?`, never panic

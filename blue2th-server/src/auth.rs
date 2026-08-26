@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Authentication for the LAN API (phase 6.4).
 //!
 //! Until now anything on the LAN — and, through the permissive CORS layer, any

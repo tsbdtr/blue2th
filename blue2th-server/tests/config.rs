@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 6.2 (`GET`/`POST /config`): the backend's own
 //! name, pushed by the app and re-validated server-side.
 //!

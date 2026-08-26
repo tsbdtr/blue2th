@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! blue2th PC backend binary.
 //!
 //! Thin launcher: all routing/logic lives in the library crate (`lib.rs`) so it

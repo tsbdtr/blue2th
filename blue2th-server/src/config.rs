@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The backend's own name (phase 6.2).
 //!
 //! The app is the source of truth for the name and pushes it over `POST /config`;

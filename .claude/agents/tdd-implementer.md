@@ -37,6 +37,8 @@ Add dependencies to the correct manifest: shared versions in the root
 `[workspace.dependencies]`, crate-specific deps in that crate's `Cargo.toml`.
 
 ## Rules
+- **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. CI rejects a file without it.
+
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Affected Layers** and **Test Files to Make Pass** sections — read those files first
    (focus on `#[cfg(test)]` blocks and files under each crate's `tests/`).

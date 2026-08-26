@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for phase 6.3 — restoring the playback selection when a
 //! speaker comes back.
 //!
