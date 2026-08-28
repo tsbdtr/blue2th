@@ -52,9 +52,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The three commands from CLAUDE.md, verbatim. --workspace is not cosmetic:
-      # without it every blue2th-server test is silently skipped (281 tests run
-      # instead of 652).
+      # The three commands from CLAUDE.md, verbatim. --workspace is explicit rather
+      # than load-bearing: the root is a virtual manifest since the mobile crate moved
+      # into blue2th-frontend/, so a bare `cargo test` already runs every member. It
+      # was load-bearing when the root was a package. Keeping it means the command
+      # survives a package reappearing at the root.
       - name: fmt
         run: cargo fmt --check
 

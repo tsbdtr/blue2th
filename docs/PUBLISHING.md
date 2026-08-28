@@ -106,8 +106,15 @@ itself (installable through
 of the PR pipeline and reserve it for the release tag, with a `workflow_dispatch`
 entry point for the times a PR touches the mobile layer.
 
-The version of `dx` must be pinned, or the frozen Android files drift without
-breaking the build — the failure lands at runtime (#2).
+The version of `dx` must be pinned in that workflow, or the frozen Android files
+drift without breaking the build — the failure lands at runtime, on the phone.
+
+Note what the pin does and does not buy. It prevents *accidental* drift; it does not
+detect drift. The moment the pin is raised deliberately, the re-diff checklist in
+`CLAUDE.md` has to be walked by hand, with nothing verifying that it was. Catching
+drift rather than merely postponing it would take a job that regenerates dx's
+templates and diffs them against our copies — which needs the Android toolchain in
+CI, so it is not free.
 
 ---
 
@@ -205,9 +212,9 @@ mutates no generated file, so nothing depends on the internal layout of `target/
 or on the exact text of a line `dx` owns — a coupling whose failure mode is silent,
 since a wrong `versionCode` builds and signs perfectly and only fails on the phone.
 
-Being on a `dx` version that carries the fix is a prerequisite here, which ties this
-to the pinned version in #2: bumping the pin is what enables the simplification, and
-the two must move together.
+Being on a `dx` version that carries the fix is a prerequisite here, so it is tied to
+the pin in the release workflow (#23): raising the pin is what enables the
+simplification, and the two must move together.
 
 ---
 

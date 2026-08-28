@@ -45,8 +45,12 @@ cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W 
 cargo test --workspace
 ```
 
-`--workspace` is required: a plain `cargo test` from the root only covers `blue2th`
-and `blue2th-proto` — it silently skips every `blue2th-server` test.
+`--workspace` is kept for explicitness, not for effect: since the mobile crate moved
+out and the root became a virtual manifest, a bare `cargo test` already runs every
+member. It used to matter — the root was a package, so `cargo test` tested only it and
+silently skipped `blue2th-server`. Keep the flag, and do not restore that reasoning:
+the day someone puts a package back at the root, the flag is what keeps the command
+meaning the same thing.
 
 When the **mobile** layer changed, also cross-compile for the real target:
 
