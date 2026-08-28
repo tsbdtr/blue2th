@@ -130,11 +130,84 @@ keystore (#3). The keystore is the only irreversible item in the whole plan.
   keystore, then `zipalign`/`apksigner` depending on what `dx` actually emits.
 - **Publish**: `gh release create` with both artifacts and release notes.
 
-> **To check before writing the workflow.** The Android `versionCode` — an integer
-> that must increase on every publication, or the phone refuses the update. It does
-> not appear in the frozen manifest, so `dx` generates it; what remains to establish
-> is *where* it takes it from and whether it follows `Cargo.toml`. Verify on a local
-> build before building the release on top of it.
+### The Android `versionCode` — `dx` does not derive it
+
+`versionCode` is the integer Android compares to decide whether an APK is an
+update. It must increase on every publication, or the phone refuses to install
+over the app already there.
+
+`dx` does not derive it from anything. In the Handlebars template embedded in the
+`dx` binary, the line is a **literal**, sitting between two genuine placeholders:
+
+```kotlin
+applicationId = "{{ application_id }}"
+minSdk = {{ min_sdk }}
+targetSdk = {{ target_sdk }}
+versionCode = 1
+versionName = "{{ version }}"
+```
+
+No configuration key can reach it, because there is no substitution point to
+reach. `[bundle] version` feeds `versionName`, `[android] identifier` feeds
+`applicationId`; nothing feeds `versionCode`. It is `1` in debug and in release
+alike, and stays `1` on every rebuild. Verified against `dx` 0.7.10, in the
+generated `target/dx/blue2th-frontend/debug/android/app/app/build.gradle.kts`.
+
+Left alone, the first release ships `versionCode = 1` and the **second one cannot
+be installed over it**.
+
+Two routes look like solutions and are not:
+
+- **Declaring `android:versionCode` in the frozen manifest.** The AGP DSL value
+  takes precedence over the manifest attribute whenever it is set — and it is set,
+  to `1`.
+- **Patching the generated `build.gradle.kts`, then re-running `dx`.** `dx`
+  rewrites that file from the template on every build, discarding the patch.
+
+What makes it tractable is that the generated Android project is a **standalone
+Gradle project**, `gradlew` included, under
+`target/dx/<package>/<profile>/android/app/`. The release workflow can let `dx`
+build once, rewrite the line, then drive Gradle directly — the Rust `.so` files
+are already staged in `jniLibs`, so only the Android packaging runs again:
+
+```bash
+dx build --platform android --package blue2th-frontend --release
+sed -i "s/versionCode = 1/versionCode = ${VERSION_CODE}/" \
+  target/dx/blue2th-frontend/release/android/app/app/build.gradle.kts
+(cd target/dx/blue2th-frontend/release/android/app && ./gradlew assembleRelease)
+```
+
+`VERSION_CODE` comes from the tag once the version scheme (#1) is settled. Use
+**`major * 1000000 + minor * 1000 + patch`** — not a formula of our own. It is the
+derivation the upstream fix uses (see below), so the value we compute by hand today
+is the value `dx` will compute by itself tomorrow, and the migration changes
+nothing. It also stays inside Play's `1..=2100000000` range, and leaves room for
+999 minors and 999 patches where a tighter formula would cap them at 99.
+
+> **To confirm on the first real release run**, since neither has been exercised
+> yet: that the second Gradle invocation reuses the staged `jniLibs` rather than
+> rebuilding, and which of the two APKs ends up where.
+
+### This workaround has an expiry date
+
+[DioxusLabs/dioxus#5735](https://github.com/DioxusLabs/dioxus/pull/5735) — *CLI:
+configurable Android versionCode and iOS/macOS CFBundleVersion* — fixes it upstream.
+Open since 2026-08-04, not merged as of this writing. It resolves the value in three
+steps:
+
+1. `--version-code <u32>`, or the `DX_ANDROID_VERSION_CODE` environment variable;
+2. `[android] version_code` in `Dioxus.toml`;
+3. failing both, `major * 1000000 + minor * 1000 + patch` from the crate version.
+
+Once it is merged **and released**, drop the `sed` and the second Gradle invocation
+and pass the environment variable instead. That is strictly better for us: it
+mutates no generated file, so nothing depends on the internal layout of `target/dx`
+or on the exact text of a line `dx` owns — a coupling whose failure mode is silent,
+since a wrong `versionCode` builds and signs perfectly and only fails on the phone.
+
+Being on a `dx` version that carries the fix is a prerequisite here, which ties this
+to the pinned version in #2: bumping the pin is what enables the simplification, and
+the two must move together.
 
 ---
 
@@ -172,12 +245,13 @@ flip (#5).
 `README.md` is the unmodified `dx` template; no secret in any tracked file (the
 Spotify client id comes from an environment variable, tokens live in
 `$XDG_STATE_HOME`, `.env*` is ignored); a single `#[ignore]` test, on PipeWire; the
-three crates sit at `0.1.0` with no `[workspace.package]`; 16 of 37 tracked `.rs`
+three crates sit at `0.1.0` with no `[workspace.package]`; `dx` 0.7.10 hardcodes
+`versionCode = 1` in its Gradle template; 16 of 37 tracked `.rs`
 files carry the Apache header, all of the mobile crate plus `watchdog.rs`;
 `.githooks/pre-commit` omits `--workspace`; 652 tests green on `develop`.
 
-**Still to check**: where `dx` takes the Android `versionCode` from; what
-`dx build --release` actually emits regarding signing and alignment; the real
+**Still to check**: what `dx build --release` actually emits regarding signing
+and alignment; the real
 duration of an Android CI build, which decides whether it stays out of the PR
 pipeline; whether `graphify update` should keep running locally once CI is in
 place.
