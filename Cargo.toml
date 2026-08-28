@@ -12,11 +12,22 @@
 members = ["blue2th-frontend", "blue2th-proto", "blue2th-server"]
 resolver = "2"
 
-# The licence is a property of the product, not of each crate: the app, the
-# backend and the shared DTOs ship together. Hoisted so the three cannot drift.
-# `version` belongs here too — see #1.
+# Version, licence and publishability are properties of the *product*, not of
+# each crate: the app, the backend and the shared DTOs are built from one tag and
+# released together. Hoisted so the three cannot drift.
+#
+# One consequence to accept: a server-only fix still moves the app's version.
+# The number designates the release, not the crate that changed — which is why
+# the changelog has to say which layer moved.
+#
+# `publish = false` because none of the three belongs on crates.io: two are
+# applications, and the third is a private contract between them. A publication
+# cannot be retracted, so the guard is worth its three lines. Should `blue2th-proto`
+# ever need publishing, override both keys on that crate alone.
 [workspace.package]
+version = "0.1.0"
 license = "MIT OR Apache-2.0"
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

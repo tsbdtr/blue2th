@@ -236,22 +236,28 @@ What needs writing:
   app, which presence reporting and the 30-minute grace period compensate for.
   Saying so plainly beats receiving the bug report.
 
-The licence headers are in an inconsistent state and have to be settled before the
-flip (#5).
+The licence question is settled: `MIT OR Apache-2.0`, one SPDX line at the top of
+every `.rs` file, enforced by the `licence-headers` CI job (#5). What still gates
+the flip is the documentation itself — `README.md` is still the `dx` template (#9).
 
 ## Provenance
 
-**Verified in the repository**: `bluer` and `rodio` link D-Bus and ALSA;
-`README.md` is the unmodified `dx` template; no secret in any tracked file (the
-Spotify client id comes from an environment variable, tokens live in
-`$XDG_STATE_HOME`, `.env*` is ignored); a single `#[ignore]` test, on PipeWire; the
-three crates sit at `0.1.0` with no `[workspace.package]`; `dx` 0.7.10 hardcodes
-`versionCode = 1` in its Gradle template; 16 of 37 tracked `.rs`
-files carry the Apache header, all of the mobile crate plus `watchdog.rs`;
-`.githooks/pre-commit` omits `--workspace`; 652 tests green on `develop`.
+**Verified in the repository**, as of 2026-08-29: `bluer` and `rodio` link D-Bus
+and ALSA; `README.md` is still the unmodified `dx` template (#9); no secret in any
+tracked file (the Spotify client id comes from an environment variable, tokens live
+in `$XDG_STATE_HOME`, `.env*` is ignored); a single `#[ignore]` test, on PipeWire;
+the three crates share one `[workspace.package] version`, and none of them is
+publishable (#1); `dx` 0.7.10 hardcodes `versionCode = 1` in its Gradle template;
+all 35 tracked `.rs` files carry the SPDX header (#5); `.githooks/pre-commit` runs
+`cargo test --workspace`; 589 tests green on `develop`, one ignored.
 
-**Still to check**: what `dx build --release` actually emits regarding signing
-and alignment; the real
-duration of an Android CI build, which decides whether it stays out of the PR
-pipeline; whether `graphify update` should keep running locally once CI is in
-place.
+> This list is a snapshot, and it rots quietly. Three of its entries were still
+> describing 25 August when they were corrected on the 29th — the headers and the
+> hook had been fixed by merged pull requests, the test count had moved with the
+> legacy removal. Re-measure before citing it, and carry the date forward when you
+> do.
+
+**Still to check**: what `dx build --release` actually emits regarding signing and
+alignment; the real duration of an Android CI build, which decides whether it stays
+out of the PR pipeline; whether `graphify update` should keep running locally once
+CI is in place.
