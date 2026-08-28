@@ -13,7 +13,13 @@ use serde::{Deserialize, Serialize};
 pub struct HealthStatus {
     /// Liveness marker, e.g. `"ok"`.
     pub status: String,
-    /// Backend crate version (its `CARGO_PKG_VERSION`).
+    /// Version of the backend's *release* — the workspace version the app, the
+    /// backend and this crate share (see the root `Cargo.toml`).
+    ///
+    /// Informational only. It says which release a backend comes from, never
+    /// whether this app can talk to it: two binaries published together are not
+    /// two binaries running together, since the phone and the PC are updated by
+    /// hand at different times. Wire compatibility gets its own field (#33).
     pub version: String,
     /// Whether the backend requires `Authorization: Bearer <token>` on every
     /// route but `/health` and `POST /pair` (phase 6.4).

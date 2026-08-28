@@ -1,8 +1,9 @@
 [package]
 name = "blue2th-server"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license.workspace = true
+publish.workspace = true
 
 # PC-side backend for the blue2th audio engine (Axum/Tokio). It will drive BlueZ
 # (via `bluer`) and PipeWire in later phases; phase 0 only exposes /health.
