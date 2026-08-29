@@ -30,6 +30,52 @@ pub struct HealthStatus {
     /// keeps a pre-6.4 payload parsing, reading as "no authentication".
     #[serde(default)]
     pub auth_required: bool,
+    /// Newest wire contract this backend speaks — its own [`PROTOCOL_VERSION`].
+    ///
+    /// Separate from `version` on purpose: the release says which build a
+    /// backend comes from, this says what it can talk to. `serde(default)`
+    /// reads a backend predating the mechanism as `0`, which fails the upper
+    /// bound and is reported as "update the backend".
+    #[serde(default)]
+    pub protocol: u32,
+    /// Oldest client contract this backend still serves — its own
+    /// [`MIN_SUPPORTED_PROTOCOL_VERSION`]. A client below it must update.
+    #[serde(default)]
+    pub protocol_min: u32,
+}
+
+/// The wire contract this build of the app/backend speaks.
+///
+/// Bumped whenever the HTTP surface changes in a way an older peer cannot
+/// follow. Compiled into both sides, so the comparison never depends on what a
+/// payload claims about itself.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// The oldest client contract a backend built from this source still serves.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+
+/// Which of the two machines is behind, when the app and the backend cannot
+/// agree on a wire contract.
+///
+/// Typed rather than a formatted string: the app has to name *which machine to
+/// update*, and a message built in the client layer cannot be matched on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolMismatch {
+    /// The backend speaks an older contract than the client — update the
+    /// backend on the server.
+    BackendTooOld,
+    /// The backend dropped support for a client this old — update the app on
+    /// the phone.
+    BackendTooNew,
+}
+
+/// Check a client contract against the range a backend announces. Pure.
+///
+/// Accepts `health.protocol_min <= client <= health.protocol`, bounds included.
+pub fn check_protocol(health: &HealthStatus, client: u32) -> Result<(), ProtocolMismatch> {
+    // RED-phase scaffolding: the comparison itself lands in the GREEN phase.
+    let _ = (health, client);
+    Ok(())
 }
 
 impl HealthStatus {
@@ -40,6 +86,10 @@ impl HealthStatus {
             status: "ok".to_string(),
             version: version.into(),
             auth_required: false,
+            // RED-phase scaffolding: announcing the compiled range is the
+            // GREEN phase's job.
+            protocol: 0,
+            protocol_min: 0,
         }
     }
 
@@ -1200,6 +1250,124 @@ mod tests {
             Ok(DEFAULT_BACKEND_NAME.to_string())
         );
         assert!(DEFAULT_BACKEND_NAME.len() <= MAX_BACKEND_NAME_LEN);
+    }
+
+    // ---- backend protocol compatibility check (#33) ----
+
+    // Criterion: proto — `PROTOCOL_VERSION` and `MIN_SUPPORTED_PROTOCOL_VERSION`
+    // exist and are both `1`, and `HealthStatus::ok()` fills the range from them
+    // so a backend cannot forget to announce it.
+    #[test]
+    fn test_health_status_announces_the_compiled_protocol_range() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL_VERSION, 1);
+
+        let status = HealthStatus::ok("0.1.0");
+        assert_eq!(
+            status.protocol, PROTOCOL_VERSION,
+            "the backend must announce the contract it was built with"
+        );
+        assert_eq!(
+            status.protocol_min, MIN_SUPPORTED_PROTOCOL_VERSION,
+            "the backend must announce the oldest client it still serves"
+        );
+    }
+
+    // Criterion: proto — `HealthStatus` carries `protocol` / `protocol_min` and
+    // round-trips them through serde, with both on the wire.
+    #[test]
+    fn test_health_status_round_trips_the_protocol_fields() {
+        let original = HealthStatus {
+            status: "ok".to_string(),
+            version: "0.1.0".to_string(),
+            auth_required: true,
+            protocol: 7,
+            protocol_min: 3,
+        };
+        let json = serde_json::to_string(&original).expect("serialize HealthStatus");
+        assert!(
+            json.contains("\"protocol\":7"),
+            "the announced contract must be on the wire, got {json}"
+        );
+        assert!(
+            json.contains("\"protocol_min\":3"),
+            "the oldest served contract must be on the wire, got {json}"
+        );
+        let parsed: HealthStatus = serde_json::from_str(&json).expect("deserialize HealthStatus");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion: proto — `check_protocol()` accepts a client version inside the
+    // range, **bounds included**: an exact match on either end is compatible.
+    #[test]
+    fn test_check_protocol_accepts_a_client_on_either_bound() {
+        let health = HealthStatus {
+            status: "ok".to_string(),
+            version: "0.1.0".to_string(),
+            auth_required: false,
+            protocol: 4,
+            protocol_min: 2,
+        };
+        for client in [2, 3, 4] {
+            assert_eq!(
+                check_protocol(&health, client),
+                Ok(()),
+                "client {client} sits inside 2..=4"
+            );
+        }
+    }
+
+    // Criterion: proto — a client newer than what the backend speaks is
+    // `BackendTooOld` (the phone was updated first).
+    #[test]
+    fn test_check_protocol_rejects_a_client_newer_than_the_backend() {
+        let health = HealthStatus {
+            status: "ok".to_string(),
+            version: "0.1.0".to_string(),
+            auth_required: false,
+            protocol: 4,
+            protocol_min: 2,
+        };
+        assert_eq!(
+            check_protocol(&health, 5),
+            Err(ProtocolMismatch::BackendTooOld)
+        );
+    }
+
+    // Criterion: proto — a client older than the backend's minimum is
+    // `BackendTooNew` (the backend dropped support for apps this old).
+    #[test]
+    fn test_check_protocol_rejects_a_client_older_than_the_backend_minimum() {
+        let health = HealthStatus {
+            status: "ok".to_string(),
+            version: "0.1.0".to_string(),
+            auth_required: false,
+            protocol: 4,
+            protocol_min: 2,
+        };
+        assert_eq!(
+            check_protocol(&health, 1),
+            Err(ProtocolMismatch::BackendTooNew)
+        );
+    }
+
+    // Criterion: proto — a payload carrying neither field parses (both read `0`)
+    // and is rejected as `BackendTooOld`: a backend predating the mechanism is,
+    // by definition, one to update.
+    //
+    // Built from **raw JSON** rather than `HealthStatus::ok()` on purpose: a
+    // workspace build compiles one `blue2th-proto`, so an in-process fixture
+    // could never be incompatible with itself.
+    #[test]
+    fn test_check_protocol_reads_absent_fields_as_a_backend_too_old() {
+        let parsed: HealthStatus = serde_json::from_str(r#"{"status":"ok","version":"0.1.0"}"#)
+            .expect("a payload predating the mechanism must still parse");
+        assert_eq!(parsed.protocol, 0, "an absent field reads as 0");
+        assert_eq!(parsed.protocol_min, 0, "an absent field reads as 0");
+        assert_eq!(
+            check_protocol(&parsed, PROTOCOL_VERSION),
+            Err(ProtocolMismatch::BackendTooOld)
+        );
     }
 
     // ---- phase 6.4: authenticated LAN API with QR or code pairing ----

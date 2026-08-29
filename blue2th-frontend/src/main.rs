@@ -1420,9 +1420,13 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
     let health = settings::backend_health(
         backend_online(),
         app_settings.read().active_token().is_some(),
+        // RED phase: the poll does not carry the mismatch yet (#33).
+        None,
     );
     let tooltip = match health {
         settings::BackendHealth::Offline => rust_i18n::t!("server.offline"),
+        // RED phase: the GREEN phase names the side to update here.
+        settings::BackendHealth::Incompatible(_) => rust_i18n::t!("server.offline"),
         settings::BackendHealth::Unpaired => rust_i18n::t!("app_settings.not_paired"),
         settings::BackendHealth::Ready => rust_i18n::t!("server.online"),
     };
@@ -1459,6 +1463,7 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
                         // will work until the code is exchanged.
                         match health {
                             settings::BackendHealth::Offline => "#ef4444",
+                            settings::BackendHealth::Incompatible(_) => "#f59e0b",
                             settings::BackendHealth::Unpaired => "#f59e0b",
                             settings::BackendHealth::Ready => "#22c55e",
                         },

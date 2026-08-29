@@ -14,7 +14,7 @@
 //! The *name* rule itself lives in `blue2th-proto`, shared with the server, which
 //! re-validates rather than trusting the client.
 
-use blue2th_proto::{NameError, PairLink};
+use blue2th_proto::{NameError, PairLink, ProtocolMismatch};
 use serde::{Deserialize, Serialize};
 
 /// What the status encart shows while no backend is configured.
@@ -174,6 +174,10 @@ impl Default for AppSettings {
 pub enum BackendHealth {
     /// Nothing configured, or the active backend cannot be reached at all.
     Offline,
+    /// Reachable, but the app and the backend do not speak the same wire
+    /// contract. Carries which machine to update (#33).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    Incompatible(ProtocolMismatch),
     /// Reachable, but no token: every call comes back 401 until the user pairs.
     Unpaired,
     /// Reachable and paired — the only fully working state.
@@ -184,12 +188,33 @@ pub enum BackendHealth {
 ///
 /// Unreachable wins over unpaired: pairing a backend the phone cannot even talk
 /// to is not the next step, reaching it is.
-pub fn backend_health(online: bool, paired: bool) -> BackendHealth {
+pub fn backend_health(
+    online: bool,
+    paired: bool,
+    mismatch: Option<ProtocolMismatch>,
+) -> BackendHealth {
+    // RED-phase scaffolding: the mismatch is read but not yet ranked — the
+    // GREEN phase places `Incompatible` between `Offline` and `Unpaired`.
+    let _ = mismatch;
     match (online, paired) {
         (false, _) => BackendHealth::Offline,
         (true, false) => BackendHealth::Unpaired,
         (true, true) => BackendHealth::Ready,
     }
+}
+
+/// The warning the device list must carry permanently, if any. Pure.
+///
+/// Scaffolding: always silent.
+pub fn device_list_warning(_health: BackendHealth) -> Option<ProtocolMismatch> {
+    None
+}
+
+/// Whether the active backend accepts actions. Pure.
+///
+/// Scaffolding: always yes.
+pub fn backend_actionable(_health: BackendHealth) -> bool {
+    true
 }
 
 /// What a discovered service means for the settings the app already holds.
