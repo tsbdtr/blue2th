@@ -26,6 +26,10 @@ gh auth status >/dev/null 2>&1 || die "gh is not authenticated — run: gh auth 
 ROOT=$(git rev-parse --show-toplevel) || die "not inside a git repository"
 cd "$ROOT"
 
+# The whole script assumes the main checkout is on develop: it pulls into the
+# current branch further down, and deletes a branch you cannot be standing on.
+# Checked here rather than there so it fails before the first network call.
+# Also catches a detached HEAD, which reads back as "HEAD".
 CURRENT=$(git rev-parse --abbrev-ref HEAD)
 [ "$CURRENT" = "develop" ] || die "cleanup expects the main checkout on develop, found '$CURRENT'. Switch first — it pulls and deletes a branch."
 
@@ -107,6 +111,9 @@ echo "PR #$PR_NUMBER is merged — cleaning up."
 #
 # Order matters: without this, local develop does not know about the merge and
 # `git branch -d` refuses the branch as unmerged.
+#
+# This pulls into the current branch, which the precondition at the top of the
+# script has already established is develop.
 
 git pull --ff-only origin develop
 
