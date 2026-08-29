@@ -1374,6 +1374,32 @@ mod tests {
         );
     }
 
+    // Edge case: a backend announcing an impossible range (`protocol_min` above
+    // `protocol`) must still yield one actionable verdict rather than an
+    // arbitrary one. The upper bound is checked first, so a client outside both
+    // ends is reported as `BackendTooOld` — the reading that points at the
+    // machine that announced the nonsense.
+    #[test]
+    fn test_check_protocol_on_an_inverted_range_names_the_backend() {
+        let health = HealthStatus {
+            status: "ok".to_string(),
+            version: "0.1.0".to_string(),
+            auth_required: false,
+            protocol: 2,
+            protocol_min: 5,
+        };
+        assert_eq!(
+            check_protocol(&health, 3),
+            Err(ProtocolMismatch::BackendTooOld),
+            "a client above the maximum is told to update the backend, whatever the minimum says"
+        );
+        assert_eq!(
+            check_protocol(&health, 1),
+            Err(ProtocolMismatch::BackendTooNew),
+            "below both ends, the minimum is what rejects the client"
+        );
+    }
+
     // ---- phase 6.4: authenticated LAN API with QR or code pairing ----
 
     /// A well-formed link for the round-trip tests, built by hand rather than

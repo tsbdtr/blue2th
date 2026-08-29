@@ -454,8 +454,8 @@ fn health_url(base: &str) -> String {
 }
 
 /// Message carried by a wire-contract mismatch. The *side to update* travels
-/// beside it as a [`ProtocolMismatch`], never inside this string.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+/// beside it as a [`ProtocolMismatch`], never inside this string — which is why
+/// this one is not localised: the UI reads the typed variant, not this text.
 pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
 
 /// Probe `GET {url}/health` and check the wire contract this app speaks against
@@ -464,7 +464,6 @@ pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
 /// Runs before pairing and on every health poll: the phone and the PC are
 /// updated by hand at different times, so a version gap is the normal state
 /// between two updates.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn check_backend_protocol(url: &str) -> Result<(), BackendError> {
     // An unreachable backend surfaces its transport error untouched: "cannot
     // reach" must never read as "incompatible".

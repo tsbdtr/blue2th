@@ -58,8 +58,8 @@ fn use_backend_health() -> settings::BackendHealth {
 }
 
 /// The localised message naming which of the two machines to update. One mapping
-/// for the status tooltip and for both pairing paths, so their wording cannot
-/// drift apart. Pure.
+/// for the standing banner, the status dot's tooltip and both pairing paths, so
+/// their wording cannot drift apart. Pure.
 fn protocol_message(mismatch: blue2th_proto::ProtocolMismatch) -> String {
     match mismatch {
         blue2th_proto::ProtocolMismatch::BackendTooOld => {
@@ -189,19 +189,25 @@ fn App() -> Element {
                     // seen says nothing about the backend now — it is cleared.
                     Err(_) => None,
                 };
+                // Usable means reachable *and* speaking the same contract: the
+                // name push below is a write, and writing to a backend whose
+                // `/config` may have kept its shape while changing its meaning
+                // is exactly the guess this check exists to refuse (#33).
+                let was_usable = *backend_online.peek() && backend_protocol.peek().is_none();
                 if *backend_protocol.peek() != mismatch {
                     *backend_protocol.write() = mismatch;
                 }
                 if *backend_online.peek() != reachable {
                     *backend_online.write() = reachable;
-                    // Coming back online: re-assert the name the app is the source
-                    // of truth for. This covers a push that failed while the
-                    // backend was down, and a backend (or app) that restarted
-                    // since — otherwise the Connect device would keep advertising
-                    // whatever name the server last stored.
-                    if reachable {
-                        backend::push_active_name().await;
-                    }
+                }
+                // Becoming usable again: re-assert the name the app is the source
+                // of truth for. This covers a push that failed while the backend
+                // was down, a backend (or app) that restarted since, and one just
+                // updated out of an incompatible range — otherwise the Connect
+                // device would keep advertising whatever name the server last
+                // stored.
+                if reachable && mismatch.is_none() && !was_usable {
+                    backend::push_active_name().await;
                 }
                 tokio::time::sleep(BACKEND_HEALTH_INTERVAL).await;
             }
@@ -1513,21 +1519,17 @@ fn optimistic_now_playing_state(
 #[component]
 fn BackendStatus(error: Signal<Option<String>>) -> Element {
     use_locale();
-    let backend_online = use_context::<BackendOnline>().0;
-    let backend_protocol = use_context::<BackendProtocol>().0;
+    // Reachable is not the same as usable since phase 6.4: an unpaired backend
+    // answers `/health` and 401s everything else. Nor since #33: one that
+    // answers may speak a contract this app cannot follow. Read through the
+    // shared hook so the dot and the banner classify the same backend the same
+    // way.
+    let health = use_backend_health();
     let mut app_settings = use_context::<SettingsState>().0;
     let navigator = use_navigator();
     let mut open = use_signal(|| false);
 
     let label = app_settings.read().active_label();
-    // Reachable is not the same as usable since phase 6.4: an unpaired backend
-    // answers `/health` and 401s everything else. Nor since #33: one that
-    // answers may speak a contract this app cannot follow.
-    let health = settings::backend_health(
-        backend_online(),
-        app_settings.read().active_token().is_some(),
-        backend_protocol(),
-    );
     let tooltip = match health {
         settings::BackendHealth::Offline => rust_i18n::t!("server.offline").to_string(),
         // Names the machine to update: "incompatible" alone leaves the user
