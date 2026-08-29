@@ -38,6 +38,39 @@ const DEEP_LINK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_m
 #[derive(Clone, Copy)]
 struct BackendOnline(Signal<bool>);
 
+/// The wire-contract mismatch the last `/health` poll saw, shared via context.
+/// `None` means the two ends agree — or that nothing was compared, because the
+/// backend could not be reached (#33).
+#[derive(Clone, Copy)]
+struct BackendProtocol(Signal<Option<blue2th_proto::ProtocolMismatch>>);
+
+/// The active backend's health, as every gate on screen must agree on it.
+///
+/// Calls hooks: invoke it once, unconditionally, at the top of a component body.
+/// Shared rather than re-derived per component so the status dot, the banner and
+/// every disabled control can never disagree about the same backend (#33).
+fn use_backend_health() -> settings::BackendHealth {
+    let backend_online = use_context::<BackendOnline>().0;
+    let backend_protocol = use_context::<BackendProtocol>().0;
+    let app_settings = use_context::<SettingsState>().0;
+    let paired = app_settings.read().active_token().is_some();
+    settings::backend_health(backend_online(), paired, backend_protocol())
+}
+
+/// The localised message naming which of the two machines to update. One mapping
+/// for the status tooltip and for both pairing paths, so their wording cannot
+/// drift apart. Pure.
+fn protocol_message(mismatch: blue2th_proto::ProtocolMismatch) -> String {
+    match mismatch {
+        blue2th_proto::ProtocolMismatch::BackendTooOld => {
+            rust_i18n::t!("protocol.backend_too_old").to_string()
+        },
+        blue2th_proto::ProtocolMismatch::BackendTooNew => {
+            rust_i18n::t!("protocol.backend_too_new").to_string()
+        },
+    }
+}
+
 /// The app settings (known backends + the active one), shared so the status
 /// encart, its quick-switch dropdown and the settings page all read and write the
 /// same list. Seeded by `App` from the persisted blob.
@@ -135,12 +168,30 @@ fn App() -> Element {
     // its scan button and clears its list when the backend goes down.
     let backend_online: Signal<bool> = use_signal(|| false);
     use_context_provider(|| BackendOnline(backend_online));
+    // The same poll answers "can we talk to it at all?": the payload already
+    // carries the range, so no second request is needed (#33).
+    let backend_protocol: Signal<Option<blue2th_proto::ProtocolMismatch>> = use_signal(|| None);
+    use_context_provider(|| BackendProtocol(backend_protocol));
     use_hook(|| {
         // Signal<bool> is Copy; the spawned task captures its own handle.
         let mut backend_online = backend_online;
+        let mut backend_protocol = backend_protocol;
         spawn(async move {
             loop {
-                let reachable = backend::ping_backend().await.is_ok();
+                let probe = backend::ping_backend().await;
+                let reachable = probe.is_ok();
+                let mismatch = match probe {
+                    Ok(health) => {
+                        blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
+                            .err()
+                    },
+                    // Unreachable: nothing was compared, so the mismatch last
+                    // seen says nothing about the backend now — it is cleared.
+                    Err(_) => None,
+                };
+                if *backend_protocol.peek() != mismatch {
+                    *backend_protocol.write() = mismatch;
+                }
                 if *backend_online.peek() != reachable {
                     *backend_online.write() = reachable;
                     // Coming back online: re-assert the name the app is the source
@@ -259,6 +310,16 @@ fn App() -> Element {
                 // intent, so both are read here — the pair link first, since it
                 // is the one that can create the backend everything else needs.
                 if let Some(link) = blue2th_proto::parse_pair_link(&uri) {
+                    // The contract first: a token minted against a backend the
+                    // app cannot talk to would be useless, and the failure has
+                    // to name which machine to update.
+                    if let Err(e) = backend::check_backend_protocol(&link.url).await {
+                        *background_error.write() = Some(match e.protocol_mismatch() {
+                            Some(mismatch) => protocol_message(mismatch),
+                            None => e.to_string(),
+                        });
+                        continue;
+                    }
                     match backend::pair(&link.url, &link.code).await {
                         Ok(token) => {
                             let mut next = app_settings.peek().clone();
@@ -417,6 +478,9 @@ fn BackendDeviceItem(
     unavailable: Signal<HashSet<String>>,
     targets: Signal<blue2th_proto::TargetsState>,
 ) -> Element {
+    // An incompatible backend must refuse every device action, not fail on it
+    // once the request is out (#33).
+    let actionable = settings::backend_actionable(use_backend_health());
     let addr = device.address.clone();
     let connected = device.connected;
     let rssi = device.rssi;
@@ -473,6 +537,10 @@ fn BackendDeviceItem(
         "device-row active"
     } else if is_unavailable {
         "device-row unavailable"
+    } else if !actionable {
+        // Same dimmed, non-interactive look as an unreachable speaker: the row
+        // cannot be acted on, and the banner above says why.
+        "device-row blocked"
     } else {
         "device-row"
     };
@@ -484,8 +552,9 @@ fn BackendDeviceItem(
             onclick: {
                 let addr = addr.clone();
                 move |_| {
-                    // Only connect an idle, available, disconnected device.
-                    if connected || is_unavailable || busy().is_some() {
+                    // Only connect an idle, available, disconnected device on a
+                    // backend this app can still talk to.
+                    if connected || is_unavailable || busy().is_some() || !actionable {
                         return;
                     }
                     let addr = addr.clone();
@@ -533,6 +602,9 @@ fn BackendDeviceItem(
                             let addr = addr.clone();
                             move |e: Event<MouseData>| {
                                 e.stop_propagation();
+                                if !actionable {
+                                    return;
+                                }
                                 let addr = addr.clone();
                                 let mut targets = targets;
                                 let mut error = error;
@@ -560,7 +632,7 @@ fn BackendDeviceItem(
                             let addr = addr.clone();
                             move |e: Event<MouseData>| {
                                 e.stop_propagation();
-                                if busy().is_some() {
+                                if busy().is_some() || !actionable {
                                     return;
                                 }
                                 let addr = addr.clone();
@@ -608,6 +680,11 @@ fn BackendDeviceItem(
                             max: "750",
                             step: "10",
                             value: "{offset_draft}",
+                            // Not just the release handler: without this the
+                            // thumb still slides under the finger and only the
+                            // backend call is dropped, which reads as the app
+                            // losing the value rather than refusing it (#33).
+                            disabled: !actionable,
                             onpointerdown: move |e| e.stop_propagation(),
                             onclick: move |e| e.stop_propagation(),
                             oninput: move |e| {
@@ -620,6 +697,9 @@ fn BackendDeviceItem(
                                 let addr = addr.clone();
                                 move |e| {
                                     *offset_dragging.write() = false;
+                                    if !actionable {
+                                        return;
+                                    }
                                     if let Ok(v) = e.value().parse::<u32>() {
                                         let addr = addr.clone();
                                         let mut targets = targets;
@@ -685,6 +765,10 @@ fn BackendScan() -> Element {
     });
 
     let backend_online = use_context::<BackendOnline>().0;
+    // One classification for the banner, the scan button and every control
+    // below, so they cannot disagree about the same backend (#33).
+    let health = use_backend_health();
+    let actionable = settings::backend_actionable(health);
     // Load the backend's known devices on mount, and again each time it comes
     // back online. The list is never cleared: leaving the app (Spotify login in
     // the browser, or a restart) briefly flips the health probe to offline, and
@@ -817,6 +901,9 @@ fn BackendScan() -> Element {
         rust_i18n::t!("scan.button")
     };
     let empty_label = rust_i18n::t!("device.empty");
+    // Permanent, unlike the dot's `title`: a phone has no hover, so the tooltip
+    // alone left the user with an orange dot and no explanation (#33).
+    let protocol_warning = settings::device_list_warning(health).map(protocol_message);
 
     rsx! {
         div { class: "status-row",
@@ -825,9 +912,20 @@ fn BackendScan() -> Element {
             SettingsButton {}
         }
         SpotifyLoginDialog { error }
+        // Directly under the backend and Spotify cards, above the scan button:
+        // it explains why everything below it is inert. Not inside the
+        // empty-state card — an incompatible backend still serves `/devices`,
+        // so the list is normally full and a message living there would never
+        // be seen.
+        if let Some(warning) = protocol_warning {
+            div { class: "device-list-warning", "{warning}" }
+        }
         button {
             class: "{btn_class}",
-            disabled: scanning() || !backend_online(),
+            // Incompatible as well as offline: a backend announcing a contract
+            // this app does not speak may answer `/scan` with the right shape
+            // and the wrong meaning (#33).
+            disabled: scanning() || !actionable,
             onclick: move |_| async move {
                 *error.write() = None;
                 found.write().clear();
@@ -929,6 +1027,10 @@ fn TransportBar(
 ) -> Element {
     use blue2th_proto::PlaybackStatus;
     use_locale();
+
+    // Every control below is also gated on this: an incompatible backend must
+    // refuse playback rather than fail on it once the request is out (#33).
+    let actionable = settings::backend_actionable(use_backend_health());
 
     // Expand/collapse state is local so the bar (re)appears expanded each time it
     // is mounted; the user can still collapse it while it is shown.
@@ -1145,7 +1247,7 @@ fn TransportBar(
                         icon: "⏮".to_string(),
                         label: rust_i18n::t!("spotify.previous").to_string(),
                         action: backend::SpotifyAction::Previous,
-                        disabled: !spotify_connected,
+                        disabled: !spotify_connected || !actionable,
                         primary: false,
                         error,
                     }
@@ -1156,7 +1258,7 @@ fn TransportBar(
                         icon: spotify_toggle_icon.to_string(),
                         label: spotify_toggle_label.clone(),
                         action: spotify_toggle_action,
-                        disabled: !spotify_connected,
+                        disabled: !spotify_connected || !actionable,
                         primary: true,
                         error,
                     }
@@ -1164,14 +1266,14 @@ fn TransportBar(
                         icon: "⏭".to_string(),
                         label: rust_i18n::t!("spotify.next").to_string(),
                         action: backend::SpotifyAction::Next,
-                        disabled: !spotify_connected,
+                        disabled: !spotify_connected || !actionable,
                         primary: false,
                         error,
                     }
                 } else {
                 button {
                     class: "transport-btn transport-play",
-                    disabled: !has_target,
+                    disabled: !has_target || !actionable,
                     title: "{play_label}",
                     aria_label: "{play_label}",
                     onclick: move |_| {
@@ -1196,7 +1298,7 @@ fn TransportBar(
                 }
                 button {
                     class: "transport-btn transport-stop",
-                    disabled: !has_target,
+                    disabled: !has_target || !actionable,
                     title: "{stop_label}",
                     aria_label: "{stop_label}",
                     onclick: move |_| {
@@ -1223,7 +1325,7 @@ fn TransportBar(
                         class: "transport-volume-icon",
                         title: "{volume_label}",
                         aria_label: "{volume_label}",
-                        disabled: !has_target,
+                        disabled: !has_target || !actionable,
                         onpointerdown: move |e: PointerEvent| e.stop_propagation(),
                         onclick: move |_| {
                             if !has_target {
@@ -1248,7 +1350,7 @@ fn TransportBar(
                                 max: "1",
                                 step: "0.01",
                                 value: "{vol_draft}",
-                                disabled: !has_target,
+                                disabled: !has_target || !actionable,
                                 // Keep slider drags from bubbling to the bar's
                                 // expand/collapse gesture.
                                 onpointerdown: move |e| e.stop_propagation(),
@@ -1306,7 +1408,9 @@ fn SpotifySource(
     // Backend/OAuth state and the login dialog are shared: `App` polls them and
     // the transport bar reads the same signals.
     let spotify = use_context::<SpotifyUi>();
-    let backend_online = use_context::<BackendOnline>().0;
+    // Not merely "online": an incompatible backend must refuse to start Spotify
+    // rather than fail once the request is out (#33).
+    let actionable = settings::backend_actionable(use_backend_health());
 
     // In-flight guard so a double tap does not fire two start/stop calls.
     let busy = use_signal(|| false);
@@ -1324,7 +1428,7 @@ fn SpotifySource(
     };
     // Dim (and block) the encart while offline or mid-flight; and when starting,
     // until a speaker is selected (the server rejects a start with no target — a 400).
-    let disabled = busy() || !backend_online() || (!is_running && !has_target);
+    let disabled = busy() || !actionable || (!is_running && !has_target);
     let card_class = if disabled {
         "backend-status spotify-card disabled"
     } else {
@@ -1338,7 +1442,7 @@ fn SpotifySource(
             class: "{card_class}",
             title: "{toggle_tooltip}",
             onclick: move |_| {
-                if busy() || !backend_online() {
+                if busy() || !actionable {
                     return;
                 }
                 // Guard the start precondition client-side too, so the user gets
@@ -1410,25 +1514,27 @@ fn optimistic_now_playing_state(
 fn BackendStatus(error: Signal<Option<String>>) -> Element {
     use_locale();
     let backend_online = use_context::<BackendOnline>().0;
+    let backend_protocol = use_context::<BackendProtocol>().0;
     let mut app_settings = use_context::<SettingsState>().0;
     let navigator = use_navigator();
     let mut open = use_signal(|| false);
 
     let label = app_settings.read().active_label();
     // Reachable is not the same as usable since phase 6.4: an unpaired backend
-    // answers `/health` and 401s everything else.
+    // answers `/health` and 401s everything else. Nor since #33: one that
+    // answers may speak a contract this app cannot follow.
     let health = settings::backend_health(
         backend_online(),
         app_settings.read().active_token().is_some(),
-        // RED phase: the poll does not carry the mismatch yet (#33).
-        None,
+        backend_protocol(),
     );
     let tooltip = match health {
-        settings::BackendHealth::Offline => rust_i18n::t!("server.offline"),
-        // RED phase: the GREEN phase names the side to update here.
-        settings::BackendHealth::Incompatible(_) => rust_i18n::t!("server.offline"),
-        settings::BackendHealth::Unpaired => rust_i18n::t!("app_settings.not_paired"),
-        settings::BackendHealth::Ready => rust_i18n::t!("server.online"),
+        settings::BackendHealth::Offline => rust_i18n::t!("server.offline").to_string(),
+        // Names the machine to update: "incompatible" alone leaves the user
+        // with nothing to do.
+        settings::BackendHealth::Incompatible(mismatch) => protocol_message(mismatch),
+        settings::BackendHealth::Unpaired => rust_i18n::t!("app_settings.not_paired").to_string(),
+        settings::BackendHealth::Ready => rust_i18n::t!("server.online").to_string(),
     };
     // One read for the whole list: the active index comes from the same snapshot
     // as the names, so the menu can never mark a row the list no longer holds.
@@ -1463,7 +1569,9 @@ fn BackendStatus(error: Signal<Option<String>>) -> Element {
                         // will work until the code is exchanged.
                         match health {
                             settings::BackendHealth::Offline => "#ef4444",
-                            settings::BackendHealth::Incompatible(_) => "#f59e0b",
+                            // Its own colour: an incompatible backend and an
+                            // unreachable one call for different actions.
+                            settings::BackendHealth::Incompatible(_) => "#f97316",
                             settings::BackendHealth::Unpaired => "#f59e0b",
                             settings::BackendHealth::Ready => "#22c55e",
                         },
@@ -2128,6 +2236,18 @@ fn AppSettingsPage() -> Element {
                                 let mut pairing = pairing;
                                 *pairing.write() = true;
                                 spawn(async move {
+                                    // The contract first: pairing with a backend
+                                    // this app cannot talk to spends an attempt
+                                    // for a token nothing could use.
+                                    if let Err(e) = backend::check_backend_protocol(&url).await {
+                                        *pairing.write() = false;
+                                        *notice.write() = None;
+                                        *error.write() = Some(match e.protocol_mismatch() {
+                                            Some(mismatch) => protocol_message(mismatch),
+                                            None => e.to_string(),
+                                        });
+                                        return;
+                                    }
                                     // The one call that carries no bearer: the
                                     // app has none until this succeeds.
                                     let outcome = backend::pair(&url, &code).await;

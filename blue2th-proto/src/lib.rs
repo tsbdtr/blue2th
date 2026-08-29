@@ -73,8 +73,12 @@ pub enum ProtocolMismatch {
 ///
 /// Accepts `health.protocol_min <= client <= health.protocol`, bounds included.
 pub fn check_protocol(health: &HealthStatus, client: u32) -> Result<(), ProtocolMismatch> {
-    // RED-phase scaffolding: the comparison itself lands in the GREEN phase.
-    let _ = (health, client);
+    if client > health.protocol {
+        return Err(ProtocolMismatch::BackendTooOld);
+    }
+    if client < health.protocol_min {
+        return Err(ProtocolMismatch::BackendTooNew);
+    }
     Ok(())
 }
 
@@ -86,10 +90,10 @@ impl HealthStatus {
             status: "ok".to_string(),
             version: version.into(),
             auth_required: false,
-            // RED-phase scaffolding: announcing the compiled range is the
-            // GREEN phase's job.
-            protocol: 0,
-            protocol_min: 0,
+            // Filled from the compiled constants, never by hand: a backend
+            // cannot forget to announce the contract it was built with.
+            protocol: PROTOCOL_VERSION,
+            protocol_min: MIN_SUPPORTED_PROTOCOL_VERSION,
         }
     }
 

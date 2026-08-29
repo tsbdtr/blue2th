@@ -522,8 +522,10 @@ body {
     transform-origin: center;
 }
 
-/* Unavailable row: dimmed and non-interactive. */
-.device-row.unavailable {
+/* Unavailable row, and a row on a backend that cannot be acted on (#33):
+   dimmed and non-interactive. */
+.device-row.unavailable,
+.device-row.blocked {
     opacity: 0.55;
     cursor: default;
 }
@@ -879,6 +881,24 @@ body {
 
 #echo>p {
     margin: 20px 0px 0px auto;
+}
+
+/* The permanent wire-contract warning above the device list (#33). Static, not
+   fixed like .toast-error: it is a standing condition, not a transient event,
+   and it must survive scrolling rather than float over the player. */
+.device-list-warning {
+    /* Aligned with the full-width scan button just below it, and tucked under
+       the status cards' own 8px gap. */
+    margin: 0 0 4px;
+    background: #431407;
+    color: #fed7aa;
+    border: 1px solid #f97316;
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    text-align: center;
+    word-break: break-word;
 }
 
 .toast-error {

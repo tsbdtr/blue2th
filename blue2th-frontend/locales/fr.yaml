@@ -6,6 +6,10 @@ server:
   online: "Backend connecté"
   offline: "Backend injoignable"
 
+protocol:
+  backend_too_old: "Ce backend est trop ancien pour l'application. Mettez à jour le backend sur le PC."
+  backend_too_new: "Ce backend est plus récent que l'application. Mettez à jour l'application sur le téléphone."
+
 bt:
   confirm_title: "Activer le Bluetooth ?"
   confirm_subtitle: "Le Bluetooth sera activé sur cet appareil."

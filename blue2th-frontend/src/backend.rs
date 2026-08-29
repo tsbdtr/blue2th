@@ -32,7 +32,6 @@ pub struct BackendError {
     /// Which machine is behind, when the app and the backend disagree on the
     /// wire contract. Typed rather than folded into the message, exactly like
     /// `not_paired`: the UI has to name the side to update.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     mismatch: Option<ProtocolMismatch>,
 }
 
@@ -47,7 +46,6 @@ impl BackendError {
 
     /// The typed "this app and this backend do not speak the same wire
     /// contract" failure, naming which machine to update.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn protocol(mismatch: ProtocolMismatch) -> Self {
         Self {
             message: PROTOCOL_MISMATCH.to_string(),
@@ -59,7 +57,6 @@ impl BackendError {
     /// Which side is behind, when this failure is a contract mismatch at all.
     /// `None` for every other failure — a backend that cannot be reached is not
     /// an incompatible one.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn protocol_mismatch(&self) -> Option<ProtocolMismatch> {
         self.mismatch
     }
@@ -469,10 +466,11 @@ pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
 /// between two updates.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn check_backend_protocol(url: &str) -> Result<(), BackendError> {
-    // RED-phase scaffolding: the probe runs (so an unreachable backend already
-    // surfaces its transport error), but the comparison lands in GREEN.
-    let _health = test_backend(url).await?;
-    Ok(())
+    // An unreachable backend surfaces its transport error untouched: "cannot
+    // reach" must never read as "incompatible".
+    let health = test_backend(url).await?;
+    blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
+        .map_err(BackendError::protocol)
 }
 
 /// Flatten a `reqwest::Error` and its source chain into one string, so the
