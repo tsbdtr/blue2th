@@ -1,7 +1,8 @@
 # /tdd — TDD Workflow Skill
 
-Orchestrates the Red → Green → Refactor TDD cycle using three sub-agents,
-each working in an isolated git worktree and receiving only the context relevant to its phase.
+Orchestrates the Red → Green → Refactor TDD cycle using three sub-agents, each
+working in an isolated git worktree and receiving only the context relevant to its
+phase — then opens the pull request and, once a human has merged it, cleans up.
 
 This is a **cargo workspace** with three layers (see `docs/ROADMAP.md`):
 - **mobile** — `blue2th-frontend` (Dioxus/Android app): `blue2th-frontend/`. The
@@ -13,33 +14,62 @@ A feature may touch one, two, or all three layers. The quality gates always run
 across the whole workspace; the Android NDK cross-build runs **only** when the
 mobile layer is affected.
 
+**Scope: features only.** The cycle branches from `HEAD`, so it always starts from
+`develop`. A hotfix branches from `main` and is a different skill.
+
 ## Usage
-`/tdd [test|impl|review|all|done]`
+
+`/tdd [issue|test|impl|review|pr|all|cleanup]`
+
+| Phase     | Does                                                              |
+|-----------|-------------------------------------------------------------------|
+| `issue`   | Open the tracking issue from the spec (idempotent)                |
+| `test`    | RED — write failing tests                                         |
+| `impl`    | GREEN — implement until they pass                                 |
+| `review`  | REFACTOR — improve without breaking them                          |
+| `pr`      | Push the branch, open the PR, post the review report as a comment |
+| `all`     | `issue` → `test` → `impl` → `review` → `pr`                       |
+| `cleanup` | Verify the PR merged, then remove the worktree and reset the spec |
+
+## Where `gh` may run
+
+**Every `gh` call stays in this orchestrator. Never put one in a sub-agent prompt.**
+
+The three sub-agents run headless. A `gh` command that would raise a permission
+prompt gets no prompt there — it hangs or fails with nothing to show for it. The
+agents keep to Read/Edit/Write/Bash inside their worktree, which removes the
+problem rather than working around it.
 
 ## Steps
 
 ### 1. Determine the phase
-From the skill args:
-- `test`          → RED phase only
-- `impl`          → GREEN phase only
-- `review`        → REFACTOR phase only
-- `all` or no arg → all three phases sequentially
-- `done`          → cleanup after merge (remove worktree, reset spec)
-- anything else   → show usage
 
-### 2. Validate the feature spec (skip if phase is `done`)
-If the phase is **not** `done`: read `tdd/feature.md`.
-If any line equals exactly `PENDING`, stop immediately and tell the user:
+From the skill args: `issue`, `test`, `impl`, `review`, `pr`, `cleanup`, or
+`all` / no arg. Anything else → show the usage table and stop.
+
+### 2. `gh` preflight — for `issue`, `pr`, `cleanup` and `all`
+
+```bash
+command -v gh >/dev/null || echo "MISSING"
+gh auth status >/dev/null 2>&1 || echo "UNAUTHENTICATED"
+```
+
+If either fails, stop and say which command failed and how to fix it
+(`gh auth login`). Do not proceed and discover it three phases later.
+
+### 3. Validate the feature spec — skipped for `cleanup`
+
+Read `tdd/feature.md`. If any line equals exactly `PENDING`, stop and tell the user:
+
 > "`tdd/feature.md` still has PENDING sections. Describe the feature and I will fill the file."
 
-### 3. Create or reuse the feature worktree
-
-Run the following using Bash:
+### 4. Create or reuse the feature worktree — skipped for `cleanup`
 
 a. Read the **Feature Name** line from `tdd/feature.md`.
 
-b. Derive a **slug**: lowercase, strip accents, replace spaces and non-alphanumeric characters with hyphens, collapse consecutive hyphens, strip leading/trailing hyphens.
-   Example: `"Filter devices by name"` → `filter-devices-by-name`
+b. Derive a **slug**: lowercase, strip accents, replace spaces and non-alphanumeric
+   characters with hyphens, collapse consecutive hyphens, strip leading/trailing
+   hyphens. Example: `"Filter devices by name"` → `filter-devices-by-name`
 
 c. Set:
    - `BRANCH=feat/<slug>`
@@ -65,20 +95,33 @@ d. Check whether the worktree already exists:
 
 e. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 
-### 4. Spawn agents with targeted context
+### 5. `issue` — open the tracking issue
 
-Spawn each phase with its **dedicated** agent type — `tdd-test-writer` (RED),
-`tdd-implementer` (GREEN), `tdd-reviewer` (REFACTOR). These agents carry the right
-tool grants (`Read, Edit, Write, Bash`); `general-purpose` is denied `Read`/`Bash`
-by the permission hooks and will stall.
+Runs first in `all`, and standalone as `/tdd issue`. **Idempotent**: the issue
+number is persisted so a re-run never opens a second one.
 
-Because the dedicated agent's `.md` body is already its system prompt, **do not**
-re-inject it into the prompt. Pass only the contextual sections shown below (the
-parts after the first `---`: Worktree, Affected Layers, and the phase-specific
-context). The leading `<...-body>` placeholder in each structure is therefore
-omitted when spawning a dedicated agent.
+a. If `$WORKTREE_PATH/.tdd-issue` exists, read `ISSUE_NUMBER` from it, print
+   `Tracking issue: #$ISSUE_NUMBER (already open)` and skip the rest of this step.
 
-#### 4.0 Determine the affected layers
+b. Otherwise create it:
+   - **Title** — the **Feature Name** line, verbatim.
+   - **Body** — the **Description** section only.
+
+   The nominal and non-nominal scenarios are working material for the agents, not
+   tracker content. Leave them in `feature.md`.
+
+   ```bash
+   gh issue create --title "<Feature Name>" --body "<Description>"
+   ```
+
+c. Persist the number, which has to survive to the `pr` phase so the pull request
+   can carry `Closes #N`:
+   ```bash
+   echo "<N>" > "$WORKTREE_PATH/.tdd-issue"
+   ```
+   `.tdd-issue` is gitignored, like `.tdd-base-sha`, and dies with the worktree.
+
+### 6. Determine the affected layers
 
 Build a `LAYERS` set from `tdd/feature.md`:
 
@@ -94,6 +137,19 @@ Build a `LAYERS` set from `tdd/feature.md`:
 Render `LAYERS` as a comma-separated list (e.g. `server, proto`) and inject it into
 every agent prompt under an `## Affected Layers` heading. Agents use it to decide
 whether to run the Android NDK cross-build (mobile only) and which crates to focus on.
+
+### 7. Spawn agents with targeted context
+
+Spawn each phase with its **dedicated** agent type — `tdd-test-writer` (RED),
+`tdd-implementer` (GREEN), `tdd-reviewer` (REFACTOR). These agents carry the right
+tool grants (`Read, Edit, Write, Bash`); `general-purpose` is denied `Read`/`Bash`
+by the permission hooks and will stall.
+
+Because the dedicated agent's `.md` body is already its system prompt, **do not**
+re-inject it into the prompt. Pass only the contextual sections shown below (the
+parts after the first `---`: Worktree, Affected Layers, and the phase-specific
+context). The leading `<...-body>` placeholder in each structure is therefore
+omitted when spawning a dedicated agent.
 
 ---
 
@@ -221,68 +277,73 @@ Branch: `<BRANCH>`
 <Acceptance Criteria section from tdd/feature.md>
 ```
 
----
+### 8. Sequencing for `all`
 
-### 5. Sequencing for `all`
-
-Spawn RED → wait → run build check → spawn GREEN → wait → spawn REFACTOR.
+`issue` → RED → wait → build check → GREEN → wait → REFACTOR → wait → `pr`.
 Print a separator between phases: `\n--- [Phase] complete ---\n`.
 
-### 6. Final report
+### 9. `pr` — push and open the pull request
 
-After all agents complete:
-
-1. If the REFACTOR phase ran, read `<WORKTREE_PATH>/tdd/REVIEW.md` and display its full contents.
-
-2. Then output:
-   - Worktree: `<WORKTREE_PATH>` — branch: `<BRANCH>`
-   - Next steps:
-     ```bash
-     git -C <WORKTREE_PATH> push -u origin <BRANCH>   # open a PR
-     # once merged, run: /tdd done
-     ```
-
-### 7. `done` — cleanup after merge
-
-Run the following using Bash:
-
-a. Read the **Feature Name** from `tdd/feature.md` and derive the slug (same rule as step 3b).
-
-b. Set:
-   - `ROOT=$(git rev-parse --show-toplevel)`
-   - `WORKTREE_PATH=$(dirname "$ROOT")/blue2th-<slug>`
-   - `BRANCH=feat/<slug>`
-
-c. Verify the worktree exists:
+a. Push the branch:
    ```bash
-   git worktree list | grep "$WORKTREE_PATH"
-   ```
-   If not found, tell the user "No worktree found for this feature — nothing to clean up." and stop.
-
-d. Remove the worktree and delete the local branch:
-   ```bash
-   git worktree remove --force "$WORKTREE_PATH"
-   git branch -d "$BRANCH"
-   ```
-   `--force` is required because the Rust `target/` directory is always present and untracked.
-   If `git branch -d` fails (branch not yet merged), warn the user and do **not** force-delete.
-
-e. Reset the feature spec:
-   ```bash
-   git checkout HEAD -- tdd/feature.md
+   git -C "$WORKTREE_PATH" push -u origin "$BRANCH"
    ```
 
-f. Update the knowledge graph (AST-only, no API cost):
+b. **Idempotent** — if a pull request already exists for this branch, do not open a
+   second one; report the existing one and go to step (d):
    ```bash
-   graphify update .
+   gh pr list --head "$BRANCH" --state open --json number,url
    ```
-   If `graphify` is not found, skip this step and warn the user.
 
-g. If any files in `graphify-out/` changed, commit them:
+c. Create it. The body is built from `feature.md`'s **Description**, plus
+   `Closes #<ISSUE_NUMBER>` read from `$WORKTREE_PATH/.tdd-issue`:
    ```bash
-   git add graphify-out/
-   git diff --cached --quiet || git commit -m "chore(graph): update knowledge graph after <slug>"
-   ```
-   Replace `<slug>` with the actual feature slug.
+   gh pr create --base develop --head "$BRANCH" \
+     --title "<Feature Name>" --body "<Description>
 
-h. Print: `Cleaned up: worktree and branch <BRANCH> removed. tdd/feature.md reset. Knowledge graph updated.`
+   Closes #<ISSUE_NUMBER>"
+   ```
+   Same source as the issue body, so the two cannot drift. **Not `--fill`**, which
+   composes the body from commit messages instead.
+
+   Then add, in the body, anything a reviewer would miss on a green CI run — a new
+   dependency, a change to a shared DTO, a file touched outside the stated scope, a
+   test deleted rather than fixed. `CLAUDE.md` requires it, and only this
+   orchestrator has the diff in view.
+
+d. Post the review report as a **comment**, not a commit:
+   ```bash
+   gh pr comment <N> --body-file "$WORKTREE_PATH/tdd/REVIEW.md"
+   ```
+   It stays attached to the change and readable at review time, without adding a
+   `docs(tdd)` commit to the branch. That leaves exactly three commits — `test:`,
+   `feat:`, `refactor:` — which are the feature *and* the proof the tests came
+   first. **Do not squash them.** Reverting the whole feature is already
+   `git revert -m 1 <merge-commit>`.
+
+e. **Never `gh pr merge`.** This skill opens the pull request; a human merges it.
+   That is the last human checkpoint in the cycle, and it is a governance rule, not
+   a statement about capability.
+
+f. Print the pull request URL and: `Once it is merged, run: /tdd cleanup`
+
+### 10. `cleanup` — after the merge
+
+Delegate to the script, which holds the whole logic so a `post-merge` hook can call
+it too (#17):
+
+```bash
+tdd/cleanup.sh
+```
+
+Report its output as-is. It exits non-zero and touches nothing when the pull
+request is not merged — open, or closed without merging — and says which. Do not
+work around a refusal: an open PR means the work is not done, and a closed one
+means it was abandoned.
+
+### 11. Final report
+
+After the phases complete:
+
+1. If REFACTOR ran, read `<WORKTREE_PATH>/tdd/REVIEW.md` and display its full contents.
+2. Print the worktree, the branch, the tracking issue and the pull request URL.

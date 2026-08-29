@@ -27,7 +27,7 @@ PENDING
 
 ## Layers touched
 <!-- Source of truth for which crates the TDD agents build/test. Check all that apply. -->
-<!-- mobile = blue2th (Dioxus/Android, src/) · server = blue2th-server (Axum/PipeWire) · proto = blue2th-proto (shared serde DTOs) -->
+<!-- mobile = blue2th-frontend (Dioxus/Android) · server = blue2th-server (Axum/PipeWire) · proto = blue2th-proto (shared serde DTOs) -->
 - [ ] mobile (`blue2th-frontend`)
 - [ ] server (`blue2th-server/`)
 - [ ] proto (`blue2th-proto/`)

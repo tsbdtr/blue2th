@@ -206,13 +206,14 @@ being patched directly. And disagreement is allowed: when a comment is wrong,
 reply with the reason instead of complying. Compliance is not engineering.
 
 ## tdd
-- **tdd** (`.claude/skills/tdd/SKILL.md`) — orchestrate the TDD cycle (red/green/refactor). Trigger: `/tdd`
+- **tdd** (`.claude/skills/tdd/SKILL.md`) — orchestrate the whole cycle: tracking issue → red/green/refactor → pull request → cleanup. Trigger: `/tdd`
 - When a user describes a new feature, **before** filling `tdd/feature.md` and before running `/tdd`:
   1. Ask the user to describe the **nominal usage scenario** (the happy path: who does what, what happens, what they see).
   2. Identify the **obvious non-nominal cases** (errors, empty states, permission denied, unavailable hardware…) and ask the user how each should be handled.
   3. Run a **code impact analysis**: query the knowledge graph (`graphify query`) and read the relevant source files to identify which functions/files need to change, determine **which layers are touched** (mobile / server / proto), and flag any risks (breaking changes, Android-only JNI paths, Axum route/handler changes, BlueZ/PipeWire hardware boundaries, shared-DTO contract changes, UI state implications).
   4. Only once the scenarios and impact are clear: fill `tdd/feature.md` — including the **Layers touched** checkboxes — and tell the user to run `/tdd all`.
-- Agents are defined in `.claude/agents/`: `tdd-test-writer`, `tdd-implementer`, `tdd-reviewer`.
+- `/tdd all` ends by opening the pull request, and stops there. **Never merge it** — that is the last human checkpoint. Once a human has, run `/tdd cleanup`, which reads the pull request state first and refuses on one that is open or closed-without-merge rather than deleting the work.
+- Agents are defined in `.claude/agents/`: `tdd-test-writer`, `tdd-implementer`, `tdd-reviewer`. Every `gh` call stays in the orchestrating skill: the three agents run headless, where a permission prompt has nobody to answer it.
 When the user types `/tdd`, invoke the Skill tool with `skill: "tdd"` before doing anything else.
 
 ## graphify
