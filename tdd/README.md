@@ -28,8 +28,12 @@ the merged pull request.
    scenario**, then for how each obvious **non-nominal case** should behave, and runs
    a code-impact analysis (`graphify query` plus the relevant sources) — see the
    `tdd` section of `CLAUDE.md`.
-2. Claude fills `tdd/feature.md`, **including the `Layers touched` checkboxes**.
-3. Run `/tdd all`.
+2. If the feature is visible on screen, Claude asks **how it is represented** —
+   which surface, what colour, where — because nothing rendered is test-runnable
+   here, so the spec is the only record of it.
+3. Claude fills `tdd/feature.md`, **including the `Layers touched` checkboxes** and
+   the **`Manual verification`** section, then **stops** so you can read it.
+4. Run `/tdd all`.
 
 A git worktree is created at `../blue2th-<feature-slug>` on branch
 `feat/<feature-slug>`. Each feature is isolated, so several can run in parallel.
@@ -69,11 +73,21 @@ A git worktree is created at `../blue2th-<feature-slug>` on branch
     └── tdd/SKILL.md          ← /tdd skill (orchestrator)
 
 tdd/
-├── feature.md                ← Current feature spec (filled by Claude)
-├── REVIEW.md                 ← Review report template (overwritten in the worktree)
+├── feature.template.md       ← Versioned template, never filled in place
+├── feature.md                ← Working spec, gitignored, copied from the template
+├── REVIEW.template.md        ← Versioned template for the review report
+├── REVIEW.md                 ← Working report, gitignored, written in the worktree
 ├── cleanup.sh                ← The cleanup phase, callable on its own
 └── README.md
 ```
+
+The two working files are **ignored by git**, not merely "not to be committed".
+The phase agents stage with `git add -A`, so the spec once reached a feature
+branch through the red phase's own commit and only a history rewrite got it out.
+An ignored file cannot be swept in. `cleanup.sh` restores both by copying the
+templates over them — it used to run `git checkout HEAD --`, which discards
+uncommitted changes only and therefore announced a reset it had not performed the
+moment a filled spec reached `develop`.
 
 `.tdd-base-sha` and `.tdd-issue` are gitignored markers inside the worktree,
 carrying the branch point and the issue number between phases. They die with the

@@ -59,9 +59,22 @@ If either fails, stop and say which command failed and how to fix it
 
 ### 3. Validate the feature spec — skipped for `cleanup`
 
-Read `tdd/feature.md`. If any line equals exactly `PENDING`, stop and tell the user:
+`tdd/feature.md` is a **working file, ignored by git**, generated from the
+versioned `tdd/feature.template.md`. Create it if it is missing — a fresh clone
+has only the template:
+
+```bash
+[ -f tdd/feature.md ] || cp tdd/feature.template.md tdd/feature.md
+```
+
+Then read it. If any line equals exactly `PENDING`, stop and tell the user:
 
 > "`tdd/feature.md` still has PENDING sections. Describe the feature and I will fill the file."
+
+**Never `git add` it, in this skill or in a sub-agent prompt.** It is ignored, so
+`git add -A` cannot sweep it in — which is the point: it reached a feature branch
+that way once, through an agent's `git add -A`, and only a history rewrite got it
+back out. The same holds for `tdd/REVIEW.md`.
 
 ### 4. Create or reuse the feature worktree — skipped for `cleanup`
 
@@ -93,7 +106,15 @@ d. Check whether the worktree already exists:
    BASE_SHA=$(cat "$WORKTREE_PATH/.tdd-base-sha")
    ```
 
-e. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
+e. Copy the spec into the worktree. `tdd/feature.md` is gitignored, so
+   `git worktree add` does **not** bring it along — the agents would find the
+   file missing:
+   ```bash
+   cp tdd/feature.md "$WORKTREE_PATH/tdd/feature.md"
+   ```
+   It stays ignored there too, so it cannot reach the branch.
+
+f. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 
 ### 5. `issue` — open the tracking issue
 
@@ -279,8 +300,27 @@ Branch: `<BRANCH>`
 
 ### 8. Sequencing for `all`
 
-`issue` → RED → wait → build check → GREEN → wait → REFACTOR → wait → `pr`.
-Print a separator between phases: `\n--- [Phase] complete ---\n`.
+`issue` → RED → wait → build check → GREEN → **manual-verification halt** →
+REFACTOR → wait → `pr`. Print a separator between phases:
+`\n--- [Phase] complete ---\n`.
+
+#### The halt after GREEN
+
+Read the `## Manual verification` section of `tdd/feature.md`. If it holds
+anything but `PENDING` or nothing at all, **stop after GREEN**: print the section
+verbatim, say the feature is ready to try, and tell the user to run `/tdd review`
+when they are done. Do not spawn the reviewer.
+
+Two reasons, and neither is politeness:
+
+- REFACTOR rewrites code whose only proof is the test suite. If the behaviour is
+  broken where no test looks, refactoring first means debugging a moving target.
+- A fix found after REFACTOR lands as a fourth commit, which breaks the
+  `test:` / `feat:` / `refactor:` shape that shows the tests came first.
+
+An empty section means everything is covered by tests, and `all` runs straight
+through. On the mobile layer it is almost never empty: Dioxus components are not
+test-runnable here, so anything rendered is verified by hand or not at all.
 
 ### 9. `pr` — push and open the pull request
 
@@ -295,11 +335,24 @@ b. **Idempotent** — if a pull request already exists for this branch, do not o
    gh pr list --head "$BRANCH" --state open --json number,url
    ```
 
-c. Create it. The body is built from `feature.md`'s **Description**, plus
-   `Closes #<ISSUE_NUMBER>` read from `$WORKTREE_PATH/.tdd-issue`:
+c. Create it. The **title must follow Conventional Commits**, or the
+   `commit-convention` job fails on the pull request the moment it is opened —
+   and until #40 landed, correcting the title afterwards re-ran nothing, so it
+   stayed red. A Feature Name is a phrase, not a commit subject, so compose the
+   title instead of passing the name through:
+
+   ```
+   TITLE="feat: <Feature Name>"
+   ```
+
+   The type is `feat` because this skill branches `feat/<slug>` and handles
+   features only (see **Scope** at the top); the scope is optional in the
+   pattern, which lives in `.githooks/commit-msg`. The body is built from
+   `feature.md`'s **Description**, plus `Closes #<ISSUE_NUMBER>` read from
+   `$WORKTREE_PATH/.tdd-issue`:
    ```bash
    gh pr create --base develop --head "$BRANCH" \
-     --title "<Feature Name>" --body "<Description>
+     --title "$TITLE" --body "<Description>
 
    Closes #<ISSUE_NUMBER>"
    ```

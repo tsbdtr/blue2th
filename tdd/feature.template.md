@@ -1,7 +1,9 @@
 # TDD Feature Specification
 
-> **Instructions**: Describe the feature to Claude (in conversation) and it will fill this file.
-> Then run: `/tdd all`
+> **Instructions**: this file is the template. Describe the feature to Claude in
+> conversation; it copies this file to `tdd/feature.md` — a working file, ignored
+> by git — fills it, and stops so you can read it before anything runs.
+> Then: `/tdd all`.
 
 ---
 
@@ -55,6 +57,20 @@ PENDING
 ### Integration tests (async)
 <!-- mobile: tests/ + #[tokio::test] · server: blue2th-server/tests/ (e.g. route tests via tower oneshot) · proto: serde round-trip in lib.rs -->
 <!-- Hardware (BlueZ/PipeWire/audio device) is NOT test-runnable: cover pure logic, leave the hardware boundary to manual testing. -->
+- PENDING
+
+## Manual verification
+<!-- What no test here can check, and how to check it by hand. -->
+<!-- LEAVE EMPTY if everything is covered by tests. Non-empty means `/tdd all` -->
+<!-- stops after GREEN and prints this section, so the behaviour can be tried -->
+<!-- before REFACTOR rewrites the code that produces it. -->
+<!-- -->
+<!-- Each entry MUST say how to *trigger* the case, not only what to look at: -->
+<!-- "test the incompatible backend" is not actionable when both binaries -->
+<!-- compile the same constant. Give the patch, the fixture or the gesture. -->
+<!-- -->
+<!-- Anything rendered (Dioxus components) and anything behind hardware -->
+<!-- (BlueZ, PipeWire, a real speaker) belongs here by construction. -->
 - PENDING
 
 ## Constraints & Notes
