@@ -58,7 +58,14 @@ When the **mobile** layer changed, also cross-compile for the real target:
 dx build --platform android --package blue2th-frontend
 ```
 
-Install the pre-commit hook once with: `git config core.hooksPath .githooks`
+Install the hooks once with: `git config core.hooksPath .githooks` — that gets the
+pre-commit gate and the commit-message check, both of which only ever refuse a bad
+commit.
+
+`.githooks/post-merge` is a third hook, and it stays inert until it is turned on
+separately: `git config --bool blue2th.tddAutoCleanup true`. It runs `/tdd cleanup`
+when a merged `develop` lands, which deletes a worktree and a branch — nobody
+should inherit that by having opted into a pre-commit gate.
 
 `blue2th-frontend/assets/tailwind.css` is **generated, not tracked**: `dx` rebuilds
 it from `blue2th-frontend/tailwind.css` on every Android build.

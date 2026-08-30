@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Run the /tdd cleanup when a merged develop lands locally.
+#
+# Install the hooks once with: git config core.hooksPath .githooks
+# Then turn THIS one on, explicitly:
+#
+#   git config --bool blue2th.tddAutoCleanup true
+#
+# Two switches on purpose. Installing the hooks buys the pre-commit gate and the
+# commit-message check, which only ever refuse a bad commit. This one deletes a
+# worktree and a branch, and nobody should inherit that by having opted into
+# something else.
+#
+# Everything else is decided by tdd/cleanup.sh --from-hook, which exits 0 without
+# a word unless there is exactly one /tdd worktree, on develop, whose pull
+# request is MERGED. This hook fires on every merge and pull; almost all of them
+# have nothing to do with a feature branch.
+
+set -euo pipefail
+
+[ "$(git config --bool blue2th.tddAutoCleanup 2>/dev/null || echo false)" = "true" ] || exit 0
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -x "$ROOT/tdd/cleanup.sh" ] || exit 0
+
+# Never fail the merge that called us. The merge already succeeded; cleanup is
+# housekeeping, and a hook that turns a good pull into a non-zero exit teaches
+# people to pass --no-verify.
+"$ROOT/tdd/cleanup.sh" --from-hook || true
