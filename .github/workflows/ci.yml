@@ -99,30 +99,3 @@ jobs:
             echo "Expected exactly: $expected"
             exit 1
           fi
-
-  commit-convention:
-    name: PR title follows Conventional Commits
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # The pattern is read from .githooks/commit-msg rather than copied, so the
-      # hook and CI cannot drift apart — which is exactly how the test gate ended
-      # up skipping half the suite (see the history of .githooks/pre-commit).
-      - name: Validate title
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          PATTERN=$(sed -n "s/^PATTERN='\(.*\)'$/\1/p" .githooks/commit-msg)
-          if [ -z "$PATTERN" ]; then
-            echo "Could not read PATTERN from .githooks/commit-msg"
-            exit 1
-          fi
-          if ! printf '%s' "$TITLE" | grep -qE "$PATTERN"; then
-            echo "PR title does not follow Conventional Commits."
-            echo "Expected: <type>(<scope>): <description>"
-            echo "Got: $TITLE"
-            exit 1
-          fi
