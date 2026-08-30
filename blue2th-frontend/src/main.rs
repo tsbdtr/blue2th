@@ -44,6 +44,16 @@ struct BackendOnline(Signal<bool>);
 #[derive(Clone, Copy)]
 struct BackendProtocol(Signal<Option<blue2th_proto::ProtocolMismatch>>);
 
+/// Whether the backend has been declared **gone**, shared via context.
+///
+/// Slower and stricter than [`BackendOnline`], which goes false on the very first
+/// missed probe so the status dot reacts at once: this one only flips after
+/// [`settings::PROBES_BEFORE_CLEARING`] consecutive failures, and it is what tells
+/// the screens to drop the state that backend owned rather than keep showing it as
+/// if it were still true.
+#[derive(Clone, Copy)]
+struct BackendGone(Signal<bool>);
+
 /// The active backend's health, as every gate on screen must agree on it.
 ///
 /// Calls hooks: invoke it once, unconditionally, at the top of a component body.
@@ -172,11 +182,20 @@ fn App() -> Element {
     // carries the range, so no second request is needed (#33).
     let backend_protocol: Signal<Option<blue2th_proto::ProtocolMismatch>> = use_signal(|| None);
     use_context_provider(|| BackendProtocol(backend_protocol));
+    // The slower verdict the same poll produces: the backend is not just missing
+    // a beat, it is gone, and the state it owned must stop being shown as if it
+    // were still true.
+    let backend_gone: Signal<bool> = use_signal(|| false);
+    use_context_provider(|| BackendGone(backend_gone));
     use_hook(|| {
         // Signal<bool> is Copy; the spawned task captures its own handle.
         let mut backend_online = backend_online;
         let mut backend_protocol = backend_protocol;
+        let mut backend_gone = backend_gone;
         spawn(async move {
+            // Local to this task on purpose: nothing else reads the run length,
+            // only the verdict it produces, which is the signal above.
+            let mut failures: u32 = 0;
             loop {
                 let probe = backend::ping_backend().await;
                 let reachable = probe.is_ok();
@@ -199,6 +218,15 @@ fn App() -> Element {
                 }
                 if *backend_online.peek() != reachable {
                     *backend_online.write() = reachable;
+                }
+                // …and the second, slower verdict, which the dot above never
+                // waits for: only a run of consecutive failures declares the
+                // backend gone, and `track_probe` says so exactly once so the
+                // screens clear once instead of on every later probe.
+                if settings::track_probe(&mut failures, reachable) {
+                    *backend_gone.write() = true;
+                } else if reachable && *backend_gone.peek() {
+                    *backend_gone.write() = false;
                 }
                 // Becoming usable again: re-assert the name the app is the source
                 // of truth for. This covers a push that failed while the backend
@@ -238,6 +266,28 @@ fn App() -> Element {
         background_error: use_signal(|| None),
     };
     use_context_provider(|| spotify_ui);
+
+    // The backend is gone: drop the Spotify state it owned. Keeping it would
+    // leave the card green over a `librespot` nobody can reach any more, and the
+    // now-playing panel showing a track that stopped. The polls above only ever
+    // overwrite these while the backend answers, so nothing else would.
+    use_effect(move || {
+        if !backend_gone() {
+            return;
+        }
+        let mut running = spotify_ui.running;
+        let mut connected = spotify_ui.connected;
+        let mut now_playing = spotify_ui.now_playing;
+        if *running.peek() {
+            *running.write() = false;
+        }
+        if *connected.peek() {
+            *connected.write() = false;
+        }
+        if now_playing.peek().is_some() {
+            *now_playing.write() = None;
+        }
+    });
 
     // Reconcile both Spotify states in one task: the librespot subprocess can die
     // server-side, and the OAuth session can expire, so neither is inferred from
@@ -789,6 +839,35 @@ fn BackendScan() -> Element {
                 merge_devices(&mut found, devices);
             }
         });
+    });
+
+    // The backend is gone: drop what it owned. The list, the playback state and
+    // the target selection all describe *that* backend, and a list nobody can act
+    // on reads as a working app. Deliberately not `merge_devices`, which never
+    // removes anything so a refetch cannot empty the list under the user — this is
+    // the separate, explicit act of a confirmed loss. Emptying the targets also
+    // takes the transport bar away, since it only renders with a target.
+    let backend_gone = use_context::<BackendGone>().0;
+    use_effect(move || {
+        if !backend_gone() {
+            return;
+        }
+        let mut found = found;
+        let mut playback = playback;
+        let mut targets = targets;
+        if !found.peek().is_empty() {
+            found.write().clear();
+        }
+        if playback.peek().is_some() {
+            *playback.write() = None;
+        }
+        let idle = blue2th_proto::TargetsState {
+            speakers: Vec::new(),
+            routing: blue2th_proto::RoutingMode::Idle,
+        };
+        if *targets.peek() != idle {
+            *targets.write() = idle;
+        }
     });
 
     // Poll the playback state while online so the UI reflects changes made

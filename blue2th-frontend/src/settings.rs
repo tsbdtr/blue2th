@@ -250,9 +250,15 @@ pub const PROBES_BEFORE_CLEARING: u32 = 3;
 /// `true` **only** on the probe that reaches [`PROBES_BEFORE_CLEARING`], so the
 /// caller clears once instead of on every later failure.
 pub fn track_probe(failures: &mut u32, reachable: bool) -> bool {
-    // RED phase stub: the counting rule itself is the GREEN phase's job.
-    let _ = (failures, reachable);
-    false
+    if reachable {
+        *failures = 0;
+        return false;
+    }
+    // Saturating: a backend left down for long enough would otherwise wrap the
+    // counter back through the threshold and clear a second time.
+    *failures = failures.saturating_add(1);
+    // Exactly on the threshold, never after: the caller clears once per loss.
+    *failures == PROBES_BEFORE_CLEARING
 }
 
 /// What a discovered service means for the settings the app already holds.
