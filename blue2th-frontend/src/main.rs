@@ -174,8 +174,10 @@ fn main() {
 #[component]
 fn App() -> Element {
     // Periodically probe the PC backend so the whole app knows whether it is
-    // reachable. Shared via context: Home shows a status dot, BackendScan gates
-    // its scan button and clears its list when the backend goes down.
+    // reachable. Shared via context: Home shows a status dot and BackendScan gates
+    // its scan button on it. Clearing the list is *not* this signal's job — it
+    // reacts to the very first missed probe, and a single one means nothing; that
+    // is the slower `BackendGone` verdict below.
     let backend_online: Signal<bool> = use_signal(|| false);
     use_context_provider(|| BackendOnline(backend_online));
     // The same poll answers "can we talk to it at all?": the payload already
@@ -826,9 +828,11 @@ fn BackendScan() -> Element {
     let health = use_backend_health();
     let actionable = settings::backend_actionable(health);
     // Load the backend's known devices on mount, and again each time it comes
-    // back online. The list is never cleared: leaving the app (Spotify login in
+    // back online. Nothing is cleared *here*: leaving the app (Spotify login in
     // the browser, or a restart) briefly flips the health probe to offline, and
-    // wiping the list there is what used to force a manual "load devices".
+    // wiping the list on that first miss is what used to force a manual "load
+    // devices". Only the confirmed loss below clears, and this same effect is what
+    // repopulates afterwards, with no user action.
     use_effect(move || {
         if !backend_online() {
             return;
@@ -847,6 +851,13 @@ fn BackendScan() -> Element {
     // removes anything so a refetch cannot empty the list under the user — this is
     // the separate, explicit act of a confirmed loss. Emptying the targets also
     // takes the transport bar away, since it only renders with a target.
+    //
+    // The unavailable marks go with the list, exactly as they do on a manual scan:
+    // a connect attempted while the backend was dying fails, and a failed connect
+    // is read as "this *speaker* is unreachable", which disables its row. Kept,
+    // those marks would outlive the list and come back over the refetched devices
+    // as rows only a manual scan could revive — the tap this change exists to
+    // spare the user.
     let backend_gone = use_context::<BackendGone>().0;
     use_effect(move || {
         if !backend_gone() {
@@ -855,8 +866,12 @@ fn BackendScan() -> Element {
         let mut found = found;
         let mut playback = playback;
         let mut targets = targets;
+        let mut unavailable = unavailable;
         if !found.peek().is_empty() {
             found.write().clear();
+        }
+        if !unavailable.peek().is_empty() {
+            unavailable.write().clear();
         }
         if playback.peek().is_some() {
             *playback.write() = None;
