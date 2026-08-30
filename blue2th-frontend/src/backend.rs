@@ -10,7 +10,7 @@ use std::time::Duration;
 use blue2th_proto::{
     AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo, HealthStatus,
     NowPlaying, OffsetRequest, PairRequest, PairResponse, PlaybackState, PresenceRequest,
-    ServerConfig, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
+    ProtocolMismatch, ServerConfig, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
 };
 use futures::StreamExt;
 
@@ -29,6 +29,10 @@ pub struct BackendError {
     /// apart from the message so the UI can point at pairing instead of showing
     /// yet another network failure — "not paired" is not "unreachable".
     not_paired: bool,
+    /// Which machine is behind, when the app and the backend disagree on the
+    /// wire contract. Typed rather than folded into the message, exactly like
+    /// `not_paired`: the UI has to name the side to update.
+    mismatch: Option<ProtocolMismatch>,
 }
 
 impl BackendError {
@@ -36,7 +40,25 @@ impl BackendError {
         Self {
             message: msg.into(),
             not_paired: false,
+            mismatch: None,
         }
+    }
+
+    /// The typed "this app and this backend do not speak the same wire
+    /// contract" failure, naming which machine to update.
+    pub fn protocol(mismatch: ProtocolMismatch) -> Self {
+        Self {
+            message: PROTOCOL_MISMATCH.to_string(),
+            not_paired: false,
+            mismatch: Some(mismatch),
+        }
+    }
+
+    /// Which side is behind, when this failure is a contract mismatch at all.
+    /// `None` for every other failure — a backend that cannot be reached is not
+    /// an incompatible one.
+    pub fn protocol_mismatch(&self) -> Option<ProtocolMismatch> {
+        self.mismatch
     }
 
     /// The typed "the app is not paired with this backend" failure: no token
@@ -45,6 +67,7 @@ impl BackendError {
         Self {
             message: NOT_PAIRED.to_string(),
             not_paired: true,
+            mismatch: None,
         }
     }
 
@@ -428,6 +451,25 @@ pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
 /// Build the `/health` URL from a base, tolerating a trailing slash.
 fn health_url(base: &str) -> String {
     format!("{}/health", base.trim_end_matches('/'))
+}
+
+/// Message carried by a wire-contract mismatch. The *side to update* travels
+/// beside it as a [`ProtocolMismatch`], never inside this string — which is why
+/// this one is not localised: the UI reads the typed variant, not this text.
+pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
+
+/// Probe `GET {url}/health` and check the wire contract this app speaks against
+/// the range the backend announces.
+///
+/// Runs before pairing and on every health poll: the phone and the PC are
+/// updated by hand at different times, so a version gap is the normal state
+/// between two updates.
+pub async fn check_backend_protocol(url: &str) -> Result<(), BackendError> {
+    // An unreachable backend surfaces its transport error untouched: "cannot
+    // reach" must never read as "incompatible".
+    let health = test_backend(url).await?;
+    blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
+        .map_err(BackendError::protocol)
 }
 
 /// Flatten a `reqwest::Error` and its source chain into one string, so the
@@ -1447,6 +1489,118 @@ mod tests {
         });
 
         Ok((format!("http://{addr}"), handle))
+    }
+
+    // ---- backend protocol compatibility check (#33) ----
+    //
+    // A workspace build compiles one `blue2th-proto`, so a `HealthStatus::ok()`
+    // built in-process could never be incompatible with itself: every payload
+    // below is canned on the wire, with the numbers written out by hand.
+
+    // Criterion: mobile — `check_backend_protocol(url)` returns `Ok(())` for a
+    // backend whose announced range contains this app's `PROTOCOL_VERSION`.
+    #[tokio::test]
+    async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
+        // Range 1..=1, matching `PROTOCOL_VERSION` at the time of writing.
+        let (base, served) = canned_backend(
+            "200 OK",
+            r#"{"status":"ok","version":"0.1.0","protocol":1,"protocol_min":1}"#,
+        )
+        .await
+        .expect("start the canned backend");
+
+        let checked = check_backend_protocol(&base).await;
+        let _ = served.await.expect("join the test listener");
+
+        assert_eq!(
+            blue2th_proto::PROTOCOL_VERSION,
+            1,
+            "the canned payload above is written for contract 1"
+        );
+        assert_eq!(
+            checked.map_err(|e| e.to_string()),
+            Ok(()),
+            "a backend announcing 1..=1 serves an app speaking 1"
+        );
+    }
+
+    // Criterion (non-nominal): a backend speaking an older contract than the app
+    // is reported as `BackendTooOld` — update the backend on the server.
+    #[tokio::test]
+    async fn test_check_backend_protocol_refuses_a_backend_that_is_too_old() {
+        let (base, served) = canned_backend(
+            "200 OK",
+            r#"{"status":"ok","version":"0.0.1","protocol":0,"protocol_min":0}"#,
+        )
+        .await
+        .expect("start the canned backend");
+
+        let checked = check_backend_protocol(&base).await;
+        let _ = served.await.expect("join the test listener");
+
+        assert_eq!(
+            checked.err().and_then(|e| e.protocol_mismatch()),
+            Some(ProtocolMismatch::BackendTooOld),
+            "the app is newer than the backend: the server is the side to update"
+        );
+    }
+
+    // Criterion (non-nominal): a backend that dropped support for apps this old
+    // is reported as `BackendTooNew` — update the app on the phone.
+    #[tokio::test]
+    async fn test_check_backend_protocol_refuses_a_backend_that_is_too_new() {
+        let (base, served) = canned_backend(
+            "200 OK",
+            r#"{"status":"ok","version":"9.9.9","protocol":99,"protocol_min":99}"#,
+        )
+        .await
+        .expect("start the canned backend");
+
+        let checked = check_backend_protocol(&base).await;
+        let _ = served.await.expect("join the test listener");
+
+        assert_eq!(
+            checked.err().and_then(|e| e.protocol_mismatch()),
+            Some(ProtocolMismatch::BackendTooNew),
+            "the backend no longer serves an app this old: the phone is the side to update"
+        );
+    }
+
+    // Criterion (non-nominal): a backend predating the mechanism announces
+    // neither field; both read `0`, which fails the upper bound and is reported
+    // as "backend too old".
+    #[tokio::test]
+    async fn test_check_backend_protocol_reads_a_payload_without_the_fields_as_too_old() {
+        let (base, served) = canned_backend("200 OK", r#"{"status":"ok","version":"0.1.0"}"#)
+            .await
+            .expect("start the canned backend");
+
+        let checked = check_backend_protocol(&base).await;
+        let _ = served.await.expect("join the test listener");
+
+        assert_eq!(
+            checked.err().and_then(|e| e.protocol_mismatch()),
+            Some(ProtocolMismatch::BackendTooOld),
+            "a backend that announces nothing is one to update"
+        );
+    }
+
+    // Criterion (non-nominal): an unreachable backend stays a plain transport
+    // error. "Cannot reach" must never read as "incompatible" — the two point at
+    // completely different fixes.
+    #[tokio::test]
+    async fn test_check_backend_protocol_reports_an_unreachable_backend_as_a_plain_error() {
+        // Port 1 is privileged and unbound: the connection is refused at once,
+        // with no listener and no hardware involved.
+        let checked = check_backend_protocol("http://127.0.0.1:1").await;
+
+        // Compared as one value so the failure shows what actually came back:
+        // it must be an error, carrying neither a mismatch nor a pairing hint.
+        assert_eq!(
+            checked.map_err(|e| (e.protocol_mismatch(), e.is_not_paired())),
+            Err((None, false)),
+            "a transport failure says nothing about the wire contract, nor about pairing"
+        );
     }
 
     // Criterion: every backend call carries the bearer when the active entry has

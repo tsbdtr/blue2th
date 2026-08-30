@@ -11,7 +11,7 @@
 use blue2th_frontend::settings::{
     self, AppSettings, BackendEntry, PairingMethod, SettingsError, NO_BACKEND_LABEL,
 };
-use blue2th_proto::{NameError, PairLink, MAX_BACKEND_NAME_LEN};
+use blue2th_proto::{NameError, PairLink, ProtocolMismatch, MAX_BACKEND_NAME_LEN};
 
 // The settings page reads its labels from `locales/`, and a duplicated top-level
 // key there silently drops a whole block, so the keys are checked here.
@@ -854,6 +854,11 @@ fn test_locales_carry_the_settings_page_labels() {
             "app_settings.test_ok",
             "app_settings.name_placeholder",
             "app_settings.url_placeholder",
+            // The wire-contract mismatch (#33): each message names which of the
+            // two machines to update, so "incompatible" is never all the user
+            // gets told.
+            "protocol.backend_too_old",
+            "protocol.backend_too_new",
         ] {
             let translated = rust_i18n::t!(key);
             assert_ne!(
@@ -1210,11 +1215,11 @@ fn test_upsert_from_pair_link_refuses_a_name_another_backend_already_uses() {
 #[test]
 fn test_backend_health_separates_unpaired_from_ready() {
     assert_eq!(
-        settings::backend_health(true, true),
+        settings::backend_health(true, true, None),
         settings::BackendHealth::Ready
     );
     assert_eq!(
-        settings::backend_health(true, false),
+        settings::backend_health(true, false, None),
         settings::BackendHealth::Unpaired,
         "reachable but tokenless is the in-between state, not a working one"
     );
@@ -1226,7 +1231,7 @@ fn test_backend_health_separates_unpaired_from_ready() {
 fn test_backend_health_reports_offline_whatever_the_pairing() {
     for paired in [true, false] {
         assert_eq!(
-            settings::backend_health(false, paired),
+            settings::backend_health(false, paired, None),
             settings::BackendHealth::Offline,
             "an unreachable backend is offline whether or not a token is held"
         );
@@ -1240,7 +1245,166 @@ fn test_backend_health_with_nothing_configured_is_offline() {
     let empty = AppSettings::default();
     assert_eq!(empty.active_token(), None);
     assert_eq!(
-        settings::backend_health(false, empty.active_token().is_some()),
+        settings::backend_health(false, empty.active_token().is_some(), None),
         settings::BackendHealth::Offline
+    );
+}
+
+// Criterion: mobile — `Incompatible` wins over `Unpaired`. Pairing a backend the
+// app cannot talk to is not the next step: one of the two machines has to be
+// updated first, and the token would be useless until then.
+#[test]
+fn test_backend_health_reports_incompatible_over_unpaired() {
+    assert_eq!(
+        settings::backend_health(true, false, Some(ProtocolMismatch::BackendTooOld)),
+        settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooOld),
+        "an incompatible backend is not merely an unpaired one"
+    );
+    assert_eq!(
+        settings::backend_health(true, true, Some(ProtocolMismatch::BackendTooNew)),
+        settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooNew),
+        "a token changes nothing while the two ends cannot talk"
+    );
+}
+
+// Criterion: mobile — `Offline` still wins over `Incompatible`. A backend that
+// cannot be reached announced no range at all, so nothing was compared.
+#[test]
+fn test_backend_health_reports_offline_over_incompatible() {
+    for paired in [true, false] {
+        for mismatch in [
+            ProtocolMismatch::BackendTooOld,
+            ProtocolMismatch::BackendTooNew,
+        ] {
+            assert_eq!(
+                settings::backend_health(false, paired, Some(mismatch)),
+                settings::BackendHealth::Offline,
+                "unreachable outranks incompatible, whatever was last seen"
+            );
+        }
+    }
+}
+
+// Criterion: mobile — the state carries *which machine to update*, not just the
+// fact that the two ends disagree.
+#[test]
+fn test_backend_health_keeps_the_side_to_update() {
+    for mismatch in [
+        ProtocolMismatch::BackendTooOld,
+        ProtocolMismatch::BackendTooNew,
+    ] {
+        assert_eq!(
+            settings::backend_health(true, true, Some(mismatch)),
+            settings::BackendHealth::Incompatible(mismatch),
+            "the side to update must survive the classification"
+        );
+    }
+}
+
+// Criterion: mobile — **both** pairing paths (the QR deep link and the
+// hand-typed code) probe the wire contract before sending `POST /pair`, and
+// refuse to pair on a mismatch.
+//
+// Asserted on the sources rather than on behaviour: both call sites live inside
+// Dioxus components in `main.rs`, which no test here can drive. This is the same
+// guard the codebase already uses for `CorsLayer::permissive` and
+// `BLUE2TH_BACKEND_URL` — it catches the regression that matters, one path being
+// wired and the other forgotten. The exchange itself stays a manual, on-device
+// check. The needles are assembled at compile time so this file is not itself an
+// occurrence.
+#[test]
+fn test_both_pairing_paths_probe_the_protocol_before_pairing() {
+    let pair_call = concat!("backend::", "pair(");
+    let probe_call = concat!("backend::", "check_backend_protocol(");
+    let main_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let source = std::fs::read_to_string(&main_rs)
+        .map_err(|e| format!("read {main_rs:?}: {e}"))
+        .expect("the app entry point must be readable");
+
+    let pairings = source.matches(pair_call).count();
+    let probes = source.matches(probe_call).count();
+
+    assert_eq!(
+        pairings, 2,
+        "the QR deep link and the typed code are the two pairing paths; \
+         found {pairings} call(s) to {pair_call}"
+    );
+    assert!(
+        probes >= pairings,
+        "every pairing path must probe the contract first: {probes} call(s) to \
+         {probe_call} for {pairings} call(s) to {pair_call}"
+    );
+}
+
+// ── The device list's permanent incompatibility banner (#33) ─────────────────
+
+// Criterion: mobile — the warning has to stay on screen. The status dot carries
+// it as an HTML `title`, which needs a hover the phone does not have: on device
+// the message simply did not exist. The device list shows it instead, above the
+// list rather than in place of the empty-state card — an incompatible backend
+// still serves `/devices`, so the list is normally *full* and a message living
+// in the empty card would never be seen.
+#[test]
+fn test_device_list_warning_names_the_side_to_update_when_incompatible() {
+    for mismatch in [
+        ProtocolMismatch::BackendTooOld,
+        ProtocolMismatch::BackendTooNew,
+    ] {
+        assert_eq!(
+            settings::device_list_warning(settings::BackendHealth::Incompatible(mismatch)),
+            Some(mismatch),
+            "the banner must name which machine to update, not merely warn"
+        );
+    }
+}
+
+// Criterion: mobile — and only then. `Offline` compared nothing, so a banner
+// there would point at the wrong problem; `Unpaired` and `Ready` already have
+// their own wording on the dot.
+#[test]
+fn test_device_list_warning_is_silent_in_every_other_state() {
+    for health in [
+        settings::BackendHealth::Offline,
+        settings::BackendHealth::Unpaired,
+        settings::BackendHealth::Ready,
+    ] {
+        assert_eq!(
+            settings::device_list_warning(health),
+            None,
+            "{health:?} is not an incompatibility and must not raise the banner"
+        );
+    }
+}
+
+// Criterion: mobile — an incompatible backend must refuse the actions, not just
+// warn about them. Letting them through was tried on device and rejected: the
+// user could still connect a speaker, start Spotify and play, each failing with
+// a toast, which reads as a broken app rather than as a backend to update.
+#[test]
+fn test_backend_actionable_blocks_an_incompatible_backend() {
+    for mismatch in [
+        ProtocolMismatch::BackendTooOld,
+        ProtocolMismatch::BackendTooNew,
+    ] {
+        assert!(
+            !settings::backend_actionable(settings::BackendHealth::Incompatible(mismatch)),
+            "an incompatible backend must not accept actions"
+        );
+    }
+    assert!(
+        !settings::backend_actionable(settings::BackendHealth::Offline),
+        "an unreachable backend has nothing to act on"
+    );
+}
+
+// Criterion: mobile — and it blocks *only* those two. `Unpaired` keeps its
+// current behaviour here on purpose: gating it is #37, a separate change, and
+// silently folding it in would make this one impossible to review as one thing.
+#[test]
+fn test_backend_actionable_leaves_the_other_states_alone() {
+    assert!(settings::backend_actionable(settings::BackendHealth::Ready));
+    assert!(
+        settings::backend_actionable(settings::BackendHealth::Unpaired),
+        "gating the unpaired state is #37, not this change"
     );
 }

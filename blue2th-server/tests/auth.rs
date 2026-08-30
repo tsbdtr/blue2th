@@ -269,10 +269,12 @@ async fn test_health_answers_with_a_wrong_bearer() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// Criterion: `/health` must not leak anything beyond the version and
-// `auth_required` — it is the only payload an unauthenticated caller can read.
+// Criterion: `/health` must not leak anything beyond the version, the
+// `auth_required` flag and the wire-contract range (#33) — it is the only
+// payload an unauthenticated caller can read. The protocol range belongs here
+// precisely because the app has to read it *before* pairing.
 #[tokio::test]
-async fn test_health_payload_leaks_nothing_beyond_status_version_and_auth() {
+async fn test_health_payload_leaks_nothing_beyond_the_declared_fields() {
     let request = Request::builder()
         .uri("/health")
         .body(Body::empty())
@@ -285,7 +287,16 @@ async fn test_health_payload_leaks_nothing_beyond_status_version_and_auth() {
     let object = payload.as_object().expect("the payload must be an object");
     let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, vec!["auth_required", "status", "version"]);
+    assert_eq!(
+        keys,
+        vec![
+            "auth_required",
+            "protocol",
+            "protocol_min",
+            "status",
+            "version"
+        ]
+    );
 }
 
 // Criterion: `CorsLayer::permissive()` is gone — it answered the preflight for

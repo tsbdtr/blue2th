@@ -14,7 +14,7 @@
 //! The *name* rule itself lives in `blue2th-proto`, shared with the server, which
 //! re-validates rather than trusting the client.
 
-use blue2th_proto::{NameError, PairLink};
+use blue2th_proto::{NameError, PairLink, ProtocolMismatch};
 use serde::{Deserialize, Serialize};
 
 /// What the status encart shows while no backend is configured.
@@ -174,6 +174,9 @@ impl Default for AppSettings {
 pub enum BackendHealth {
     /// Nothing configured, or the active backend cannot be reached at all.
     Offline,
+    /// Reachable, but the app and the backend do not speak the same wire
+    /// contract. Carries which machine to update (#33).
+    Incompatible(ProtocolMismatch),
     /// Reachable, but no token: every call comes back 401 until the user pairs.
     Unpaired,
     /// Reachable and paired — the only fully working state.
@@ -184,11 +187,49 @@ pub enum BackendHealth {
 ///
 /// Unreachable wins over unpaired: pairing a backend the phone cannot even talk
 /// to is not the next step, reaching it is.
-pub fn backend_health(online: bool, paired: bool) -> BackendHealth {
-    match (online, paired) {
-        (false, _) => BackendHealth::Offline,
-        (true, false) => BackendHealth::Unpaired,
-        (true, true) => BackendHealth::Ready,
+pub fn backend_health(
+    online: bool,
+    paired: bool,
+    mismatch: Option<ProtocolMismatch>,
+) -> BackendHealth {
+    // Ranked `Offline` > `Incompatible` > `Unpaired` > `Ready`: an unreachable
+    // backend announced no range, so nothing was compared; and a token is
+    // useless while the two ends cannot talk.
+    match (online, mismatch, paired) {
+        (false, _, _) => BackendHealth::Offline,
+        (true, Some(mismatch), _) => BackendHealth::Incompatible(mismatch),
+        (true, None, false) => BackendHealth::Unpaired,
+        (true, None, true) => BackendHealth::Ready,
+    }
+}
+
+/// The warning the device list must carry permanently, if any. Pure.
+///
+/// The status dot names the side to update through an HTML `title`, which needs
+/// a hover the phone does not have — on device the message was invisible. The
+/// device list carries it instead, and only for [`BackendHealth::Incompatible`]:
+/// `Offline` compared no range at all, and the other two states already read
+/// correctly on the dot.
+pub fn device_list_warning(health: BackendHealth) -> Option<ProtocolMismatch> {
+    match health {
+        BackendHealth::Incompatible(mismatch) => Some(mismatch),
+        BackendHealth::Offline | BackendHealth::Unpaired | BackendHealth::Ready => None,
+    }
+}
+
+/// Whether the active backend accepts actions. Pure.
+///
+/// `false` for [`BackendHealth::Incompatible`] as well as `Offline`, because a
+/// backend that announces a contract this app does not speak may answer a route
+/// with the right *shape* and the wrong *meaning* — a field whose unit changed
+/// decodes without error and does the wrong thing. Refusing beats acting on a
+/// guess.
+///
+/// `Unpaired` is deliberately left actionable here: gating it is #37.
+pub fn backend_actionable(health: BackendHealth) -> bool {
+    match health {
+        BackendHealth::Offline | BackendHealth::Incompatible(_) => false,
+        BackendHealth::Unpaired | BackendHealth::Ready => true,
     }
 }
 

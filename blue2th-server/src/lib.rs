@@ -1671,6 +1671,36 @@ mod tests {
         assert_eq!(parsed.version, env!("CARGO_PKG_VERSION"));
     }
 
+    // Criterion: server — `GET /health` announces `protocol` and `protocol_min`
+    // equal to the proto constants, so the app can compare the wire contract
+    // rather than guessing from the release version (#33).
+    #[tokio::test]
+    async fn test_health_endpoint_announces_the_protocol_range() {
+        let request = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = build_app().oneshot(request).await.expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let parsed: HealthStatus = serde_json::from_slice(&bytes).expect("parse HealthStatus");
+
+        assert_eq!(
+            parsed.protocol,
+            blue2th_proto::PROTOCOL_VERSION,
+            "the backend must announce the newest contract it speaks"
+        );
+        assert_eq!(
+            parsed.protocol_min,
+            blue2th_proto::MIN_SUPPORTED_PROTOCOL_VERSION,
+            "the backend must announce the oldest client it still serves"
+        );
+    }
+
     // Criterion (phase 6.1, re-pointed in 6.4): the router still serves
     // `/targets`, and only the offsets are ever persisted — never the selection,
     // so a freshly built router reports nothing selected. Built store-free: the
