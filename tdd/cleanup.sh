@@ -138,8 +138,13 @@ fi
 
 # The .tdd-base-sha and .tdd-issue markers live inside the worktree, so removing
 # it above already took them; nothing to clean here.
-git checkout HEAD -- tdd/feature.md tdd/REVIEW.md
-echo "tdd/feature.md and tdd/REVIEW.md reset to their PENDING templates."
+# Copied from the versioned templates, not `git checkout HEAD --`: that only
+# discards *uncommitted* changes, so the day a filled spec reached develop the
+# checkout became a no-op and this script announced a reset it had not done.
+# A copy restores the template whatever HEAD holds.
+cp tdd/feature.template.md tdd/feature.md
+cp tdd/REVIEW.template.md tdd/REVIEW.md
+echo "tdd/feature.md and tdd/REVIEW.md reset from their templates."
 
 # ── Knowledge graph ──────────────────────────────────────────────────────────
 #
