@@ -60,9 +60,12 @@ agents and to CI. **Never write a test that requires real hardware.**
 7. Each acceptance criterion from the spec must map to at least one test.
 8. Name tests descriptively: `test_<what>_<expected_outcome>`.
 9. Add a short comment above each test referencing the acceptance criterion it covers.
-10. Add a stub (`todo!()`) for any function that does not exist yet so the test compiles.
+10. Add a stub for any function that does not exist yet so the test compiles — but **never `todo!()`**: the project's clippy profile denies `clippy::todo` (as well as `panic`, `unreachable` and `unimplemented`), so a `todo!()` stub fails the very gate the green phase has to pass. Return a wrong-but-typed value instead — `false`, `None`, `Ok(())` — chosen so the assertions fail rather than the compiler.
 11. Run `cargo test --workspace 2>&1 | tail -30`. Tests must FAIL (red phase), but everything must **compile**.
-12. Commit: `git add -A && git commit -m "test(<scope>): <description>"`.
+12. Commit with explicit paths and `--no-verify`:
+    `git add <the files you changed> && git commit --no-verify -m "test(<scope>): <description>"`.
+    - `--no-verify` because the repository's `pre-commit` hook runs `cargo test --workspace`, and a red phase is failing **by definition**. This is the one commit in the cycle where skipping the gate is correct. Say so in your summary. The other way out — making the tests pass — would destroy what this phase exists to prove, so do not take it.
+    - Explicit paths, never `git add -A`: `tdd/feature.md` and `tdd/REVIEW.md` are gitignored working files, and a spec reached a feature branch this way once.
 13. Output a summary: tests written, which criterion each covers, and any hardware boundary left to manual testing.
 
 ## What you must NOT do
