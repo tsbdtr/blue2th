@@ -1,0 +1,50 @@
+name: PR title
+
+# Split out of ci.yml, and not merged back in, because of the trigger.
+#
+# A pull_request workflow with no `types:` gets GitHub's default,
+# [opened, synchronize, reopened] — `edited` is absent, so retitling a pull
+# request re-runs nothing and the result from opening stands forever. Re-running
+# the failed job does not help either: Actions replays the original event
+# payload, so the check reads the old title again. The only ways out were pushing
+# a commit or closing and reopening the pull request (see #39).
+#
+# ci.yml cannot simply add `edited`: it carries `cancel-in-progress`, so every
+# edit to a title *or a description* would cancel the running build and restart a
+# job matrix that installs the GTK/WebKit and D-Bus/ALSA stacks. This check is a
+# checkout and a grep, so it gets its own trigger and its own concurrency group.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  commit-convention:
+    name: PR title follows Conventional Commits
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pattern is read from .githooks/commit-msg rather than copied, so the
+      # hook and CI cannot drift apart — which is exactly how the test gate ended
+      # up skipping half the suite (see the history of .githooks/pre-commit).
+      - name: Validate title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          PATTERN=$(sed -n "s/^PATTERN='\(.*\)'$/\1/p" .githooks/commit-msg)
+          if [ -z "$PATTERN" ]; then
+            echo "Could not read PATTERN from .githooks/commit-msg"
+            exit 1
+          fi
+          if ! printf '%s' "$TITLE" | grep -qE "$PATTERN"; then
+            echo "PR title does not follow Conventional Commits."
+            echo "Expected: <type>(<scope>): <description>"
+            echo "Got: $TITLE"
+            exit 1
+          fi
