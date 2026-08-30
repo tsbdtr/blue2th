@@ -233,6 +233,34 @@ pub fn backend_actionable(health: BackendHealth) -> bool {
     }
 }
 
+/// How many consecutive failed `/health` probes declare the backend **gone**.
+///
+/// The dot goes red on the *first* failure — that stays. This is the slower,
+/// second verdict: only once the backend has missed this many probes in a row
+/// (~6 s at the current poll interval) is the state it owned cleared. Named
+/// rather than spelled `3` at the call site, because the delay is a decision:
+/// the OAuth browser round-trip briefly flips the probe offline, and clearing on
+/// the first miss is what used to force a manual "load devices".
+pub const PROBES_BEFORE_CLEARING: u32 = 3;
+
+/// Fold one `/health` probe into the consecutive-failure count, and say whether
+/// the backend must be declared **gone** right now. Pure.
+///
+/// A reachable probe zeroes the count. A failed one increments it and returns
+/// `true` **only** on the probe that reaches [`PROBES_BEFORE_CLEARING`], so the
+/// caller clears once instead of on every later failure.
+pub fn track_probe(failures: &mut u32, reachable: bool) -> bool {
+    if reachable {
+        *failures = 0;
+        return false;
+    }
+    // Saturating: a backend left down for long enough would otherwise wrap the
+    // counter back through the threshold and clear a second time.
+    *failures = failures.saturating_add(1);
+    // Exactly on the threshold, never after: the caller clears once per loss.
+    *failures == PROBES_BEFORE_CLEARING
+}
+
 /// What a discovered service means for the settings the app already holds.
 ///
 /// Pure classification, computed by [`reconcile`] with no network and no JNI: the
