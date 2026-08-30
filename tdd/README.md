@@ -91,7 +91,15 @@ moment a filled spec reached `develop`.
 
 `.tdd-base-sha` and `.tdd-issue` are gitignored markers inside the worktree,
 carrying the branch point and the issue number between phases. They die with the
-worktree.
+worktree — and `.tdd-base-sha` is also how `cleanup.sh` finds which worktree to
+clean, rather than rebuilding a branch name from the spec: `feature.md` is a
+working file that may already describe the next feature by then.
+
+Cleanup can also run on its own, from `.githooks/post-merge`, once you opt in
+twice — `git config core.hooksPath .githooks` for the hooks at all, then
+`git config --bool blue2th.tddAutoCleanup true` for this one. It is the only hook
+that deletes anything, it never fails the merge that fired it, and it says nothing
+unless there is exactly one open feature worktree whose pull request is merged.
 
 ## After the merge
 

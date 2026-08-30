@@ -389,10 +389,22 @@ it too (#17):
 tdd/cleanup.sh
 ```
 
+No slug is needed: the script finds the feature worktree by the `.tdd-base-sha`
+marker written into it, and takes the branch from git's own worktree list. Pass a
+slug only when the worktree is already gone.
+
 Report its output as-is. It exits non-zero and touches nothing when the pull
 request is not merged — open, or closed without merging — and says which. Do not
 work around a refusal: an open PR means the work is not done, and a closed one
 means it was abandoned.
+
+It also refuses to remove a worktree holding untracked files, and says so rather
+than deleting them. That is not an obstacle to route around either: look at the
+files first.
+
+The same script runs unattended from `.githooks/post-merge` with `--from-hook`,
+for anyone who sets `blue2th.tddAutoCleanup`. Do not add logic here that the hook
+would not get.
 
 ### 11. Final report
 

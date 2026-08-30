@@ -74,6 +74,13 @@ The hooks in `.githooks/` are opt-in — they only exist once
 `git config core.hooksPath` has been set. On a shared repository they guarantee
 nothing, which is why CI has to replay the same gates (#4).
 
+`post-merge` needs a second, separate opt-in
+(`git config --bool blue2th.tddAutoCleanup true`) because it is the only hook that
+*does* something rather than refusing something: it runs `/tdd cleanup` when a
+merged `develop` lands, deleting the feature worktree and its branch. It never
+fails the merge that called it, and it refuses to remove a worktree holding
+untracked files.
+
 ---
 
 ## 02 — Continuous integration
