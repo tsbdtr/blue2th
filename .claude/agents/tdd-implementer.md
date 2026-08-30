@@ -53,6 +53,13 @@ Add dependencies to the correct manifest: shared versions in the root
 **Always** — the gates cover the whole workspace:
 - `cargo test --workspace` — all tests must pass (exit 0).
 - `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented` — no errors.
+
+**What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
+`allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
+are fine inside tests. It sets **nothing for `panic!`**, so `clippy::panic` is
+denied in test code too — `x.unwrap_or_else(|| panic!("..."))` to name a missing
+value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
+`x.and_then(...)`. The same holds for `todo!`, `unreachable!` and `unimplemented!`.
 - `cargo build --workspace 2>&1 | tail -20` — must exit 0.
 
 **Only if `mobile` is in the Affected Layers** (Android NDK cross-build is slow; skip it for server-/proto-only features):

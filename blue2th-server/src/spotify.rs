@@ -74,6 +74,19 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str, cache_dir: &str)
         // the same and the log says what happened.
         "--autoplay".to_string(),
         "off".to_string(),
+        // Start at full scale. librespot applies its own gain to the PCM *inside
+        // its process*, before PulseAudio sees it, so the attenuation is invisible
+        // in `pactl list sink-inputs` — the stream reads 0.00 dB while the samples
+        // are already quieter. Its default is 50% on a logarithmic curve, i.e.
+        // roughly -30 dB, which is why the backend sounded markedly softer than the
+        // same speaker paired straight to a phone.
+        //
+        // Only the *starting* point: the Spotify client can still lower it, and no
+        // argv takes that authority away — `--volume-ctrl fixed` was tried and is
+        // inert with this backend. Who owns the Spotify volume afterwards is the
+        // open question in #54.
+        "--initial-volume".to_string(),
+        "100".to_string(),
     ]
 }
 
@@ -314,6 +327,77 @@ mod tests {
             Some("off"),
             "--autoplay must be followed by off: {args:?}"
         );
+    }
+
+    // Criterion: `build_librespot_args` emits `--initial-volume` immediately
+    // followed by `100`. librespot attenuates in-process — its default is 50% on a
+    // *logarithmic* curve, roughly -30 dB rather than half amplitude — before
+    // PulseAudio ever sees the samples, which is why the backend sounded quieter
+    // than a direct phone connection while every PipeWire stage read 0.00 dB.
+    #[test]
+    fn test_build_librespot_args_starts_at_full_volume() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        let flag = args
+            .iter()
+            .position(|a| a == "--initial-volume")
+            .expect("argv must carry --initial-volume");
+        assert_eq!(
+            args.get(flag + 1).map(String::as_str),
+            Some("100"),
+            "--initial-volume must be followed by 100: {args:?}"
+        );
+    }
+
+    // Criterion: `--volume-ctrl` is NOT emitted. It was tried and is inert with the
+    // PulseAudio backend — with the flag in the running argv, the Spotify client
+    // still drove the output to silence and the sink-input stayed at 0.00 dB. A
+    // no-op flag pinned by a test would read as a solved problem, so this test
+    // exists to keep it out.
+    #[test]
+    fn test_build_librespot_args_does_not_set_a_volume_control() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        assert!(
+            !args.iter().any(|a| a == "--volume-ctrl"),
+            "--volume-ctrl is inert with this backend and must not ship: {args:?}"
+        );
+    }
+
+    // Companion to the guard above, which compares whole arguments: clap also
+    // accepts the attached spelling `--volume-ctrl=fixed`, a single argument that
+    // an equality check on `--volume-ctrl` lets straight through. The flag must be
+    // absent in that form too, or the guard only holds against the way it happened
+    // to be written the first time.
+    #[test]
+    fn test_build_librespot_args_does_not_set_an_attached_volume_control() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        assert!(
+            !args.iter().any(|a| a.starts_with("--volume-ctrl=")),
+            "--volume-ctrl must not ship in its attached form either: {args:?}"
+        );
+    }
+
+    // Criterion: the rest of the argv is unchanged — `--name`, `--backend
+    // pulseaudio`, `--device`, `--system-cache` and `--autoplay off` all still
+    // present with the same values, so adding the volume flag cannot silently drop
+    // a neighbouring one.
+    #[test]
+    fn test_build_librespot_args_keeps_every_other_flag() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        for (flag, value) in [
+            ("--name", SPOTIFY_DEVICE_NAME),
+            ("--backend", "pulseaudio"),
+            ("--device", COMBINED_SINK_NAME),
+            ("--system-cache", "/tmp/cache"),
+            ("--autoplay", "off"),
+        ] {
+            let at = args.iter().position(|a| a == flag);
+            assert!(at.is_some(), "argv must carry {flag}: {args:?}");
+            assert_eq!(
+                at.and_then(|i| args.get(i + 1)).map(String::as_str),
+                Some(value),
+                "{flag} must be followed by {value}: {args:?}"
+            );
+        }
     }
 
     // Criterion: the argv caches credentials, so librespot logs into the account

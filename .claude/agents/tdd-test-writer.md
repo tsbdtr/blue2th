@@ -68,6 +68,13 @@ agents and to CI. **Never write a test that requires real hardware.**
     - Explicit paths, never `git add -A`: `tdd/feature.md` and `tdd/REVIEW.md` are gitignored working files, and a spec reached a feature branch this way once.
 13. Output a summary: tests written, which criterion each covers, and any hardware boundary left to manual testing.
 
+**What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
+`allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
+are fine inside tests. It sets **nothing for `panic!`**, so `clippy::panic` is
+denied in test code too — `x.unwrap_or_else(|| panic!("..."))` to name a missing
+value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
+`x.and_then(...)`. The same holds for `todo!`, `unreachable!` and `unimplemented!`.
+
 ## What you must NOT do
 - Do not write any implementation code (no business logic beyond stubs).
 - Do not make tests pass.
