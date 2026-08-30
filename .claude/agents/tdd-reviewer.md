@@ -46,6 +46,13 @@ Read the **Affected Layers** section of your prompt — review only those layers
 **Always** — record baseline and re-run at the end:
 - `cargo test --workspace 2>&1` — must pass.
 - `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented 2>&1` — must be clean.
+
+**What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
+`allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
+are fine inside tests. It sets **nothing for `panic!`**, so `clippy::panic` is
+denied in test code too — `x.unwrap_or_else(|| panic!("..."))` to name a missing
+value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
+`x.and_then(...)`. The same holds for `todo!`, `unreachable!` and `unimplemented!`.
 - `cargo build --workspace 2>&1 | tail -20` — must exit 0.
 
 **Only if `mobile` is in the Affected Layers** (skip otherwise — the Android NDK build is slow and irrelevant for server-/proto-only features):
