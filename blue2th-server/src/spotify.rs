@@ -362,6 +362,20 @@ mod tests {
         );
     }
 
+    // Companion to the guard above, which compares whole arguments: clap also
+    // accepts the attached spelling `--volume-ctrl=fixed`, a single argument that
+    // an equality check on `--volume-ctrl` lets straight through. The flag must be
+    // absent in that form too, or the guard only holds against the way it happened
+    // to be written the first time.
+    #[test]
+    fn test_build_librespot_args_does_not_set_an_attached_volume_control() {
+        let args = build_librespot_args(SPOTIFY_DEVICE_NAME, COMBINED_SINK_NAME, "/tmp/cache");
+        assert!(
+            !args.iter().any(|a| a.starts_with("--volume-ctrl=")),
+            "--volume-ctrl must not ship in its attached form either: {args:?}"
+        );
+    }
+
     // Criterion: the rest of the argv is unchanged — `--name`, `--backend
     // pulseaudio`, `--device`, `--system-cache` and `--autoplay off` all still
     // present with the same values, so adding the volume flag cannot silently drop
