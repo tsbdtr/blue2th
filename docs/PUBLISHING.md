@@ -50,12 +50,25 @@ every subsequent delivery starts in conflict. `gh pr merge --merge` throughout.
 
 ### Repository hygiene
 
-`graphify-out/20*/` is ignored since `1e42923`. The 15 dated directories were
-point-in-time copies of the five root files that `graphify update` rewrites on
-every run; nothing read them, and no `graphify` command looks at them —
-`query`, `path` and `explain` all default to `graphify-out/graph.json`.
-`graph.json`, `graph.html` and `GRAPH_REPORT.md` stay tracked: the project
-instructions rely on them.
+`graphify-out/` is ignored in full. It began with the dated directories
+(`graphify-out/20*/`, since `1e42923`): 15 point-in-time copies of the files
+`graphify update` rewrites on every run, which nothing read and no `graphify`
+command looks at. Then the two large blobs, `graph.json` and `graph.html`, at
+3.6 MB per regeneration. Then the remainder, once the argument for keeping it
+turned out not to survive reading:
+
+- `.graphify_python` stores an absolute path into one machine's uv toolchain, so
+  it is wrong on every other clone and rewritten by the next update;
+- `cost.json` is a local ledger of token counts per run;
+- `GRAPH_REPORT.md` was kept for having a readable diff, but `/tdd cleanup`
+  regenerates it *after* the merge, in a commit of its own — that diff is never
+  in front of a reviewer.
+
+Nothing in the build, the tests or CI reads any of it, and `graphify update .`
+rebuilds the lot locally in seconds with no API call. The project instructions
+now say to run it once on a fresh clone. Dropping the last tracked files also
+removed the `chore(graph)` commit `/tdd cleanup` made straight on `develop`,
+which was the one write bypassing the pull-request rule above.
 
 The hooks in `.githooks/` are opt-in — they only exist once
 `git config core.hooksPath` has been set. On a shared repository they guarantee

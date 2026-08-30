@@ -223,14 +223,24 @@ When the user types `/tdd`, invoke the Skill tool with `skill: "tdd"` before doi
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- **`graph.json` and `graph.html` are not tracked.** On a fresh clone they do not
-  exist, and `graphify query` has nothing to read until `graphify update .` has run
-  once — do that first rather than falling back to grep. They were untracked
-  deliberately: 3.6 MB of blob per regeneration, no consumer outside a local
-  session, and a 63k-line diff for a plain directory rename, which no pull request
-  can honestly carry. `GRAPH_REPORT.md` stays tracked — it is small and its diff is
-  readable.
+- **`graphify-out/` is not tracked at all.** On a fresh clone the directory does not
+  exist and every command below has nothing to read: run `graphify update .` once
+  first, rather than falling back to grep. It is AST-only, costs no API call, and
+  takes seconds.
+- For codebase questions, first run `graphify query "<question>"`. Use
+  `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"`
+  for focused concepts. These return a scoped subgraph, usually much smaller than
+  GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw
+  source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when
+  query/path/explain do not surface enough context. For architecture written by a
+  human rather than derived, `docs/ROADMAP.md` and this file come first.
+- After modifying code, run `graphify update .` to keep the graph current.
+- Nothing under `graphify-out/` is ever committed, and nothing outside a local
+  session reads it — not the build, not the tests, not CI. The two large blobs were
+  untracked first (3.6 MB per regeneration, a 63k-line diff for a directory rename);
+  the rest followed once it was clear that `.graphify_python` carried an absolute
+  path to one machine's toolchain, `cost.json` a local token ledger, and
+  `GRAPH_REPORT.md` a diff that never reached a reviewer — `/tdd cleanup`
+  regenerates it *after* the merge, in a commit of its own.
