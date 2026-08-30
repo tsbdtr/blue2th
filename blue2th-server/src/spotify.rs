@@ -74,6 +74,19 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str, cache_dir: &str)
         // the same and the log says what happened.
         "--autoplay".to_string(),
         "off".to_string(),
+        // Start at full scale. librespot applies its own gain to the PCM *inside
+        // its process*, before PulseAudio sees it, so the attenuation is invisible
+        // in `pactl list sink-inputs` — the stream reads 0.00 dB while the samples
+        // are already quieter. Its default is 50% on a logarithmic curve, i.e.
+        // roughly -30 dB, which is why the backend sounded markedly softer than the
+        // same speaker paired straight to a phone.
+        //
+        // Only the *starting* point: the Spotify client can still lower it, and no
+        // argv takes that authority away — `--volume-ctrl fixed` was tried and is
+        // inert with this backend. Who owns the Spotify volume afterwards is the
+        // open question in #54.
+        "--initial-volume".to_string(),
+        "100".to_string(),
     ]
 }
 
