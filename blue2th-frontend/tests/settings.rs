@@ -1408,3 +1408,95 @@ fn test_backend_actionable_leaves_the_other_states_alone() {
         "gating the unpaired state is #37, not this change"
     );
 }
+
+// Criterion: mobile — `PROBES_BEFORE_CLEARING` is `3`, and `track_probe()`
+// returns `true` exactly on the third consecutive failed probe. The two earlier
+// failures say nothing: a single dropped packet must turn the dot red and clear
+// nothing.
+#[test]
+fn test_track_probe_declares_the_backend_gone_on_the_third_failure() {
+    assert_eq!(
+        settings::PROBES_BEFORE_CLEARING,
+        3,
+        "the spec fixes the delay at three probes (~6 s)"
+    );
+
+    let mut failures = 0;
+    for probe in 1..settings::PROBES_BEFORE_CLEARING {
+        assert!(
+            !settings::track_probe(&mut failures, false),
+            "failure {probe} of {} must not declare the backend gone",
+            settings::PROBES_BEFORE_CLEARING
+        );
+    }
+    assert!(
+        settings::track_probe(&mut failures, false),
+        "a run of {} consecutive failures declares the backend gone",
+        settings::PROBES_BEFORE_CLEARING
+    );
+}
+
+// Criterion: mobile — it returns `false` on the fourth failure and beyond, so
+// the clear fires once. A backend that stays down must not wipe the state again
+// on every later probe.
+#[test]
+fn test_track_probe_declares_the_backend_gone_only_once() {
+    let mut failures = 0;
+    for _ in 1..settings::PROBES_BEFORE_CLEARING {
+        assert!(!settings::track_probe(&mut failures, false));
+    }
+    assert!(
+        settings::track_probe(&mut failures, false),
+        "the threshold probe is the one that clears"
+    );
+    for extra in 1..=5 {
+        assert!(
+            !settings::track_probe(&mut failures, false),
+            "failure {extra} past the threshold must not clear again"
+        );
+    }
+}
+
+// Criterion: mobile — a reachable probe resets the count, so two failures then a
+// success clear nothing. This is the case the delay exists for: the OAuth browser
+// round-trip briefly flips the probe offline.
+#[test]
+fn test_track_probe_resets_the_count_on_a_reachable_probe() {
+    let mut failures = 0;
+    assert!(!settings::track_probe(&mut failures, false));
+    assert!(!settings::track_probe(&mut failures, false));
+    assert!(
+        !settings::track_probe(&mut failures, true),
+        "a probe that succeeds never declares the backend gone"
+    );
+    assert_eq!(failures, 0, "a reachable probe zeroes the count");
+
+    // Two more failures: with the count reset, that is only two in a row, so
+    // nothing is cleared.
+    assert!(!settings::track_probe(&mut failures, false));
+    assert!(
+        !settings::track_probe(&mut failures, false),
+        "two failures after a success are not {} in a row",
+        settings::PROBES_BEFORE_CLEARING
+    );
+    // …and the count really restarted from that success rather than stalling:
+    // the third failure after it does declare the backend gone.
+    assert!(
+        settings::track_probe(&mut failures, false),
+        "counting resumes from the success, so the third failure after it clears"
+    );
+}
+
+// Criterion: mobile — a backend that answers is never declared gone, however
+// long the app keeps polling it.
+#[test]
+fn test_track_probe_never_declares_a_reachable_backend_gone() {
+    let mut failures = 0;
+    for probe in 0..(settings::PROBES_BEFORE_CLEARING * 3) {
+        assert!(
+            !settings::track_probe(&mut failures, true),
+            "reachable probe {probe} must never declare the backend gone"
+        );
+        assert_eq!(failures, 0, "a reachable probe leaves no failure behind");
+    }
+}
