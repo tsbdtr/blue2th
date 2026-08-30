@@ -148,16 +148,17 @@ echo "tdd/feature.md and tdd/REVIEW.md reset from their templates."
 
 # ── Knowledge graph ──────────────────────────────────────────────────────────
 #
-# Kept here per #12; whether these artifacts should be tracked at all is #16.
+# Refreshed (per #12) but no longer committed: the whole of graphify-out/ is
+# gitignored, so there is nothing to stage. That also removes the one place where
+# this script wrote straight to develop — the branching model says every change
+# reaches it through a pull request, and a regenerated artifact was a silent
+# exception to that.
 
 if command -v graphify >/dev/null 2>&1; then
-    graphify update . >/dev/null 2>&1 || echo "graphify update failed — skipping the graph commit."
-    git add graphify-out/ 2>/dev/null || true
-    if ! git diff --cached --quiet 2>/dev/null; then
-        git commit -q -m "chore(graph): update knowledge graph after $SLUG"
-        echo "Knowledge graph updated and committed."
+    if graphify update . >/dev/null 2>&1; then
+        echo "Knowledge graph refreshed (local only, not tracked)."
     else
-        echo "Knowledge graph unchanged."
+        echo "graphify update failed — the local graph is stale; rerun: graphify update ."
     fi
 else
     echo "graphify not found — knowledge graph not updated."
