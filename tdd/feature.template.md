@@ -11,6 +11,20 @@
 <!-- Short name, e.g. "Filter devices by name" -->
 PENDING
 
+## Change Type
+<!-- The Conventional Commits type this change is, one word. It becomes the -->
+<!-- branch prefix (`<type>/<slug>`) AND the pull-request title (`<type>: …`), -->
+<!-- so a cleanup is not announced as a feature. One of: -->
+<!-- feat fix refactor test chore docs style perf build ci revert -->
+<!-- `feat` adds behaviour; deleting dead code is `refactor`; tooling is `chore`. -->
+PENDING
+
+## Tracking Issue
+<!-- `#N` when the work is already filed — /tdd reuses that issue instead of -->
+<!-- opening a second one, and the pull request closes it. `none` when there is -->
+<!-- no issue yet: /tdd opens one from the Feature Name and Description below. -->
+PENDING
+
 ## Description
 <!-- 2-5 sentences describing the feature in detail -->
 PENDING
