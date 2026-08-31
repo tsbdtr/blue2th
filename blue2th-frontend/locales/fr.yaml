@@ -10,14 +10,6 @@ protocol:
   backend_too_old: "Ce backend est trop ancien pour l'application. Mettez à jour le backend sur le PC."
   backend_too_new: "Ce backend est plus récent que l'application. Mettez à jour l'application sur le téléphone."
 
-bt:
-  confirm_title: "Activer le Bluetooth ?"
-  confirm_subtitle: "Le Bluetooth sera activé sur cet appareil."
-  confirm_yes: "Oui, activer"
-
-common:
-  no: "Non"
-
 device:
   disconnect: "Déconnecter"
   empty: "Aucun appareil trouvé"
@@ -33,7 +25,6 @@ transport:
   pause: "Pause"
   stop: "Stop"
   volume: "Volume"
-  no_speaker: "Aucun appareil connecté"
   no_target: "Sélectionnez un appareil à diffuser"
   status_playing: "En lecture"
   status_paused: "En pause"
@@ -43,12 +34,9 @@ transport:
 
 spotify:
   title: "Spotify"
-  hint: "Diffusez Spotify sur vos appareils via blue2th-PC"
   start: "Activer Spotify"
   stop: "Arrêter Spotify"
   working: "En cours…"
-  status_running: "Backend Spotify actif"
-  status_stopped: "Backend Spotify arrêté"
   no_target: "Sélectionnez d'abord un appareil"
   connect: "Connecter Spotify"
   login_cancelled: "Connexion Spotify annulée"
