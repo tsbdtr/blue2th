@@ -77,9 +77,15 @@ tdd_worktrees() {
 
 if [ $# -ge 1 ] && [ -n "$1" ]; then
     # Explicit slug: the escape hatch for a worktree already gone, or one whose
-    # marker was lost.
-    SLUG="$1"
-    BRANCH="feat/$SLUG"
+    # marker was lost. Accepts either `<slug>` or `<type>/<slug>` — the branch
+    # prefix follows the spec's Change Type, so it is not always `feat`, and the
+    # slug alone no longer determines the branch name. Without the type this
+    # falls back to `feat/`, which is what every branch was before the type
+    # became a field.
+    case "$1" in
+        */*) BRANCH="$1"; SLUG="${1#*/}" ;;
+        *)   SLUG="$1"; BRANCH="feat/$SLUG" ;;
+    esac
     WORKTREE_PATH="$(dirname "$ROOT")/blue2th-$SLUG"
 else
     # `if` rather than `[ … ] && printf`: the latter leaves the loop's exit

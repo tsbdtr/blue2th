@@ -86,8 +86,9 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 13. **Do not commit the report.** Leave `tdd/REVIEW.md` uncommitted in the worktree:
     the orchestrator posts it as a comment on the pull request, so it stays attached
     to the change and readable at review time without adding a `docs(tdd)` commit to
-    the branch. The branch must end with exactly three commits — `test:`, `feat:`,
-    `refactor:` — which are the feature and the proof the tests came first.
+    the branch. The branch must end with exactly three commits — `test:`, the
+    implementation's own type (`feat:`, `refactor:`, `chore:` …), then
+    `refactor:` — which are the change and the proof the tests came first.
 
 ## What you must NOT do
 - Do not remove or weaken existing tests.

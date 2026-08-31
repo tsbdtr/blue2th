@@ -31,18 +31,23 @@ the merged pull request.
 2. If the feature is visible on screen, Claude asks **how it is represented** —
    which surface, what colour, where — because nothing rendered is test-runnable
    here, so the spec is the only record of it.
-3. Claude fills `tdd/feature.md`, **including the `Layers touched` checkboxes** and
-   the **`Manual verification`** section, then **stops** so you can read it.
+3. Claude fills `tdd/feature.md` — including the **`Change Type`** (the commit
+   type the branch and the pull request carry), the **`Tracking Issue`** (`#N` if
+   the work is already filed, `none` otherwise), the **`Layers touched`**
+   checkboxes and the **`Manual verification`** section — then **stops** so you
+   can read it.
 4. Run `/tdd all`.
 
 A git worktree is created at `../blue2th-<feature-slug>` on branch
-`feat/<feature-slug>`. Each feature is isolated, so several can run in parallel.
+`<change-type>/<feature-slug>`. Each feature is isolated, so several can run in
+parallel.
 
 ## What ends up where
 
-- **The tracking issue** — title from `Feature Name`, body from `Description`. The
-  scenarios stay in `feature.md`: they are working material for the agents, not
-  tracker content.
+- **The tracking issue** — title from `Feature Name`, body from `Description`,
+  *unless* `Tracking Issue` already names one, in which case that issue is reused
+  and none is opened. The scenarios stay in `feature.md`: they are working
+  material for the agents, not tracker content.
 - **The pull request** — same `Description`, plus `Closes #N` so GitHub closes the
   issue on merge, plus whatever a reviewer would miss on a green CI run.
 - **The review report** — a *comment* on the pull request, never a commit. The
@@ -50,7 +55,7 @@ A git worktree is created at `../blue2th-<feature-slug>` on branch
 
   ```
   test(x): add red-phase tests
-  feat(x): implement
+  <change-type>(x): implement
   refactor(x): ...
   ```
 

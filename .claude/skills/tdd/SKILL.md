@@ -14,8 +14,15 @@ A feature may touch one, two, or all three layers. The quality gates always run
 across the whole workspace; the Android NDK cross-build runs **only** when the
 mobile layer is affected.
 
-**Scope: features only.** The cycle branches from `HEAD`, so it always starts from
-`develop`. A hotfix branches from `main` and is a different skill.
+**Scope: anything that branches from `develop`.** The cycle branches from `HEAD`,
+so it always starts there. A hotfix branches from `main` and is a different skill.
+
+**The change is not always a feature.** Deleting dead code is a `refactor`, a
+tooling change is a `chore`. The spec says which, through its **Change Type**, and
+that one field drives both the branch prefix and the pull-request title — so a
+cleanup does not reach the tracker announced as a feature. It used to be hardcoded
+to `feat`, which meant every honest branch name had to be a deviation from this
+file.
 
 ## Usage
 
@@ -78,14 +85,19 @@ back out. The same holds for `tdd/REVIEW.md`.
 
 ### 4. Create or reuse the feature worktree — skipped for `cleanup`
 
-a. Read the **Feature Name** line from `tdd/feature.md`.
+a. Read the **Feature Name** and **Change Type** lines from `tdd/feature.md`.
 
 b. Derive a **slug**: lowercase, strip accents, replace spaces and non-alphanumeric
    characters with hyphens, collapse consecutive hyphens, strip leading/trailing
    hyphens. Example: `"Filter devices by name"` → `filter-devices-by-name`
 
 c. Set:
-   - `BRANCH=feat/<slug>`
+   - `TYPE` = the **Change Type** line. It must be one of the types
+     `.githooks/commit-msg` accepts — `feat fix refactor test chore docs style
+     perf build ci revert`. Anything else, or a missing line, → **stop and ask**
+     rather than defaulting to `feat`: the branch name hangs off it, and unlike
+     the pull-request title a branch name is not cheap to correct once pushed.
+   - `BRANCH=$TYPE/<slug>`
    - `ROOT=$(git rev-parse --show-toplevel)`
    - `WORKTREE_PATH=$(dirname "$ROOT")/blue2th-<slug>`
 
@@ -124,7 +136,27 @@ number is persisted so a re-run never opens a second one.
 a. If `$WORKTREE_PATH/.tdd-issue` exists, read `ISSUE_NUMBER` from it, print
    `Tracking issue: #$ISSUE_NUMBER (already open)` and skip the rest of this step.
 
-b. Otherwise create it:
+b. Otherwise, read the **Tracking Issue** line from `tdd/feature.md`.
+
+   **It names an issue (`#N`)** — the work is already filed, which is the normal
+   case when the cycle starts from the tracker rather than from a conversation.
+   Do not open a second one: two issues for one change split the discussion, and
+   `Closes #N` then closes the one nobody is watching. Confirm the number first,
+   because **issues and pull requests share a single numbering** — `#27` can be a
+   merged pull request:
+   ```bash
+   gh issue view <N> --json number,state,title
+   ```
+   `Could not resolve to an Issue`, or a `CLOSED` state → stop and ask; that
+   number is not a tracking issue for work about to start. Otherwise seed the
+   marker, print `Tracking issue: #N (existing, reused)`, and skip (c):
+   ```bash
+   echo "<N>" > "$WORKTREE_PATH/.tdd-issue"
+   ```
+
+   **It says `none`** — there is no issue yet. Create it, per (c).
+
+c. Create it:
    - **Title** — the **Feature Name** line, verbatim.
    - **Body** — the **Description** section only.
 
@@ -135,7 +167,7 @@ b. Otherwise create it:
    gh issue create --title "<Feature Name>" --body "<Description>"
    ```
 
-c. Persist the number, which has to survive to the `pr` phase so the pull request
+d. Persist the number, which has to survive to the `pr` phase so the pull request
    can carry `Closes #N`:
    ```bash
    echo "<N>" > "$WORKTREE_PATH/.tdd-issue"
@@ -237,6 +269,11 @@ Branch: `<BRANCH>`
 Read each of these files, focusing on `#[cfg(test)]` blocks and files under `tests/`:
 
 <output of: git -C WORKTREE_PATH diff BASE_SHA --name-only | grep -E '\.(rs|toml)$'>
+
+---
+
+## Change Type
+<TYPE> — commit the implementation as `<TYPE>(<scope>): …`, not `feat(<scope>): …`.
 
 ---
 
@@ -342,12 +379,12 @@ c. Create it. The **title must follow Conventional Commits**, or the
    title instead of passing the name through:
 
    ```
-   TITLE="feat: <Feature Name>"
+   TITLE="$TYPE: <Feature Name>"
    ```
 
-   The type is `feat` because this skill branches `feat/<slug>` and handles
-   features only (see **Scope** at the top); the scope is optional in the
-   pattern, which lives in `.githooks/commit-msg`. The body is built from
+   The type is the spec's **Change Type**, the same one the branch carries, so a
+   `refactor/<slug>` branch opens a `refactor: …` pull request; the scope is
+   optional in the pattern, which lives in `.githooks/commit-msg`. The body is built from
    `feature.md`'s **Description**, plus `Closes #<ISSUE_NUMBER>` read from
    `$WORKTREE_PATH/.tdd-issue`:
    ```bash
@@ -370,8 +407,8 @@ d. Post the review report as a **comment**, not a commit:
    ```
    It stays attached to the change and readable at review time, without adding a
    `docs(tdd)` commit to the branch. That leaves exactly three commits — `test:`,
-   `feat:`, `refactor:` — which are the feature *and* the proof the tests came
-   first. **Do not squash them.** Reverting the whole feature is already
+   the implementation's own type, then `refactor:` — which are the change *and*
+   the proof the tests came first. **Do not squash them.** Reverting the whole feature is already
    `git revert -m 1 <merge-commit>`.
 
 e. **Never `gh pr merge`.** This skill opens the pull request; a human merges it.
