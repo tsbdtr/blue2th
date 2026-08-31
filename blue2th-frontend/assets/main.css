@@ -901,6 +901,27 @@ body {
     word-break: break-word;
 }
 
+/* The unpaired variant (#37) is a <button>, because pairing is one tap away —
+   unlike the incompatibility above, which can only be fixed on the other
+   machine. Amber rather than orange, to match the status dot for that state. */
+.device-list-warning.unpaired {
+    background: #451a03;
+    color: #fde68a;
+    border-color: #f59e0b;
+    /* A button carries its own font, box sizing and width; reset them so it
+       reads exactly like the div variant. */
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: inherit;
+    /* Tap affordance: the only banner of the two that does anything. */
+    cursor: pointer;
+}
+
+.device-list-warning.unpaired:active {
+    background: #5a2206;
+}
+
 .toast-error {
     position: fixed;
     bottom: 32px;

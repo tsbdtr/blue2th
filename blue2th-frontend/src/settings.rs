@@ -203,20 +203,6 @@ pub fn backend_health(
     }
 }
 
-/// The warning the device list must carry permanently, if any. Pure.
-///
-/// The status dot names the side to update through an HTML `title`, which needs
-/// a hover the phone does not have — on device the message was invisible. The
-/// device list carries it instead, and only for [`BackendHealth::Incompatible`]:
-/// `Offline` compared no range at all, and the other two states already read
-/// correctly on the dot.
-pub fn device_list_warning(health: BackendHealth) -> Option<ProtocolMismatch> {
-    match health {
-        BackendHealth::Incompatible(mismatch) => Some(mismatch),
-        BackendHealth::Offline | BackendHealth::Unpaired | BackendHealth::Ready => None,
-    }
-}
-
 /// What the device list must say permanently about the active backend, if
 /// anything. Pure.
 ///
@@ -224,10 +210,6 @@ pub fn device_list_warning(health: BackendHealth) -> Option<ProtocolMismatch> {
 /// list now speaks for two states that need a different colour, a different
 /// message and a different element: an incompatibility the user cannot act on
 /// from the phone, and a pairing they can (#37).
-// `main.rs` compiles this file as a module of the binary, where nothing calls
-// the new notice yet: the call site moves over in the GREEN phase, which drops
-// both of these `allow`s along with `device_list_warning`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceListNotice {
     /// The app and the backend disagree on the wire contract; carries which
@@ -240,15 +222,18 @@ pub enum DeviceListNotice {
 
 /// The notice the device list must carry permanently, if any. Pure.
 ///
-/// Replaces [`device_list_warning`]: the GREEN phase deletes that one and moves
-/// its single call site in `main.rs` over here. Two functions that must agree
-/// about the same health is exactly the drift [`backend_health`] exists to
-/// prevent — they are only side by side for the length of the red phase.
-#[allow(dead_code)]
+/// The status dot names the problem through an HTML `title`, which needs a
+/// hover the phone does not have — on device the message was invisible. The
+/// device list carries it instead, for the two states the user must be told
+/// about: an incompatibility they can only fix on the other machine (#33), and
+/// a pairing they can start from here (#37). `Offline` compared no range and
+/// has nothing to pair, and `Ready` has nothing to say.
 pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
-    // RED-phase stub: typed, deliberately wrong. The GREEN phase classifies.
-    let _ = health;
-    None
+    match health {
+        BackendHealth::Incompatible(mismatch) => Some(DeviceListNotice::Incompatible(mismatch)),
+        BackendHealth::Unpaired => Some(DeviceListNotice::Unpaired),
+        BackendHealth::Offline | BackendHealth::Ready => None,
+    }
 }
 
 /// Whether the active backend accepts actions. Pure.
@@ -259,11 +244,14 @@ pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
 /// decodes without error and does the wrong thing. Refusing beats acting on a
 /// guess.
 ///
-/// `Unpaired` is deliberately left actionable here: gating it is #37.
+/// `false` for [`BackendHealth::Unpaired`] for the same reason, one step
+/// earlier: a backend holding no token 401s every route but `/health`, so the
+/// app already knows the call cannot work. Sending it anyway answered the user
+/// with a "not paired" toast for a request that never had a chance (#37).
 pub fn backend_actionable(health: BackendHealth) -> bool {
     match health {
-        BackendHealth::Offline | BackendHealth::Incompatible(_) => false,
-        BackendHealth::Unpaired | BackendHealth::Ready => true,
+        BackendHealth::Offline | BackendHealth::Incompatible(_) | BackendHealth::Unpaired => false,
+        BackendHealth::Ready => true,
     }
 }
 
