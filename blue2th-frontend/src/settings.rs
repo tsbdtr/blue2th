@@ -226,8 +226,10 @@ pub enum DeviceListNotice {
 /// hover the phone does not have — on device the message was invisible. The
 /// device list carries it instead, for the two states the user must be told
 /// about: an incompatibility they can only fix on the other machine (#33), and
-/// a pairing they can start from here (#37). `Offline` compared no range and
-/// has nothing to pair, and `Ready` has nothing to say.
+/// a pairing they can start from here (#37). `Offline` says nothing about
+/// either — nothing was compared, and whether a token would be accepted is
+/// unknown while the backend cannot be reached — and reaching it is the step
+/// the red dot already names. `Ready` has nothing to say.
 pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
     match health {
         BackendHealth::Incompatible(mismatch) => Some(DeviceListNotice::Incompatible(mismatch)),

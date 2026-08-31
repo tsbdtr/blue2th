@@ -1400,9 +1400,11 @@ fn test_device_list_notice_is_silent_when_offline_or_ready() {
 // classified `Incompatible`, so the two banners can never render together.
 // True today by the ranking in `backend_health`; pinned here because #37 is the
 // change that makes it visible — before it, only one of the two states drew a
-// banner and the overlap could not be seen.
+// banner and the overlap could not be seen. The classification is restated as
+// the premise (it is `test_backend_health_reports_incompatible_over_unpaired`
+// that owns it): what this one adds is the notice the overlap resolves to.
 #[test]
-fn test_backend_health_never_reports_unpaired_when_incompatible() {
+fn test_unpaired_and_incompatible_banners_never_render_together() {
     for mismatch in [
         ProtocolMismatch::BackendTooOld,
         ProtocolMismatch::BackendTooNew,
@@ -1419,6 +1421,38 @@ fn test_backend_health_never_reports_unpaired_when_incompatible() {
             "the incompatibility banner is the one that shows for that backend"
         );
     }
+}
+
+// Criterion: mobile — the banner and the gate are read from the same health and
+// must never disagree: a state that puts an explanation on screen is a state
+// the app refuses to act on. Without this, a state could grey every control
+// with nothing saying why, or explain a problem while leaving the controls
+// live — the drift the shared `use_backend_health` exists to prevent, and which
+// neither function can catch alone.
+#[test]
+fn test_every_state_that_raises_a_banner_is_also_blocked() {
+    let mut raised = 0;
+    for health in [
+        settings::BackendHealth::Offline,
+        settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooOld),
+        settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooNew),
+        settings::BackendHealth::Unpaired,
+        settings::BackendHealth::Ready,
+    ] {
+        if settings::device_list_notice(health).is_none() {
+            continue;
+        }
+        raised += 1;
+        assert!(
+            !settings::backend_actionable(health),
+            "{health:?} explains itself on screen yet still offers the actions"
+        );
+    }
+    assert_eq!(
+        raised, 3,
+        "both incompatibilities and the unpaired state raise a banner; a count \
+         that drifts means the loop above stopped covering the states"
+    );
 }
 
 // Criterion: mobile — an incompatible backend must refuse the actions, not just

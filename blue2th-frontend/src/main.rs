@@ -824,8 +824,8 @@ fn BackendScan() -> Element {
     });
 
     let backend_online = use_context::<BackendOnline>().0;
-    // One classification for the banner, the scan button and every control
-    // below, so they cannot disagree about the same backend (#33).
+    // One classification for the banners, the scan button and every control
+    // below, so they cannot disagree about the same backend (#33, #37).
     let health = use_backend_health();
     let actionable = settings::backend_actionable(health);
     // Load the backend's known devices on mount, and again each time it comes
