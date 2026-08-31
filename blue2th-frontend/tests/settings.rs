@@ -1336,7 +1336,7 @@ fn test_both_pairing_paths_probe_the_protocol_before_pairing() {
     );
 }
 
-// ── The device list's permanent incompatibility banner (#33) ─────────────────
+// ── The device list's permanent banners (#33, then #37) ─────────────────────
 
 // Criterion: mobile — the warning has to stay on screen. The status dot carries
 // it as an HTML `title`, which needs a hover the phone does not have: on device
@@ -1344,34 +1344,79 @@ fn test_both_pairing_paths_probe_the_protocol_before_pairing() {
 // list rather than in place of the empty-state card — an incompatible backend
 // still serves `/devices`, so the list is normally *full* and a message living
 // in the empty card would never be seen.
+//
+// Renamed with the function (#37): the notice now speaks for two states, and
+// the incompatible one must still carry the mismatch through the rename.
 #[test]
-fn test_device_list_warning_names_the_side_to_update_when_incompatible() {
+fn test_device_list_notice_names_the_side_to_update_when_incompatible() {
     for mismatch in [
         ProtocolMismatch::BackendTooOld,
         ProtocolMismatch::BackendTooNew,
     ] {
         assert_eq!(
-            settings::device_list_warning(settings::BackendHealth::Incompatible(mismatch)),
-            Some(mismatch),
+            settings::device_list_notice(settings::BackendHealth::Incompatible(mismatch)),
+            Some(settings::DeviceListNotice::Incompatible(mismatch)),
             "the banner must name which machine to update, not merely warn"
         );
     }
 }
 
-// Criterion: mobile — and only then. `Offline` compared nothing, so a banner
-// there would point at the wrong problem; `Unpaired` and `Ready` already have
-// their own wording on the dot.
+// Criterion: mobile — the notice fires for `Unpaired` too, and tells it apart
+// from an incompatibility, so the caller can render another colour, another
+// message and a tappable element.
+//
+// This flips `test_device_list_warning_is_silent_in_every_other_state`, which
+// asserted the opposite and named #37 as the change allowed to do it: "not
+// paired" reached the user only through the dot's HTML `title`, invisible on a
+// phone, so the state the app knew about was the one state it never said.
 #[test]
-fn test_device_list_warning_is_silent_in_every_other_state() {
+fn test_device_list_notice_reports_an_unpaired_backend() {
+    assert_eq!(
+        settings::device_list_notice(settings::BackendHealth::Unpaired),
+        Some(settings::DeviceListNotice::Unpaired),
+        "an unpaired backend must raise its own banner, distinct from the \
+         incompatibility one"
+    );
+}
+
+// Criterion: mobile — and only those two. `Offline` compared nothing and has
+// nothing to pair, so a banner there would point at the wrong problem; `Ready`
+// has nothing to say at all.
+#[test]
+fn test_device_list_notice_is_silent_when_offline_or_ready() {
     for health in [
         settings::BackendHealth::Offline,
-        settings::BackendHealth::Unpaired,
         settings::BackendHealth::Ready,
     ] {
         assert_eq!(
-            settings::device_list_warning(health),
+            settings::device_list_notice(health),
             None,
-            "{health:?} is not an incompatibility and must not raise the banner"
+            "{health:?} raises neither banner"
+        );
+    }
+}
+
+// Criterion: mobile — a backend that is both unpaired and incompatible is
+// classified `Incompatible`, so the two banners can never render together.
+// True today by the ranking in `backend_health`; pinned here because #37 is the
+// change that makes it visible — before it, only one of the two states drew a
+// banner and the overlap could not be seen.
+#[test]
+fn test_backend_health_never_reports_unpaired_when_incompatible() {
+    for mismatch in [
+        ProtocolMismatch::BackendTooOld,
+        ProtocolMismatch::BackendTooNew,
+    ] {
+        let health = settings::backend_health(true, false, Some(mismatch));
+        assert_eq!(
+            health,
+            settings::BackendHealth::Incompatible(mismatch),
+            "incompatible outranks unpaired, so only one banner can render"
+        );
+        assert_eq!(
+            settings::device_list_notice(health),
+            Some(settings::DeviceListNotice::Incompatible(mismatch)),
+            "the incompatibility banner is the one that shows for that backend"
         );
     }
 }
@@ -1397,16 +1442,44 @@ fn test_backend_actionable_blocks_an_incompatible_backend() {
     );
 }
 
-// Criterion: mobile — and it blocks *only* those two. `Unpaired` keeps its
-// current behaviour here on purpose: gating it is #37, a separate change, and
-// silently folding it in would make this one impossible to review as one thing.
+// Criterion: mobile — an unpaired backend must refuse the actions too (#37).
+//
+// This flips `test_backend_actionable_leaves_the_other_states_alone`, which
+// asserted `Unpaired` was actionable and named #37 as the change allowed to do
+// it. The old behaviour let the load button run a scan the app already knew
+// would 401, and answered the user with a "not paired" toast for it: a request
+// the app could have refused before sending.
+#[test]
+fn test_backend_actionable_blocks_an_unpaired_backend() {
+    assert!(
+        !settings::backend_actionable(settings::BackendHealth::Unpaired),
+        "a backend holding no token 401s every route but /health; refusing \
+         beats sending the call to fail"
+    );
+}
+
+// Criterion: mobile — this gates one more state, it does not redefine the
+// others. `Ready` stays the only actionable one; `Offline` and both
+// incompatibilities stay blocked.
 #[test]
 fn test_backend_actionable_leaves_the_other_states_alone() {
-    assert!(settings::backend_actionable(settings::BackendHealth::Ready));
     assert!(
-        settings::backend_actionable(settings::BackendHealth::Unpaired),
-        "gating the unpaired state is #37, not this change"
+        settings::backend_actionable(settings::BackendHealth::Ready),
+        "a reachable, paired, compatible backend is still the working state"
     );
+    assert!(
+        !settings::backend_actionable(settings::BackendHealth::Offline),
+        "an unreachable backend has nothing to act on"
+    );
+    for mismatch in [
+        ProtocolMismatch::BackendTooOld,
+        ProtocolMismatch::BackendTooNew,
+    ] {
+        assert!(
+            !settings::backend_actionable(settings::BackendHealth::Incompatible(mismatch)),
+            "an incompatible backend stays blocked, whichever side is behind"
+        );
+    }
 }
 
 // Criterion: mobile — `PROBES_BEFORE_CLEARING` is `3`, and `track_probe()`

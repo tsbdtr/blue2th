@@ -217,6 +217,40 @@ pub fn device_list_warning(health: BackendHealth) -> Option<ProtocolMismatch> {
     }
 }
 
+/// What the device list must say permanently about the active backend, if
+/// anything. Pure.
+///
+/// Two notices rather than one `Option<ProtocolMismatch>`, because the device
+/// list now speaks for two states that need a different colour, a different
+/// message and a different element: an incompatibility the user cannot act on
+/// from the phone, and a pairing they can (#37).
+// `main.rs` compiles this file as a module of the binary, where nothing calls
+// the new notice yet: the call site moves over in the GREEN phase, which drops
+// both of these `allow`s along with `device_list_warning`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceListNotice {
+    /// The app and the backend disagree on the wire contract; carries which
+    /// machine to update (#33).
+    Incompatible(ProtocolMismatch),
+    /// The backend answers but holds no token: every route but `/health` 401s
+    /// until the user pairs it.
+    Unpaired,
+}
+
+/// The notice the device list must carry permanently, if any. Pure.
+///
+/// Replaces [`device_list_warning`]: the GREEN phase deletes that one and moves
+/// its single call site in `main.rs` over here. Two functions that must agree
+/// about the same health is exactly the drift [`backend_health`] exists to
+/// prevent — they are only side by side for the length of the red phase.
+#[allow(dead_code)]
+pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
+    // RED-phase stub: typed, deliberately wrong. The GREEN phase classifies.
+    let _ = health;
+    None
+}
+
 /// Whether the active backend accepts actions. Pure.
 ///
 /// `false` for [`BackendHealth::Incompatible`] as well as `Offline`, because a
