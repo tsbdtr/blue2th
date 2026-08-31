@@ -203,17 +203,38 @@ pub fn backend_health(
     }
 }
 
-/// The warning the device list must carry permanently, if any. Pure.
+/// What the device list must say permanently about the active backend, if
+/// anything. Pure.
 ///
-/// The status dot names the side to update through an HTML `title`, which needs
-/// a hover the phone does not have — on device the message was invisible. The
-/// device list carries it instead, and only for [`BackendHealth::Incompatible`]:
-/// `Offline` compared no range at all, and the other two states already read
-/// correctly on the dot.
-pub fn device_list_warning(health: BackendHealth) -> Option<ProtocolMismatch> {
+/// Two notices rather than one `Option<ProtocolMismatch>`, because the device
+/// list now speaks for two states that need a different colour, a different
+/// message and a different element: an incompatibility the user cannot act on
+/// from the phone, and a pairing they can (#37).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceListNotice {
+    /// The app and the backend disagree on the wire contract; carries which
+    /// machine to update (#33).
+    Incompatible(ProtocolMismatch),
+    /// The backend answers but holds no token: every route but `/health` 401s
+    /// until the user pairs it.
+    Unpaired,
+}
+
+/// The notice the device list must carry permanently, if any. Pure.
+///
+/// The status dot names the problem through an HTML `title`, which needs a
+/// hover the phone does not have — on device the message was invisible. The
+/// device list carries it instead, for the two states the user must be told
+/// about: an incompatibility they can only fix on the other machine (#33), and
+/// a pairing they can start from here (#37). `Offline` says nothing about
+/// either — nothing was compared, and whether a token would be accepted is
+/// unknown while the backend cannot be reached — and reaching it is the step
+/// the red dot already names. `Ready` has nothing to say.
+pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
     match health {
-        BackendHealth::Incompatible(mismatch) => Some(mismatch),
-        BackendHealth::Offline | BackendHealth::Unpaired | BackendHealth::Ready => None,
+        BackendHealth::Incompatible(mismatch) => Some(DeviceListNotice::Incompatible(mismatch)),
+        BackendHealth::Unpaired => Some(DeviceListNotice::Unpaired),
+        BackendHealth::Offline | BackendHealth::Ready => None,
     }
 }
 
@@ -225,11 +246,14 @@ pub fn device_list_warning(health: BackendHealth) -> Option<ProtocolMismatch> {
 /// decodes without error and does the wrong thing. Refusing beats acting on a
 /// guess.
 ///
-/// `Unpaired` is deliberately left actionable here: gating it is #37.
+/// `false` for [`BackendHealth::Unpaired`] for the same reason, one step
+/// earlier: a backend holding no token 401s every route but `/health`, so the
+/// app already knows the call cannot work. Sending it anyway answered the user
+/// with a "not paired" toast for a request that never had a chance (#37).
 pub fn backend_actionable(health: BackendHealth) -> bool {
     match health {
-        BackendHealth::Offline | BackendHealth::Incompatible(_) => false,
-        BackendHealth::Unpaired | BackendHealth::Ready => true,
+        BackendHealth::Offline | BackendHealth::Incompatible(_) | BackendHealth::Unpaired => false,
+        BackendHealth::Ready => true,
     }
 }
 

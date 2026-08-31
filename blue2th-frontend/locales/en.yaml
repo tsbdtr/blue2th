@@ -5,6 +5,7 @@ scan:
 server:
   online: "Backend connected"
   offline: "Backend unreachable"
+  not_paired: "This backend is not paired. Tap to pair it."
 
 protocol:
   backend_too_old: "This backend is too old for the app. Update the backend on the server."

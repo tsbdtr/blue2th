@@ -537,7 +537,8 @@ fn BackendDeviceItem(
     targets: Signal<blue2th_proto::TargetsState>,
 ) -> Element {
     // An incompatible backend must refuse every device action, not fail on it
-    // once the request is out (#33).
+    // once the request is out (#33); an unpaired one likewise, since every
+    // route but `/health` 401s until it is paired (#37).
     let actionable = settings::backend_actionable(use_backend_health());
     let addr = device.address.clone();
     let connected = device.connected;
@@ -823,8 +824,8 @@ fn BackendScan() -> Element {
     });
 
     let backend_online = use_context::<BackendOnline>().0;
-    // One classification for the banner, the scan button and every control
-    // below, so they cannot disagree about the same backend (#33).
+    // One classification for the banners, the scan button and every control
+    // below, so they cannot disagree about the same backend (#33, #37).
     let health = use_backend_health();
     let actionable = settings::backend_actionable(health);
     // Load the backend's known devices on mount, and again each time it comes
@@ -1002,8 +1003,9 @@ fn BackendScan() -> Element {
     };
     let empty_label = rust_i18n::t!("device.empty");
     // Permanent, unlike the dot's `title`: a phone has no hover, so the tooltip
-    // alone left the user with an orange dot and no explanation (#33).
-    let protocol_warning = settings::device_list_warning(health).map(protocol_message);
+    // alone left the user with a coloured dot and no explanation (#33, #37).
+    let notice = settings::device_list_notice(health);
+    let navigator = use_navigator();
 
     rsx! {
         div { class: "status-row",
@@ -1017,14 +1019,31 @@ fn BackendScan() -> Element {
         // empty-state card — an incompatible backend still serves `/devices`,
         // so the list is normally full and a message living there would never
         // be seen.
-        if let Some(warning) = protocol_warning {
-            div { class: "device-list-warning", "{warning}" }
+        match notice {
+            // Nothing to tap: the fix is on the other machine, so this one
+            // stays a plain `div` (#33).
+            Some(settings::DeviceListNotice::Incompatible(mismatch)) => rsx! {
+                div { class: "device-list-warning", "{protocol_message(mismatch)}" }
+            },
+            // Amber like the dot, and tappable: pairing is one screen away, so
+            // the banner is the shortcut there (#37).
+            Some(settings::DeviceListNotice::Unpaired) => rsx! {
+                button {
+                    class: "device-list-warning unpaired",
+                    onclick: move |_| {
+                        navigator.push(Route::AppSettingsPage {});
+                    },
+                    "{rust_i18n::t!(\"server.not_paired\")}"
+                }
+            },
+            None => rsx! {},
         }
         button {
             class: "{btn_class}",
             // Incompatible as well as offline: a backend announcing a contract
             // this app does not speak may answer `/scan` with the right shape
-            // and the wrong meaning (#33).
+            // and the wrong meaning (#33). Unpaired too: `/scan` would 401
+            // (#37).
             disabled: scanning() || !actionable,
             onclick: move |_| async move {
                 *error.write() = None;
@@ -1129,7 +1148,8 @@ fn TransportBar(
     use_locale();
 
     // Every control below is also gated on this: an incompatible backend must
-    // refuse playback rather than fail on it once the request is out (#33).
+    // refuse playback rather than fail on it once the request is out (#33), and
+    // an unpaired one has no token for `/play` at all (#37).
     let actionable = settings::backend_actionable(use_backend_health());
 
     // Expand/collapse state is local so the bar (re)appears expanded each time it
@@ -1509,7 +1529,8 @@ fn SpotifySource(
     // the transport bar reads the same signals.
     let spotify = use_context::<SpotifyUi>();
     // Not merely "online": an incompatible backend must refuse to start Spotify
-    // rather than fail once the request is out (#33).
+    // rather than fail once the request is out (#33), and an unpaired one would
+    // only collect a 401 for trying (#37).
     let actionable = settings::backend_actionable(use_backend_health());
 
     // In-flight guard so a double tap does not fire two start/stop calls.
