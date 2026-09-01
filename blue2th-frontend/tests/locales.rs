@@ -406,32 +406,61 @@ fn test_the_bluetooth_pairing_failure_key_exists_in_both_locales() {
     }
 }
 
+/// The value of one `namespace.key` entry, with its surrounding quotes removed.
+///
+/// Addressed by its **full path**: `not_paired` is declared twice — under
+/// `server:` (this app and its backend) and under `app_settings:` — so a lookup
+/// on the bare name would silently read whichever line comes first, and would
+/// start reading the other one the day the blocks are reordered.
+///
+/// Lenient where [`flatten`] is strict: the grammar is already guarded by the
+/// tests above, and a line this helper cannot read is simply not the one asked
+/// for. Returns `None` when the path is absent, which the caller asserts on.
+fn locale_value(content: &str, path: &str) -> Option<String> {
+    let mut namespace = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        let indented = line.starts_with(char::is_whitespace);
+
+        if indented {
+            if format!("{namespace}.{name}") == path {
+                return Some(value.trim_matches('"').to_string());
+            }
+        } else if value.is_empty() {
+            name.clone_into(&mut namespace);
+        } else if name == path {
+            return Some(value.trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 // Criterion (#52): the wording must not be confused with app-to-backend pairing.
-// `backend.not_paired` already owns that sentence, so the two must not read the
+// `server.not_paired` already owns that sentence, so the two must not read the
 // same, and the Bluetooth one has to name the speaker.
 #[test]
 fn test_the_bluetooth_pairing_failure_message_is_not_the_backend_pairing_one() {
     for locale in LOCALES {
         let path = locale_path(locale);
         let content = std::fs::read_to_string(&path).expect("read the locale file");
-        let value = |key: &str| -> Option<String> {
-            content
-                .lines()
-                .map(str::trim)
-                .find(|line| line.starts_with(&format!("{key}:")))
-                .and_then(|line| line.split_once(':'))
-                .map(|(_, v)| v.trim().trim_matches('"').to_string())
-        };
 
-        let bluetooth = value("pairing_failed");
+        let bluetooth = locale_value(&content, "device.pairing_failed");
         assert!(
             bluetooth.is_some(),
-            "{locale}.yaml must carry a `pairing_failed` message"
+            "{locale}.yaml must carry a `device.pairing_failed` message"
         );
-        let backend = value("not_paired");
+        let backend = locale_value(&content, "server.not_paired");
         assert!(
             backend.is_some(),
-            "{locale}.yaml must still carry the backend `not_paired` message"
+            "{locale}.yaml must still carry the backend `server.not_paired` message"
         );
         assert_ne!(
             bluetooth, backend,
@@ -439,4 +468,23 @@ fn test_the_bluetooth_pairing_failure_message_is_not_the_backend_pairing_one() {
              from the unpaired-backend message"
         );
     }
+}
+
+// The helper above is what the test before it leans on, and a lookup that always
+// answered `None` would make its `assert_ne!` compare nothing at all.
+#[test]
+fn test_locale_value_reads_the_named_namespace_only() {
+    let content =
+        "server:\n  not_paired: \"backend\"\n\napp_settings:\n  not_paired: \"settings\"\n";
+
+    assert_eq!(
+        locale_value(content, "server.not_paired").as_deref(),
+        Some("backend")
+    );
+    assert_eq!(
+        locale_value(content, "app_settings.not_paired").as_deref(),
+        Some("settings"),
+        "the second block must be reachable, not shadowed by the first"
+    );
+    assert_eq!(locale_value(content, "device.not_paired"), None);
 }

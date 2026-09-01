@@ -98,6 +98,20 @@ impl BackendError {
         }
     }
 
+    /// A refused Bluetooth pairing that keeps the backend's own wording.
+    ///
+    /// The device row shows the localised `device.pairing_failed` and never
+    /// reads this message, but `/spotify/*` maps its own upstream failures to
+    /// 502 as well (`SpotifyApiError::Exchange`, `::Http`), and those are shown
+    /// as `Display`. Dropping the body there would replace "token exchange
+    /// failed" with "bluetooth pairing failed" on the Spotify dialog.
+    fn pairing_failed_with(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            ..Self::pairing_failed()
+        }
+    }
+
     /// Whether this failure is a refused Bluetooth pairing, in which case the
     /// speaker must not be marked unavailable — the user can put it into pairing
     /// mode and tap again.
@@ -138,10 +152,12 @@ fn auth_header_value(token: &str) -> String {
 /// Map a failed backend response to a typed error. Pure.
 ///
 /// A 401 becomes [`BackendError::not_paired`] and a 502 becomes
-/// [`BackendError::pairing_failed`], whatever the body says; any other status
-/// keeps the backend's own message (which `error_for_status` would throw away,
-/// leaving the phone showing a bare status line).
+/// [`BackendError::pairing_failed`], whatever the body says. Every other status
+/// — and the message a 502 carries — keeps the backend's own wording (which
+/// `error_for_status` would throw away, leaving the phone showing a bare status
+/// line).
 fn backend_error_for(status: u16, body: &str) -> BackendError {
+    let message = body.trim();
     if status == 401 {
         // Typed, not textual: the UI must be able to tell an unpaired app from
         // an unreachable one, and the backend's wording may change.
@@ -150,10 +166,14 @@ fn backend_error_for(status: u16, body: &str) -> BackendError {
     if status == 502 {
         // Same reason as the 401 above: the UI has to tell a speaker that
         // refused the bond from a speaker that is out of reach, and the
-        // backend's wording is not what it reads.
-        return BackendError::pairing_failed();
+        // backend's wording is not what it reads. The body is kept all the same:
+        // the Spotify routes answer 502 too, and there it is all the user gets.
+        return if message.is_empty() {
+            BackendError::pairing_failed()
+        } else {
+            BackendError::pairing_failed_with(message)
+        };
     }
-    let message = body.trim();
     if message.is_empty() {
         BackendError::new(format!("HTTP {status}"))
     } else {
@@ -1958,6 +1978,30 @@ mod tests {
                 "HTTP {status} must not read as an unpaired backend, got {error}"
             );
         }
+    }
+
+    // A 502 does not only come from `/connect`: `/spotify/*` maps a token
+    // exchange or an upstream API failure to it too, and those are shown to the
+    // user as `Display`. The flag is still set (nothing branches on it outside
+    // the device row), but the backend's wording must survive.
+    #[test]
+    fn test_backend_error_for_502_keeps_the_backend_message() {
+        let error = backend_error_for(502, "Spotify token exchange failed");
+        assert_eq!(
+            error.to_string(),
+            "Spotify token exchange failed",
+            "a 502 from a non-Bluetooth route must not read as a refused speaker"
+        );
+        assert!(error.is_pairing_failed(), "got {error}");
+    }
+
+    // With no body there is nothing to show, so the fallback wording is used
+    // rather than a bare status line.
+    #[test]
+    fn test_backend_error_for_502_without_a_body_falls_back_to_the_constant() {
+        let error = backend_error_for(502, "   ");
+        assert_eq!(error.to_string(), BLUETOOTH_PAIRING_FAILED);
+        assert!(error.is_pairing_failed(), "got {error}");
     }
 
     // Criterion: the constructor mirrors `not_paired()` — flagged as a pairing

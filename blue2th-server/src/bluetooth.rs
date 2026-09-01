@@ -69,7 +69,15 @@ impl std::fmt::Display for ConnectError {
     }
 }
 
-impl std::error::Error for ConnectError {}
+impl std::error::Error for ConnectError {
+    /// The BlueZ failure both arms wrap, so a caller chaining sources (or
+    /// `anyhow`) reaches the `bluer::ErrorKind` instead of a flattened string.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConnectError::Pairing(err) | ConnectError::Bluetooth(err) => Some(err),
+        }
+    }
+}
 
 /// Pair (if needed), trust, and connect a device on the default adapter.
 /// Trusting lets BlueZ reconnect its audio profiles without re-confirmation.
@@ -79,8 +87,10 @@ impl std::error::Error for ConnectError {}
 /// phone is here to avoid. The agent registered here has every handler `None`,
 /// which publishes `NoInputNoOutput` (Just Works): while it is registered, the
 /// host accepts a bond without confirmation. That is a security trade-off, and
-/// it is only acceptable because the registration lasts exactly the span of one
-/// user-initiated `pair()` — never lift it to startup.
+/// it is only acceptable because the registration lasts one user-initiated
+/// `pair()` and no longer — never lift it to startup. "No longer" is as tight as
+/// BlueZ allows: dropping the handle asks `bluer` to call `UnregisterAgent`, so
+/// the window closes a D-Bus round trip after `pair()` returns, not on the spot.
 pub async fn connect_device(addr: Address) -> Result<DeviceInfo, ConnectError> {
     let session = Session::new().await.map_err(ConnectError::Bluetooth)?;
     let adapter = session
@@ -92,8 +102,8 @@ pub async fn connect_device(addr: Address) -> Result<DeviceInfo, ConnectError> {
     if !device.is_paired().await.unwrap_or(false) {
         // Registered on the very session that issues `Pair()`: BlueZ resolves
         // the agent from the D-Bus sender, so this needs no default-agent
-        // privilege. The handle unregisters on drop, hence the explicit block —
-        // a `let _ = …` binding would drop it before `pair()` even runs.
+        // privilege. Dropping the handle unregisters it, hence the named binding
+        // — a `let _ = …` would drop it before `pair()` even runs.
         let handle = session
             .register_agent(Agent::default())
             .await
