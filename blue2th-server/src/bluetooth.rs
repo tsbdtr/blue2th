@@ -42,6 +42,37 @@ pub async fn list_paired_devices() -> bluer::Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
+/// Why a `connect` attempt failed: at the **pairing** step, or anywhere else.
+///
+/// The two are not the same story for the user. A failed pairing means the
+/// speaker was not in pairing mode, is out of range, or refused the bond — the
+/// app must let the user retry. Any other BlueZ failure on an already-paired
+/// device means the hardware is the suspect, which is what the greyed-out row is
+/// for. Kept typed rather than folded into a message: the HTTP status the app
+/// reads is derived from it (`502` vs `500`).
+// Red phase: the variants are not constructed yet — `connect_device` still
+// returns `bluer::Result`. The green phase wires them and drops this attribute.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug)]
+pub enum ConnectError {
+    /// `device.pair()` failed, or the BlueZ agent could not be registered for it.
+    Pairing(bluer::Error),
+    /// Any other BlueZ failure: no adapter, connect refused, properties unreadable.
+    Bluetooth(bluer::Error),
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Red-phase stub: keeps the BlueZ kind but drops the message the tests
+        // require the app (and the logs) to see.
+        match self {
+            ConnectError::Pairing(err) | ConnectError::Bluetooth(err) => write!(f, "{}", err.kind),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
 /// Pair (if needed), trust, and connect a device on the default adapter.
 /// Trusting lets BlueZ reconnect its audio profiles without re-confirmation.
 pub async fn connect_device(addr: Address) -> bluer::Result<DeviceInfo> {

@@ -388,3 +388,55 @@ fn test_the_scanner_reads_t_call_sites_only() {
         vec!["device.empty", "scan.button", "transport.play"]
     );
 }
+
+// Criterion (#52): the pairing-failure toast uses a localised key, present in
+// both `en.yaml` and `fr.yaml`. The parity test above only checks the two files
+// agree — it stays green while a key is missing from both, which is exactly the
+// case here, so the key is named explicitly.
+#[test]
+fn test_the_bluetooth_pairing_failure_key_exists_in_both_locales() {
+    const KEY: &str = "device.pairing_failed";
+
+    for locale in LOCALES {
+        let keys = locale_keys(locale).expect("the locale file must parse");
+        assert!(
+            keys.contains(KEY),
+            "{locale}.yaml must carry {KEY:?}, the message shown when a speaker refuses the bond"
+        );
+    }
+}
+
+// Criterion (#52): the wording must not be confused with app-to-backend pairing.
+// `backend.not_paired` already owns that sentence, so the two must not read the
+// same, and the Bluetooth one has to name the speaker.
+#[test]
+fn test_the_bluetooth_pairing_failure_message_is_not_the_backend_pairing_one() {
+    for locale in LOCALES {
+        let path = locale_path(locale);
+        let content = std::fs::read_to_string(&path).expect("read the locale file");
+        let value = |key: &str| -> Option<String> {
+            content
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with(&format!("{key}:")))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        };
+
+        let bluetooth = value("pairing_failed");
+        assert!(
+            bluetooth.is_some(),
+            "{locale}.yaml must carry a `pairing_failed` message"
+        );
+        let backend = value("not_paired");
+        assert!(
+            backend.is_some(),
+            "{locale}.yaml must still carry the backend `not_paired` message"
+        );
+        assert_ne!(
+            bluetooth, backend,
+            "{locale}.yaml must word the speaker pairing failure differently \
+             from the unpaired-backend message"
+        );
+    }
+}

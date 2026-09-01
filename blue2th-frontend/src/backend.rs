@@ -76,6 +76,28 @@ impl BackendError {
     pub fn is_not_paired(&self) -> bool {
         self.not_paired
     }
+
+    /// The typed "the speaker refused the Bluetooth bond" failure: the backend
+    /// answered 502 because `pair()` failed on its side.
+    ///
+    /// Deliberately **not** [`BackendError::not_paired`], which is about this app
+    /// and its backend: this one is about the backend and a speaker.
+    // Red phase: the green phase wires this into `backend_error_for` and drops
+    // the attribute.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn pairing_failed() -> Self {
+        // Stub: carries no pairing-failure flag yet.
+        Self::new(BLUETOOTH_PAIRING_FAILED)
+    }
+
+    /// Whether this failure is a refused Bluetooth pairing, in which case the
+    /// speaker must not be marked unavailable — the user can put it into pairing
+    /// mode and tap again.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_pairing_failed(&self) -> bool {
+        // Stub: no failure is ever a pairing failure yet.
+        false
+    }
 }
 
 impl std::fmt::Display for BackendError {
@@ -91,6 +113,11 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 /// Message carried by every call made while the active backend has no token, or
 /// answered 401 (phase 6.4).
 pub const NOT_PAIRED: &str = "not paired";
+
+/// Fallback message for a refused Bluetooth pairing (backend answered 502). The
+/// screen shows the localised `device.pairing_failed` instead; this is what the
+/// error carries for logs and for `Display`.
+pub const BLUETOOTH_PAIRING_FAILED: &str = "bluetooth pairing failed";
 
 /// Build the `{base}/pair` URL, tolerating a trailing slash on the base.
 fn pair_url(base: &str) -> String {
@@ -1872,6 +1899,62 @@ mod tests {
         // An empty body still has to say something.
         let bare = backend_error_for(500, "");
         assert!(!bare.to_string().trim().is_empty());
+    }
+
+    // ---- #52: a refused Bluetooth pairing is typed, like a 401 is ----
+
+    // Criterion: `backend_error_for(502, …)` yields a `BackendError` flagged as a
+    // pairing failure, keeping the same shape as the existing `not_paired` flag.
+    #[test]
+    fn test_backend_error_for_502_is_flagged_as_a_pairing_failure() {
+        let error = backend_error_for(502, "Authentication Timeout");
+        assert!(
+            error.is_pairing_failed(),
+            "a 502 from /connect means the speaker refused the bond, got {error}"
+        );
+        assert!(
+            !error.is_not_paired(),
+            "a refused speaker must not read as an unpaired backend, got {error}"
+        );
+    }
+
+    // Criterion: the two pairings must not be confused — a 401 stays the
+    // app-to-backend "not paired" and is never a Bluetooth pairing failure.
+    #[test]
+    fn test_backend_error_for_401_is_not_a_bluetooth_pairing_failure() {
+        let error = backend_error_for(401, "some server wording");
+        assert!(error.is_not_paired());
+        assert!(
+            !error.is_pairing_failed(),
+            "an unpaired app is not a refused speaker, got {error}"
+        );
+    }
+
+    // Criterion: every other status is flagged as neither, so an old backend
+    // answering 500 keeps greying the row exactly as before.
+    #[test]
+    fn test_backend_error_for_other_statuses_are_neither_flag() {
+        for status in [500u16, 503] {
+            let error = backend_error_for(status, "boom");
+            assert!(
+                !error.is_pairing_failed(),
+                "HTTP {status} must not read as a pairing failure, got {error}"
+            );
+            assert!(
+                !error.is_not_paired(),
+                "HTTP {status} must not read as an unpaired backend, got {error}"
+            );
+        }
+    }
+
+    // Criterion: the constructor mirrors `not_paired()` — flagged as a pairing
+    // failure, and not as an unpaired backend.
+    #[test]
+    fn test_pairing_failed_constructor_is_flagged_as_a_pairing_failure() {
+        let error = BackendError::pairing_failed();
+        assert!(error.is_pairing_failed(), "got {error}");
+        assert!(!error.is_not_paired(), "got {error}");
+        assert!(error.protocol_mismatch().is_none(), "got {error}");
     }
 
     // Criterion: switching backends quietens the one being left behind with
