@@ -1802,18 +1802,48 @@ mod tests {
         }
     }
 
-    // Criterion: a pairing failure maps to HTTP 502 — the speaker refused or
-    // timed out, which is an upstream failure, not a bug in the backend. The app
-    // types that status and leaves the row clickable instead of greying it.
+    // Criterion: a pairing failure maps to HTTP 409 — the speaker refused or
+    // timed out, which is a conflict with the speaker's own state, not a bug in
+    // the backend. The app types that status and leaves the row clickable
+    // instead of greying it.
+    //
+    // Deliberately **not** 502: `SpotifyApiError::Exchange | ::Http` already map
+    // there, so sharing the code would have the app read a failed Spotify token
+    // exchange as a refused speaker.
     #[test]
-    fn test_connect_error_pairing_maps_to_bad_gateway() {
+    fn test_connect_error_pairing_maps_to_conflict() {
         let err: AppError = bluetooth::ConnectError::Pairing(bluez_error(
             bluer::ErrorKind::AuthenticationTimeout,
             "Authentication Timeout",
         ))
         .into();
 
-        assert_eq!(err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    // Criterion: 502 stays the Spotify upstream failure alone — a pairing
+    // failure must never answer it again, or the two meanings collapse back
+    // together.
+    #[test]
+    fn test_connect_error_pairing_is_never_bad_gateway() {
+        for err in [
+            bluetooth::ConnectError::Pairing(bluez_error(
+                bluer::ErrorKind::AuthenticationFailed,
+                "Authentication Failed",
+            )),
+            bluetooth::ConnectError::Pairing(bluez_error(
+                bluer::ErrorKind::AuthenticationTimeout,
+                "Authentication Timeout",
+            )),
+        ] {
+            let mapped: AppError = err.into();
+            assert_ne!(
+                mapped.status,
+                StatusCode::BAD_GATEWAY,
+                "502 is the Spotify upstream failure, got {:?}",
+                mapped.message
+            );
+        }
     }
 
     // Criterion: every other BlueZ failure keeps HTTP 500, so the app still
