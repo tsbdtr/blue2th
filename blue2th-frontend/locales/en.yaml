@@ -18,6 +18,7 @@ device:
   deselect_target: "Remove this device"
   offset: "Offset"
   favourite: "Known to the backend"
+  pairing_failed: "The speaker refused to pair. Put it in pairing mode, then tap it again."
 
 transport:
   title: "Playback"

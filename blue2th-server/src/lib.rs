@@ -1538,6 +1538,15 @@ impl AppError {
             message: message.into(),
         }
     }
+
+    /// A 502 error carrying the given message: something upstream of the backend
+    /// failed (a speaker refusing the bond), not the backend itself.
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -1555,9 +1564,14 @@ impl From<bluer::Error> for AppError {
 
 impl From<bluetooth::ConnectError> for AppError {
     fn from(err: bluetooth::ConnectError) -> Self {
-        // Red-phase stub: every connect failure still reads as a server fault,
-        // so a pairing failure cannot be told apart on the wire.
-        AppError::internal(err.to_string())
+        // The status is what the app types on: a refused bond is upstream (502)
+        // and leaves the row clickable, anything else stays a server fault (500)
+        // and greys it out. Both keep the BlueZ message for the logs.
+        let message = err.to_string();
+        match err {
+            bluetooth::ConnectError::Pairing(_) => AppError::bad_gateway(message),
+            bluetooth::ConnectError::Bluetooth(_) => AppError::internal(message),
+        }
     }
 }
 

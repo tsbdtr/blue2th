@@ -33,6 +33,10 @@ pub struct BackendError {
     /// wire contract. Typed rather than folded into the message, exactly like
     /// `not_paired`: the UI has to name the side to update.
     mismatch: Option<ProtocolMismatch>,
+    /// Whether a **speaker** refused the Bluetooth bond (the backend answered
+    /// 502). Kept apart from `not_paired`, which is about this app and its
+    /// backend: the two are different failures with different remedies.
+    pairing_failed: bool,
 }
 
 impl BackendError {
@@ -41,6 +45,7 @@ impl BackendError {
             message: msg.into(),
             not_paired: false,
             mismatch: None,
+            pairing_failed: false,
         }
     }
 
@@ -51,6 +56,7 @@ impl BackendError {
             message: PROTOCOL_MISMATCH.to_string(),
             not_paired: false,
             mismatch: Some(mismatch),
+            pairing_failed: false,
         }
     }
 
@@ -68,6 +74,7 @@ impl BackendError {
             message: NOT_PAIRED.to_string(),
             not_paired: true,
             mismatch: None,
+            pairing_failed: false,
         }
     }
 
@@ -82,21 +89,20 @@ impl BackendError {
     ///
     /// Deliberately **not** [`BackendError::not_paired`], which is about this app
     /// and its backend: this one is about the backend and a speaker.
-    // Red phase: the green phase wires this into `backend_error_for` and drops
-    // the attribute.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn pairing_failed() -> Self {
-        // Stub: carries no pairing-failure flag yet.
-        Self::new(BLUETOOTH_PAIRING_FAILED)
+        Self {
+            message: BLUETOOTH_PAIRING_FAILED.to_string(),
+            not_paired: false,
+            mismatch: None,
+            pairing_failed: true,
+        }
     }
 
     /// Whether this failure is a refused Bluetooth pairing, in which case the
     /// speaker must not be marked unavailable — the user can put it into pairing
     /// mode and tap again.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_pairing_failed(&self) -> bool {
-        // Stub: no failure is ever a pairing failure yet.
-        false
+        self.pairing_failed
     }
 }
 
@@ -131,14 +137,21 @@ fn auth_header_value(token: &str) -> String {
 
 /// Map a failed backend response to a typed error. Pure.
 ///
-/// A 401 becomes [`BackendError::not_paired`] whatever the body says; any other
-/// status keeps the backend's own message (which `error_for_status` would throw
-/// away, leaving the phone showing a bare status line).
+/// A 401 becomes [`BackendError::not_paired`] and a 502 becomes
+/// [`BackendError::pairing_failed`], whatever the body says; any other status
+/// keeps the backend's own message (which `error_for_status` would throw away,
+/// leaving the phone showing a bare status line).
 fn backend_error_for(status: u16, body: &str) -> BackendError {
     if status == 401 {
         // Typed, not textual: the UI must be able to tell an unpaired app from
         // an unreachable one, and the backend's wording may change.
         return BackendError::not_paired();
+    }
+    if status == 502 {
+        // Same reason as the 401 above: the UI has to tell a speaker that
+        // refused the bond from a speaker that is out of reach, and the
+        // backend's wording is not what it reads.
+        return BackendError::pairing_failed();
     }
     let message = body.trim();
     if message.is_empty() {

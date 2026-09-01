@@ -519,12 +519,8 @@ fn sort_scanned(devices: &mut [blue2th_proto::DeviceInfo]) {
 /// A failed connect is the only reliable signal that a *paired* speaker is out
 /// of reach. A refused Bluetooth pairing is not that: the speaker was simply not
 /// in pairing mode, and the row must stay clickable so the user can retry (#52).
-// Red phase: the green phase calls this from the connect closure and drops the
-// attribute.
-#[cfg_attr(not(test), allow(dead_code))]
-fn marks_unavailable(_err: &backend::BackendError) -> bool {
-    // Stub: every failure still greys the row, which is the bug being fixed.
-    true
+fn marks_unavailable(err: &backend::BackendError) -> bool {
+    !err.is_pairing_failed()
 }
 
 /// Replace the device with `info`'s address in `found` with its updated state.
@@ -645,9 +641,16 @@ fn BackendDeviceItem(
                             }
                             Err(e) => {
                                 // A failed connect is the only reliable signal that a
-                                // paired device is unreachable (powered off).
-                                unavailable.write().insert(addr.clone());
-                                *error.write() = Some(e.to_string());
+                                // paired device is unreachable (powered off) — but a
+                                // refused bond is not that, so the row stays clickable.
+                                if marks_unavailable(&e) {
+                                    unavailable.write().insert(addr.clone());
+                                }
+                                *error.write() = Some(if e.is_pairing_failed() {
+                                    rust_i18n::t!("device.pairing_failed").to_string()
+                                } else {
+                                    e.to_string()
+                                });
                             }
                         }
                         *busy.write() = None;
