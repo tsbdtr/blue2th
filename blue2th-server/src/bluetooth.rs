@@ -49,7 +49,7 @@ pub async fn list_paired_devices() -> bluer::Result<Vec<DeviceInfo>> {
 /// app must let the user retry. Any other BlueZ failure on an already-paired
 /// device means the hardware is the suspect, which is what the greyed-out row is
 /// for. Kept typed rather than folded into a message: the HTTP status the app
-/// reads is derived from it (`502` vs `500`).
+/// reads is derived from it (`409` vs `500`).
 #[derive(Debug)]
 pub enum ConnectError {
     /// `device.pair()` failed, or the BlueZ agent could not be registered for it.

@@ -1539,11 +1539,12 @@ impl AppError {
         }
     }
 
-    /// A 502 error carrying the given message: something upstream of the backend
-    /// failed (a speaker refusing the bond), not the backend itself.
-    fn bad_gateway(message: impl Into<String>) -> Self {
+    /// A 409 error carrying the given message: the request collided with the
+    /// state of something the backend does not own — a speaker refusing the
+    /// bond — rather than with a bug on this side.
+    fn conflict(message: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::BAD_GATEWAY,
+            status: StatusCode::CONFLICT,
             message: message.into(),
         }
     }
@@ -1564,12 +1565,14 @@ impl From<bluer::Error> for AppError {
 
 impl From<bluetooth::ConnectError> for AppError {
     fn from(err: bluetooth::ConnectError) -> Self {
-        // The status is what the app types on: a refused bond is upstream (502)
-        // and leaves the row clickable, anything else stays a server fault (500)
-        // and greys it out. Both keep the BlueZ message for the logs.
+        // A refused bond is a conflict with the speaker's own state (409), any
+        // other BlueZ failure a server fault (500). Both keep the BlueZ message
+        // for the logs. Nothing on the app side reads these statuses globally —
+        // the connect route alone gives the 409 its meaning — so sharing it with
+        // `SpotifyApiError::NotConnected` is harmless.
         let message = err.to_string();
         match err {
-            bluetooth::ConnectError::Pairing(_) => AppError::bad_gateway(message),
+            bluetooth::ConnectError::Pairing(_) => AppError::conflict(message),
             bluetooth::ConnectError::Bluetooth(_) => AppError::internal(message),
         }
     }
