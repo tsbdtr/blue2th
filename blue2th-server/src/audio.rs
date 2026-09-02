@@ -50,12 +50,26 @@ pub fn clamp_volume(level: f32) -> f32 {
 /// resolution — the resolution `parse_first_percent` actually reads. Otherwise
 /// the last `commanded` level is reported: it is true as a command, and it never
 /// presents one speaker's level as if it were everyone's.
-///
-/// Red-phase stub: wrong-but-typed, so the tests below fail rather than the
-/// compiler.
 pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
-    let _ = (levels, commanded);
-    0.0
+    let mut agreed: Option<i32> = None;
+    for level in levels {
+        // An unreadable sink (or a `NaN` one) makes the selection undecidable:
+        // nothing here is known to be true of every speaker.
+        let Some(level) = level.filter(|l| !l.is_nan()) else {
+            return commanded;
+        };
+        let pct = (level * 100.0).round() as i32;
+        match agreed {
+            Some(first) if first != pct => return commanded,
+            Some(_) => {},
+            None => agreed = Some(pct),
+        }
+    }
+    // An empty selection agrees on nothing, so it falls back to `commanded` too.
+    match agreed {
+        Some(pct) => pct as f32 / 100.0,
+        None => commanded,
+    }
 }
 
 /// Pluggable audio output. The engine drives the state machine and delegates the
