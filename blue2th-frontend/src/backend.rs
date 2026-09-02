@@ -118,9 +118,11 @@ impl BackendError {
     /// response at all. `None` for the failures built without one (no backend
     /// configured, no token stored, a transport error).
     ///
-    /// Retained rather than interpreted: the backend answers eleven distinct
-    /// statuses and [`backend_error_for`] is the single mapping point for every
-    /// route, so only a route may give a status a meaning.
+    /// Retained rather than interpreted: the backend answers ten distinct
+    /// failure statuses (enumerated as `BACKEND_STATUSES` in the tests, which is
+    /// where that count stays checkable) and [`backend_error_for`] is the single
+    /// mapping point for every route, so only a route may give a status a
+    /// meaning.
     pub fn status(&self) -> Option<u16> {
         self.status
     }
@@ -2146,6 +2148,19 @@ mod tests {
         assert_eq!(error.to_string(), BLUETOOTH_PAIRING_FAILED);
     }
 
+    // Criterion: the bodiless case is recognised by comparing the message with
+    // the status line, so a backend answering 409 with `HTTP 409` as its body
+    // takes that same branch. Harmless, and pinned here so it stays a known
+    // property rather than a surprise: the row is flagged either way, and both
+    // messages say the same thing to the log — the row itself shows the
+    // localised `device.pairing_failed`, never this text.
+    #[test]
+    fn test_pairing_failure_if_conflict_with_a_status_line_body_is_still_flagged() {
+        let error = backend_error_for(409, "HTTP 409").pairing_failure_if_conflict();
+        assert!(error.is_pairing_failed(), "got {error}");
+        assert_eq!(error.to_string(), BLUETOOTH_PAIRING_FAILED);
+    }
+
     // Criterion: every other status passes through unflagged, so a connect that
     // failed for any other reason still greys the row exactly as before.
     #[test]
@@ -2171,6 +2186,26 @@ mod tests {
             "the app-to-backend pairing and the Bluetooth one must not collide, got {error}"
         );
         assert!(error.to_string().contains(NOT_PAIRED), "got {error}");
+    }
+
+    // Criterion: `not_paired` wins over the connect route's reading even when
+    // the two coincide. `backend_error_for` cannot produce this pair today (only
+    // a 401 sets the flag), so the guard is what makes the precedence a rule
+    // rather than an accident of the current status mapping — and this test is
+    // what fails if the guard is dropped.
+    #[test]
+    fn test_pairing_failure_if_conflict_leaves_a_not_paired_409_untouched() {
+        let error = BackendError {
+            status: Some(CONFLICT),
+            ..BackendError::not_paired()
+        }
+        .pairing_failure_if_conflict();
+
+        assert!(error.is_not_paired(), "got {error}");
+        assert!(
+            !error.is_pairing_failed(),
+            "an unpaired app must never be reported as a refused speaker, got {error}"
+        );
     }
 
     // Criterion: a failure that never saw a response (no token stored) carries
@@ -2238,6 +2273,32 @@ mod tests {
             "only /connect reads a 409 as a refused bond, got {error}"
         );
         assert_eq!(error.to_string(), "no active Spotify device");
+    }
+
+    // Criterion (regression): the sibling route built on the very same helper is
+    // not flagged either. `connect_device` and `disconnect_device` both go
+    // through `post_device_action`, so moving the mapping one level down is the
+    // easy accident that would make the flag inexact again — this is the test
+    // that catches it, which the `/spotify/play` one cannot.
+    #[tokio::test]
+    async fn test_disconnect_device_does_not_report_a_pairing_failure_on_409() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("409 Conflict", "device is busy")
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let error = disconnect_device("AA:BB:CC:DD:EE:FF")
+            .await
+            .expect_err("a 409 must not yield a device");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(
+            !error.is_pairing_failed(),
+            "the connect route alone reads a 409 as a refused bond, got {error}"
+        );
+        assert_eq!(error.to_string(), "device is busy");
     }
 
     // Criterion: switching backends quietens the one being left behind with
