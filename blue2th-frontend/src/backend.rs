@@ -33,6 +33,15 @@ pub struct BackendError {
     /// wire contract. Typed rather than folded into the message, exactly like
     /// `not_paired`: the UI has to name the side to update.
     mismatch: Option<ProtocolMismatch>,
+    /// Whether a **speaker** refused the Bluetooth bond. Set by the connect
+    /// route alone (see [`BackendError::pairing_failure_if_conflict`]), never by
+    /// the status mapping. Kept apart from `not_paired`, which is about this app
+    /// and its backend: the two are different failures with different remedies.
+    pairing_failed: bool,
+    /// The status the backend answered, when this failure came from a response.
+    /// Retained, not interpreted: a status only acquires a meaning where a route
+    /// gives it one.
+    status: Option<u16>,
 }
 
 impl BackendError {
@@ -41,6 +50,8 @@ impl BackendError {
             message: msg.into(),
             not_paired: false,
             mismatch: None,
+            pairing_failed: false,
+            status: None,
         }
     }
 
@@ -51,6 +62,8 @@ impl BackendError {
             message: PROTOCOL_MISMATCH.to_string(),
             not_paired: false,
             mismatch: Some(mismatch),
+            pairing_failed: false,
+            status: None,
         }
     }
 
@@ -68,6 +81,8 @@ impl BackendError {
             message: NOT_PAIRED.to_string(),
             not_paired: true,
             mismatch: None,
+            pairing_failed: false,
+            status: None,
         }
     }
 
@@ -75,6 +90,67 @@ impl BackendError {
     /// backend is unreachable.
     pub fn is_not_paired(&self) -> bool {
         self.not_paired
+    }
+
+    /// The typed "the speaker refused the Bluetooth bond" failure: `pair()`
+    /// failed on the backend's side.
+    ///
+    /// Deliberately **not** [`BackendError::not_paired`], which is about this app
+    /// and its backend: this one is about the backend and a speaker.
+    pub fn pairing_failed() -> Self {
+        Self {
+            message: BLUETOOTH_PAIRING_FAILED.to_string(),
+            not_paired: false,
+            mismatch: None,
+            pairing_failed: true,
+            status: None,
+        }
+    }
+
+    /// Whether this failure is a refused Bluetooth pairing, in which case the
+    /// speaker must not be marked unavailable — the user can put it into pairing
+    /// mode and tap again.
+    pub fn is_pairing_failed(&self) -> bool {
+        self.pairing_failed
+    }
+
+    /// The HTTP status the backend answered, when this failure came from a
+    /// response at all. `None` for the failures built without one (no backend
+    /// configured, no token stored, a transport error).
+    ///
+    /// Retained rather than interpreted: the backend answers ten distinct
+    /// failure statuses (enumerated as `BACKEND_STATUSES` in the tests, which is
+    /// where that count stays checkable) and [`backend_error_for`] is the single
+    /// mapping point for every route, so only a route may give a status a
+    /// meaning.
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+
+    /// The connect route's own reading of a retained status: a `409` there — and
+    /// only there — means the speaker refused the Bluetooth bond. Pure.
+    ///
+    /// Applied by `connect_device` alone, so no other route can set the flag: a
+    /// `409` from `/spotify/play` while disconnected keeps meaning what it says.
+    /// A [`BackendError::not_paired`] passes through untouched — a 401 on the
+    /// connect route is still "pair the app with the backend".
+    fn pairing_failure_if_conflict(self) -> Self {
+        if self.not_paired || self.status() != Some(CONFLICT) {
+            return self;
+        }
+        // A bodiless response reached here as the bare status line: "HTTP 409"
+        // names no cause, so the constant takes over. A body is kept verbatim —
+        // the BlueZ wording is what says at which step the bond was refused.
+        if self.message == status_line(CONFLICT) {
+            return Self {
+                status: self.status,
+                ..Self::pairing_failed()
+            };
+        }
+        Self {
+            pairing_failed: true,
+            ..self
+        }
     }
 }
 
@@ -92,6 +168,22 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 /// answered 401 (phase 6.4).
 pub const NOT_PAIRED: &str = "not paired";
 
+/// Fallback message for a refused Bluetooth pairing carried by a response with
+/// no body. The screen shows the localised `device.pairing_failed` instead; this
+/// is what the error carries for logs and for `Display`.
+pub const BLUETOOTH_PAIRING_FAILED: &str = "bluetooth pairing failed";
+
+/// The status the backend answers when a speaker refuses the Bluetooth bond —
+/// and, on other routes, plenty of unrelated conflicts. Only
+/// [`BackendError::pairing_failure_if_conflict`] reads it as the former.
+const CONFLICT: u16 = 409;
+
+/// What a failed response with no body shows: a bare status line, naming no
+/// cause. Pure.
+fn status_line(status: u16) -> String {
+    format!("HTTP {status}")
+}
+
 /// Build the `{base}/pair` URL, tolerating a trailing slash on the base.
 fn pair_url(base: &str) -> String {
     format!("{}/pair", base.trim_end_matches('/'))
@@ -102,22 +194,31 @@ fn auth_header_value(token: &str) -> String {
     format!("Bearer {token}")
 }
 
-/// Map a failed backend response to a typed error. Pure.
+/// Map a failed backend response to a typed error, **retaining** its status.
+/// Pure.
 ///
-/// A 401 becomes [`BackendError::not_paired`] whatever the body says; any other
-/// status keeps the backend's own message (which `error_for_status` would throw
-/// away, leaving the phone showing a bare status line).
+/// A 401 becomes [`BackendError::not_paired`], and that is the only meaning read
+/// here: it is genuinely global, since any route can reject a stale token. Every
+/// other status keeps the backend's own wording (which `error_for_status` would
+/// throw away, leaving the phone showing a bare status line) and nothing else —
+/// this is the single mapping point for every route, so anything interpreted
+/// here becomes global, and the next status added server-side would re-break the
+/// reader in silence. A route that wants a meaning applies its own rule, the way
+/// `connect_device` applies [`BackendError::pairing_failure_if_conflict`].
 fn backend_error_for(status: u16, body: &str) -> BackendError {
-    if status == 401 {
+    let message = body.trim();
+    let typed = if status == 401 {
         // Typed, not textual: the UI must be able to tell an unpaired app from
         // an unreachable one, and the backend's wording may change.
-        return BackendError::not_paired();
-    }
-    let message = body.trim();
-    if message.is_empty() {
-        BackendError::new(format!("HTTP {status}"))
+        BackendError::not_paired()
+    } else if message.is_empty() {
+        BackendError::new(status_line(status))
     } else {
         BackendError::new(message)
+    };
+    BackendError {
+        status: Some(status),
+        ..typed
     }
 }
 
@@ -553,7 +654,11 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
 /// returning the device's updated state.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn connect_device(address: &str) -> Result<DeviceInfo, BackendError> {
-    post_device_action(address, "connect").await
+    // The one place a 409 means "the speaker refused the bond": on every other
+    // route it keeps saying what the backend meant by it.
+    post_device_action(address, "connect")
+        .await
+        .map_err(BackendError::pairing_failure_if_conflict)
 }
 
 /// `POST {base}/devices/{address}/disconnect` — disconnect on the backend,
@@ -1872,6 +1977,328 @@ mod tests {
         // An empty body still has to say something.
         let bare = backend_error_for(500, "");
         assert!(!bare.to_string().trim().is_empty());
+    }
+
+    // ---- #52: a refused Bluetooth pairing is typed, but only by /connect ----
+
+    /// Every status the backend answers today, straight from `AppError`: 400,
+    /// 401, 403, 404, 409, 412, 429, 500, 502, 503. Eight of them come from the
+    /// Spotify mapping alone, which is why no status-only rule can own a
+    /// route-specific meaning.
+    const BACKEND_STATUSES: [u16; 10] = [400, 401, 403, 404, 409, 412, 429, 500, 502, 503];
+
+    // Criterion: `backend_error_for` flags **nothing** as a pairing failure —
+    // 409 included. It is the single mapping point for every route, so anything
+    // it flags becomes global, and the next status added server-side would
+    // re-break the flag silently.
+    #[test]
+    fn test_backend_error_for_flags_no_status_as_a_pairing_failure() {
+        for status in BACKEND_STATUSES {
+            let error = backend_error_for(status, "boom");
+            assert!(
+                !error.is_pairing_failed(),
+                "HTTP {status} must carry no pairing meaning of its own, got {error}"
+            );
+        }
+    }
+
+    // Criterion: 409 in particular is not flagged here. It is already
+    // `SpotifyApiError::NotConnected`, and the connect route is the only place
+    // allowed to read it as a refused speaker.
+    #[test]
+    fn test_backend_error_for_409_is_not_flagged_as_a_pairing_failure() {
+        let error = backend_error_for(409, "pairing failed: Authentication Timeout");
+        assert!(
+            !error.is_pairing_failed(),
+            "a bare 409 says nothing about a Bluetooth bond, got {error}"
+        );
+        assert!(
+            !error.is_not_paired(),
+            "a 409 must not read as an unpaired backend either, got {error}"
+        );
+    }
+
+    // Criterion: the response status is **retained** on the error instead of
+    // being interpreted — that is what lets a single route, and no one else,
+    // give it a meaning.
+    #[test]
+    fn test_backend_error_for_retains_the_response_status() {
+        for status in BACKEND_STATUSES {
+            let error = backend_error_for(status, "boom");
+            assert_eq!(
+                error.status(),
+                Some(status),
+                "HTTP {status} must survive on the error, got {error}"
+            );
+        }
+    }
+
+    // Criterion: the 401 rule is unchanged — it is genuinely global, since any
+    // route can reject a stale token. It stays typed, and it keeps its status.
+    #[test]
+    fn test_backend_error_for_401_is_still_not_paired() {
+        let error = backend_error_for(401, "some server wording");
+        assert!(error.is_not_paired(), "got {error}");
+        assert!(
+            !error.is_pairing_failed(),
+            "an unpaired app is not a refused speaker, got {error}"
+        );
+        assert_eq!(error.status(), Some(401), "got {error}");
+        assert!(
+            error.to_string().contains(NOT_PAIRED),
+            "the user must read that the app is not paired, got {error}"
+        );
+    }
+
+    // Criterion: the body still survives for every status but the typed 401 —
+    // the backend's own wording is all the user gets on most screens.
+    #[test]
+    fn test_backend_error_for_keeps_the_body_for_every_status() {
+        for status in BACKEND_STATUSES.into_iter().filter(|s| *s != 401) {
+            let error = backend_error_for(status, "  the backend's own wording  ");
+            assert_eq!(
+                error.to_string(),
+                "the backend's own wording",
+                "HTTP {status} must keep the body verbatim"
+            );
+        }
+    }
+
+    // Criterion: with nothing to show, every status falls back to the plain
+    // status line — never to the Bluetooth pairing wording.
+    #[test]
+    fn test_backend_error_for_without_a_body_falls_back_to_the_status_line() {
+        for status in BACKEND_STATUSES.into_iter().filter(|s| *s != 401) {
+            let error = backend_error_for(status, "   ");
+            assert_eq!(error.to_string(), format!("HTTP {status}"));
+            assert_ne!(
+                error.to_string(),
+                BLUETOOTH_PAIRING_FAILED,
+                "a bodiless HTTP {status} must not be dressed as a refused speaker"
+            );
+        }
+    }
+
+    // Criterion (regression, the reason this pass exists): an error built the
+    // way `/spotify/play` builds one — 409, a Spotify body — is not a pairing
+    // failure, because it never went through the connect route. This is what
+    // stops the two meanings collapsing back together.
+    #[test]
+    fn test_a_409_from_the_spotify_route_is_never_a_pairing_failure() {
+        let error = backend_error_for(409, "no active Spotify device");
+        assert!(
+            !error.is_pairing_failed(),
+            "SpotifyApiError::NotConnected is not a refused speaker, got {error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "no active Spotify device",
+            "the Spotify wording is all the dialog shows"
+        );
+    }
+
+    // Criterion (regression): the same for the 502 that burnt the first attempt
+    // — a failed Spotify token exchange is not a speaker refusing the bond, and
+    // it keeps its body.
+    #[test]
+    fn test_backend_error_for_502_is_not_a_pairing_failure_and_keeps_its_body() {
+        let error = backend_error_for(502, "Spotify token exchange failed: invalid code");
+        assert!(
+            !error.is_pairing_failed(),
+            "a failed Spotify token exchange is not a refused speaker, got {error}"
+        );
+        assert!(!error.is_not_paired(), "got {error}");
+        assert_eq!(
+            error.to_string(),
+            "Spotify token exchange failed: invalid code",
+            "a 502 must keep the backend's own wording verbatim"
+        );
+    }
+
+    // ---- the connect route is the only producer of the flag ----
+
+    // Criterion: the connect route's pure mapping turns a retained 409 into a
+    // pairing failure, keeping the BlueZ wording the backend sent.
+    #[test]
+    fn test_pairing_failure_if_conflict_flags_a_retained_409() {
+        let error = backend_error_for(409, "pairing failed: Authentication Timeout")
+            .pairing_failure_if_conflict();
+
+        assert!(
+            error.is_pairing_failed(),
+            "a 409 on /connect means the speaker refused the bond, got {error}"
+        );
+        assert!(
+            !error.is_not_paired(),
+            "a refused speaker must not read as an unpaired backend, got {error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "pairing failed: Authentication Timeout",
+            "the BlueZ wording is what tells the operator what happened"
+        );
+    }
+
+    // Criterion: a bodiless 409 on the connect route still reads as a pairing
+    // failure, falling back to the constant rather than to a bare status line.
+    #[test]
+    fn test_pairing_failure_if_conflict_without_a_body_falls_back_to_the_constant() {
+        let error = backend_error_for(409, "   ").pairing_failure_if_conflict();
+        assert!(error.is_pairing_failed(), "got {error}");
+        assert_eq!(error.to_string(), BLUETOOTH_PAIRING_FAILED);
+    }
+
+    // Criterion: the bodiless case is recognised by comparing the message with
+    // the status line, so a backend answering 409 with `HTTP 409` as its body
+    // takes that same branch. Harmless, and pinned here so it stays a known
+    // property rather than a surprise: the row is flagged either way, and both
+    // messages say the same thing to the log — the row itself shows the
+    // localised `device.pairing_failed`, never this text.
+    #[test]
+    fn test_pairing_failure_if_conflict_with_a_status_line_body_is_still_flagged() {
+        let error = backend_error_for(409, "HTTP 409").pairing_failure_if_conflict();
+        assert!(error.is_pairing_failed(), "got {error}");
+        assert_eq!(error.to_string(), BLUETOOTH_PAIRING_FAILED);
+    }
+
+    // Criterion: every other status passes through unflagged, so a connect that
+    // failed for any other reason still greys the row exactly as before.
+    #[test]
+    fn test_pairing_failure_if_conflict_leaves_every_other_status_unflagged() {
+        for status in BACKEND_STATUSES.into_iter().filter(|s| *s != 409) {
+            let error = backend_error_for(status, "boom").pairing_failure_if_conflict();
+            assert!(
+                !error.is_pairing_failed(),
+                "only a 409 is a refused bond, HTTP {status} gave {error}"
+            );
+        }
+    }
+
+    // Criterion: a `not_paired` error passes through untouched — a 401 on the
+    // connect route is still "pair the app with the backend", not "the speaker
+    // refused the bond".
+    #[test]
+    fn test_pairing_failure_if_conflict_leaves_a_not_paired_error_untouched() {
+        let error = backend_error_for(401, "stale token").pairing_failure_if_conflict();
+        assert!(error.is_not_paired(), "got {error}");
+        assert!(
+            !error.is_pairing_failed(),
+            "the app-to-backend pairing and the Bluetooth one must not collide, got {error}"
+        );
+        assert!(error.to_string().contains(NOT_PAIRED), "got {error}");
+    }
+
+    // Criterion: `not_paired` wins over the connect route's reading even when
+    // the two coincide. `backend_error_for` cannot produce this pair today (only
+    // a 401 sets the flag), so the guard is what makes the precedence a rule
+    // rather than an accident of the current status mapping — and this test is
+    // what fails if the guard is dropped.
+    #[test]
+    fn test_pairing_failure_if_conflict_leaves_a_not_paired_409_untouched() {
+        let error = BackendError {
+            status: Some(CONFLICT),
+            ..BackendError::not_paired()
+        }
+        .pairing_failure_if_conflict();
+
+        assert!(error.is_not_paired(), "got {error}");
+        assert!(
+            !error.is_pairing_failed(),
+            "an unpaired app must never be reported as a refused speaker, got {error}"
+        );
+    }
+
+    // Criterion: a failure that never saw a response (no token stored) carries
+    // no status, so the connect mapping cannot flag it.
+    #[test]
+    fn test_pairing_failure_if_conflict_leaves_a_statusless_error_untouched() {
+        let error = BackendError::new("connection refused");
+        assert_eq!(error.status(), None, "got {error}");
+        let error = error.pairing_failure_if_conflict();
+        assert!(!error.is_pairing_failed(), "got {error}");
+        assert_eq!(error.to_string(), "connection refused");
+    }
+
+    // Criterion: the constructor mirrors `not_paired()` — flagged as a pairing
+    // failure, and not as an unpaired backend.
+    #[test]
+    fn test_pairing_failed_constructor_is_flagged_as_a_pairing_failure() {
+        let error = BackendError::pairing_failed();
+        assert!(error.is_pairing_failed(), "got {error}");
+        assert!(!error.is_not_paired(), "got {error}");
+        assert!(error.protocol_mismatch().is_none(), "got {error}");
+    }
+
+    // Criterion: end to end, `connect_device` is the route that applies the
+    // mapping — a backend answering 409 there yields a flagged error.
+    #[tokio::test]
+    async fn test_connect_device_reports_a_pairing_failure_on_409() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) =
+            canned_backend("409 Conflict", "pairing failed: Authentication Timeout")
+                .await
+                .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let error = connect_device("AA:BB:CC:DD:EE:FF")
+            .await
+            .expect_err("a refused bond must not yield a device");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(
+            error.is_pairing_failed(),
+            "the connect route must type the 409, got {error}"
+        );
+    }
+
+    // Criterion (regression): the very same status on another route is not
+    // flagged, because the mapping lives on the connect route alone.
+    #[tokio::test]
+    async fn test_play_does_not_report_a_pairing_failure_on_409() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("409 Conflict", "no active Spotify device")
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let error = play()
+            .await
+            .expect_err("a 409 must not yield a playback state");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(
+            !error.is_pairing_failed(),
+            "only /connect reads a 409 as a refused bond, got {error}"
+        );
+        assert_eq!(error.to_string(), "no active Spotify device");
+    }
+
+    // Criterion (regression): the sibling route built on the very same helper is
+    // not flagged either. `connect_device` and `disconnect_device` both go
+    // through `post_device_action`, so moving the mapping one level down is the
+    // easy accident that would make the flag inexact again — this is the test
+    // that catches it, which the `/spotify/play` one cannot.
+    #[tokio::test]
+    async fn test_disconnect_device_does_not_report_a_pairing_failure_on_409() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("409 Conflict", "device is busy")
+            .await
+            .expect("start the canned backend");
+        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+
+        let error = disconnect_device("AA:BB:CC:DD:EE:FF")
+            .await
+            .expect_err("a 409 must not yield a device");
+        let _ = served.await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(
+            !error.is_pairing_failed(),
+            "the connect route alone reads a 409 as a refused bond, got {error}"
+        );
+        assert_eq!(error.to_string(), "device is busy");
     }
 
     // Criterion: switching backends quietens the one being left behind with

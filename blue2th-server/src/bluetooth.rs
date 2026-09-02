@@ -6,7 +6,7 @@
 
 use async_stream::try_stream;
 use blue2th_proto::{AdapterInfo, DeviceInfo};
-use bluer::{AdapterEvent, Address, Device, Session};
+use bluer::{agent::Agent, AdapterEvent, Address, Device, Session};
 use futures::{Stream, StreamExt};
 
 /// List every Bluetooth adapter present on the host.
@@ -42,19 +42,85 @@ pub async fn list_paired_devices() -> bluer::Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
+/// Why a `connect` attempt failed: at the **pairing** step, or anywhere else.
+///
+/// The two are not the same story for the user. A failed pairing means the
+/// speaker was not in pairing mode, is out of range, or refused the bond — the
+/// app must let the user retry. Any other BlueZ failure on an already-paired
+/// device means the hardware is the suspect, which is what the greyed-out row is
+/// for. Kept typed rather than folded into a message: the HTTP status the app
+/// reads is derived from it (`409` vs `500`).
+#[derive(Debug)]
+pub enum ConnectError {
+    /// `device.pair()` failed, or the BlueZ agent could not be registered for it.
+    Pairing(bluer::Error),
+    /// Any other BlueZ failure: no adapter, connect refused, properties unreadable.
+    Bluetooth(bluer::Error),
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `bluer::Error` already renders as "kind: message"; the pairing arm only
+        // says at which step it happened, so the operator reads both.
+        match self {
+            ConnectError::Pairing(err) => write!(f, "pairing failed: {err}"),
+            ConnectError::Bluetooth(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {
+    /// The BlueZ failure both arms wrap, so a caller chaining sources (or
+    /// `anyhow`) reaches the `bluer::ErrorKind` instead of a flattened string.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConnectError::Pairing(err) | ConnectError::Bluetooth(err) => Some(err),
+        }
+    }
+}
+
 /// Pair (if needed), trust, and connect a device on the default adapter.
 /// Trusting lets BlueZ reconnect its audio profiles without re-confirmation.
-pub async fn connect_device(addr: Address) -> bluer::Result<DeviceInfo> {
-    let session = Session::new().await?;
-    let adapter = session.default_adapter().await?;
-    let device = adapter.device(addr)?;
+///
+/// Pairing needs an agent, or BlueZ answers `Pair()` with "No agent available"
+/// and the user has to go and confirm the bond on the PC — the very thing the
+/// phone is here to avoid. The agent registered here has every handler `None`,
+/// which publishes `NoInputNoOutput` (Just Works): while it is registered, the
+/// host accepts a bond without confirmation. That is a security trade-off, and
+/// it is only acceptable because the registration lasts one user-initiated
+/// `pair()` and no longer — never lift it to startup. "No longer" is as tight as
+/// BlueZ allows: dropping the handle asks `bluer` to call `UnregisterAgent`, so
+/// the window closes a D-Bus round trip after `pair()` returns, not on the spot.
+pub async fn connect_device(addr: Address) -> Result<DeviceInfo, ConnectError> {
+    let session = Session::new().await.map_err(ConnectError::Bluetooth)?;
+    let adapter = session
+        .default_adapter()
+        .await
+        .map_err(ConnectError::Bluetooth)?;
+    let device = adapter.device(addr).map_err(ConnectError::Bluetooth)?;
 
     if !device.is_paired().await.unwrap_or(false) {
-        device.pair().await?;
+        // Registered on the very session that issues `Pair()`: BlueZ resolves
+        // the agent from the D-Bus sender, so this needs no default-agent
+        // privilege. Dropping the handle unregisters it, hence the named binding
+        // — a `let _ = …` would drop it before `pair()` even runs.
+        let handle = session
+            .register_agent(Agent::default())
+            .await
+            // Failing to register is our side failing, not the speaker's, but it
+            // is still the pairing step that could not happen: typed as such so
+            // the app offers a retry instead of greying the row out.
+            .map_err(ConnectError::Pairing)?;
+        let paired = device.pair().await;
+        drop(handle);
+        paired.map_err(ConnectError::Pairing)?;
     }
-    device.set_trusted(true).await?;
-    device.connect().await?;
-    device_info(&device).await
+    device
+        .set_trusted(true)
+        .await
+        .map_err(ConnectError::Bluetooth)?;
+    device.connect().await.map_err(ConnectError::Bluetooth)?;
+    device_info(&device).await.map_err(ConnectError::Bluetooth)
 }
 
 /// Connect a device that is **already paired**, without ever pairing it.

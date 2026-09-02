@@ -1538,6 +1538,16 @@ impl AppError {
             message: message.into(),
         }
     }
+
+    /// A 409 error carrying the given message: the request collided with the
+    /// state of something the backend does not own — a speaker refusing the
+    /// bond — rather than with a bug on this side.
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -1550,6 +1560,21 @@ impl IntoResponse for AppError {
 impl From<bluer::Error> for AppError {
     fn from(err: bluer::Error) -> Self {
         AppError::internal(err.to_string())
+    }
+}
+
+impl From<bluetooth::ConnectError> for AppError {
+    fn from(err: bluetooth::ConnectError) -> Self {
+        // A refused bond is a conflict with the speaker's own state (409), any
+        // other BlueZ failure a server fault (500). Both keep the BlueZ message
+        // for the logs. Nothing on the app side reads these statuses globally —
+        // the connect route alone gives the 409 its meaning — so sharing it with
+        // `SpotifyApiError::NotConnected` is harmless.
+        let message = err.to_string();
+        match err {
+            bluetooth::ConnectError::Pairing(_) => AppError::conflict(message),
+            bluetooth::ConnectError::Bluetooth(_) => AppError::internal(message),
+        }
     }
 }
 
@@ -1768,6 +1793,100 @@ mod tests {
     fn test_spotify_api_premium_required_maps_to_forbidden() {
         let err: AppError = SpotifyApiError::PremiumRequired.into();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    // ---- #52: a Bluetooth pairing failure is not a server fault ----
+
+    /// A BlueZ failure as `bluer` reports one, with a message the user can read.
+    fn bluez_error(kind: bluer::ErrorKind, message: &str) -> bluer::Error {
+        bluer::Error {
+            kind,
+            message: message.to_string(),
+        }
+    }
+
+    // Criterion: a pairing failure maps to HTTP 409 — the speaker refused or
+    // timed out, which is a conflict with the speaker's own state, not a bug in
+    // the backend. The app types that status and leaves the row clickable
+    // instead of greying it.
+    //
+    // Deliberately **not** 502: `SpotifyApiError::Exchange | ::Http` already map
+    // there, so sharing the code would have the app read a failed Spotify token
+    // exchange as a refused speaker.
+    #[test]
+    fn test_connect_error_pairing_maps_to_conflict() {
+        let err: AppError = bluetooth::ConnectError::Pairing(bluez_error(
+            bluer::ErrorKind::AuthenticationTimeout,
+            "Authentication Timeout",
+        ))
+        .into();
+
+        assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    // Criterion: 502 stays the Spotify upstream failure alone — a pairing
+    // failure must never answer it again, or the two meanings collapse back
+    // together.
+    #[test]
+    fn test_connect_error_pairing_is_never_bad_gateway() {
+        for err in [
+            bluetooth::ConnectError::Pairing(bluez_error(
+                bluer::ErrorKind::AuthenticationFailed,
+                "Authentication Failed",
+            )),
+            bluetooth::ConnectError::Pairing(bluez_error(
+                bluer::ErrorKind::AuthenticationTimeout,
+                "Authentication Timeout",
+            )),
+        ] {
+            let mapped: AppError = err.into();
+            assert_ne!(
+                mapped.status,
+                StatusCode::BAD_GATEWAY,
+                "502 is the Spotify upstream failure, got {:?}",
+                mapped.message
+            );
+        }
+    }
+
+    // Criterion: every other BlueZ failure keeps HTTP 500, so the app still
+    // greys out a paired speaker that cannot be connected (powered off).
+    #[test]
+    fn test_connect_error_bluetooth_maps_to_internal_error() {
+        let err: AppError = bluetooth::ConnectError::Bluetooth(bluez_error(
+            bluer::ErrorKind::ConnectionAttemptFailed,
+            "br-connection-page-timeout",
+        ))
+        .into();
+
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Criterion: both arms keep the BlueZ message — it is the only thing telling
+    // the operator (and the logs) what the adapter actually answered.
+    #[test]
+    fn test_connect_error_keeps_the_bluez_message_on_both_arms() {
+        let pairing: AppError = bluetooth::ConnectError::Pairing(bluez_error(
+            bluer::ErrorKind::AuthenticationFailed,
+            "Authentication Failed",
+        ))
+        .into();
+        assert!(
+            pairing.message.contains("Authentication Failed"),
+            "the pairing failure must carry the BlueZ message, got {:?}",
+            pairing.message
+        );
+
+        let other: AppError = bluetooth::ConnectError::Bluetooth(bluez_error(
+            bluer::ErrorKind::Failed,
+            "br-connection-page-timeout",
+        ))
+        .into();
+        assert!(
+            other.message.contains("br-connection-page-timeout"),
+            "any other failure must carry the BlueZ message, got {:?}",
+            other.message
+        );
     }
 
     // ---- phase 6.4: LAN bind address and the pairing banner ----

@@ -18,6 +18,7 @@ device:
   deselect_target: "Retirer cet appareil"
   offset: "Décalage"
   favourite: "Connu de la backend"
+  pairing_failed: "L'enceinte a refusé l'appairage. Mettez-la en mode appairage, puis touchez-la de nouveau."
 
 transport:
   title: "Lecture"

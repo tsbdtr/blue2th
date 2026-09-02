@@ -512,6 +512,17 @@ fn sort_scanned(devices: &mut [blue2th_proto::DeviceInfo]) {
     devices.sort_by_key(|d| (std::cmp::Reverse(d.paired), std::cmp::Reverse(d.rssi)));
 }
 
+/// Whether a failed connect justifies marking the speaker **unavailable** (the
+/// greyed row with struck signal bars). Pure, so the rule is testable outside a
+/// Dioxus component.
+///
+/// A failed connect is the only reliable signal that a *paired* speaker is out
+/// of reach. A refused Bluetooth pairing is not that: the speaker was simply not
+/// in pairing mode, and the row must stay clickable so the user can retry (#52).
+fn marks_unavailable(err: &backend::BackendError) -> bool {
+    !err.is_pairing_failed()
+}
+
 /// Replace the device with `info`'s address in `found` with its updated state.
 fn replace_device(
     found: &mut Signal<Vec<blue2th_proto::DeviceInfo>>,
@@ -630,9 +641,16 @@ fn BackendDeviceItem(
                             }
                             Err(e) => {
                                 // A failed connect is the only reliable signal that a
-                                // paired device is unreachable (powered off).
-                                unavailable.write().insert(addr.clone());
-                                *error.write() = Some(e.to_string());
+                                // paired device is unreachable (powered off) — but a
+                                // refused bond is not that, so the row stays clickable.
+                                if marks_unavailable(&e) {
+                                    unavailable.write().insert(addr.clone());
+                                }
+                                *error.write() = Some(if e.is_pairing_failed() {
+                                    rust_i18n::t!("device.pairing_failed").to_string()
+                                } else {
+                                    e.to_string()
+                                });
                             }
                         }
                         *busy.write() = None;
@@ -2637,7 +2655,8 @@ fn SpotifyLoginDialog(error: Signal<Option<String>>) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{signal_bars, sort_scanned};
+    use super::{marks_unavailable, signal_bars, sort_scanned};
+    use crate::backend::BackendError;
 
     /// A scanned (disconnected) device. Built by hand: a fixture must not lean
     /// on the code under test.
@@ -2737,5 +2756,40 @@ mod tests {
         sort_scanned(&mut devices);
 
         assert_eq!(order(&devices), vec!["FIRST", "SECOND"]);
+    }
+
+    // ---- #52: a refused Bluetooth pairing must not grey the row ----
+
+    // AC: a `BackendError` flagged as a pairing failure does not add the address
+    // to the `unavailable` set — the speaker was not in pairing mode, so the row
+    // stays clickable for a retry.
+    #[test]
+    fn test_marks_unavailable_is_false_for_a_pairing_failure() {
+        assert!(
+            !marks_unavailable(&BackendError::pairing_failed()),
+            "a refused pairing says nothing about the speaker being reachable"
+        );
+    }
+
+    // AC: any other connect failure still marks the address unavailable — a
+    // paired speaker that will not connect is the one case where the hardware
+    // really is the suspect. This is the behaviour the fix must not regress.
+    #[test]
+    fn test_marks_unavailable_is_true_for_a_plain_backend_error() {
+        let err = BackendError::protocol(blue2th_proto::ProtocolMismatch::BackendTooOld);
+        assert!(
+            marks_unavailable(&err),
+            "every non-pairing failure keeps greying the row"
+        );
+    }
+
+    // AC: an unpaired *backend* (401) is not a Bluetooth pairing failure, so the
+    // two flags must not be conflated into one rule.
+    #[test]
+    fn test_marks_unavailable_is_true_for_an_unpaired_backend() {
+        assert!(
+            marks_unavailable(&BackendError::not_paired()),
+            "app-to-backend pairing is a different failure from speaker pairing"
+        );
     }
 }
