@@ -624,6 +624,48 @@ fn bluetooth_sink_for(mac: &str) -> Result<String, AudioError> {
         .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
 }
 
+/// Pick the live PipeWire sink node-name matching `prefix` out of the text
+/// `pactl list short sinks` prints: tab-separated columns, the node name in the
+/// second one. A `bluez_output.<MAC>` prefix resolves to the line carrying the
+/// card suffix (`bluez_output.<MAC>.1`); an already exact node name resolves to
+/// itself. Pure — performs no I/O.
+///
+/// A candidate must either *equal* `prefix` or continue it with a `.`, the
+/// separator PipeWire puts before the card index. That boundary is what keeps a
+/// sink merely sharing the opening characters (`blue2th_combined_old` for
+/// `blue2th_combined`) from being answered instead of the target, and an exact
+/// name wins over any longer namesake wherever the two sit in the listing.
+///
+/// An **empty** prefix matches nothing, explicitly: it starts every name, so the
+/// plain `starts_with` this replaces answered the first sink in the listing —
+/// the PC's own output, in index order — which is exactly the silent wrong-sink
+/// fallback this resolution exists to prevent. `spotify_target_sink(&[])` is
+/// empty, so the value is reachable; only the `speakers.is_empty()` guard in
+/// `SpotifyBackend::start` kept it away. The boundary rule alone would not do:
+/// a line whose node-name column is blank equals the empty prefix.
+///
+/// Among several `.`-suffixed candidates the first line wins, i.e. `pactl`'s own
+/// sink-index order.
+pub fn sink_matching_prefix(listing: &str, prefix: &str) -> Option<String> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let mut suffixed: Option<&str> = None;
+    for name in listing.lines().filter_map(|line| line.split('\t').nth(1)) {
+        if name == prefix {
+            return Some(name.to_string());
+        }
+        if suffixed.is_none()
+            && name
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
+        {
+            suffixed = Some(name);
+        }
+    }
+    suffixed.map(|name| name.to_string())
+}
+
 /// Resolve a live PipeWire sink node-name from its `bluez_output.*` prefix (which
 /// the combined-sink plan stores without the trailing card suffix). Returns
 /// `None` if no sink currently matches or `pactl` is unavailable.
@@ -635,11 +677,19 @@ fn find_sink_with_prefix(prefix: &str) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.split('\t').nth(1))
-        .find(|name| name.starts_with(prefix))
-        .map(|name| name.to_string())
+    sink_matching_prefix(&String::from_utf8_lossy(&output.stdout), prefix)
+}
+
+/// Resolve a logical playback target to the live PipeWire node name to hand a
+/// player. The target is either a `bluez_output.*` prefix (from
+/// [`bluez_sink_prefix`], which carries no card suffix) or an exact node name
+/// such as `blue2th_combined`, which resolves to itself. Errors rather than
+/// falling back to the default sink, so a vanished speaker — or an empty target,
+/// which no sink can carry — is reported instead of silently sending audio
+/// elsewhere.
+pub fn resolve_target_sink(target: &str) -> Result<String, AudioError> {
+    find_sink_with_prefix(target)
+        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for target {target}")))
 }
 
 /// Make `sink` the default PipeWire sink (by node name) via `pactl`.
@@ -1001,5 +1051,176 @@ mod tests {
             second.sink
         );
         assert_eq!(second.latency_ms, 250);
+    }
+
+    /// A realistic `pactl list short sinks` block: tab-separated columns, the
+    /// node name second, one Bluetooth speaker whose live node carries the `.1`
+    /// card suffix, the PC's own output and the combined null sink.
+    const PACTL_SINKS: &str = concat!(
+        "39\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+        "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+        "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+    );
+
+    // Criterion: a pure function resolves a prefix against the text `pactl list
+    // short sinks` prints, mapping `bluez_output.<MAC>` to the line carrying the
+    // card suffix (`bluez_output.<MAC>.1`). This is the heart of the defect: the
+    // prefix itself names no live node, so `--device <prefix>` silently falls
+    // back to the default sink.
+    #[test]
+    fn test_sink_matching_prefix_resolves_a_bluez_prefix_to_the_card_suffixed_node() {
+        assert_eq!(
+            sink_matching_prefix(PACTL_SINKS, "bluez_output.80_99_E7_63_50_29"),
+            Some("bluez_output.80_99_E7_63_50_29.1".to_string())
+        );
+    }
+
+    // Criterion: the matcher returns `None` when no line matches — the speaker
+    // vanished between the routing call and the spawn, and the caller must fail
+    // rather than fall back to the default sink.
+    #[test]
+    fn test_sink_matching_prefix_without_a_matching_line_is_none() {
+        assert_eq!(
+            sink_matching_prefix(PACTL_SINKS, "bluez_output.AA_BB_CC_DD_EE_FF"),
+            None
+        );
+    }
+
+    // Criterion: with several sinks present the matcher picks the right
+    // `bluez_output.*` line — the second speaker's node, not the first one and
+    // not the PC's own output.
+    #[test]
+    fn test_sink_matching_prefix_picks_the_right_line_among_several_sinks() {
+        let listing = concat!(
+            "39\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+            "58\tbluez_output.11_22_33_44_55_66.2\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n",
+            "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "bluez_output.11_22_33_44_55_66"),
+            Some("bluez_output.11_22_33_44_55_66.2".to_string())
+        );
+    }
+
+    // Criterion: the match is anchored at the start of the node name, so a sink
+    // that merely *contains* the prefix is not mistaken for the speaker's own
+    // node. A `contains` implementation would answer the wrong sink here.
+    #[test]
+    fn test_sink_matching_prefix_ignores_a_sink_that_only_contains_the_prefix() {
+        let listing = concat!(
+            "44\tvirtual_bluez_output.80_99_E7_63_50_29.9\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n",
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "bluez_output.80_99_E7_63_50_29"),
+            Some("bluez_output.80_99_E7_63_50_29.1".to_string())
+        );
+    }
+
+    // Criterion (non-nominal, the path that always worked): `blue2th_combined`
+    // is already an exact node name, so resolving it is a no-op and the combined
+    // route keeps behaving exactly as it does today.
+    #[test]
+    fn test_sink_matching_prefix_leaves_an_exact_node_name_unchanged() {
+        assert_eq!(
+            sink_matching_prefix(PACTL_SINKS, "blue2th_combined"),
+            Some("blue2th_combined".to_string())
+        );
+    }
+
+    // An empty prefix starts every string, so a bare `starts_with` answers the
+    // first line of the listing — the PC's own output. `spotify_target_sink(&[])`
+    // returns exactly that empty string, and only the `speakers.is_empty()` guard
+    // at the top of `SpotifyBackend::start` stands between it and pointing
+    // `--device` at the PC. Verified on a live `pactl`: before this guard,
+    // `resolve_target_sink("")` answered `Ok("alsa_output.…HiFi__Speaker__sink")`.
+    #[test]
+    fn test_sink_matching_prefix_without_a_prefix_matches_nothing() {
+        assert_eq!(sink_matching_prefix(PACTL_SINKS, ""), None);
+        // Also against a listing carrying a blank node-name column, which the
+        // boundary rule would otherwise accept as *equal* to the empty prefix.
+        assert_eq!(sink_matching_prefix("39\t\tPipeWire\tIDLE\n", ""), None);
+    }
+
+    // Criterion: the matcher picks the `bluez_output.*` line rather than an
+    // unrelated sink that happens to share a prefix. A longer namesake that does
+    // not continue with the `.` card separator is not the target, whatever its
+    // sink index — a bare `starts_with` answers it as soon as it sorts first.
+    #[test]
+    fn test_sink_matching_prefix_ignores_a_longer_namesake_without_a_card_separator() {
+        let listing = "60\tblue2th_combined_old\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n";
+        assert_eq!(sink_matching_prefix(listing, "blue2th_combined"), None);
+    }
+
+    // The exact node wins over a longer namesake wherever the two sit: a stale
+    // `blue2th_combined_old` carrying a lower sink index must not shadow the
+    // combined sink librespot is about to be pointed at.
+    #[test]
+    fn test_sink_matching_prefix_prefers_the_exact_node_over_a_longer_namesake() {
+        let listing = concat!(
+            "60\tblue2th_combined_old\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+            "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "blue2th_combined"),
+            Some("blue2th_combined".to_string())
+        );
+    }
+
+    // The tie-break is stated in the doc, so it is pinned here: with two
+    // `.`-suffixed candidates for one prefix, the first line wins — `pactl`'s own
+    // sink-index order — rather than whichever the iteration happens to reach.
+    #[test]
+    fn test_sink_matching_prefix_takes_the_first_suffixed_candidate() {
+        let listing = concat!(
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+            "58\tbluez_output.80_99_E7_63_50_29.2\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "bluez_output.80_99_E7_63_50_29"),
+            Some("bluez_output.80_99_E7_63_50_29.1".to_string())
+        );
+    }
+
+    // The listing comes from a subprocess, so it must survive whatever `pactl`
+    // prints: a blank line, a line short of the node-name column, and a trailing
+    // newline all get skipped rather than panicking or answering an empty name.
+    #[test]
+    fn test_sink_matching_prefix_skips_lines_without_a_node_name_column() {
+        let listing = concat!(
+            "\n",
+            "39\n",
+            "\t\n",
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+            "\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "bluez_output.80_99_E7_63_50_29"),
+            Some("bluez_output.80_99_E7_63_50_29.1".to_string())
+        );
+    }
+
+    // Criterion: `start()` propagates a *resolution failure*, so the resolver
+    // must report one rather than hand the target back unresolved — a silent
+    // fallback to the default sink is the defect this change fixes. Needs no
+    // hardware and holds either way: with no `pactl` the lookup fails outright,
+    // and with a live one no sink can carry this name.
+    #[test]
+    fn test_resolve_target_sink_for_an_absent_node_is_an_error() {
+        assert!(
+            resolve_target_sink("blue2th_no_such_sink_ever").is_err(),
+            "an unresolvable target must be an error, never the target handed back"
+        );
+    }
+
+    // The empty target `spotify_target_sink(&[])` yields must not resolve to the
+    // first sink `pactl` happens to list.
+    #[test]
+    fn test_resolve_target_sink_for_an_empty_target_is_an_error() {
+        assert!(
+            resolve_target_sink("").is_err(),
+            "an empty target names no node and must not resolve to an arbitrary sink"
+        );
     }
 }
