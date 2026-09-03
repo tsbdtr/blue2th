@@ -182,14 +182,13 @@ impl SpotifyBackend {
         &self.device_name
     }
 
-    /// The argv the next spawn would use for `speakers` — the seam that pins
-    /// `librespot --name <configured name>` without spawning anything. Pure.
-    pub fn librespot_args(&self, speakers: &[SpeakerTarget]) -> Vec<String> {
-        build_librespot_args(
-            &self.device_name,
-            &spotify_target_sink(speakers),
-            &librespot_cache_dir(),
-        )
+    /// The argv the next spawn would use for an **already-resolved** sink node
+    /// name — the seam that pins `librespot --name <configured name> --device
+    /// <live node>` without spawning anything. Pure.
+    pub fn librespot_args(&self, sink: &str) -> Vec<String> {
+        // Red-phase stub: the resolved sink is not threaded into the argv yet.
+        let _ = sink;
+        build_librespot_args(&self.device_name, "", &librespot_cache_dir())
     }
 
     /// The sink the running subprocess feeds, or `None` while stopped.
@@ -230,7 +229,7 @@ impl SpotifyBackend {
         let sink = spotify_target_sink(speakers);
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
-        let args = self.librespot_args(speakers);
+        let args = self.librespot_args(&sink);
         let child = std::process::Command::new("librespot")
             .args(&args)
             .spawn()
@@ -277,6 +276,9 @@ mod tests {
 
     const A: &str = "AA:BB:CC:DD:EE:FF";
     const B: &str = "11:22:33:44:55:66";
+    /// A live PipeWire node name as BlueZ creates it: the `bluez_output.<MAC>`
+    /// prefix plus the card suffix `spotify_target_sink` does not carry.
+    const RESOLVED_SINK: &str = "bluez_output.80_99_E7_63_50_29.1";
 
     fn target(addr: &str) -> SpeakerTarget {
         SpeakerTarget {
@@ -436,15 +438,25 @@ mod tests {
         assert_eq!(sink, COMBINED_SINK_NAME);
     }
 
-    // Criterion: `spotify_target_sink(&speakers)` returns the speaker's
-    // `bluez_output.*` prefix for a single target.
+    // Criterion: `spotify_target_sink(&speakers)` still returns a **logical**
+    // target for a single speaker — the `bluez_output.*` prefix, which is not a
+    // live node name: the node BlueZ creates carries a card suffix
+    // (`bluez_output.<MAC>.1`). The caller must resolve it before handing it to
+    // `--device`; resolving here would pull `pactl` into a pure function that
+    // `tests/restore.rs` calls with no hardware.
     #[test]
-    fn test_spotify_target_sink_single_target_is_bluez_prefix() {
+    fn test_spotify_target_sink_single_target_is_an_unresolved_prefix() {
         let sink = spotify_target_sink(&[target(A)]);
         assert_eq!(sink, crate::audio::bluez_sink_prefix(A));
         assert!(
             sink.starts_with("bluez_output."),
             "single-target sink must be a bluez_output.* prefix, got {sink}"
+        );
+        // A prefix, not a node: the live node adds a `.<card>` segment.
+        assert_eq!(
+            sink.matches('.').count(),
+            1,
+            "the logical target must carry no card suffix — it is a prefix the caller resolves, got {sink}"
         );
     }
 
@@ -521,7 +533,7 @@ mod tests {
     #[test]
     fn test_librespot_args_carry_the_configured_name() {
         let backend = SpotifyBackend::with_name("Salon");
-        let args = backend.librespot_args(&[target(A)]);
+        let args = backend.librespot_args(RESOLVED_SINK);
         let flag = args
             .iter()
             .position(|a| a == "--name")
@@ -537,15 +549,75 @@ mod tests {
         );
     }
 
-    // Criterion (phase 6.2): the argv still points at the sink derived from the
-    // selection — renaming changes the name only.
+    // Criterion: `librespot_args` takes the already-resolved sink and emits it
+    // verbatim after `--device`, card suffix included. Handing `--device` a
+    // prefix names no live node, and librespot silently falls back to the
+    // default sink — the defect this change fixes.
     #[test]
-    fn test_librespot_args_still_point_at_the_selection_sink() {
+    fn test_librespot_args_emit_the_resolved_sink_verbatim() {
         let backend = SpotifyBackend::with_name("Salon");
-        let args = backend.librespot_args(&[target(A), target(B)]);
-        assert!(
-            args.iter().any(|a| a == COMBINED_SINK_NAME),
+        let args = backend.librespot_args(RESOLVED_SINK);
+        let flag = args
+            .iter()
+            .position(|a| a == "--device")
+            .expect("argv must carry --device");
+        assert_eq!(
+            args.get(flag + 1).map(String::as_str),
+            Some(RESOLVED_SINK),
+            "--device must be followed by the resolved node name, card suffix included: {args:?}"
+        );
+    }
+
+    // Criterion (non-nominal): the combined sink is already an exact node name,
+    // so it travels through untouched — the path that always worked.
+    #[test]
+    fn test_librespot_args_pass_the_combined_sink_through_unchanged() {
+        let backend = SpotifyBackend::with_name("Salon");
+        let args = backend.librespot_args(COMBINED_SINK_NAME);
+        let flag = args
+            .iter()
+            .position(|a| a == "--device")
+            .expect("argv must carry --device");
+        assert_eq!(
+            args.get(flag + 1).map(String::as_str),
+            Some(COMBINED_SINK_NAME),
             "argv must point the output at the combined sink: {args:?}"
+        );
+    }
+
+    // Criterion: every other argv flag is unchanged once the sink is resolved —
+    // `--initial-volume 100` still there, `--volume-ctrl` still absent in both
+    // its spellings, and no neighbouring flag dropped.
+    #[test]
+    fn test_librespot_args_keep_every_other_flag_with_a_resolved_sink() {
+        let backend = SpotifyBackend::with_name("Salon");
+        let args = backend.librespot_args(RESOLVED_SINK);
+        for (flag, value) in [
+            ("--name", "Salon"),
+            ("--backend", "pulseaudio"),
+            ("--device", RESOLVED_SINK),
+            ("--autoplay", "off"),
+            ("--initial-volume", "100"),
+        ] {
+            let at = args.iter().position(|a| a == flag);
+            assert!(at.is_some(), "argv must carry {flag}: {args:?}");
+            assert_eq!(
+                at.and_then(|i| args.get(i + 1)).map(String::as_str),
+                Some(value),
+                "{flag} must be followed by {value}: {args:?}"
+            );
+        }
+        assert!(
+            args.iter().any(|a| a == "--system-cache"),
+            "argv must still cache the credentials: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--volume-ctrl"),
+            "--volume-ctrl is inert with this backend and must not ship: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("--volume-ctrl=")),
+            "--volume-ctrl must not ship in its attached form either: {args:?}"
         );
     }
 

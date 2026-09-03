@@ -624,6 +624,18 @@ fn bluetooth_sink_for(mac: &str) -> Result<String, AudioError> {
         .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
 }
 
+/// Pick the live PipeWire sink node-name matching `prefix` out of the text
+/// `pactl list short sinks` prints: tab-separated columns, the node name in the
+/// second one. A `bluez_output.<MAC>` prefix resolves to the line carrying the
+/// card suffix (`bluez_output.<MAC>.1`); an already exact node name resolves to
+/// itself. Pure — performs no I/O.
+pub fn sink_matching_prefix(listing: &str, prefix: &str) -> Option<String> {
+    // Red-phase stub: the matcher does not exist yet, `find_sink_with_prefix`
+    // still shells out and parses in one place.
+    let _ = (listing, prefix);
+    None
+}
+
 /// Resolve a live PipeWire sink node-name from its `bluez_output.*` prefix (which
 /// the combined-sink plan stores without the trailing card suffix). Returns
 /// `None` if no sink currently matches or `pactl` is unavailable.
@@ -1001,5 +1013,81 @@ mod tests {
             second.sink
         );
         assert_eq!(second.latency_ms, 250);
+    }
+
+    /// A realistic `pactl list short sinks` block: tab-separated columns, the
+    /// node name second, one Bluetooth speaker whose live node carries the `.1`
+    /// card suffix, the PC's own output and the combined null sink.
+    const PACTL_SINKS: &str = concat!(
+        "39\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+        "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+        "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+    );
+
+    // Criterion: a pure function resolves a prefix against the text `pactl list
+    // short sinks` prints, mapping `bluez_output.<MAC>` to the line carrying the
+    // card suffix (`bluez_output.<MAC>.1`). This is the heart of the defect: the
+    // prefix itself names no live node, so `--device <prefix>` silently falls
+    // back to the default sink.
+    #[test]
+    fn test_sink_matching_prefix_resolves_a_bluez_prefix_to_the_card_suffixed_node() {
+        assert_eq!(
+            sink_matching_prefix(PACTL_SINKS, "bluez_output.80_99_E7_63_50_29"),
+            Some("bluez_output.80_99_E7_63_50_29.1".to_string())
+        );
+    }
+
+    // Criterion: the matcher returns `None` when no line matches — the speaker
+    // vanished between the routing call and the spawn, and the caller must fail
+    // rather than fall back to the default sink.
+    #[test]
+    fn test_sink_matching_prefix_without_a_matching_line_is_none() {
+        assert_eq!(
+            sink_matching_prefix(PACTL_SINKS, "bluez_output.AA_BB_CC_DD_EE_FF"),
+            None
+        );
+    }
+
+    // Criterion: with several sinks present the matcher picks the right
+    // `bluez_output.*` line — the second speaker's node, not the first one and
+    // not the PC's own output.
+    #[test]
+    fn test_sink_matching_prefix_picks_the_right_line_among_several_sinks() {
+        let listing = concat!(
+            "39\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+            "58\tbluez_output.11_22_33_44_55_66.2\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n",
+            "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "bluez_output.11_22_33_44_55_66"),
+            Some("bluez_output.11_22_33_44_55_66.2".to_string())
+        );
+    }
+
+    // Criterion: the match is anchored at the start of the node name, so a sink
+    // that merely *contains* the prefix is not mistaken for the speaker's own
+    // node. A `contains` implementation would answer the wrong sink here.
+    #[test]
+    fn test_sink_matching_prefix_ignores_a_sink_that_only_contains_the_prefix() {
+        let listing = concat!(
+            "44\tvirtual_bluez_output.80_99_E7_63_50_29.9\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n",
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+        );
+        assert_eq!(
+            sink_matching_prefix(listing, "bluez_output.80_99_E7_63_50_29"),
+            Some("bluez_output.80_99_E7_63_50_29.1".to_string())
+        );
+    }
+
+    // Criterion (non-nominal, the path that always worked): `blue2th_combined`
+    // is already an exact node name, so resolving it is a no-op and the combined
+    // route keeps behaving exactly as it does today.
+    #[test]
+    fn test_sink_matching_prefix_leaves_an_exact_node_name_unchanged() {
+        assert_eq!(
+            sink_matching_prefix(PACTL_SINKS, "blue2th_combined"),
+            Some("blue2th_combined".to_string())
+        );
     }
 }
