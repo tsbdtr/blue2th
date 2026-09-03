@@ -173,6 +173,30 @@ templates are dx's code, not ours.
 - No `println!` or `dbg!` in production code
 - Use owned types (`String`, `Vec<T>`) for Dioxus props; use `&str`, `&[T]` in pure functions
 
+### Comments
+
+A comment explains **why**. Those age well, because a reason does not change when
+the code does — the GPL boundary around `librespot`, why the Android templates are
+frozen, why `--workspace` stays on the test command. Every one of them has held.
+
+What rots is a comment that **asserts something a machine could check**, and it
+rots dangerously: a reader believes it and stops checking. `sink_volume` and
+`parse_first_percent` both documented `0.0..=1.0`; `pactl` prints `153%` for an
+over-amplified sink, and that false claim is exactly what made the missing range
+check look unnecessary. The comment caused the bug. **If a comment states a fact
+about values, make it a test instead** — a doctest on a public item, or a unit
+test whose *name* is the claim.
+
+**No future tense.** "Phase 4 will route to a combined sink instead of hijacking
+the system default" outlived phase 4 by two milestones and became issue #66. A
+comment describes what *is*; an intention goes to the tracker, which has an owner
+and a closing condition. A comment has neither.
+
+**Referencing an issue is fine — claiming its state is not.** `(#33)` says "this
+exists because of #33" and stays true forever, including after #33 closes. "The
+open question in #54" claims #54 is open, and was already wrong. Prefer the bare
+provenance form.
+
 ## Pull Requests
 
 Every change reaches `develop` through a pull request; `main` only ever receives a

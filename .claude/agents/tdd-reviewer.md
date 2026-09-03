@@ -40,6 +40,21 @@ Read the **Affected Layers** section of your prompt — review only those layers
    d. Layer hygiene (no hardware/platform deps leaking into `blue2th-proto`; dispatcher fallbacks present on mobile)
    e. Naming clarity and consistency with the existing codebase
    f. Performance issues (unnecessary clones, allocations)
+   g. **Comments that assert a checkable fact — verify them by running the code,
+      not by reading it.** This is where the real bugs have been. A doc claiming
+      a value is "always in `0.0..=1.0`" was false, and it is what made the
+      missing range check look unnecessary; it was caught by calling the function
+      with an infinity, never by re-reading it. Likewise a claim about a
+      dependency ("the handle unregisters on drop") — open the crate in
+      `~/.cargo/registry/src/` and check, rather than trusting the sentence.
+      A comment that describes a design the branch just replaced is worse than no
+      comment: fix it in the same pass.
+   h. **Rules that look pinned but are not.** Ask what mutation the tests would
+      miss: loosen the rule (an exact comparison instead of a rounded one, a
+      `continue` instead of an early return, the same `map_err` moved into a
+      shared helper) and re-run. If nothing fails, the rule is documentation, not
+      a rule — add the test that fails, and say in the report which mutation you
+      checked.
 9. Do NOT introduce new abstractions or refactors that aren't motivated by a concrete issue.
 
 ### Quality gates (run from the worktree root)
