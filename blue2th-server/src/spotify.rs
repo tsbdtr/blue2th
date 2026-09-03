@@ -84,7 +84,7 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str, cache_dir: &str)
         // Only the *starting* point: the Spotify client can still lower it, and no
         // argv takes that authority away — `--volume-ctrl fixed` was tried and is
         // inert with this backend. Who owns the Spotify volume afterwards is the
-        // open question in #54.
+        // open question in #58.
         "--initial-volume".to_string(),
         "100".to_string(),
     ]

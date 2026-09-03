@@ -42,6 +42,45 @@ pub fn clamp_volume(level: f32) -> f32 {
     level.clamp(0.0, 1.0)
 }
 
+/// Decide the single volume `GET /playback` reports for the whole selection.
+///
+/// `levels` carries one entry per selected speaker, in selection order, `None`
+/// for a sink that could not be read. The selection's levels are reported only
+/// when every one of them is readable, lies in `0.0..=1.0`, and they agree at
+/// whole-percent resolution — the resolution `parse_first_percent` actually
+/// reads. The returned level is therefore always in `0.0..=1.0`, as
+/// `PlaybackState.volume` documents. Otherwise
+/// the last `commanded` level is reported: it is true as a command, and it never
+/// presents one speaker's level as if it were everyone's.
+pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
+    let mut agreed: Option<u32> = None;
+    for level in levels {
+        // A sink that could not be read makes the selection undecidable: nothing
+        // here is known to be true of every speaker. So does one whose level
+        // `PlaybackState.volume` cannot express — `NaN`, an infinity, or a value
+        // outside `0.0..=1.0` (pactl reports an over-amplified sink as e.g.
+        // "153%"). Reporting a clamped 100% there would name a level no speaker
+        // is at, which is the defect this rule exists to remove. The range check
+        // also keeps the cast below meaningful: `as` saturates, so an unchecked
+        // infinity would round-trip as 21474836, and two distinct huge levels
+        // would both saturate to the same percentage and count as agreeing.
+        let Some(level) = level.filter(|l| (0.0..=1.0).contains(l)) else {
+            return commanded;
+        };
+        let pct = (level * 100.0).round() as u32;
+        match agreed {
+            Some(first) if first != pct => return commanded,
+            Some(_) => {},
+            None => agreed = Some(pct),
+        }
+    }
+    // An empty selection agrees on nothing, so it falls back to `commanded` too.
+    match agreed {
+        Some(pct) => pct as f32 / 100.0,
+        None => commanded,
+    }
+}
+
 /// Pluggable audio output. The engine drives the state machine and delegates the
 /// actual sound to an implementation of this trait, so the rodio test source can
 /// be swapped for `librespot` in phase 5 and so tests can run without an audio
@@ -636,8 +675,10 @@ pub fn set_sink_volume(mac: &str, level: f32) -> Result<(), AudioError> {
     }
 }
 
-/// Read the live volume (`0.0..=1.0`) of the speaker's PipeWire sink — picks up a
-/// change made on the speaker itself (AVRCP). Returns `None` on any failure.
+/// Read the live volume of the speaker's PipeWire sink — picks up a change made
+/// on the speaker itself (AVRCP). Normally `0.0..=1.0`, but an over-amplified
+/// sink reads above `1.0` (pactl prints e.g. "153%"). Returns `None` on any
+/// failure.
 pub fn sink_volume(mac: &str) -> Option<f32> {
     let sink = bluetooth_sink_for(mac).ok()?;
     let output = Command::new("pactl")
@@ -651,7 +692,8 @@ pub fn sink_volume(mac: &str) -> Option<f32> {
     parse_first_percent(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Extract the first `<n>%` from `pactl get-sink-volume` output as `0.0..=1.0`.
+/// Extract the first `<n>%` from `pactl get-sink-volume` output as a fraction
+/// (`59%` -> `0.59`). Above `1.0` for an over-amplified sink, which prints `153%`.
 fn parse_first_percent(text: &str) -> Option<f32> {
     let pct_end = text.find('%')?;
     // Collect the digit run immediately before '%' (char-wise, no byte slicing).
@@ -787,6 +829,117 @@ mod tests {
             Some(0.0)
         );
         assert_eq!(parse_first_percent("no percentage here"), None);
+    }
+
+    // Criterion: all levels readable and equal -> that value is reported.
+    #[test]
+    fn test_reported_volume_agreeing_levels_reports_the_common_value() {
+        assert_eq!(
+            reported_volume(&[Some(0.4), Some(0.4)], 0.7),
+            0.4,
+            "two sinks at 40% report 40%, not the commanded level"
+        );
+    }
+
+    // Criterion: all levels readable and equal -> that value is reported (a
+    // single selected speaker agrees with itself, so its live level is reported).
+    #[test]
+    fn test_reported_volume_single_readable_level_reports_that_level() {
+        assert_eq!(reported_volume(&[Some(0.55)], 0.2), 0.55);
+    }
+
+    // Criterion: levels readable but not all equal -> the commanded level.
+    #[test]
+    fn test_reported_volume_differing_levels_reports_commanded() {
+        assert_eq!(
+            reported_volume(&[Some(0.3), Some(0.8)], 0.55),
+            0.55,
+            "the slider must not jump to one speaker's value"
+        );
+    }
+
+    // Criterion: any level unreadable -> the commanded level, even when the
+    // readable ones agree.
+    #[test]
+    fn test_reported_volume_one_unreadable_level_reports_commanded() {
+        assert_eq!(reported_volume(&[Some(0.4), None, Some(0.4)], 0.65), 0.65);
+    }
+
+    // Criterion: any level unreadable -> the commanded level.
+    #[test]
+    fn test_reported_volume_all_levels_unreadable_reports_commanded() {
+        assert_eq!(reported_volume(&[None, None], 0.25), 0.25);
+    }
+
+    // Criterion: no selected speaker -> the commanded level (unchanged
+    // behaviour).
+    #[test]
+    fn test_reported_volume_empty_selection_reports_commanded() {
+        assert_eq!(reported_volume(&[], 0.6), 0.6);
+    }
+
+    // Criterion: agreement is decided at whole-percent resolution — two levels a
+    // whole percent apart disagree, so the commanded level is reported.
+    #[test]
+    fn test_reported_volume_levels_one_percent_apart_reports_commanded() {
+        assert_eq!(reported_volume(&[Some(0.40), Some(0.41)], 0.75), 0.75);
+    }
+
+    // Criterion: agreement is decided at whole-percent resolution rather than by
+    // float equality — two levels differing only below that resolution agree, so
+    // their common whole-percent level (40%) is reported, not `commanded`.
+    #[test]
+    fn test_reported_volume_sub_percent_difference_reports_the_common_value() {
+        let reported = reported_volume(&[Some(0.401), Some(0.404)], 0.9);
+        assert!(
+            (reported - 0.40).abs() < 0.005,
+            "expected the shared 40% level, got {reported}"
+        );
+    }
+
+    // Criterion: a `NaN` level is never counted as agreeing. `parse_first_percent`
+    // cannot currently produce one, so this guards a future reader rather than
+    // pinning a live bug.
+    #[test]
+    fn test_reported_volume_nan_level_reports_commanded() {
+        assert_eq!(reported_volume(&[Some(0.5), Some(f32::NAN)], 0.35), 0.35);
+        assert_eq!(reported_volume(&[Some(f32::NAN)], 0.35), 0.35);
+    }
+
+    // Criterion: a level `PlaybackState.volume` cannot express is never counted
+    // as agreeing. `pactl` reports an over-amplified sink as e.g. "153%", which
+    // `parse_first_percent` reads as 1.53; reporting it would break the DTO's
+    // documented `0.0..=1.0` range, and clamping it to 100% would name a level
+    // no speaker is at.
+    #[test]
+    fn test_reported_volume_out_of_range_level_reports_commanded() {
+        assert_eq!(reported_volume(&[Some(1.53)], 0.35), 0.35);
+        assert_eq!(
+            reported_volume(&[Some(1.53), Some(1.53)], 0.35),
+            0.35,
+            "two over-amplified sinks agree on a level the API cannot report"
+        );
+        assert_eq!(reported_volume(&[Some(0.4), Some(1.2)], 0.35), 0.35);
+        assert_eq!(reported_volume(&[Some(-0.2)], 0.35), 0.35);
+    }
+
+    // Criterion: a level that is not a number is never counted as agreeing —
+    // infinities included. The percentage cast saturates, so an unfiltered
+    // infinity would be reported as 21474836, and two *distinct* huge levels
+    // would saturate to the same percentage and manufacture an agreement.
+    #[test]
+    fn test_reported_volume_infinite_level_reports_commanded() {
+        assert_eq!(reported_volume(&[Some(f32::INFINITY)], 0.35), 0.35);
+        assert_eq!(reported_volume(&[Some(f32::NEG_INFINITY)], 0.35), 0.35);
+        assert_eq!(reported_volume(&[Some(1e30), Some(1e31)], 0.35), 0.35);
+    }
+
+    // Criterion: any level unreadable -> the commanded level, wherever it sits in
+    // the selection order — the first entry decides just as the last one does.
+    #[test]
+    fn test_reported_volume_unreadable_level_at_either_end_reports_commanded() {
+        assert_eq!(reported_volume(&[None, Some(0.4)], 0.65), 0.65);
+        assert_eq!(reported_volume(&[Some(0.4), None], 0.65), 0.65);
     }
 
     // Criterion: `POST /volume` sets the sink volume and returns the new state;

@@ -945,20 +945,22 @@ async fn volume(
 }
 
 /// `GET /playback` — current playback state, reconciled so it returns to
-/// `Stopped` once the tone ends on its own, and carrying the *live* sink volume
-/// (of the first target) so a change made on the speaker itself is reflected.
+/// `Stopped` once the tone ends on its own, and carrying a volume that is true
+/// of *every* selected speaker: the live sink level when they all agree (so a
+/// change made on a speaker itself is reflected), the commanded level otherwise
+/// — see `audio::reported_volume`.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
         engine.poll_state()
     };
-    // Read the live volume from the first target's sink, outside the guard.
-    let first = state.targets.lock().await.speakers().into_iter().next();
-    if let Some(target) = first {
-        if let Some(volume) = audio::sink_volume(&target.address) {
-            snapshot.volume = volume;
-        }
-    }
+    // Snapshot the selection and release the guard before the PipeWire reads.
+    let speakers = state.targets.lock().await.speakers();
+    let levels: Vec<Option<f32>> = speakers
+        .iter()
+        .map(|target| audio::sink_volume(&target.address))
+        .collect();
+    snapshot.volume = audio::reported_volume(&levels, snapshot.volume);
     Json(snapshot)
 }
 
