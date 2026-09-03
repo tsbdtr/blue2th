@@ -102,9 +102,15 @@ pub fn librespot_cache_dir() -> String {
     format!("{base}/blue2th/librespot")
 }
 
-/// Resolve the PipeWire sink `librespot` should feed for the current selection:
-/// the `blue2th_combined` null sink for two targets, or the single speaker's
-/// `bluez_output.*` sink prefix for one. Pure — performs no I/O.
+/// The **logical** playback target for the current selection: the
+/// `blue2th_combined` null sink for two targets, or the single speaker's
+/// `bluez_output.*` sink prefix for one.
+///
+/// The single-speaker value is a *prefix*, **not** a node name — the live node
+/// BlueZ creates carries a card suffix (`bluez_output.<MAC>.1`) — so the caller
+/// must resolve it (`audio::resolve_target_sink`) before handing it to
+/// `--device`. Pure — performs no I/O, which is what lets `tests/restore.rs`
+/// call it with no hardware.
 pub fn spotify_target_sink(speakers: &[SpeakerTarget]) -> String {
     match speakers {
         [] => String::new(),
@@ -186,9 +192,7 @@ impl SpotifyBackend {
     /// name — the seam that pins `librespot --name <configured name> --device
     /// <live node>` without spawning anything. Pure.
     pub fn librespot_args(&self, sink: &str) -> Vec<String> {
-        // Red-phase stub: the resolved sink is not threaded into the argv yet.
-        let _ = sink;
-        build_librespot_args(&self.device_name, "", &librespot_cache_dir())
+        build_librespot_args(&self.device_name, sink, &librespot_cache_dir())
     }
 
     /// The sink the running subprocess feeds, or `None` while stopped.
@@ -227,16 +231,25 @@ impl SpotifyBackend {
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
+        // `spotify_target_sink` yields a *logical* target: for a single speaker a
+        // `bluez_output.*` prefix, which names no live node (the node BlueZ
+        // creates carries a card suffix). Resolve it here, at the argv, rather
+        // than in that pure function; a failure is reported instead of letting
+        // librespot fall back to the default sink.
+        let resolved = crate::audio::resolve_target_sink(&sink)
+            .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
-        let args = self.librespot_args(&sink);
+        let args = self.librespot_args(&resolved);
         let child = std::process::Command::new("librespot")
             .args(&args)
             .spawn()
             .map_err(map_spawn_error)?;
         self.child = Some(child);
-        // Remember where librespot was pointed: `--device` is fixed at spawn, so a
-        // later selection change that moves the sink requires a respawn.
+        // Remember the *logical* target, not the resolved node: `resync_spotify_sink`
+        // compares this against `spotify_target_sink(...)`, and storing the resolved
+        // name would make them never compare equal — respawning librespot, hence
+        // cutting the audio, on every selection change.
         self.sink = Some(sink);
         Ok(self.status())
     }

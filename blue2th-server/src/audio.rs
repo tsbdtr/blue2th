@@ -630,10 +630,11 @@ fn bluetooth_sink_for(mac: &str) -> Result<String, AudioError> {
 /// card suffix (`bluez_output.<MAC>.1`); an already exact node name resolves to
 /// itself. Pure — performs no I/O.
 pub fn sink_matching_prefix(listing: &str, prefix: &str) -> Option<String> {
-    // Red-phase stub: the matcher does not exist yet, `find_sink_with_prefix`
-    // still shells out and parses in one place.
-    let _ = (listing, prefix);
-    None
+    listing
+        .lines()
+        .filter_map(|line| line.split('\t').nth(1))
+        .find(|name| name.starts_with(prefix))
+        .map(|name| name.to_string())
 }
 
 /// Resolve a live PipeWire sink node-name from its `bluez_output.*` prefix (which
@@ -647,11 +648,18 @@ fn find_sink_with_prefix(prefix: &str) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.split('\t').nth(1))
-        .find(|name| name.starts_with(prefix))
-        .map(|name| name.to_string())
+    sink_matching_prefix(&String::from_utf8_lossy(&output.stdout), prefix)
+}
+
+/// Resolve a logical playback target to the live PipeWire node name to hand a
+/// player. The target is either a `bluez_output.*` prefix (from
+/// [`bluez_sink_prefix`], which carries no card suffix) or an exact node name
+/// such as `blue2th_combined`, which resolves to itself. Errors rather than
+/// falling back to the default sink, so a vanished speaker is reported instead
+/// of silently sending audio elsewhere.
+pub fn resolve_target_sink(target: &str) -> Result<String, AudioError> {
+    find_sink_with_prefix(target)
+        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for target {target}")))
 }
 
 /// Make `sink` the default PipeWire sink (by node name) via `pactl`.
