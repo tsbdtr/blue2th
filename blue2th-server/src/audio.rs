@@ -576,6 +576,49 @@ pub fn retune_combined_branch(sink_name: &str, branch: &CombineBranch) -> Result
     ])
 }
 
+/// The loopback branches currently loaded for the combined sink `sink_name`,
+/// read out of the text `pactl list short modules` prints: one entry per
+/// `module-loopback` fed by `<sink_name>.monitor`, carrying the **resolved** sink
+/// node it feeds and its `latency_msec`. Pure — performs no I/O.
+///
+/// The input comes from a subprocess, so anything that does not parse is skipped
+/// rather than reported: a truncated or unexpected listing yields fewer branches,
+/// never a failure.
+pub fn loaded_branches(listing: &str, sink_name: &str) -> Vec<CombineBranch> {
+    let _ = (listing, sink_name);
+    Vec::new()
+}
+
+/// What a selection change has to do to an already-loaded combined sink: the
+/// branches to load and the loaded ones to unload.
+///
+/// `to_unload` carries the branches as they were read from the module listing —
+/// i.e. with the **resolved** node name — because that is what the unload seam
+/// matches its `sink=` pattern on, while `to_load` carries the plan's
+/// `bluez_output.*` prefixes, which the load seam resolves.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchReconciliation {
+    /// Branches of the spec that are not loaded as-is and must be loaded.
+    pub to_load: Vec<CombineBranch>,
+    /// Loaded branches the spec no longer calls for, which must be unloaded.
+    pub to_unload: Vec<CombineBranch>,
+}
+
+/// Compare the loopbacks currently loaded for a combined sink against the plan
+/// and decide what to change, leaving matching branches — and the null sink —
+/// alone. Pure; the caller performs the loads and unloads.
+pub fn reconcile_branches(
+    loaded: &[CombineBranch],
+    spec: &CombineSinkSpec,
+) -> BranchReconciliation {
+    // Red-phase stub: the rebuild-everything behaviour this change replaces.
+    // Both clones are the stub's whole content — it owns no data of its own.
+    BranchReconciliation {
+        to_load: spec.branches.clone(),
+        to_unload: loaded.to_vec(),
+    }
+}
+
 /// Unload every loaded module whose `pactl list short modules` line contains all
 /// of `patterns`. Best-effort — a missing module is not an error.
 fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
@@ -1221,6 +1264,286 @@ mod tests {
         assert!(
             resolve_target_sink("").is_err(),
             "an empty target names no node and must not resolve to an arbitrary sink"
+        );
+    }
+
+    /// A realistic `pactl list short modules` block: index, module name and the
+    /// argument string, tab-separated. It carries the combined sink's own null
+    /// sink, its two delayed loopbacks, a loopback belonging to a *different*
+    /// combined sink, a loopback feeding *into* the combined sink (whose
+    /// `sink=` mentions it but which is not one of its branches) and ordinary
+    /// unrelated modules.
+    const PACTL_MODULES: &str = concat!(
+        "10\tmodule-device-restore\t\n",
+        "26\tmodule-null-sink\tsink_name=blue2th_combined sink_properties=node.description=blue2th_combined\n",
+        "27\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.80_99_E7_63_50_29.1 latency_msec=0 source_dont_move=true sink_dont_move=true\n",
+        "28\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.11_22_33_44_55_66.1 latency_msec=250 source_dont_move=true sink_dont_move=true\n",
+        "29\tmodule-loopback\tsource=other_combined.monitor sink=bluez_output.AA_BB_CC_DD_EE_FF.1 latency_msec=120 source_dont_move=true sink_dont_move=true\n",
+        "30\tmodule-loopback\tsource=alsa_input.pci-0000_00_1f.3.analog-stereo sink=blue2th_combined latency_msec=40\n",
+        "31\tmodule-switch-on-connect\t\n",
+    );
+
+    // Criterion: a pure function reads `pactl list short modules` and returns the
+    // loopback branches loaded for a given combined sink, each with the real sink
+    // it feeds and its `latency_msec`.
+    #[test]
+    fn test_loaded_branches_reads_each_loopback_sink_and_latency() {
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined");
+
+        assert_eq!(
+            branches,
+            vec![
+                CombineBranch {
+                    sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+                    latency_ms: 0,
+                },
+                CombineBranch {
+                    sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                    latency_ms: 250,
+                },
+            ],
+            "the two loopbacks fed by blue2th_combined.monitor, with their latencies"
+        );
+    }
+
+    // Criterion: the parser ignores modules belonging to another sink name, and
+    // any module that is not a `module-loopback` — in particular the null sink,
+    // which a selection change must never unload.
+    #[test]
+    fn test_loaded_branches_ignores_other_sinks_and_non_loopback_modules() {
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined");
+
+        assert!(
+            !branches
+                .iter()
+                .any(|b| b.sink.contains("AA_BB_CC_DD_EE_FF")),
+            "a loopback of another combined sink is not one of our branches: {branches:?}"
+        );
+        assert!(
+            !branches.iter().any(|b| b.sink.contains("blue2th_combined")),
+            "neither the null sink nor a loopback feeding into it is a branch: {branches:?}"
+        );
+    }
+
+    // Criterion: the same parser reads another sink's branches without picking
+    // ours up, i.e. the match is on `source=<sink_name>.monitor`.
+    #[test]
+    fn test_loaded_branches_reads_only_the_named_sinks_branches() {
+        let branches = loaded_branches(PACTL_MODULES, "other_combined");
+
+        assert_eq!(
+            branches,
+            vec![CombineBranch {
+                sink: "bluez_output.AA_BB_CC_DD_EE_FF.1".to_string(),
+                latency_ms: 120,
+            }],
+            "only the loopback fed by other_combined.monitor"
+        );
+    }
+
+    // Criterion: a listing with nothing matching yields an empty set rather than
+    // a panic — the input comes from a subprocess and may be anything.
+    #[test]
+    fn test_loaded_branches_without_a_matching_module_is_empty() {
+        assert!(loaded_branches("", "blue2th_combined").is_empty());
+        assert!(loaded_branches(
+            "10\tmodule-device-restore\t\n31\tmodule-switch-on-connect\t\n",
+            "blue2th_combined"
+        )
+        .is_empty());
+        assert!(
+            loaded_branches("27\tmodule-loopback", "blue2th_combined").is_empty(),
+            "a truncated line names no sink and no latency, so it is no branch"
+        );
+    }
+
+    /// The spec the reconciliation tests compare a loaded graph against: two
+    /// speakers, offsets 0 and 250 ms, branch sinks held as `bluez_output.*`
+    /// **prefixes** the way [`combine_sink_plan`] builds them.
+    fn two_speaker_spec() -> CombineSinkSpec {
+        combine_sink_plan(&[
+            SpeakerTarget {
+                address: "80:99:E7:63:50:29".to_string(),
+                offset_ms: 0,
+            },
+            SpeakerTarget {
+                address: "11:22:33:44:55:66".to_string(),
+                offset_ms: 250,
+            },
+        ])
+    }
+
+    // Criterion: a speaker present in both the loaded set and the spec with the
+    // same latency appears in neither list — an unchanged selection touches
+    // nothing, which is what keeps the stream alive.
+    #[test]
+    fn test_reconcile_branches_unchanged_selection_changes_nothing() {
+        let spec = two_speaker_spec();
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name);
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(plan, BranchReconciliation::default());
+    }
+
+    // Criterion: a speaker added to the selection yields exactly one load and no
+    // unload — the loopback already streaming stays up.
+    #[test]
+    fn test_reconcile_branches_added_speaker_loads_only_the_new_branch() {
+        let spec = two_speaker_spec();
+        let loaded = vec![CombineBranch {
+            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+            latency_ms: 0,
+        }];
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(
+            plan.to_load,
+            vec![CombineBranch {
+                sink: bluez_sink_prefix("11:22:33:44:55:66"),
+                latency_ms: 250,
+            }],
+            "only the newly selected speaker is loaded"
+        );
+        assert!(
+            plan.to_unload.is_empty(),
+            "nothing is unloaded when a speaker is added, got {:?}",
+            plan.to_unload
+        );
+    }
+
+    // Criterion: a speaker dropped from the selection yields exactly one unload,
+    // naming the resolved node its loopback feeds, and never the null sink.
+    #[test]
+    fn test_reconcile_branches_dropped_speaker_unloads_only_that_branch() {
+        let spec = combine_sink_plan(&[SpeakerTarget {
+            address: "80:99:E7:63:50:29".to_string(),
+            offset_ms: 0,
+        }]);
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name);
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert!(
+            plan.to_load.is_empty(),
+            "the remaining speaker's loopback is already loaded, got {:?}",
+            plan.to_load
+        );
+        assert_eq!(
+            plan.to_unload,
+            vec![CombineBranch {
+                sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                latency_ms: 250,
+            }],
+            "only the deselected speaker's loopback is unloaded"
+        );
+        assert!(
+            !plan
+                .to_unload
+                .iter()
+                .any(|b| b.sink.contains(&spec.sink_name)),
+            "the null sink is never unloaded by a selection change: {:?}",
+            plan.to_unload
+        );
+    }
+
+    // Criterion: a speaker present in both but with a different latency is
+    // reloaded — the new branch is loaded and the stale loopback must not
+    // survive.
+    #[test]
+    fn test_reconcile_branches_latency_change_replaces_the_stale_loopback() {
+        let spec = combine_sink_plan(&[
+            SpeakerTarget {
+                address: "80:99:E7:63:50:29".to_string(),
+                offset_ms: 0,
+            },
+            SpeakerTarget {
+                address: "11:22:33:44:55:66".to_string(),
+                offset_ms: 400,
+            },
+        ]);
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name);
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(
+            plan.to_load,
+            vec![CombineBranch {
+                sink: bluez_sink_prefix("11:22:33:44:55:66"),
+                latency_ms: 400,
+            }],
+            "the retuned speaker is reloaded with its new latency, alone"
+        );
+        assert_eq!(
+            plan.to_unload,
+            vec![CombineBranch {
+                sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                latency_ms: 250,
+            }],
+            "the stale 250 ms loopback is unloaded, and only it"
+        );
+    }
+
+    // Criterion: `CombineBranch::sink` holds the `bluez_output.<MAC>` prefix while
+    // a loaded module names the resolved node `bluez_output.<MAC>.1`. Without
+    // this, reconciliation would believe nothing is loaded and rebuild the whole
+    // graph on every change — the very defect being fixed.
+    #[test]
+    fn test_reconcile_branches_matches_a_prefix_against_the_resolved_node() {
+        let spec = combine_sink_plan(&[SpeakerTarget {
+            address: "80:99:E7:63:50:29".to_string(),
+            offset_ms: 0,
+        }]);
+        assert_eq!(
+            spec.branches[0].sink, "bluez_output.80_99_E7_63_50_29",
+            "the plan holds the prefix, not the resolved node"
+        );
+        let loaded = vec![CombineBranch {
+            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+            latency_ms: 0,
+        }];
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(
+            plan,
+            BranchReconciliation::default(),
+            "the prefix names the loaded node, so this branch is already up"
+        );
+    }
+
+    // Criterion (same one, the other side): the prefix comparison must not match
+    // a different speaker's node, or a selection change would leave the wrong
+    // loopback in place and never load the right one.
+    #[test]
+    fn test_reconcile_branches_prefix_does_not_match_another_speakers_node() {
+        let spec = combine_sink_plan(&[SpeakerTarget {
+            address: "80:99:E7:63:50:29".to_string(),
+            offset_ms: 0,
+        }]);
+        let loaded = vec![CombineBranch {
+            sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+            latency_ms: 0,
+        }];
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(
+            plan.to_load,
+            vec![CombineBranch {
+                sink: "bluez_output.80_99_E7_63_50_29".to_string(),
+                latency_ms: 0,
+            }],
+            "the selected speaker has no loopback yet, so it is loaded"
+        );
+        assert_eq!(
+            plan.to_unload,
+            vec![CombineBranch {
+                sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                latency_ms: 0,
+            }],
+            "the other speaker's loopback is not the selected one and goes"
         );
     }
 }
