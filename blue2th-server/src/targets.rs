@@ -37,6 +37,45 @@ pub fn should_quieten_on_last_loss(lost_last_target: bool, restore_during_playba
     lost_last_target && !restore_during_playback
 }
 
+/// What the loss of the last selected speaker calls for (#67).
+///
+/// Three outcomes, because the two paths that empty the selection do not want
+/// the same answer: only one of them promises to bring the speaker back, and a
+/// boolean has no room for the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastLossAction {
+    /// Leave everything alone.
+    Nothing,
+    /// Pause both sources and touch the routing not at all: the speaker is
+    /// coming back, so the pause has to be resumable and nothing may be
+    /// destroyed under a still-running stream.
+    PauseSources,
+    /// Quieten the sources and tear the routing down: nothing will re-select the
+    /// speaker, so the graph must stop pointing at it.
+    QuietenAndTeardown,
+}
+
+/// Which action the loss of the last selected speaker calls for. Pure.
+pub fn action_on_last_loss(
+    lost_last_target: bool,
+    restore_during_playback: bool,
+) -> LastLossAction {
+    // Stub: the decision this replaces is still the one production runs.
+    let _ = (lost_last_target, restore_during_playback);
+    LastLossAction::Nothing
+}
+
+/// Whether a restoration may resume the sources it finds paused (#67).
+///
+/// Only a pause the backend performed may be undone by the backend: an explicit
+/// transport command from the app clears that claim, so a pause the user asked
+/// for survives a speaker coming back. Pure.
+pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
+    // Stub: nothing resumes on restoration today.
+    let _ = backend_paused_sources;
+    false
+}
+
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
 ///
 /// Restoring mid-playback puts the returning speaker's branch back into the live
@@ -1266,28 +1305,71 @@ mod tests {
         assert_eq!(restored.offset_ms, 320);
     }
 
-    // Criterion (phase 6.3): losing the last selected device quietens the stream,
-    // because nothing else will — the routing still points at its sink, and
-    // PipeWire re-attaches that sink when the device comes back.
+    // ---- #67: the three-way answer to losing the last speaker ----
+    //
+    // These four rows replace the three `should_quieten_on_last_loss` tests: that
+    // decision was a boolean, and the row below that now reads `PauseSources` is
+    // exactly the one it had no room for.
+
+    // Criterion: losing the last target with `restore_during_playback` **on**
+    // yields the pause outcome — the case that does nothing today. The speaker is
+    // coming back on its own, so the sources must stop advancing while the
+    // routing is left intact for it to come back to.
     #[test]
-    fn test_should_quieten_when_the_last_device_leaves_and_nothing_restores_it() {
-        assert!(should_quieten_on_last_loss(true, false));
+    fn test_losing_the_last_target_with_restore_on_pauses_the_sources() {
+        assert_eq!(
+            action_on_last_loss(true, true),
+            LastLossAction::PauseSources,
+            "the speakers vanished and will be re-selected: pause, tear nothing down"
+        );
     }
 
-    // Criterion (phase 6.3): with restoration on, the device is re-selected on its
-    // own when it returns, so pausing would leave it silent until the user pressed
-    // play — the opposite of what that setting promises.
+    // Criterion: losing the last target with the setting **off** still yields the
+    // teardown outcome — today's behaviour, which must not regress. Nothing will
+    // re-select the speaker, so the routing must stop pointing at it.
     #[test]
-    fn test_should_not_quieten_when_the_setting_restores_the_device() {
-        assert!(!should_quieten_on_last_loss(true, true));
+    fn test_losing_the_last_target_with_restore_off_quietens_and_tears_down() {
+        assert_eq!(
+            action_on_last_loss(true, false),
+            LastLossAction::QuietenAndTeardown,
+            "nothing will bring the speaker back: quieten and drop the routing"
+        );
     }
 
-    // Criterion (phase 6.3): a poll that did not empty the selection quietens
-    // nothing, whatever the setting says.
+    // Criterion: not losing the last target yields no action — with the setting
+    // on. This runs on every `/devices` poll, so the common row is "do nothing".
     #[test]
-    fn test_should_not_quieten_while_a_target_remains() {
-        assert!(!should_quieten_on_last_loss(false, false));
-        assert!(!should_quieten_on_last_loss(false, true));
+    fn test_keeping_a_target_with_restore_on_does_nothing() {
+        assert_eq!(action_on_last_loss(false, true), LastLossAction::Nothing);
+    }
+
+    // Criterion: not losing the last target yields no action — with the setting
+    // off too. The setting only ever picks between the two loss outcomes.
+    #[test]
+    fn test_keeping_a_target_with_restore_off_does_nothing() {
+        assert_eq!(action_on_last_loss(false, false), LastLossAction::Nothing);
+    }
+
+    // Criterion: a restoration resumes only when the backend is the one that
+    // paused — the claim it sets when the speakers vanish is what licenses the
+    // automatic resume.
+    #[test]
+    fn test_should_resume_after_restore_when_the_backend_paused() {
+        assert!(
+            should_resume_after_restore(true),
+            "the backend paused these sources: bringing the speaker back may undo it"
+        );
+    }
+
+    // Criterion: an explicit transport command from the app clears the backend's
+    // claim, so a pause the *user* asked for is never undone by a restoration —
+    // and neither is a state the backend never paused at all.
+    #[test]
+    fn test_should_not_resume_after_restore_without_the_backend_claim() {
+        assert!(
+            !should_resume_after_restore(false),
+            "no claim: a pause the user asked for must survive a speaker coming back"
+        );
     }
 
     // Criterion: while playback runs, restoration only happens when the flag is
