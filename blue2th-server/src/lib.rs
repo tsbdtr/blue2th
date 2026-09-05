@@ -1112,7 +1112,9 @@ async fn client_presence(
     tracing::info!("client presence: {:?}", req.presence);
     state.sse_watch.set_presence(req.presence);
     if req.presence == ClientPresence::Gone {
-        pause_spotify_now(&state).await;
+        // The outcome is only used to decide the backend's resume claim, which
+        // a closing app makes no promise about: nothing here will resume it.
+        let _ = pause_spotify_now(&state).await;
     }
     StatusCode::NO_CONTENT
 }
@@ -1131,17 +1133,29 @@ async fn client_presence(
 /// servers answer, which says nothing about the audio thread. The
 /// empty-selection branch of `apply_selection_change` stops the subprocess
 /// instead.
-async fn pause_spotify_now(state: &AppState) {
+///
+/// Returns whether it really silenced something, which is what licenses the
+/// backend to claim the pause (see [`targets::may_claim_pause`]). Spotify
+/// answers a restriction when there is nothing to pause, so a successful
+/// `transport` call means playback was actually running. A network or token
+/// failure lands on the same `false`, and that direction is the safe one: no
+/// claim means a restoration resumes nothing, so the music stays paused rather
+/// than starting again behind the user's back.
+async fn pause_spotify_now(state: &AppState) -> bool {
     let running = {
         let mut spotify = state.spotify.lock().await;
         spotify.poll_liveness().status == SpotifyStatus::Running
     };
     if !running {
-        return;
+        return false;
     }
     let mut auth = state.spotify_auth.lock().await;
-    if let Err(e) = auth.transport(Transport::Pause).await {
-        tracing::warn!("could not pause Spotify on client exit: {e}");
+    match auth.transport(Transport::Pause).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("could not pause Spotify on client exit: {e}");
+            false
+        },
     }
 }
 
@@ -1339,21 +1353,31 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
 }
 
 /// Pause both sources because the last selected speaker vanished, and claim that
-/// pause so a restoration may undo it (#67).
+/// pause — but only when a source really was silenced — so a restoration may
+/// undo it (#67).
 ///
 /// The routing is deliberately left standing: the setting promises the speaker
 /// comes back, so nothing may be destroyed under a still-running stream — which
 /// is also what makes a *resumable* pause safe here, the Web API returning before
 /// `librespot`'s audio thread has stopped no longer orphaning anything.
 async fn pause_sources_until_restored(state: &AppState) {
-    pause_spotify_now(state).await;
-    {
+    let spotify_silenced = pause_spotify_now(state).await;
+    let engine_silenced = {
         let mut engine = state.engine.lock().await;
-        if let Err(e) = engine.pause() {
-            tracing::warn!("could not pause playback after the last speaker was lost: {e}");
+        // The engine's pause is a no-op unless it was `Playing`, so the status
+        // on either side of the call is what says whether anything stopped.
+        let before = engine.poll_state().status;
+        match engine.pause() {
+            Ok(after) => before != after.status,
+            Err(e) => {
+                tracing::warn!("could not pause playback after the last speaker was lost: {e}");
+                false
+            },
         }
+    };
+    if targets::may_claim_pause(spotify_silenced, engine_silenced) {
+        state.backend_paused_sources.store(true, Ordering::SeqCst);
     }
-    state.backend_paused_sources.store(true, Ordering::SeqCst);
 }
 
 /// Resume the sources the backend paused when the speakers vanished, and drop

@@ -85,10 +85,7 @@ pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
 /// fails when Spotify has nothing to pause, and the engine's pause is a no-op
 /// unless it was `Playing`. Pure.
 pub fn may_claim_pause(spotify_silenced: bool, engine_silenced: bool) -> bool {
-    // The wiring in `lib.rs` still claims unconditionally, whatever each source
-    // reported; this is the rule the claim has to obey.
-    let _ = (spotify_silenced, engine_silenced);
-    true
+    spotify_silenced || engine_silenced
 }
 
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
