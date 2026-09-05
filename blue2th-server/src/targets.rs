@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use blue2th_proto::{RoutingMode, SpeakerTarget, TargetsState};
+use blue2th_proto::{NowPlayingState, RoutingMode, SpeakerTarget, TargetsState};
 
 /// Maximum number of speakers that can be selected as playback targets at once.
 pub const MAX_TARGETS: usize = 2;
@@ -86,6 +86,22 @@ pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
 /// unless it was `Playing`. Pure.
 pub fn may_claim_pause(spotify_silenced: bool, engine_silenced: bool) -> bool {
     spotify_silenced || engine_silenced
+}
+
+/// Whether Spotify was playing, from a `now_playing()` snapshot taken **before**
+/// the pause (#67).
+///
+/// The pause call itself cannot answer this: `transport(Pause)` reports success on
+/// any 2xx, and Spotify answers 2xx to a pause on a player that is already paused,
+/// so a call that went through proves nothing about what it stopped. Only the state
+/// observed beforehand does — which is why this takes a snapshot rather than a
+/// result. Pure.
+pub fn spotify_was_playing(state: NowPlayingState) -> bool {
+    // Wrong on purpose (red phase): this is the defect as it stands — every
+    // snapshot counted as "was playing", because a successful pause call was read
+    // as the evidence.
+    let _ = state;
+    true
 }
 
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
@@ -1424,6 +1440,41 @@ mod tests {
         assert!(
             may_claim_pause(true, true),
             "both sources were silenced by the backend, so both may come back"
+        );
+    }
+
+    // Criterion: the Spotify half of the claim comes from the playback state
+    // observed **before** pausing, and `Playing` is the one state that counts —
+    // the nominal loss mid-playback, where the backend really does stop the music.
+    #[test]
+    fn test_spotify_playing_before_the_pause_was_playing() {
+        assert!(
+            spotify_was_playing(NowPlayingState::Playing),
+            "a track was running: pausing it really silenced something"
+        );
+    }
+
+    // Criterion: `Paused` → false. **This is the defect.** A successful
+    // `transport(Pause)` was read as proof that something had been playing, and
+    // Spotify does not work that way: it answers 2xx to a pause on a player that
+    // is already paused, so the call went through and the backend claimed a pause
+    // it never performed — which is how switching the last speaker off and back on
+    // resumed music the user had stopped from the app.
+    #[test]
+    fn test_spotify_already_paused_was_not_playing() {
+        assert!(
+            !spotify_was_playing(NowPlayingState::Paused),
+            "already paused: pausing again silences nothing, so there is nothing to claim"
+        );
+    }
+
+    // Criterion: `Idle` → false. Nothing loaded, nothing playing, nothing to
+    // claim — the row that also covers "Spotify is not running".
+    #[test]
+    fn test_spotify_idle_was_not_playing() {
+        assert!(
+            !spotify_was_playing(NowPlayingState::Idle),
+            "nothing was playing: a restoration must resume nothing"
         );
     }
 
