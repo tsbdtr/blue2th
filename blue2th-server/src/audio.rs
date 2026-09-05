@@ -439,6 +439,15 @@ pub struct CombineBranch {
     pub latency_ms: u32,
 }
 
+/// The base buffer a branch's loopback is given, in milliseconds, on top of the
+/// speaker's own offset (#75).
+pub const BASE_BRANCH_LATENCY_MS: u32 = 50;
+
+/// The loopback latency a branch carries for a speaker at `offset_ms`.
+pub fn branch_latency_ms(offset_ms: u32) -> u32 {
+    offset_ms
+}
+
 /// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
 /// with each speaker's offset captured as branch latency. Building this performs
 /// no I/O; the hardware seam (`route_to_combined` / `teardown_combined`) consumes
@@ -1156,6 +1165,7 @@ fn parse_first_percent(text: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::targets::MAX_OFFSET_MS;
     use std::cell::RefCell;
 
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — value below 0 saturates
@@ -1408,7 +1418,7 @@ mod tests {
             "first branch must target the first speaker's bluez sink, got {}",
             first.sink
         );
-        assert_eq!(first.latency_ms, 0);
+        assert_eq!(first.latency_ms, branch_latency_ms(0));
 
         let second = &spec.branches[1];
         assert!(
@@ -1416,7 +1426,7 @@ mod tests {
             "second branch must target the second speaker's bluez sink, got {}",
             second.sink
         );
-        assert_eq!(second.latency_ms, 250);
+        assert_eq!(second.latency_ms, branch_latency_ms(250));
     }
 
     // Criterion: `combine_sink_plan` builds exactly one branch for a lone
@@ -1433,7 +1443,10 @@ mod tests {
         assert_eq!(spec.branches.len(), 1);
         let only = &spec.branches[0];
         assert_eq!(only.sink, bluez_sink_prefix("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(only.latency_ms, 0);
+        assert_eq!(
+            only.latency_ms, BASE_BRANCH_LATENCY_MS,
+            "offset 0 means no delay relative to the others, not no buffer"
+        );
     }
 
     // Criterion: `combine_sink_plan` keeps a lone speaker's offset as the branch
@@ -1449,7 +1462,112 @@ mod tests {
         assert_eq!(spec.branches.len(), 1);
         let only = &spec.branches[0];
         assert_eq!(only.sink, bluez_sink_prefix("11:22:33:44:55:66"));
-        assert_eq!(only.latency_ms, 320);
+        assert_eq!(only.latency_ms, branch_latency_ms(320));
+    }
+
+    // Criterion: a pure function maps an offset to a branch latency, and offset 0
+    // yields the base rather than 0. `latency_msec` is the buffer a
+    // `module-loopback` keeps to absorb scheduling jitter and clock drift; asking
+    // for zero leaves the follower branch starved and silent while the graph's
+    // driver plays on (#75).
+    #[test]
+    fn test_branch_latency_ms_at_offset_zero_is_the_base_and_never_zero() {
+        assert_eq!(BASE_BRANCH_LATENCY_MS, 50);
+        assert_eq!(branch_latency_ms(0), 50);
+        assert_ne!(
+            branch_latency_ms(0),
+            0,
+            "no branch is ever loaded with latency_msec=0"
+        );
+    }
+
+    // Criterion: a non-zero offset yields the base plus itself — 70 becomes 120,
+    // the offset that made the silent speaker play on hardware.
+    #[test]
+    fn test_branch_latency_ms_adds_the_base_to_a_nonzero_offset() {
+        assert_eq!(branch_latency_ms(70), 120);
+        assert_eq!(branch_latency_ms(250), BASE_BRANCH_LATENCY_MS + 250);
+    }
+
+    // Criterion: the offsets stay purely relative — two offsets differing by `n`
+    // yield latencies differing by exactly `n`. The relation is the claim, not the
+    // two constants: it is what says the base shifts every branch equally and so
+    // changes no perceived delay between speakers.
+    #[test]
+    fn test_branch_latency_ms_preserves_the_gap_between_two_offsets() {
+        for (lower, higher) in [(0_u32, 70_u32), (40, 250), (250, MAX_OFFSET_MS)] {
+            assert_eq!(
+                branch_latency_ms(higher) - branch_latency_ms(lower),
+                higher - lower,
+                "the gap between offsets {lower} and {higher} must survive the base"
+            );
+        }
+    }
+
+    // Criterion: the largest offset the selection accepts (`SpeakerTargets` clamps
+    // to `0..=MAX_OFFSET_MS`) still yields a sane latency, and nothing overflows —
+    // the input reaches this function from the wire, so an addition that wraps or
+    // panics would be a subprocess argument built from garbage.
+    #[test]
+    fn test_branch_latency_ms_at_the_largest_accepted_offset_stays_sane() {
+        assert_eq!(
+            branch_latency_ms(MAX_OFFSET_MS),
+            BASE_BRANCH_LATENCY_MS + MAX_OFFSET_MS
+        );
+        assert_eq!(branch_latency_ms(MAX_OFFSET_MS), 800);
+        assert!(
+            branch_latency_ms(u32::MAX) >= branch_latency_ms(MAX_OFFSET_MS),
+            "an offset past the clamp saturates rather than wrapping or panicking"
+        );
+    }
+
+    // Criterion: that function is the single place the base is applied, so what
+    // `loaded_branches` parses out of a loaded module and what the plan asks for
+    // are the same quantity. Applying the base only at load time would have every
+    // reconciliation compare a loaded 120 against a planned 70, see a mismatch and
+    // reload every branch on every tick — an audio interruption every five seconds.
+    #[test]
+    fn test_branch_latency_round_trips_from_the_plan_through_the_module_listing() {
+        let spec = combine_sink_plan(&[
+            SpeakerTarget {
+                address: "80:99:E7:63:50:29".to_string(),
+                offset_ms: 0,
+            },
+            SpeakerTarget {
+                address: "11:22:33:44:55:66".to_string(),
+                offset_ms: 70,
+            },
+        ]);
+        // What `pactl list short modules` prints back for a graph loaded from this
+        // very plan: one loopback per branch, on the resolved node, carrying the
+        // latency the plan asked for.
+        let listing: String = spec
+            .branches
+            .iter()
+            .enumerate()
+            .map(|(index, branch)| {
+                format!(
+                    "{}\tmodule-loopback\tsource={}.monitor sink={}.1 latency_msec={} source_dont_move=true sink_dont_move=true\n",
+                    27 + index,
+                    spec.sink_name,
+                    branch.sink,
+                    branch.latency_ms,
+                )
+            })
+            .collect();
+
+        let loaded = loaded_branches(&listing, &spec.sink_name, None);
+
+        assert_eq!(
+            loaded.iter().map(|b| b.latency_ms).collect::<Vec<_>>(),
+            vec![50, 120],
+            "the plan already carries the base, so the loaded modules do too"
+        );
+        assert_eq!(
+            reconcile_branches(&loaded, &spec),
+            BranchReconciliation::default(),
+            "a graph loaded from the plan reconciles against it as a no-op"
+        );
     }
 
     // Criterion: `route_for_targets` takes the combined path for every non-empty
@@ -1676,11 +1794,15 @@ mod tests {
     /// axis only: a module that is not a loopback, a loopback whose `source=`
     /// merely *contains* ours inside a longer token, and a loopback whose `sink=`
     /// carries no value. The module ids are the wide ones PipeWire hands out.
+    ///
+    /// The two branch latencies are what a plan at offsets 0 and 250 loads, base
+    /// included, so a listing captured from a healthy graph reconciles clean
+    /// against [`two_speaker_spec`].
     const PACTL_MODULES: &str = concat!(
         "10\tmodule-device-restore\t\n",
         "26\tmodule-null-sink\tsink_name=blue2th_combined sink_properties=node.description=blue2th_combined\n",
-        "27\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.80_99_E7_63_50_29.1 latency_msec=0 source_dont_move=true sink_dont_move=true\n",
-        "28\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.11_22_33_44_55_66.1 latency_msec=250 source_dont_move=true sink_dont_move=true\n",
+        "27\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.80_99_E7_63_50_29.1 latency_msec=50 source_dont_move=true sink_dont_move=true\n",
+        "28\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.11_22_33_44_55_66.1 latency_msec=300 source_dont_move=true sink_dont_move=true\n",
         "29\tmodule-loopback\tsource=other_combined.monitor sink=bluez_output.AA_BB_CC_DD_EE_FF.1 latency_msec=120 source_dont_move=true sink_dont_move=true\n",
         "30\tmodule-loopback\tsource=alsa_input.pci-0000_00_1f.3.analog-stereo sink=blue2th_combined latency_msec=40\n",
         "31\tmodule-switch-on-connect\t\n",
@@ -1756,11 +1878,11 @@ mod tests {
             vec![
                 CombineBranch {
                     sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-                    latency_ms: 0,
+                    latency_ms: 50,
                 },
                 CombineBranch {
                     sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                    latency_ms: 250,
+                    latency_ms: 300,
                 },
             ],
             "the two loopbacks fed by blue2th_combined.monitor, with their latencies"
@@ -1855,7 +1977,7 @@ mod tests {
         let spec = two_speaker_spec();
         let loaded = vec![CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: 0,
+            latency_ms: branch_latency_ms(0),
         }];
 
         let plan = reconcile_branches(&loaded, &spec);
@@ -1864,7 +1986,7 @@ mod tests {
             plan.to_load,
             vec![CombineBranch {
                 sink: bluez_sink_prefix("11:22:33:44:55:66"),
-                latency_ms: 250,
+                latency_ms: branch_latency_ms(250),
             }],
             "only the newly selected speaker is loaded"
         );
@@ -1896,7 +2018,7 @@ mod tests {
             plan.to_unload,
             vec![CombineBranch {
                 sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: 250,
+                latency_ms: branch_latency_ms(250),
             }],
             "only the deselected speaker's loopback is unloaded"
         );
@@ -1933,7 +2055,7 @@ mod tests {
             plan.to_load,
             vec![CombineBranch {
                 sink: bluez_sink_prefix("11:22:33:44:55:66"),
-                latency_ms: 400,
+                latency_ms: branch_latency_ms(400),
             }],
             "the retuned speaker is reloaded with its new latency, alone"
         );
@@ -1941,9 +2063,9 @@ mod tests {
             plan.to_unload,
             vec![CombineBranch {
                 sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: 250,
+                latency_ms: branch_latency_ms(250),
             }],
-            "the stale 250 ms loopback is unloaded, and only it"
+            "the stale loopback of the previous offset is unloaded, and only it"
         );
     }
 
@@ -1963,7 +2085,7 @@ mod tests {
         );
         let loaded = vec![CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: 0,
+            latency_ms: branch_latency_ms(0),
         }];
 
         let plan = reconcile_branches(&loaded, &spec);
@@ -1987,7 +2109,7 @@ mod tests {
         }]);
         let loaded = vec![CombineBranch {
             sink: format!("{}_2.1", spec.branches[0].sink),
-            latency_ms: 0,
+            latency_ms: branch_latency_ms(0),
         }];
 
         let plan = reconcile_branches(&loaded, &spec);
@@ -2050,7 +2172,7 @@ mod tests {
             plan.to_load,
             vec![CombineBranch {
                 sink: "bluez_output.80_99_E7_63_50_29".to_string(),
-                latency_ms: 0,
+                latency_ms: branch_latency_ms(0),
             }],
             "the selected speaker has no loopback yet, so it is loaded"
         );
@@ -2193,7 +2315,7 @@ mod tests {
             branches,
             vec![CombineBranch {
                 sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-                latency_ms: 0,
+                latency_ms: 50,
             }],
             "module 28's loopback feeds nothing, so its branch is absent"
         );
@@ -2242,7 +2364,7 @@ mod tests {
             plan.to_load,
             vec![CombineBranch {
                 sink: "bluez_output.11_22_33_44_55_66".to_string(),
-                latency_ms: 250,
+                latency_ms: branch_latency_ms(250),
             }],
             "the dead speaker's branch is rebuilt, and only that one"
         );
