@@ -197,6 +197,31 @@ exists because of #33" and stays true forever, including after #33 closes. "The
 open question in #54" claims #54 is open, and was already wrong. Prefer the bare
 provenance form.
 
+### The empty value is a wildcard, not an edge case
+
+Every predicate built on a prefix or a substring says **yes** to the empty
+string: everything starts with `""`, everything contains `""`. So a check that
+looks total is not, and it fails open — on the widest possible match rather than
+on none.
+
+It has cost this project three defects in one milestone, in all three positions
+an empty value can occupy:
+
+- **as an input** — `resolve_target_sink("")` matched every sink through
+  `starts_with`, so it resolved to the PC's own speakers, and
+  `spotify_target_sink(&[])` returns exactly that empty string;
+- **as a parsed field** — `pactl` accepts a `sink=` carrying no value, and the
+  unload pattern built from it, `"sink="`, is a substring of *every* loopback
+  line: one such module would have unloaded them all;
+- **as a result** — two absent values compare equal, so an `assert_eq!` between
+  two things the code computed stayed green while the code returned nothing at
+  all.
+
+So: **guard the emptiness explicitly** in any prefix or substring predicate, and
+**reject an empty field at the parser** rather than letting it travel. A value
+read from a subprocess, a config file or the wire is empty far more often than a
+test fixture suggests.
+
 ## Pull Requests
 
 Every change reaches `develop` through a pull request; `main` only ever receives a

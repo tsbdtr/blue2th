@@ -55,6 +55,15 @@ Read the **Affected Layers** section of your prompt — review only those layers
       shared helper) and re-run. If nothing fails, the rule is documentation, not
       a rule — add the test that fails, and say in the report which mutation you
       checked.
+   i. **The null mutation — try it on every rule you check.** Make the function
+      return its empty, zero or default value and see which tests stay green. An
+      `assert_eq!` between two values the code under test computed survives it,
+      because two *absences* compare equal as happily as two right answers: such
+      a test must first **name** what one of the two is worth. This exact
+      mutation has caught a defect on three consecutive branches — an empty
+      prefix matching every sink, an empty parsed field matching every module
+      line, and an integration test that passed while the function returned
+      nothing at all.
 9. Do NOT introduce new abstractions or refactors that aren't motivated by a concrete issue.
 
 ### Quality gates (run from the worktree root)
