@@ -593,6 +593,54 @@ fn load_branch_loopback(
     ])
 }
 
+/// What attempting a plan's branches produced: the branches that were loaded, and
+/// a message for each one that was not.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BranchLoadReport {
+    /// The `sink` prefix of each branch that was loaded, in plan order.
+    pub loaded: Vec<String>,
+    /// One message per branch that could not be resolved or loaded.
+    pub failures: Vec<String>,
+}
+
+/// Attempt every branch of a plan, independently: resolve it, load it, and record
+/// the outcome. A speaker whose `bluez_output.*` node has not appeared yet must
+/// not stop the branches that would succeed — that is what made a repair fix the
+/// previous speaker and fail on the current one (#75). The failures come back as
+/// a set so the caller can still warn and let the next tick retry.
+///
+/// `resolve` and `load` are injected so the decision is testable away from
+/// `pactl`; production passes [`resolve_branch_sink`] and [`load_branch_loopback`].
+pub fn load_planned_branches<R, L>(
+    branches: &[CombineBranch],
+    mut resolve: R,
+    mut load: L,
+) -> BranchLoadReport
+where
+    R: FnMut(&CombineBranch) -> Result<String, AudioError>,
+    L: FnMut(&CombineBranch, &str) -> Result<(), AudioError>,
+{
+    let mut report = BranchLoadReport::default();
+    for branch in branches {
+        let resolved = match resolve(branch) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                report.failures.push(err.to_string());
+                return report;
+            },
+        };
+        match load(branch, &resolved) {
+            // Cloned because the report outlives the borrowed plan.
+            Ok(()) => report.loaded.push(branch.sink.clone()),
+            Err(err) => {
+                report.failures.push(err.to_string());
+                return report;
+            },
+        }
+    }
+    report
+}
+
 /// Tear down a combined sink built by [`route_to_combined`]: unload the null sink
 /// and every loopback whose arguments reference `sink_name`. Best-effort — a
 /// missing module is not an error (the combined sink may simply not exist yet).
@@ -1071,6 +1119,7 @@ fn parse_first_percent(text: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — value below 0 saturates
     // to 0.0.
@@ -2235,5 +2284,181 @@ mod tests {
         }];
 
         assert!(!should_repair_branches(&selection, false));
+    }
+
+    const DEAD: &str = "bluez_output.10_28_74_E7_6A_56";
+    const LIVE: &str = "bluez_output.80_99_E7_63_50_29";
+
+    fn planned_branch(sink: &str, latency_ms: u32) -> CombineBranch {
+        CombineBranch {
+            sink: sink.to_string(),
+            latency_ms,
+        }
+    }
+
+    // Criterion: with one branch failing and one succeeding, the succeeding one is
+    // loaded — the rule the hardware caught, where a repair fixed the previous
+    // speaker and failed on the current one. Two speakers, the first unresolvable:
+    // the second must still be attempted and loaded.
+    #[test]
+    fn test_load_planned_branches_failing_first_still_loads_the_second() {
+        let plan = vec![planned_branch(DEAD, 0), planned_branch(LIVE, 40)];
+        let resolved = RefCell::new(Vec::new());
+        let loaded = RefCell::new(Vec::new());
+
+        let report = load_planned_branches(
+            &plan,
+            |branch| {
+                resolved.borrow_mut().push(branch.sink.clone());
+                if branch.sink == DEAD {
+                    Err(AudioError::PipeWire(format!(
+                        "no PipeWire sink for prefix {}",
+                        branch.sink
+                    )))
+                } else {
+                    Ok(format!("{}.1", branch.sink))
+                }
+            },
+            |_branch, real_sink| {
+                loaded.borrow_mut().push(real_sink.to_string());
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            *resolved.borrow(),
+            vec![DEAD.to_string(), LIVE.to_string()],
+            "an unresolvable branch must not stop the next one being attempted"
+        );
+        assert_eq!(
+            *loaded.borrow(),
+            vec![format!("{LIVE}.1")],
+            "the speaker whose node exists must be fed"
+        );
+        assert_eq!(report.loaded, vec![LIVE.to_string()]);
+        assert_eq!(
+            report.failures.len(),
+            1,
+            "the failure is still reported, so the caller warns and the next tick retries"
+        );
+    }
+
+    // Criterion: every branch in the plan is attempted, and the failures are
+    // reported only after the whole set has been tried — here the failing branch
+    // comes last, and the first must already have been loaded.
+    #[test]
+    fn test_load_planned_branches_failing_second_still_loads_the_first() {
+        let plan = vec![planned_branch(LIVE, 40), planned_branch(DEAD, 0)];
+        let resolved = RefCell::new(Vec::new());
+        let loaded = RefCell::new(Vec::new());
+
+        let report = load_planned_branches(
+            &plan,
+            |branch| {
+                resolved.borrow_mut().push(branch.sink.clone());
+                if branch.sink == DEAD {
+                    Err(AudioError::PipeWire(format!(
+                        "no PipeWire sink for prefix {}",
+                        branch.sink
+                    )))
+                } else {
+                    Ok(format!("{}.1", branch.sink))
+                }
+            },
+            |_branch, real_sink| {
+                loaded.borrow_mut().push(real_sink.to_string());
+                Ok(())
+            },
+        );
+
+        assert_eq!(*resolved.borrow(), vec![LIVE.to_string(), DEAD.to_string()]);
+        assert_eq!(*loaded.borrow(), vec![format!("{LIVE}.1")]);
+        assert_eq!(report.loaded, vec![LIVE.to_string()]);
+        assert_eq!(report.failures.len(), 1);
+    }
+
+    // Criterion: every branch in the plan is attempted — when they all resolve,
+    // they are all loaded and nothing is reported as failed.
+    #[test]
+    fn test_load_planned_branches_all_resolvable_loads_every_branch() {
+        let plan = vec![planned_branch(LIVE, 40), planned_branch(DEAD, 120)];
+        let loaded = RefCell::new(Vec::new());
+
+        let report = load_planned_branches(
+            &plan,
+            |branch| Ok(format!("{}.1", branch.sink)),
+            |branch, real_sink| {
+                loaded
+                    .borrow_mut()
+                    .push((real_sink.to_string(), branch.latency_ms));
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            *loaded.borrow(),
+            vec![(format!("{LIVE}.1"), 40), (format!("{DEAD}.1"), 120)],
+            "each branch is loaded onto its resolved node with its own latency"
+        );
+        assert_eq!(report.loaded, vec![LIVE.to_string(), DEAD.to_string()]);
+        assert!(
+            report.failures.is_empty(),
+            "a fully resolvable plan reports no failure"
+        );
+    }
+
+    // Criterion: every branch in the plan is attempted — an empty plan attempts
+    // nothing and reports no failure, so an idle selection stays a no-op.
+    #[test]
+    fn test_load_planned_branches_of_an_empty_plan_attempts_nothing() {
+        let attempts = RefCell::new(0_usize);
+
+        let report = load_planned_branches(
+            &[],
+            |branch| {
+                *attempts.borrow_mut() += 1;
+                Ok(branch.sink.clone())
+            },
+            |_branch, _real_sink| {
+                *attempts.borrow_mut() += 1;
+                Ok(())
+            },
+        );
+
+        assert_eq!(*attempts.borrow(), 0);
+        assert_eq!(report, BranchLoadReport::default());
+    }
+
+    // Criterion: the failures are reported only after the whole set has been
+    // tried — with every branch unresolvable, every branch is still attempted and
+    // each failure comes back.
+    #[test]
+    fn test_load_planned_branches_reports_every_failure_after_trying_all() {
+        let plan = vec![planned_branch(DEAD, 0), planned_branch(LIVE, 40)];
+        let resolved = RefCell::new(Vec::new());
+
+        let report = load_planned_branches(
+            &plan,
+            |branch| {
+                resolved.borrow_mut().push(branch.sink.clone());
+                Err(AudioError::PipeWire(format!(
+                    "no PipeWire sink for prefix {}",
+                    branch.sink
+                )))
+            },
+            |_branch, _real_sink| Ok(()),
+        );
+
+        assert_eq!(
+            *resolved.borrow(),
+            vec![DEAD.to_string(), LIVE.to_string()],
+            "the first failure must not end the pass"
+        );
+        assert!(report.loaded.is_empty());
+        assert_eq!(
+            report.failures.len(),
+            2,
+            "one message per branch that could not be loaded"
+        );
     }
 }
