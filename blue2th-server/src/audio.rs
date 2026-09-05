@@ -516,15 +516,11 @@ fn build_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     ])?;
     // One delayed loopback per speaker: combined.monitor -> real sink, with the
     // speaker's offset applied as loopback latency (the per-branch sync tuning).
-    for branch in &spec.branches {
-        load_branch_loopback(
-            &spec.sink_name,
-            &resolve_branch_sink(branch)?,
-            branch.latency_ms,
-        )?;
-    }
-    // Make the player target the combined sink.
-    set_default_sink(&spec.sink_name)
+    let report = load_planned_branches_live(&spec.sink_name, &spec.branches);
+    // Make the player target the combined sink. Done even when a branch failed, so
+    // the speakers that did load are fed while the next tick retries the others.
+    set_default_sink(&spec.sink_name)?;
+    report.into_result()
 }
 
 /// Bring an already-loaded combined sink in line with the plan: unload only the
@@ -554,18 +550,13 @@ fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
         // module merely feeding *into* the combined sink would be unloaded too.
         unload_modules_matching(&[&source, &format!("sink={}", branch.sink)])?;
     }
-    for branch in &plan.to_load {
-        load_branch_loopback(
-            &spec.sink_name,
-            &resolve_branch_sink(branch)?,
-            branch.latency_ms,
-        )?;
-    }
+    let report = load_planned_branches_live(&spec.sink_name, &plan.to_load);
     // The sink already exists, so it is usually already the default; this repairs
     // the case where the default moved away meanwhile — another application, or a
     // device that came back. Re-pointing the default at the sink a stream is
     // already on leaves that stream where it is.
-    set_default_sink(&spec.sink_name)
+    set_default_sink(&spec.sink_name)?;
+    report.into_result()
 }
 
 /// Resolve a branch's `bluez_output.*` prefix to the live node name, erroring
@@ -626,19 +617,36 @@ where
             Ok(resolved) => resolved,
             Err(err) => {
                 report.failures.push(err.to_string());
-                return report;
+                continue;
             },
         };
         match load(branch, &resolved) {
             // Cloned because the report outlives the borrowed plan.
             Ok(()) => report.loaded.push(branch.sink.clone()),
-            Err(err) => {
-                report.failures.push(err.to_string());
-                return report;
-            },
+            Err(err) => report.failures.push(err.to_string()),
         }
     }
     report
+}
+
+impl BranchLoadReport {
+    /// Turn what the pass could not do into one error for the caller, after the
+    /// whole set has been tried. Reporting rather than swallowing is what keeps
+    /// the warning in the log and makes the next tick retry (#75).
+    fn into_result(self) -> Result<(), AudioError> {
+        if self.failures.is_empty() {
+            return Ok(());
+        }
+        Err(AudioError::PipeWire(self.failures.join("; ")))
+    }
+}
+
+/// Attempt every branch against the live PipeWire graph, resolving each prefix to
+/// its node and loading a delayed loopback from `sink_name`'s monitor.
+fn load_planned_branches_live(sink_name: &str, branches: &[CombineBranch]) -> BranchLoadReport {
+    load_planned_branches(branches, resolve_branch_sink, |branch, real_sink| {
+        load_branch_loopback(sink_name, real_sink, branch.latency_ms)
+    })
 }
 
 /// Tear down a combined sink built by [`route_to_combined`]: unload the null sink
