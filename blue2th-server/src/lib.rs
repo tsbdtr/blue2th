@@ -1580,7 +1580,7 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     if audio::combined_sink_exists(&plan.sink_name) {
         let branch = audio::CombineBranch {
             sink: audio::bluez_sink_prefix(&target.address),
-            latency_ms: target.offset_ms,
+            latency_ms: audio::branch_latency_ms(target.offset_ms),
         };
         if let Err(e) = audio::retune_combined_branch(&plan.sink_name, &branch) {
             tracing::warn!("could not retune the speaker offset live: {e}");

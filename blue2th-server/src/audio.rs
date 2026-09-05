@@ -445,7 +445,7 @@ pub const BASE_BRANCH_LATENCY_MS: u32 = 50;
 
 /// The loopback latency a branch carries for a speaker at `offset_ms`.
 pub fn branch_latency_ms(offset_ms: u32) -> u32 {
-    offset_ms
+    BASE_BRANCH_LATENCY_MS.saturating_add(offset_ms)
 }
 
 /// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
@@ -468,7 +468,7 @@ pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
         .iter()
         .map(|t| CombineBranch {
             sink: bluez_sink_prefix(&t.address),
-            latency_ms: t.offset_ms,
+            latency_ms: branch_latency_ms(t.offset_ms),
         })
         .collect();
     CombineSinkSpec {
