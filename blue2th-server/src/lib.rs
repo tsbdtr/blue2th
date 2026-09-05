@@ -1091,9 +1091,19 @@ async fn client_presence(
     StatusCode::NO_CONTENT
 }
 
-/// Pause the Spotify Web API playback, best-effort. Used when the app reports it
-/// is closing: nothing here is worth failing that report over, and the backend
-/// answers 409 when there is nothing to pause anyway.
+/// Pause the Spotify Web API playback, best-effort — a *resumable* pause that
+/// leaves the `librespot` subprocess alive and the Connect device visible.
+///
+/// This is the app-closed intent, and its only caller is `client_presence` on a
+/// `Gone` report: the speakers are still there and the user may come back, so
+/// killing their Connect endpoint because a phone was swiped away would be
+/// wrong. Nothing here is worth failing that report over, and Spotify answers
+/// 409 when there is nothing to pause anyway.
+///
+/// It is not the way to silence a teardown: the call returns when Spotify's
+/// servers answer, which says nothing about the audio thread. The
+/// empty-selection branch of `apply_selection_change` stops the subprocess
+/// instead.
 async fn pause_spotify_now(state: &AppState) {
     let running = {
         let mut spotify = state.spotify.lock().await;
@@ -1444,9 +1454,24 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
 /// selection kept receiving the stream and playing on.
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
-        // Nothing left to play to. Pause both sources, then tear the combined
+        // Nothing left to play to. Silence both sources, then tear the combined
         // sink down so no loopback keeps feeding a speaker nobody selected.
-        pause_spotify_now(state).await;
+        //
+        // Spotify is *stopped*, not paused through the Web API: a remote pause
+        // returns when Spotify's servers answer, not when `librespot`'s audio
+        // thread has, and a failed call only warns. Unloading the null sink
+        // under a still-streaming child makes PipeWire relocate that stream onto
+        // the fallback, so the music comes out of the PC's own speakers (#67).
+        // `stop()` is local and synchronous, so once it returns there is no
+        // stream left to orphan.
+        {
+            let mut spotify = state.spotify.lock().await;
+            if let Err(e) = spotify.stop() {
+                tracing::warn!(
+                    "could not stop the Spotify backend after the last speaker was dropped: {e}"
+                );
+            }
+        }
         {
             let mut engine = state.engine.lock().await;
             if let Err(e) = engine.pause() {
