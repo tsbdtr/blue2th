@@ -1127,7 +1127,7 @@ async fn client_presence(
 /// vanishing while the setting promises to re-select it. In both the Connect
 /// endpoint must survive — killing it because a phone was swiped away, or
 /// because a speaker blinked, would be wrong. Nothing here is worth failing the
-/// caller over, and Spotify answers 409 when there is nothing to pause anyway.
+/// caller over.
 ///
 /// It is not the way to silence a teardown: the call returns when Spotify's
 /// servers answer, which says nothing about the audio thread. The
@@ -1135,10 +1135,12 @@ async fn client_presence(
 /// instead.
 ///
 /// Returns whether it really silenced something, which is what licenses the
-/// backend to claim the pause (see [`targets::may_claim_pause`]). Spotify
-/// answers a restriction when there is nothing to pause, so a successful
-/// `transport` call means playback was actually running. A network or token
-/// failure lands on the same `false`, and that direction is the safe one: no
+/// backend to claim the pause (see [`targets::may_claim_pause`]). That answer
+/// comes from a `now_playing()` snapshot taken *before* the pause, because the
+/// pause call cannot give it: Spotify answers 2xx to a pause on an
+/// already-paused player, so `transport` returning `Ok` proves nothing (see
+/// [`targets::spotify_was_playing`]). A snapshot that cannot be taken at all —
+/// network, token — lands on `false`, and that direction is the safe one: no
 /// claim means a restoration resumes nothing, so the music stays paused rather
 /// than starting again behind the user's back.
 async fn pause_spotify_now(state: &AppState) -> bool {
@@ -1150,13 +1152,18 @@ async fn pause_spotify_now(state: &AppState) -> bool {
         return false;
     }
     let mut auth = state.spotify_auth.lock().await;
-    match auth.transport(Transport::Pause).await {
-        Ok(()) => true,
+    let was_playing = match auth.now_playing().await {
+        Ok(snapshot) => targets::spotify_was_playing(snapshot.state),
         Err(e) => {
-            tracing::warn!("could not pause Spotify on client exit: {e}");
+            tracing::warn!("could not read the Spotify playback state before pausing: {e}");
             false
         },
+    };
+    if let Err(e) = auth.transport(Transport::Pause).await {
+        tracing::warn!("could not pause Spotify: {e}");
+        return false;
     }
+    was_playing
 }
 
 /// `GET /config` — the backend's current name.

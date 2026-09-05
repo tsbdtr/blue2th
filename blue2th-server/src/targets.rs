@@ -81,9 +81,10 @@ pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
 /// claim licenses a restoration to resume. Clearing it on an explicit transport
 /// command is not enough on its own: the loss path runs afterwards and would
 /// re-claim a pause it never performed, undoing a pause the user asked for. So
-/// each source reports whether it really silenced anything — `transport(Pause)`
-/// fails when Spotify has nothing to pause, and the engine's pause is a no-op
-/// unless it was `Playing`. Pure.
+/// each source reports whether it really silenced anything. The engine's pause is
+/// a no-op unless it was `Playing`, so its own status answers for it; Spotify's
+/// half cannot come from the pause call — see [`spotify_was_playing`] — and comes
+/// from the state observed beforehand. Pure.
 pub fn may_claim_pause(spotify_silenced: bool, engine_silenced: bool) -> bool {
     spotify_silenced || engine_silenced
 }
@@ -97,11 +98,7 @@ pub fn may_claim_pause(spotify_silenced: bool, engine_silenced: bool) -> bool {
 /// observed beforehand does — which is why this takes a snapshot rather than a
 /// result. Pure.
 pub fn spotify_was_playing(state: NowPlayingState) -> bool {
-    // Wrong on purpose (red phase): this is the defect as it stands — every
-    // snapshot counted as "was playing", because a successful pause call was read
-    // as the evidence.
-    let _ = state;
-    true
+    matches!(state, NowPlayingState::Playing)
 }
 
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
