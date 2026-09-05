@@ -915,21 +915,36 @@ pub struct PactlCommand {
     pub env: Vec<(String, String)>,
 }
 
-/// Describe a `pactl` invocation carrying `args`.
+/// Describe a `pactl` invocation carrying `args`, forcing `LC_ALL=C`: `pactl`'s
+/// long listings are translated, so under a non-English locale every label the
+/// parsers look for is absent and a dead branch reads as "cannot tell" forever
+/// (#75). The locale is added; the program and the arguments travel untouched.
 pub fn build_pactl_command(args: &[&str]) -> PactlCommand {
     PactlCommand {
         program: "pactl".to_string(),
         // Owned copies: the description outlives the borrowed argument slice.
         args: args.iter().map(|arg| (*arg).to_string()).collect(),
-        env: Vec::new(),
+        env: vec![("LC_ALL".to_string(), "C".to_string())],
     }
+}
+
+/// The one place a [`PactlCommand`] becomes a runnable [`Command`]. Every call
+/// site goes through it, so the locale cannot be forgotten at a single seam —
+/// a built `Command` is opaque, so this is the only reviewable guarantee.
+fn pactl(args: &[&str]) -> Command {
+    let described = build_pactl_command(args);
+    let mut command = Command::new(&described.program);
+    command.args(&described.args);
+    for (key, value) in &described.env {
+        command.env(key, value);
+    }
+    command
 }
 
 /// The text `pactl list short modules` prints, for [`loaded_branches`] and
 /// [`unload_modules_matching`] to read.
 fn module_listing() -> Result<String, AudioError> {
-    let output = Command::new("pactl")
-        .args(["list", "short", "modules"])
+    let output = pactl(&["list", "short", "modules"])
         .output()
         .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
     if !output.status.success() {
@@ -942,8 +957,7 @@ fn module_listing() -> Result<String, AudioError> {
 
 /// The text `pactl list sink-inputs` prints, for [`sink_input_liveness`] to read.
 fn sink_input_listing() -> Result<String, AudioError> {
-    let output = Command::new("pactl")
-        .args(["list", "sink-inputs"])
+    let output = pactl(&["list", "sink-inputs"])
         .output()
         .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
     if !output.status.success() {
@@ -961,7 +975,7 @@ fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
         if patterns.iter().all(|pattern| line.contains(pattern)) {
             if let Some(id) = line.split('\t').next() {
                 // Best-effort: ignore failures so one stale module cannot block teardown.
-                let _ = Command::new("pactl").args(["unload-module", id]).status();
+                let _ = pactl(&["unload-module", id]).status();
             }
         }
     }
@@ -972,17 +986,15 @@ fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
 /// [`unload_modules_matching`]: a module that is already gone is not an error,
 /// and one failure must not stop the rest of a repair.
 fn unload_module_id(module_id: u32) {
-    let _ = Command::new("pactl")
-        .args(["unload-module", &module_id.to_string()])
-        .status();
+    let _ = pactl(&["unload-module", &module_id.to_string()]).status();
 }
 
 /// Load a PipeWire module via `pactl load-module <args...>`, mapping a failure to
 /// an [`AudioError::PipeWire`].
 fn load_module(args: &[String]) -> Result<(), AudioError> {
-    let status = Command::new("pactl")
-        .arg("load-module")
-        .args(args)
+    let mut argv: Vec<&str> = vec!["load-module"];
+    argv.extend(args.iter().map(String::as_str));
+    let status = pactl(&argv)
         .status()
         .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
     if status.success() {
@@ -1059,10 +1071,7 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
 /// the combined-sink plan stores without the trailing card suffix). Returns
 /// `None` if no sink currently matches or `pactl` is unavailable.
 fn find_sink_with_prefix(prefix: &str) -> Option<String> {
-    let output = Command::new("pactl")
-        .args(["list", "short", "sinks"])
-        .output()
-        .ok()?;
+    let output = pactl(&["list", "short", "sinks"]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1083,8 +1092,7 @@ pub fn resolve_target_sink(target: &str) -> Result<String, AudioError> {
 
 /// Make `sink` the default PipeWire sink (by node name) via `pactl`.
 fn set_default_sink(sink: &str) -> Result<(), AudioError> {
-    let status = Command::new("pactl")
-        .args(["set-default-sink", sink])
+    let status = pactl(&["set-default-sink", sink])
         .status()
         .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
     if status.success() {
@@ -1101,8 +1109,8 @@ fn set_default_sink(sink: &str) -> Result<(), AudioError> {
 pub fn set_sink_volume(mac: &str, level: f32) -> Result<(), AudioError> {
     let sink = bluetooth_sink_for(mac)?;
     let pct = (clamp_volume(level) * 100.0).round() as u32;
-    let status = Command::new("pactl")
-        .args(["set-sink-volume", &sink, &format!("{pct}%")])
+    let level_arg = format!("{pct}%");
+    let status = pactl(&["set-sink-volume", &sink, &level_arg])
         .status()
         .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
     if status.success() {
@@ -1120,10 +1128,7 @@ pub fn set_sink_volume(mac: &str, level: f32) -> Result<(), AudioError> {
 /// failure.
 pub fn sink_volume(mac: &str) -> Option<f32> {
     let sink = bluetooth_sink_for(mac).ok()?;
-    let output = Command::new("pactl")
-        .args(["get-sink-volume", &sink])
-        .output()
-        .ok()?;
+    let output = pactl(&["get-sink-volume", &sink]).output().ok()?;
     if !output.status.success() {
         return None;
     }
