@@ -901,6 +901,30 @@ fn branch_is(up: &CombineBranch, planned: &CombineBranch) -> bool {
     up.latency_ms == planned.latency_ms && prefix_names_node(&planned.sink, &up.sink)
 }
 
+/// A `pactl` invocation described as data — program, arguments, environment —
+/// rather than as a built [`Command`], which cannot be inspected once created.
+/// Same seam as `build_librespot_args`: it is what lets a test pin what the
+/// subprocess is actually asked to do without spawning anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PactlCommand {
+    /// The program to run.
+    pub program: String,
+    /// The arguments, in order.
+    pub args: Vec<String>,
+    /// Environment variables set on top of the inherited environment.
+    pub env: Vec<(String, String)>,
+}
+
+/// Describe a `pactl` invocation carrying `args`.
+pub fn build_pactl_command(args: &[&str]) -> PactlCommand {
+    PactlCommand {
+        program: "pactl".to_string(),
+        // Owned copies: the description outlives the borrowed argument slice.
+        args: args.iter().map(|arg| (*arg).to_string()).collect(),
+        env: Vec::new(),
+    }
+}
+
 /// The text `pactl list short modules` prints, for [`loaded_branches`] and
 /// [`unload_modules_matching`] to read.
 fn module_listing() -> Result<String, AudioError> {
@@ -2467,6 +2491,118 @@ mod tests {
             report.failures.len(),
             2,
             "one message per branch that could not be loaded"
+        );
+    }
+
+    /// A `pactl list sink-inputs` block as it really prints under the operator's
+    /// `fr_FR.UTF-8`: every label is translated, the block header included —
+    /// captured from the running backend, where `sink_input_listing ok=true
+    /// len=7172` came with `live=None` on every tick (#75).
+    const PACTL_SINK_INPUTS_FR: &str = concat!(
+        "Entrée de la destination #135\n",
+        "\tPilote : PipeWire\n",
+        "\tModule du propriétaire : n/d\n",
+        "\tClient : 134\n",
+        "\tDestination : 29979\n",
+        "\tSpécification de l’échantillon : s16le 1ch 44100Hz\n",
+        "Entrée de la destination #31519\n",
+        "\tPilote : PipeWire\n",
+        "\tModule du propriétaire : 536870917\n",
+        "\tClient : n/d\n",
+        "\tDestination : 31506\n",
+        "\tSpécification de l’échantillon : float32le 2ch 48000Hz\n",
+    );
+
+    // Criterion: every `pactl` invocation carries `LC_ALL=C`. The rule is pinned on
+    // the pure description of the command, because a `std::process::Command` cannot
+    // be inspected once built — the same seam `build_librespot_args` uses for argv.
+    #[test]
+    fn test_build_pactl_command_forces_the_c_locale() {
+        let described = build_pactl_command(&["list", "sink-inputs"]);
+
+        assert!(
+            described
+                .env
+                .iter()
+                .any(|(key, value)| key == "LC_ALL" && value == "C"),
+            "the invocation must force LC_ALL=C: {described:?}"
+        );
+    }
+
+    // Criterion: the locale is *added*, nothing else is rewritten — the program is
+    // still `pactl` and the arguments arrive unchanged, in order.
+    #[test]
+    fn test_build_pactl_command_keeps_program_and_arguments_unchanged() {
+        let described = build_pactl_command(&["list", "short", "modules"]);
+
+        assert_eq!(described.program, "pactl");
+        assert_eq!(
+            described.args,
+            vec![
+                "list".to_string(),
+                "short".to_string(),
+                "modules".to_string()
+            ],
+            "the arguments must travel through untouched: {described:?}"
+        );
+    }
+
+    // Criterion: the locale rule holds for *every* call site, not only the two long
+    // listings — the parse-breaking translation is the reason, but a description
+    // that only sometimes carries the locale would leave the rule to be
+    // rediscovered one seam at a time.
+    #[test]
+    fn test_build_pactl_command_forces_the_locale_for_every_call_site() {
+        for args in [
+            vec!["list", "short", "modules"],
+            vec!["list", "sink-inputs"],
+            vec!["list", "short", "sinks"],
+            vec!["load-module", "module-null-sink"],
+            vec!["unload-module", "536870917"],
+            vec!["set-default-sink", "blue2th_combined"],
+            vec!["set-sink-volume", "blue2th_combined", "50%"],
+            vec!["get-sink-volume", "blue2th_combined"],
+        ] {
+            let described = build_pactl_command(&args);
+            assert!(
+                described
+                    .env
+                    .iter()
+                    .any(|(key, value)| key == "LC_ALL" && value == "C"),
+                "every pactl call site must force the locale, {args:?} does not"
+            );
+            assert_eq!(
+                described.args,
+                args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                "adding the locale must not rewrite the arguments of {args:?}"
+            );
+        }
+    }
+
+    // Criterion: a French listing yields no streams. This is a regression guard
+    // that documents *why* the `LC_ALL=C` exists, and it must not be answered by
+    // teaching the parser French: `Owner Module:` and `Sink:` are absent from every
+    // translated locale, so chasing labels language by language would be endless.
+    // Keep the locale forced, and this test stays the reason it is not noise.
+    #[test]
+    fn test_parse_sink_inputs_of_a_french_listing_yields_no_streams() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS_FR);
+
+        assert!(
+            streams.is_empty(),
+            "a translated listing names no field the parser knows: {streams:?}"
+        );
+    }
+
+    // Criterion: and because it yields no streams, a French listing reads as
+    // "cannot tell" — which is exactly what was observed live (`live=None` on every
+    // tick, with 7 KB of listing read fine): the liveness filter is skipped and a
+    // dead branch is never detected. Forcing the locale is what closes it.
+    #[test]
+    fn test_sink_input_liveness_of_a_french_listing_is_unknown() {
+        assert!(
+            sink_input_liveness(PACTL_SINK_INPUTS_FR).is_none(),
+            "an untranslated parser learns nothing from a translated listing"
         );
     }
 }
