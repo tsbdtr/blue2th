@@ -28,9 +28,9 @@ pub fn clamp_offset(ms: u32) -> u32 {
 
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
 ///
-/// Restoring mid-playback can move the target sink, which respawns `librespot`
-/// and cuts the sound for a moment: that is opt-in. With playback stopped the
-/// restoration is free and always allowed. Pure.
+/// Restoring mid-playback puts the returning speaker's branch back into the live
+/// graph, so it starts playing again under the user's hands: that is opt-in. With
+/// playback stopped the restoration is free and always allowed. Pure.
 /// Whether losing the last selected device should quieten the stream (phase 6.3).
 ///
 /// Pruning the selection leaves the audio graph alone, and PipeWire re-attaches a

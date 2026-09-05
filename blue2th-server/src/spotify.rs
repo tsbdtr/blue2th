@@ -103,23 +103,18 @@ pub fn librespot_cache_dir() -> String {
 }
 
 /// The **logical** playback target for the current selection: the
-/// `blue2th_combined` null sink for two targets, or the single speaker's
-/// `bluez_output.*` sink prefix for one.
+/// `blue2th_combined` null sink for every non-empty selection, and an empty
+/// string when nothing is selected.
 ///
-/// The single-speaker value is a *prefix*, **not** a node name — the live node
-/// BlueZ creates carries a card suffix (`bluez_output.<MAC>.1`) — so the caller
-/// must resolve it (`audio::resolve_target_sink`) before handing it to
-/// `--device`. Pure — performs no I/O, which is what lets `tests/restore.rs`
-/// call it with no hardware.
+/// One shape for every selection is what keeps the target invariant when a
+/// speaker is added or dropped, so `resync_spotify_sink` never respawns
+/// `librespot` over a selection change (#70). Pure — performs no I/O, which is
+/// what lets `tests/restore.rs` call it with no hardware.
 pub fn spotify_target_sink(speakers: &[SpeakerTarget]) -> String {
-    match speakers {
-        [] => String::new(),
-        // Fan-out, or a single speaker carrying an offset: both go through the
-        // combined sink, the only place where the offset exists (loopback latency).
-        _ if crate::audio::needs_combined(speakers) => COMBINED_SINK_NAME.to_string(),
-        // A single target with no offset feeds its own `bluez_output.*` sink.
-        [only, ..] => crate::audio::bluez_sink_prefix(&only.address),
+    if speakers.is_empty() {
+        return String::new();
     }
+    COMBINED_SINK_NAME.to_string()
 }
 
 /// Map a spawn `io::Error` to a typed [`SpotifyError`]: `NotFound` (the binary is
@@ -226,16 +221,14 @@ impl SpotifyBackend {
             return Ok(self.status());
         }
 
-        // Establish PipeWire routing for the selection (single sink vs combined).
+        // Establish PipeWire routing for the selection (the combined sink).
         crate::audio::route_for_targets(speakers)
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
-        // `spotify_target_sink` yields a *logical* target: for a single speaker a
-        // `bluez_output.*` prefix, which names no live node (the node BlueZ
-        // creates carries a card suffix). Resolve it here, at the argv, rather
-        // than in that pure function; a failure is reported instead of letting
-        // librespot fall back to the default sink.
+        // `spotify_target_sink` yields a *logical* target. Resolve it here, at the
+        // argv, rather than in that pure function; a failure is reported instead
+        // of letting librespot fall back to the default sink.
         let resolved = crate::audio::resolve_target_sink(&sink)
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
         // The argv comes from the same seam the tests pin, so the spawned

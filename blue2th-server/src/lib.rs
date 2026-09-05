@@ -901,13 +901,12 @@ fn spawn_idle_watchdog(state: AppState) {
 }
 
 /// `POST /play` — start (or resume) playback of the embedded test file, routed
-/// per the current target selection: one speaker uses the single-sink path, two
-/// build a PipeWire combined sink. An empty selection (`Idle`) is rejected (4xx).
+/// through the PipeWire combined sink spanning the current target selection. An
+/// empty selection (`Idle`) is rejected (4xx).
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
-    // Combined sink for fan-out or any non-zero offset, direct single-sink route
-    // otherwise; an empty selection is rejected.
+    // An empty selection is rejected.
     audio::route_for_targets(&speakers)?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
@@ -1403,9 +1402,8 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     };
     let plan = audio::combine_sink_plan(speakers);
 
-    // Moving a lone speaker off (or onto) a zero offset switches it between the
-    // direct route and the combined sink, which needs a respawn; a plain latency
-    // change does not, and is retuned in place below.
+    // An offset change never moves the target sink, so this does not respawn; it
+    // stays because the target would move if the sink name ever became dynamic.
     if resync_spotify_sink(state, speakers).await {
         return;
     }

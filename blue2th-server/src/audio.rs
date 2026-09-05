@@ -451,7 +451,7 @@ pub struct CombineSinkSpec {
 
 /// Build the (pure, testable) combined-sink plan for the given targets: each
 /// target maps to its `bluez_output.*` sink name and its offset as branch
-/// latency. Used by the two-speaker route path; performs no I/O.
+/// latency. Used by every non-empty selection; performs no I/O.
 pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
     let branches = targets
         .iter()
@@ -466,41 +466,22 @@ pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
     }
 }
 
-/// Whether a selection needs the combined-sink path: two speakers to fan out, or
-/// a single one carrying an offset. The offset only exists as `module-loopback`
-/// latency, so routing a single speaker straight to its sink would silently drop
-/// it — which is why a lone speaker's offset used to have no audible effect. Pure.
-pub fn needs_combined(speakers: &[SpeakerTarget]) -> bool {
-    speakers.len() > 1 || speakers.iter().any(|s| s.offset_ms > 0)
-}
-
-/// Apply the PipeWire routing a selection calls for: the combined sink when
-/// [`needs_combined`], the direct single-sink route otherwise. The single seam
-/// used by `/play` and by the Spotify backend, so both agree on where audio goes.
+/// Apply the PipeWire routing a selection calls for: every non-empty selection
+/// goes through the combined sink, so the target never moves when a speaker is
+/// added or dropped — a moving target respawns `librespot` and leaves an open
+/// stream behind (#70, #53). The single seam used by `/play` and by the Spotify
+/// backend, so both agree on where audio goes.
 pub fn route_for_targets(speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
-    let Some(only) = speakers.first() else {
+    if speakers.is_empty() {
         return Err(AudioError::NoSpeakerConnected);
-    };
-    if needs_combined(speakers) {
-        route_to_combined(&combine_sink_plan(speakers))
-    } else {
-        route_to_speaker(&only.address)
     }
+    route_to_combined(&combine_sink_plan(speakers))
 }
 
 /// Derive the `bluez_output.*` PipeWire sink node-name prefix for a speaker MAC
 /// (colons → underscores, upper-cased), matching what BlueZ creates.
 pub fn bluez_sink_prefix(mac: &str) -> String {
     format!("bluez_output.{}", mac.to_uppercase().replace(':', "_"))
-}
-
-/// Point the default PipeWire sink at the connected Bluetooth speaker so the
-/// rodio output (which opens the default device) and the `wpctl` volume both
-/// target it. The direct route, taken when [`needs_combined`] is false;
-/// [`route_to_combined`] carries every other selection.
-pub fn route_to_speaker(mac: &str) -> Result<(), AudioError> {
-    let sink = bluetooth_sink_for(mac)?;
-    set_default_sink(&sink)
 }
 
 /// Route playback to a PipeWire combined sink spanning the plan's speakers, so the
@@ -570,9 +551,9 @@ fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
         )?;
     }
     // The sink already exists, so it is usually already the default; this repairs
-    // the case where the default moved away meanwhile — a selection that dropped to
-    // the direct route and came back. Re-pointing the default at the sink a stream
-    // is already on leaves that stream where it is.
+    // the case where the default moved away meanwhile — another application, or a
+    // device that came back. Re-pointing the default at the sink a stream is
+    // already on leaves that stream where it is.
     set_default_sink(&spec.sink_name)
 }
 
