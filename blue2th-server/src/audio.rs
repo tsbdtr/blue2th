@@ -18,7 +18,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
-        Arc,
+        Arc, Mutex,
     },
     thread::JoinHandle,
     time::Duration,
@@ -552,7 +552,29 @@ fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
         unload_module_id(module_id);
     }
     let loaded = loaded_branches(&listing, &spec.sink_name, live.as_deref());
-    let plan = reconcile_branches(&loaded, spec);
+    let sinks = sink_listing().unwrap_or_default();
+    if sinks.trim().is_empty() {
+        // Same rule as `sink_input_liveness`: nothing read is "cannot tell", not
+        // "every speaker is gone". Acting on it would unload every branch.
+        return Ok(());
+    }
+    // A speaker that is switched off is absent, not broken: asking for it on every
+    // tick is what rebuilds the graph under the ones that are playing.
+    let reachable = CombineSinkSpec {
+        sink_name: spec.sink_name.clone(),
+        branches: reachable_branches(&spec.branches, &sinks),
+    };
+    let fresh = {
+        // A poisoned register costs one stale pass, never a wrong route.
+        let mut previous = match SINKS_LAST_PASS.lock() {
+            Ok(previous) => previous,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let fresh = newly_listed_sinks(&previous, &sinks);
+        *previous = Some(sink_nodes(&sinks));
+        fresh
+    };
+    let plan = reconcile_branches(&loaded, &reachable);
     let source = format!("source={}.monitor", spec.sink_name);
     for branch in &plan.to_unload {
         // Match on both ends, as `retune_combined_branch` does: on `sink=` alone a
@@ -565,7 +587,33 @@ fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     // device that came back. Re-pointing the default at the sink a stream is
     // already on leaves that stream where it is.
     set_default_sink(&spec.sink_name)?;
-    report.into_result()
+
+    // Arm the next pass if this one wired a speaker that came back, and find out
+    // whether the previous one armed us. Read and written together so a pass can
+    // both confirm and arm, and so the confirming rebuild — which loads outside
+    // `plan` — can never arm itself into a loop.
+    let confirm = {
+        let mut due = match CONFIRMATION_DUE.lock() {
+            Ok(due) => due,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let owed = *due;
+        *due = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
+        owed
+    };
+    if !confirm {
+        return report.into_result();
+    }
+    // The previous pass wired a speaker that had just come back, and that load did
+    // not start it; see `wires_a_new_sink`. Rebuilding every branch now — one tick
+    // later, which is the measured gap — starts it.
+    let listing = module_listing()?;
+    for branch in loaded_branches(&listing, &spec.sink_name, None) {
+        unload_modules_matching(&[&source, &format!("sink={}", branch.sink)])?;
+    }
+    let second = load_planned_branches_live(&spec.sink_name, &reachable.branches);
+    set_default_sink(&spec.sink_name)?;
+    second.into_result()
 }
 
 /// Resolve a branch's `bluez_output.*` prefix to the live node name, erroring
@@ -889,19 +937,109 @@ pub fn reconcile_branches(
     loaded: &[CombineBranch],
     spec: &CombineSinkSpec,
 ) -> BranchReconciliation {
-    BranchReconciliation {
-        to_load: spec
-            .branches
-            .iter()
-            .filter(|planned| !loaded.iter().any(|up| branch_is(up, planned)))
-            .cloned()
-            .collect(),
-        to_unload: loaded
-            .iter()
-            .filter(|up| !spec.branches.iter().any(|planned| branch_is(up, planned)))
-            .cloned()
-            .collect(),
+    let missing: Vec<CombineBranch> = spec
+        .branches
+        .iter()
+        .filter(|planned| !loaded.iter().any(|up| branch_is(up, planned)))
+        .cloned()
+        .collect();
+
+    if missing.is_empty() {
+        // Nothing has to start, so nothing has to restart: a selection that only
+        // lost a speaker leaves the others streaming, untouched.
+        return BranchReconciliation {
+            to_load: missing,
+            to_unload: loaded
+                .iter()
+                .filter(|up| !spec.branches.iter().any(|planned| branch_is(up, planned)))
+                .cloned()
+                .collect(),
+        };
     }
+
+    // A loopback loaded into a graph that is already running attaches its stream
+    // to the right sink and leaves the Bluetooth node silent for good: measured
+    // on two speakers, where the one that came back stayed mute with a branch
+    // that was present, live and correctly attached, while a stream written
+    // straight into its sink was silent too — and both played again the moment
+    // every branch was rebuilt in one pass (#75). Speakers start together or not
+    // at all, so one missing branch costs a rebuild of the whole selection. That
+    // is a brief cut on the speakers already playing, and the alternative is one
+    // of them silent until the operator intervenes.
+    BranchReconciliation {
+        to_load: spec.branches.clone(),
+        to_unload: loaded.to_vec(),
+    }
+}
+
+/// The sink node names listed at the previous reconciliation, so a node that has
+/// just appeared can be told from one that was already there. `None` until the
+/// first pass: what is listed then predates this process and is not new.
+static SINKS_LAST_PASS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Whether the previous pass wired a speaker that had just come back, and so owes
+/// this one a rebuild. See [`wires_a_new_sink`] for what that rebuild is for.
+static CONFIRMATION_DUE: Mutex<bool> = Mutex::new(false);
+
+/// The node names `pactl list short sinks` lists, second column.
+fn sink_nodes(sink_listing: &str) -> Vec<String> {
+    sink_listing
+        .lines()
+        .filter_map(|line| line.split('\t').nth(1))
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// The sinks `sink_listing` carries that `previous` did not — the speakers that
+/// have come back since the last pass. On the very first pass nothing is new:
+/// every sink listed then was there before the server was, which is why a start
+/// costs no rebuild.
+pub fn newly_listed_sinks(previous: &Option<Vec<String>>, sink_listing: &str) -> Vec<String> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+    sink_nodes(sink_listing)
+        .into_iter()
+        .filter(|node| !previous.iter().any(|seen| seen == node))
+        .collect()
+}
+
+/// Whether this pass wires a speaker whose sink has just appeared, and so owes the
+/// **next** pass a rebuild.
+///
+/// A `module-loopback` loaded towards a `bluez_output.*` node that has just been
+/// created does not start it: the stream attaches to the right sink, the module is
+/// live, no error is reported anywhere — and the speaker stays silent for good, so
+/// completely that a stream written straight into that sink is silent too.
+/// Rebuilding every branch **one tick later** starts it.
+///
+/// The delay is the point, and it was measured on 2026-09-06 with two speakers.
+/// Rebuilding a few milliseconds after the first load does not repair the speaker
+/// and *breaks a start that worked*; rebuilding five to seven seconds later
+/// repairs it, which is what the operator's habitual deselect/reselect had been
+/// doing by hand all along. A single load thirty seconds after the node appeared
+/// stays mute, so it is neither a settling delay nor the ordinal of the load: it
+/// is the gap between two of them (#75).
+pub fn wires_a_new_sink(to_load: &[CombineBranch], fresh: &[String], sink_listing: &str) -> bool {
+    to_load.iter().any(|branch| {
+        sink_matching_prefix(sink_listing, &branch.sink).is_some_and(|node| fresh.contains(&node))
+    })
+}
+
+/// The planned branches whose speaker sink is actually present in `sink_listing`.
+///
+/// A speaker that is switched off has no `bluez_output.*` node, so its branch
+/// cannot be loaded however often it is tried. Left in the plan it would keep the
+/// reconciliation permanently one branch short, and since a missing branch
+/// rebuilds the whole selection, the speakers still playing would be torn down
+/// and restarted on every repair tick (#75).
+pub fn reachable_branches(branches: &[CombineBranch], sink_listing: &str) -> Vec<CombineBranch> {
+    branches
+        .iter()
+        .filter(|branch| sink_matching_prefix(sink_listing, &branch.sink).is_some())
+        .cloned()
+        .collect()
 }
 
 /// Whether the loaded loopback `up` is exactly what the planned branch asks for:
@@ -1080,11 +1218,18 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
 /// the combined-sink plan stores without the trailing card suffix). Returns
 /// `None` if no sink currently matches or `pactl` is unavailable.
 fn find_sink_with_prefix(prefix: &str) -> Option<String> {
+    sink_matching_prefix(&sink_listing()?, prefix)
+}
+
+/// The text `pactl list short sinks` prints, or `None` when it could not be read.
+/// The distinction matters: an unreadable listing is "cannot tell", and reading
+/// it as "no sink exists" would unload every branch and cut the sound.
+fn sink_listing() -> Option<String> {
     let output = pactl(&["list", "short", "sinks"]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    sink_matching_prefix(&String::from_utf8_lossy(&output.stdout), prefix)
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Resolve a logical playback target to the live PipeWire node name to hand a
@@ -1970,30 +2115,143 @@ mod tests {
         assert_eq!(plan, BranchReconciliation::default());
     }
 
-    // Criterion: a speaker added to the selection yields exactly one load and no
-    // unload — the loopback already streaming stays up.
+    // Criterion: a speaker added to the selection rebuilds *every* branch, the
+    // one already streaming included. Loading the newcomer alone leaves its
+    // Bluetooth node silent — the defect this pins.
     #[test]
-    fn test_reconcile_branches_added_speaker_loads_only_the_new_branch() {
+    fn test_reconcile_branches_added_speaker_reloads_every_branch() {
         let spec = two_speaker_spec();
+        let already_streaming = CombineBranch {
+            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+            latency_ms: branch_latency_ms(0),
+        };
+        let loaded = vec![already_streaming.clone()];
+
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(
+            plan.to_load, spec.branches,
+            "every planned branch is loaded, not only the newly selected one"
+        );
+        assert_eq!(
+            plan.to_unload,
+            vec![already_streaming],
+            "the branch already streaming is torn down so it restarts alongside the newcomer"
+        );
+    }
+
+    /// `PACTL_SINKS` without the Bluetooth speaker — the listing while it is off.
+    const PACTL_SINKS_WITHOUT_SPEAKER: &str = concat!(
+        "39\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+        "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
+    );
+
+    // Criterion: the first pass has no previous listing, and what it finds predates
+    // the server. Calling it new would cost every start a rebuild it does not need.
+    #[test]
+    fn test_newly_listed_sinks_of_a_first_pass_is_empty() {
+        assert!(
+            newly_listed_sinks(&None, PACTL_SINKS).is_empty(),
+            "nothing is new when there is nothing to compare against"
+        );
+    }
+
+    // Criterion: a speaker that comes back is listed now and was not before.
+    #[test]
+    fn test_newly_listed_sinks_names_a_speaker_that_came_back() {
+        assert_eq!(
+            newly_listed_sinks(&Some(sink_nodes(PACTL_SINKS_WITHOUT_SPEAKER)), PACTL_SINKS),
+            vec!["bluez_output.80_99_E7_63_50_29.1".to_string()],
+            "only the node absent from the previous pass is new"
+        );
+    }
+
+    // Criterion: an unchanged listing carries nothing new, so a steady graph is
+    // never rebuilt — that is what keeps the churn away between ticks.
+    #[test]
+    fn test_newly_listed_sinks_of_an_unchanged_listing_is_empty() {
+        assert!(
+            newly_listed_sinks(&Some(sink_nodes(PACTL_SINKS)), PACTL_SINKS).is_empty(),
+            "nothing appeared, so nothing is new"
+        );
+    }
+
+    // Criterion: the rebuild is owed exactly when the plan wires a node that has
+    // just appeared — matched through the prefix, since the plan holds
+    // `bluez_output.<MAC>` while the listing carries the resolved `….1`.
+    #[test]
+    fn test_wires_a_new_sink_matches_the_plan_prefix_against_the_fresh_node() {
+        let spec = combine_sink_plan(&[SpeakerTarget {
+            address: "80:99:E7:63:50:29".to_string(),
+            offset_ms: 0,
+        }]);
+        let fresh = vec!["bluez_output.80_99_E7_63_50_29.1".to_string()];
+
+        assert!(
+            wires_a_new_sink(&spec.branches, &fresh, PACTL_SINKS),
+            "the planned prefix names the node that just appeared"
+        );
+        assert!(
+            !wires_a_new_sink(&spec.branches, &[], PACTL_SINKS),
+            "no sink appeared, so no rebuild is owed"
+        );
+        assert!(
+            !wires_a_new_sink(&[], &fresh, PACTL_SINKS),
+            "a plan that loads nothing wires nothing, however fresh the node"
+        );
+    }
+
+    // Criterion: a speaker whose sink is absent — switched off — is not part of
+    // what the reconciliation compares against. It is what keeps a rebuild from
+    // being asked for on every tick, since a missing branch rebuilds all.
+    #[test]
+    fn test_reachable_branches_drops_a_speaker_whose_sink_is_absent() {
+        let spec = two_speaker_spec();
+
+        let reachable = reachable_branches(&spec.branches, PACTL_SINKS);
+
+        assert_eq!(
+            reachable,
+            vec![CombineBranch {
+                sink: bluez_sink_prefix("80:99:E7:63:50:29"),
+                latency_ms: branch_latency_ms(0),
+            }],
+            "only the speaker with a live node survives, got {reachable:?}"
+        );
+    }
+
+    // Criterion: an unreadable listing must not read as "every speaker is gone".
+    // The caller guards on it; this pins what the pure half answers, so the guard
+    // cannot be dropped as redundant.
+    #[test]
+    fn test_reachable_branches_of_an_empty_listing_keeps_nothing() {
+        assert!(
+            reachable_branches(&two_speaker_spec().branches, "").is_empty(),
+            "an empty listing names no node, so it reaches no speaker"
+        );
+    }
+
+    // Criterion: the churn that made the whole selection rebuild every five
+    // seconds while one speaker was switched off. Reconciled against the
+    // speakers actually present, a selection missing an absent one is a no-op.
+    #[test]
+    fn test_reconcile_branches_a_switched_off_speaker_asks_for_no_rebuild() {
+        let spec = two_speaker_spec();
+        let present = CombineSinkSpec {
+            sink_name: spec.sink_name.clone(),
+            branches: reachable_branches(&spec.branches, PACTL_SINKS),
+        };
         let loaded = vec![CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
             latency_ms: branch_latency_ms(0),
         }];
 
-        let plan = reconcile_branches(&loaded, &spec);
+        let plan = reconcile_branches(&loaded, &present);
 
         assert_eq!(
-            plan.to_load,
-            vec![CombineBranch {
-                sink: bluez_sink_prefix("11:22:33:44:55:66"),
-                latency_ms: branch_latency_ms(250),
-            }],
-            "only the newly selected speaker is loaded"
-        );
-        assert!(
-            plan.to_unload.is_empty(),
-            "nothing is unloaded when a speaker is added, got {:?}",
-            plan.to_unload
+            plan,
+            BranchReconciliation::default(),
+            "the speaker that is playing keeps its branch while the other is off"
         );
     }
 
@@ -2052,20 +2310,19 @@ mod tests {
         let plan = reconcile_branches(&loaded, &spec);
 
         assert_eq!(
-            plan.to_load,
-            vec![CombineBranch {
-                sink: bluez_sink_prefix("11:22:33:44:55:66"),
-                latency_ms: branch_latency_ms(400),
-            }],
-            "the retuned speaker is reloaded with its new latency, alone"
+            plan.to_load, spec.branches,
+            "the retuned speaker carries its new latency, and every branch is reloaded with it"
         );
         assert_eq!(
-            plan.to_unload,
-            vec![CombineBranch {
-                sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: branch_latency_ms(250),
-            }],
-            "the stale loopback of the previous offset is unloaded, and only it"
+            plan.to_unload, loaded,
+            "every loaded loopback is unloaded, the stale one included"
+        );
+        assert!(
+            plan.to_load
+                .iter()
+                .any(|b| b.latency_ms == branch_latency_ms(400)),
+            "the new offset reaches the plan, got {:?}",
+            plan.to_load
         );
     }
 
@@ -2361,12 +2618,12 @@ mod tests {
         let plan = reconcile_branches(&loaded, &spec);
 
         assert_eq!(
-            plan.to_load,
-            vec![CombineBranch {
-                sink: "bluez_output.11_22_33_44_55_66".to_string(),
-                latency_ms: branch_latency_ms(250),
-            }],
-            "the dead speaker's branch is rebuilt, and only that one"
+            plan.to_load, spec.branches,
+            "the dead speaker's branch is rebuilt, and the live ones with it"
+        );
+        assert_eq!(
+            plan.to_unload, loaded,
+            "the branch that survived is torn down too, so both start in one pass"
         );
     }
 
