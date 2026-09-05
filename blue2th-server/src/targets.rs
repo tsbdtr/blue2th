@@ -26,17 +26,6 @@ pub fn clamp_offset(ms: u32) -> u32 {
     ms.min(MAX_OFFSET_MS)
 }
 
-/// Whether losing the last selected device should quieten the stream (phase 6.3).
-///
-/// Pruning the selection leaves the audio graph alone, and PipeWire re-attaches a
-/// returning device's sink, so a stream left running would resume on a device
-/// that is no longer selected. Quietening is skipped when the setting will bring
-/// the device back on its own: pausing then would leave it silent until the user
-/// pressed play. Pure.
-pub fn should_quieten_on_last_loss(lost_last_target: bool, restore_during_playback: bool) -> bool {
-    lost_last_target && !restore_during_playback
-}
-
 /// What the loss of the last selected speaker calls for (#67).
 ///
 /// Three outcomes, because the two paths that empty the selection do not want
@@ -56,13 +45,25 @@ pub enum LastLossAction {
 }
 
 /// Which action the loss of the last selected speaker calls for. Pure.
+///
+/// Pruning the selection leaves the audio graph alone, and PipeWire re-attaches a
+/// returning device's sink, so a stream left running would resume on a device
+/// that is no longer selected. The setting picks *how* to silence it: it promises
+/// to bring the speaker back, so the sources are merely paused and the routing is
+/// left for them to come back to; with it off nothing will re-select the speaker,
+/// so the graph must stop pointing at it.
 pub fn action_on_last_loss(
     lost_last_target: bool,
     restore_during_playback: bool,
 ) -> LastLossAction {
-    // Stub: the decision this replaces is still the one production runs.
-    let _ = (lost_last_target, restore_during_playback);
-    LastLossAction::Nothing
+    if !lost_last_target {
+        return LastLossAction::Nothing;
+    }
+    if restore_during_playback {
+        LastLossAction::PauseSources
+    } else {
+        LastLossAction::QuietenAndTeardown
+    }
 }
 
 /// Whether a restoration may resume the sources it finds paused (#67).
@@ -71,9 +72,7 @@ pub fn action_on_last_loss(
 /// transport command from the app clears that claim, so a pause the user asked
 /// for survives a speaker coming back. Pure.
 pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
-    // Stub: nothing resumes on restoration today.
-    let _ = backend_paused_sources;
-    false
+    backend_paused_sources
 }
 
 /// Whether a returning speaker may be re-selected right now (phase 6.3).

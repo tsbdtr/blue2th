@@ -7,7 +7,14 @@
 //! in-process. Phase 0 only exposed `GET /health`; later phases add Bluetooth
 //! (`bluer`) and audio (PipeWire) routes — see `docs/ROADMAP.md`.
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use axum::{
     extract::{Path, State},
@@ -82,6 +89,11 @@ struct AppState {
     /// due for a dial, and how long to wait after each failure. In memory only —
     /// a restart is deliberately a clean slate, so nothing stays given up on.
     reconnect: Arc<Mutex<reconnect::ReconnectTracker>>,
+    /// The backend's claim that *it* paused both sources when the last speaker
+    /// vanished (#67). It is what licenses the automatic resume on restoration:
+    /// any explicit transport command from the app clears it, so a pause the user
+    /// asked for is never undone by a speaker coming back.
+    backend_paused_sources: Arc<AtomicBool>,
 }
 
 /// One route the backend serves, as a (method, path template) pair plus whether
@@ -616,6 +628,7 @@ fn app_with_auth_and_targets(
         name: Arc::new(Mutex::new(server_name)),
         auth: Arc::new(Mutex::new(auth)),
         reconnect: Arc::new(Mutex::new(reconnect::ReconnectTracker::new())),
+        backend_paused_sources: Arc::new(AtomicBool::new(false)),
     };
 
     spawn_idle_watchdog(state.clone());
@@ -904,6 +917,7 @@ fn spawn_idle_watchdog(state: AppState) {
 /// through the PipeWire combined sink spanning the current target selection. An
 /// empty selection (`Idle`) is rejected (4xx).
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    forget_backend_pause(&state);
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
     audio::route_for_targets(&speakers)?;
@@ -913,14 +927,25 @@ async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
 
 /// `POST /pause` — pause playback (idempotent while stopped).
 async fn pause(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    forget_backend_pause(&state);
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.pause()?))
 }
 
 /// `POST /stop` — stop playback (idempotent while stopped).
 async fn stop(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    forget_backend_pause(&state);
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.stop()?))
+}
+
+/// Drop the backend's claim that it paused the sources (#67).
+///
+/// Every explicit transport command from the app goes through here: from that
+/// point on the playback state is the user's, so a speaker coming back must not
+/// undo it.
+fn forget_backend_pause(state: &AppState) {
+    state.backend_paused_sources.store(false, Ordering::SeqCst);
 }
 
 /// `POST /volume` — set the selected speakers' PipeWire sink volume (clamped),
@@ -1039,6 +1064,7 @@ async fn spotify_previous(State(state): State<AppState>) -> Result<StatusCode, A
 /// Drive a transport action on the Spotify Web API, returning 204 on success.
 /// While Disconnected the auth driver rejects before any outbound call (→ 409).
 async fn spotify_transport(state: &AppState, action: Transport) -> Result<StatusCode, AppError> {
+    forget_backend_pause(state);
     let mut auth = state.spotify_auth.lock().await;
     auth.transport(action).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1094,11 +1120,12 @@ async fn client_presence(
 /// Pause the Spotify Web API playback, best-effort — a *resumable* pause that
 /// leaves the `librespot` subprocess alive and the Connect device visible.
 ///
-/// This is the app-closed intent, and its only caller is `client_presence` on a
-/// `Gone` report: the speakers are still there and the user may come back, so
-/// killing their Connect endpoint because a phone was swiped away would be
-/// wrong. Nothing here is worth failing that report over, and Spotify answers
-/// 409 when there is nothing to pause anyway.
+/// This is the intent shared by the two situations where playback should stop
+/// but may well come back: the app reporting `Gone`, and the last speaker
+/// vanishing while the setting promises to re-select it. In both the Connect
+/// endpoint must survive — killing it because a phone was swiped away, or
+/// because a speaker blinked, would be wrong. Nothing here is worth failing the
+/// caller over, and Spotify answers 409 when there is nothing to pause anyway.
 ///
 /// It is not the way to silence a teardown: the call returns when Spotify's
 /// servers answer, which says nothing about the audio thread. The
@@ -1259,17 +1286,15 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
     // The last selected device just dropped off. Pruning the selection does not
     // touch the audio graph: the routing still points at that device's sink, and
     // PipeWire re-attaches the sink when it comes back — so the stream would
-    // resume on a device blue2th no longer considers selected. Quieten it and
-    // tear the routing down.
-    //
-    // Skipped when the setting is on, because the device is then re-selected on
-    // its own when it returns: pausing here would leave it silent until the user
-    // pressed play, which is the opposite of what that setting promises.
-    if targets::should_quieten_on_last_loss(
+    // resume on a device blue2th no longer considers selected.
+    let action = targets::action_on_last_loss(
         lost_last_target,
         state.name.lock().await.restore_during_playback(),
-    ) {
-        apply_selection_change(state, &[]).await;
+    );
+    match action {
+        targets::LastLossAction::Nothing => {},
+        targets::LastLossAction::PauseSources => pause_sources_until_restored(state).await,
+        targets::LastLossAction::QuietenAndTeardown => apply_selection_change(state, &[]).await,
     }
     // The overwhelmingly common case: this runs on every `/devices` poll (a
     // couple of seconds apart, per client), so a poll where nobody came back
@@ -1306,6 +1331,51 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
         targets.speakers()
     };
     apply_selection_change(state, &speakers).await;
+    // Only a pause the backend performed may be undone by the backend: without
+    // that claim, a speaker coming back would restart music the user had paused.
+    if targets::should_resume_after_restore(state.backend_paused_sources.load(Ordering::SeqCst)) {
+        resume_sources_after_restore(state).await;
+    }
+}
+
+/// Pause both sources because the last selected speaker vanished, and claim that
+/// pause so a restoration may undo it (#67).
+///
+/// The routing is deliberately left standing: the setting promises the speaker
+/// comes back, so nothing may be destroyed under a still-running stream — which
+/// is also what makes a *resumable* pause safe here, the Web API returning before
+/// `librespot`'s audio thread has stopped no longer orphaning anything.
+async fn pause_sources_until_restored(state: &AppState) {
+    pause_spotify_now(state).await;
+    {
+        let mut engine = state.engine.lock().await;
+        if let Err(e) = engine.pause() {
+            tracing::warn!("could not pause playback after the last speaker was lost: {e}");
+        }
+    }
+    state.backend_paused_sources.store(true, Ordering::SeqCst);
+}
+
+/// Resume the sources the backend paused when the speakers vanished, and drop
+/// the claim: it has been spent, so a later restoration resumes nothing on its
+/// own.
+async fn resume_sources_after_restore(state: &AppState) {
+    state.backend_paused_sources.store(false, Ordering::SeqCst);
+    {
+        let mut auth = state.spotify_auth.lock().await;
+        if let Err(e) = auth.transport(Transport::Play).await {
+            // Nothing to resume, or no login: never worth failing the poll over.
+            tracing::warn!("could not resume Spotify after the speakers came back: {e}");
+        }
+    }
+    let mut engine = state.engine.lock().await;
+    // Only a paused engine is resumed: `play()` on a stopped one would start the
+    // tone from scratch, which the backend never paused.
+    if engine.poll_state().status == PlaybackStatus::Paused {
+        if let Err(e) = engine.play() {
+            tracing::warn!("could not resume playback after the speakers came back: {e}");
+        }
+    }
 }
 
 /// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its
