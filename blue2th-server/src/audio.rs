@@ -537,11 +537,16 @@ fn build_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
 /// are [`loaded_branches`] and [`reconcile_branches`], which are pure and tested.
 fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     let listing = module_listing()?;
-    let loaded = loaded_branches(
-        &listing,
-        &spec.sink_name,
-        sink_input_liveness(&sink_input_listing().unwrap_or_default()).as_deref(),
-    );
+    // A failed `pactl` yields an empty listing, which `sink_input_liveness` reads
+    // as "cannot tell" rather than as a graph where every branch is dead.
+    let live = sink_input_liveness(&sink_input_listing().unwrap_or_default());
+    // A dead branch reads as absent below, so the reconciliation would load its
+    // replacement without ever asking for the stale module to go. Unloaded here,
+    // before that load, so the speaker never has two loopbacks feeding it.
+    for module_id in dead_branch_modules(&listing, &spec.sink_name, live.as_deref()) {
+        unload_module_id(module_id);
+    }
+    let loaded = loaded_branches(&listing, &spec.sink_name, live.as_deref());
     let plan = reconcile_branches(&loaded, spec);
     let source = format!("source={}.monitor", spec.sink_name);
     for branch in &plan.to_unload {
@@ -632,13 +637,29 @@ pub fn loaded_branches(
     sink_name: &str,
     live: Option<&[SinkInputStream]>,
 ) -> Vec<CombineBranch> {
-    let _ = live;
+    branch_modules(listing, sink_name)
+        .into_iter()
+        .filter(|(module_id, _)| match live {
+            // Nothing could be read about liveness: keep every branch, or a
+            // transient `pactl` failure would read as "everything is dead" and
+            // rebuild the whole graph under the audio it protects.
+            None => true,
+            Some(streams) => module_is_live(streams, *module_id),
+        })
+        .map(|(_, branch)| branch)
+        .collect()
+}
+
+/// Every loopback branch loaded for `sink_name`, paired with the id of the module
+/// carrying it — the id `pactl unload-module` takes, and the one a sink-input
+/// reports in `Owner Module:`. Pure — performs no I/O.
+fn branch_modules(listing: &str, sink_name: &str) -> Vec<(u32, CombineBranch)> {
     let source = format!("source={sink_name}.monitor");
     listing
         .lines()
         .filter_map(|line| {
             let mut columns = line.split('\t');
-            let _index = columns.next()?;
+            let module_id: u32 = columns.next()?.parse().ok()?;
             if columns.next()? != "module-loopback" {
                 return None;
             }
@@ -660,11 +681,36 @@ pub fn loaded_branches(
                 .find_map(|a| a.strip_prefix("latency_msec="))?
                 .parse()
                 .ok()?;
-            Some(CombineBranch {
-                sink: sink.to_string(),
-                latency_ms,
-            })
+            Some((
+                module_id,
+                CombineBranch {
+                    sink: sink.to_string(),
+                    latency_ms,
+                },
+            ))
         })
+        .collect()
+}
+
+/// The module ids of the loopbacks loaded for `sink_name` that are loaded but
+/// dead: listed, yet feeding nothing. Empty when liveness could not be read.
+///
+/// They are invisible to [`reconcile_branches`], which only sees the branches
+/// [`loaded_branches`] hands it — and a dead branch is deliberately absent from
+/// those. So the caller unloads them by id before loading the replacement: two
+/// loopbacks onto the same speaker would double the audio (#75).
+fn dead_branch_modules(
+    listing: &str,
+    sink_name: &str,
+    live: Option<&[SinkInputStream]>,
+) -> Vec<u32> {
+    let Some(streams) = live else {
+        return Vec::new();
+    };
+    branch_modules(listing, sink_name)
+        .into_iter()
+        .filter(|(module_id, _)| !module_is_live(streams, *module_id))
+        .map(|(module_id, _)| module_id)
         .collect()
 }
 
@@ -687,8 +733,30 @@ pub struct SinkInputStream {
 ///
 /// The input comes from a subprocess, so anything that does not parse is skipped
 /// rather than reported.
-pub fn parse_sink_inputs(_listing: &str) -> Vec<SinkInputStream> {
-    Vec::new()
+pub fn parse_sink_inputs(listing: &str) -> Vec<SinkInputStream> {
+    let mut streams = Vec::new();
+    let mut owner_module: Option<u32> = None;
+    let mut sink: Option<u32> = None;
+    let mut flush = |owner_module: &mut Option<u32>, sink: &mut Option<u32>| {
+        if let (Some(owner_module), Some(sink)) = (owner_module.take(), sink.take()) {
+            streams.push(SinkInputStream { owner_module, sink });
+        }
+    };
+    for line in listing.lines() {
+        let field = line.trim();
+        if field.starts_with("Sink Input #") {
+            // A new block starts: whatever the previous one gathered is complete.
+            flush(&mut owner_module, &mut sink);
+        } else if let Some(value) = field.strip_prefix("Owner Module:") {
+            // `n/a` (a plain client) fails to parse, which is exactly the skip
+            // wanted: its `Sink:` vouches for no module of ours.
+            owner_module = value.trim().parse().ok();
+        } else if let Some(value) = field.strip_prefix("Sink:") {
+            sink = value.trim().parse().ok();
+        }
+    }
+    flush(&mut owner_module, &mut sink);
+    streams
 }
 
 /// What a sink-input listing lets us conclude about liveness: `Some(streams)`
@@ -699,8 +767,12 @@ pub fn parse_sink_inputs(_listing: &str) -> Vec<SinkInputStream> {
 /// failed `pactl`, not a graph where every branch is dead. Concluding the latter
 /// would rebuild the whole graph and interrupt the audio the pass exists to
 /// protect.
-pub fn sink_input_liveness(_listing: &str) -> Option<Vec<SinkInputStream>> {
-    None
+pub fn sink_input_liveness(listing: &str) -> Option<Vec<SinkInputStream>> {
+    let streams = parse_sink_inputs(listing);
+    if streams.is_empty() {
+        return None;
+    }
+    Some(streams)
 }
 
 /// Whether a loaded `module-loopback` is actually feeding a speaker: it has a
@@ -708,16 +780,27 @@ pub fn sink_input_liveness(_listing: &str) -> Option<Vec<SinkInputStream>> {
 ///
 /// A module outlives its sink's node — a module is not a node — so a loopback can
 /// stay loaded while carrying nothing (#75).
-pub fn module_is_live(_streams: &[SinkInputStream], _module_id: u32) -> bool {
-    true
+pub fn module_is_live(streams: &[SinkInputStream], module_id: u32) -> bool {
+    streams
+        .iter()
+        .any(|s| s.owner_module == module_id && s.sink != INVALID_SINK_INDEX)
 }
+
+/// PulseAudio's invalid sink index: what a loopback's playback stream reports
+/// once the node it was pinned to is gone.
+const INVALID_SINK_INDEX: u32 = u32::MAX;
 
 /// Whether the periodic repair pass has anything to do: a branch that is missing
 /// or dead only matters while audio is flowing towards it, and skipping keeps the
 /// idle cost at zero.
-pub fn should_repair_branches(_selection: &[SpeakerTarget], _anything_playing: bool) -> bool {
-    false
+pub fn should_repair_branches(selection: &[SpeakerTarget], anything_playing: bool) -> bool {
+    !selection.is_empty() && anything_playing
 }
+
+/// How often the repair pass looks at the graph. Short enough that a speaker
+/// coming back is fed again within seconds, and it costs two `pactl` calls only
+/// while a selection is actually playing.
+pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 
 /// What a selection change has to do to an already-loaded combined sink: the
 /// branches to load and the loaded ones to unload.
@@ -803,6 +886,15 @@ fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
         }
     }
     Ok(())
+}
+
+/// Unload one module by the id `pactl` printed for it. Best-effort, like
+/// [`unload_modules_matching`]: a module that is already gone is not an error,
+/// and one failure must not stop the rest of a repair.
+fn unload_module_id(module_id: u32) {
+    let _ = Command::new("pactl")
+        .args(["unload-module", &module_id.to_string()])
+        .status();
 }
 
 /// Load a PipeWire module via `pactl load-module <args...>`, mapping a failure to
