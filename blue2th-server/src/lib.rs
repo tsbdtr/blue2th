@@ -891,6 +891,10 @@ fn spawn_branch_repair(state: AppState) {
     }
     tokio::spawn(async move {
         loop {
+            // Sleeps first, unlike `spawn_auto_reconnect`: at startup the graph is
+            // whatever the previous run left, nothing is playing yet, and the
+            // selection is restored by its own pass. A repair on the first
+            // instant would only reconcile against a selection nobody asked for.
             tokio::time::sleep(audio::BRANCH_REPAIR_TICK).await;
             branch_repair_pass(&state).await;
         }
@@ -899,11 +903,13 @@ fn spawn_branch_repair(state: AppState) {
 
 /// One repair pass: reconcile the combined sink against the current selection.
 ///
-/// The reconciliation only touches what differs, so a healthy graph is a no-op
-/// and the audio is never interrupted; a branch that failed to load — the race
+/// A graph that already matches the plan is left untouched, so the common case
+/// costs nothing and the audio runs on; a branch that failed to load — the race
 /// where PipeWire had not created the `bluez_output.*` node yet — or one ruled
-/// dead is rebuilt. A failure stays a warning and no state is carried over: the
-/// next tick simply tries again, which is what repairs the race.
+/// dead is rebuilt, and rebuilding one branch rebuilds the whole selection (see
+/// `audio::reconcile_branches`), so a repair is a brief cut on the speakers that
+/// were already playing. A failure stays a warning: the next tick simply tries
+/// again, which is what repairs the race.
 async fn branch_repair_pass(state: &AppState) {
     let speakers = state.targets.lock().await.speakers();
     // "Playing" covers both sources — the local tone and the Spotify backend —

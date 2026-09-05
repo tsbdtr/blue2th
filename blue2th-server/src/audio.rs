@@ -18,7 +18,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
     },
     thread::JoinHandle,
     time::Duration,
@@ -435,7 +435,9 @@ pub struct CombineBranch {
     /// [`bluez_sink_prefix`]); the hardware seam resolves it to the live node
     /// (which carries a trailing card suffix, e.g. `.1`).
     pub sink: String,
-    /// Branch latency in milliseconds (the speaker's offset).
+    /// The `latency_msec` the branch's `module-loopback` is loaded with, in
+    /// milliseconds: [`branch_latency_ms`] of the speaker's offset, so it is the
+    /// base buffer plus that offset and never the bare offset.
     pub latency_ms: u32,
 }
 
@@ -449,9 +451,9 @@ pub fn branch_latency_ms(offset_ms: u32) -> u32 {
 }
 
 /// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
-/// with each speaker's offset captured as branch latency. Building this performs
-/// no I/O; the hardware seam (`route_to_combined` / `teardown_combined`) consumes
-/// it.
+/// each branch carrying [`branch_latency_ms`] of its speaker's offset. Building
+/// this performs no I/O; the hardware seam (`route_to_combined` /
+/// `teardown_combined`) consumes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CombineSinkSpec {
     /// Node name of the combined sink to create.
@@ -461,8 +463,8 @@ pub struct CombineSinkSpec {
 }
 
 /// Build the (pure, testable) combined-sink plan for the given targets: each
-/// target maps to its `bluez_output.*` sink name and its offset as branch
-/// latency. Used by every non-empty selection; performs no I/O.
+/// target maps to its `bluez_output.*` sink name and to [`branch_latency_ms`] of
+/// its offset. Used by every non-empty selection; performs no I/O.
 pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
     let branches = targets
         .iter()
@@ -523,8 +525,9 @@ fn build_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
         format!("sink_name={}", spec.sink_name),
         format!("sink_properties=node.description={}", spec.sink_name),
     ])?;
-    // One delayed loopback per speaker: combined.monitor -> real sink, with the
-    // speaker's offset applied as loopback latency (the per-branch sync tuning).
+    // One delayed loopback per speaker: combined.monitor -> real sink, carrying
+    // the branch latency the plan computed (base buffer plus the speaker's offset,
+    // the per-branch sync tuning).
     let report = load_planned_branches_live(&spec.sink_name, &spec.branches);
     // Make the player target the combined sink. Done even when a branch failed, so
     // the speakers that did load are fed while the next tick retries the others.
@@ -532,14 +535,19 @@ fn build_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     report.into_result()
 }
 
-/// Bring an already-loaded combined sink in line with the plan: unload only the
-/// loopbacks the selection no longer calls for, load only the missing ones, and
-/// leave the null sink — and every branch already correct — alone. That is what
-/// keeps a live stream playing across a selection change, since `set_default_sink`
-/// does not move a stream that is already open.
+/// Bring an already-loaded combined sink in line with the plan, without ever
+/// touching the null sink: that is what keeps a live stream playing across a
+/// selection change, since `set_default_sink` does not move a stream that is
+/// already open.
+///
+/// What happens to the branches is [`reconcile_branches`]'s decision, and it is
+/// not "only what differs": a graph that matches the plan is left entirely alone,
+/// while a single missing or dead branch rebuilds every branch of the selection —
+/// see that function for the measurement behind it.
 ///
 /// Hardware seam (PipeWire/`pactl`): not exercised by CI; the decisions it acts on
-/// are [`loaded_branches`] and [`reconcile_branches`], which are pure and tested.
+/// are [`loaded_branches`], [`dead_branch_modules`], [`reachable_branches`] and
+/// [`reconcile_branches`], which are pure and tested.
 fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     let listing = module_listing()?;
     // A failed `pactl` yields an empty listing, which `sink_input_liveness` reads
@@ -565,11 +573,7 @@ fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
         branches: reachable_branches(&spec.branches, &sinks),
     };
     let fresh = {
-        // A poisoned register costs one stale pass, never a wrong route.
-        let mut previous = match SINKS_LAST_PASS.lock() {
-            Ok(previous) => previous,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let mut previous = lock_or_recover(&SINKS_LAST_PASS);
         let fresh = newly_listed_sinks(&previous, &sinks);
         *previous = Some(sink_nodes(&sinks));
         fresh
@@ -588,25 +592,23 @@ fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     // already on leaves that stream where it is.
     set_default_sink(&spec.sink_name)?;
 
-    // Arm the next pass if this one wired a speaker that came back, and find out
-    // whether the previous one armed us. Read and written together so a pass can
-    // both confirm and arm, and so the confirming rebuild — which loads outside
-    // `plan` — can never arm itself into a loop.
-    let confirm = {
-        let mut due = match CONFIRMATION_DUE.lock() {
-            Ok(due) => due,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let owed = *due;
-        *due = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
-        owed
-    };
+    // Arm the next pass if this one wired a speaker that came back, and learn
+    // whether the previous one armed us — one exchange, so a pass can both confirm
+    // and arm, and so the confirming rebuild below (which loads outside `plan`)
+    // can never arm itself into a loop.
+    let arms_the_next_pass = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
+    let confirm = lock_or_recover(&CONFIRMATION_DUE).take_and_arm(arms_the_next_pass);
     if !confirm {
         return report.into_result();
     }
     // The previous pass wired a speaker that had just come back, and that load did
     // not start it; see `wires_a_new_sink`. Rebuilding every branch now — one tick
     // later, which is the measured gap — starts it.
+    //
+    // `report` is dropped rather than merged into the answer: `plan.to_load` is
+    // either empty or the whole of `reachable.branches`, so this rebuild
+    // re-attempts every branch the pass attempted and `second` reports the same
+    // failures against a fresher reading of the graph.
     let listing = module_listing()?;
     for branch in loaded_branches(&listing, &spec.sink_name, None) {
         unload_modules_matching(&[&source, &format!("sink={}", branch.sink)])?;
@@ -979,7 +981,43 @@ static SINKS_LAST_PASS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 /// Whether the previous pass wired a speaker that had just come back, and so owes
 /// this one a rebuild. See [`wires_a_new_sink`] for what that rebuild is for.
-static CONFIRMATION_DUE: Mutex<bool> = Mutex::new(false);
+static CONFIRMATION_DUE: Mutex<ConfirmationRegister> =
+    Mutex::new(ConfirmationRegister { due: false });
+
+/// The one-tick delay line that carries the confirming rebuild from the pass that
+/// armed it to the next one.
+///
+/// Split out of [`reconcile_combined`] so the transition itself is pure and can be
+/// driven pass by pass in a test; the `pactl` seam around it cannot be.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ConfirmationRegister {
+    due: bool,
+}
+
+impl ConfirmationRegister {
+    /// Answer whether *this* pass owes the confirming rebuild, and arm the next
+    /// one when `arms`.
+    ///
+    /// The read happens before the write, and that ordering is the whole
+    /// mechanism: rebuilding in the same pass that wired the returning speaker was
+    /// measured not to repair it — and to break a start that worked — while
+    /// rebuilding one tick later repairs it (#75).
+    fn take_and_arm(&mut self, arms: bool) -> bool {
+        std::mem::replace(&mut self.due, arms)
+    }
+}
+
+/// Take one of the repair pass's process-global registers, recovering the value a
+/// panicking pass left behind rather than propagating the poison.
+///
+/// A stale register costs one pass that rebuilds when it need not, or skips a
+/// rebuild it owed; every routing decision is re-read from `pactl` on the tick
+/// that uses it, so nothing here can send audio to the wrong place.
+fn lock_or_recover<T>(register: &Mutex<T>) -> MutexGuard<'_, T> {
+    register
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// The node names `pactl list short sinks` lists, second column.
 fn sink_nodes(sink_listing: &str) -> Vec<String> {
@@ -2481,10 +2519,6 @@ mod tests {
         "\t\tmedia.name = \"loopback-6815-14 output\"\n",
     );
 
-    /// PulseAudio's invalid sink index: what a loopback's stream reports once the
-    /// node it was pinned to is gone.
-    const INVALID_SINK_INDEX: u32 = 4_294_967_295;
-
     // Criterion: a pure function parses `pactl list sink-inputs` into, for each
     // stream, its owning module id and the sink it feeds.
     #[test]
@@ -2988,5 +3022,228 @@ mod tests {
             sink_input_liveness(PACTL_SINK_INPUTS_FR).is_none(),
             "an untranslated parser learns nothing from a translated listing"
         );
+    }
+
+    // Criterion: the invalid index the liveness rule tests against is the one
+    // `pactl` really prints — the fixture carries the literal 4294967295, and the
+    // production constant must be that same number. Without this the fixture and
+    // `module_is_live` could drift apart while both tests stayed green.
+    #[test]
+    fn test_invalid_sink_index_is_the_number_pactl_prints() {
+        assert_eq!(INVALID_SINK_INDEX, 4_294_967_295);
+        assert!(
+            PACTL_SINK_INPUTS.contains("Sink: 4294967295"),
+            "the fixture must carry the literal the parser has to read"
+        );
+    }
+
+    // Criterion: the stale module is unloaded before the replacement is loaded,
+    // and `reconcile_branches` cannot ask for it — a dead branch is deliberately
+    // absent from `loaded_branches`, so it is named by module id or not at all.
+    // Module 28's loopback sits on the invalid sink and must be the one named.
+    #[test]
+    fn test_dead_branch_modules_names_the_module_of_a_branch_feeding_nothing() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        assert_eq!(
+            dead_branch_modules(PACTL_MODULES, "blue2th_combined", Some(&streams)),
+            vec![28],
+            "only the loopback whose stream feeds nothing is unloaded by id"
+        );
+    }
+
+    // Criterion: the module ids to unload and the branches that survive partition
+    // the loaded loopbacks — a live branch is never unloaded out from under the
+    // audio it is carrying, which is the whole risk of unloading by id.
+    #[test]
+    fn test_dead_branch_modules_never_names_a_live_branchs_module() {
+        let streams = vec![
+            SinkInputStream {
+                owner_module: 27,
+                sink: 28091,
+            },
+            SinkInputStream {
+                owner_module: 28,
+                sink: 28092,
+            },
+        ];
+
+        assert!(
+            dead_branch_modules(PACTL_MODULES, "blue2th_combined", Some(&streams)).is_empty(),
+            "both loopbacks feed a real sink, so neither is stale"
+        );
+        assert_eq!(
+            loaded_branches(PACTL_MODULES, "blue2th_combined", Some(&streams)).len(),
+            2,
+            "and both are still counted as branches"
+        );
+    }
+
+    // Criterion: an unreadable listing yields "cannot tell", not "everything is
+    // dead". Unloading by id bypasses `reconcile_branches` entirely, so this guard
+    // is the only thing standing between a transient `pactl` failure and every
+    // loopback of a playing selection being torn down.
+    #[test]
+    fn test_dead_branch_modules_with_unknown_liveness_names_nothing() {
+        assert!(
+            dead_branch_modules(PACTL_MODULES, "blue2th_combined", None).is_empty(),
+            "with liveness unknown no module may be unloaded"
+        );
+    }
+
+    // Criterion: the ids are the ones `pactl unload-module` takes, i.e. the first
+    // column of the module listing — not the position of the branch in the plan.
+    // PipeWire hands out wide ids, and a 0-based index would happily unload
+    // `module-device-restore`.
+    #[test]
+    fn test_dead_branch_modules_names_the_id_pactl_printed() {
+        let listing = concat!(
+            "10\tmodule-device-restore\t\n",
+            "536870917\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.80_99_E7_63_50_29.1 latency_msec=50 sink_dont_move=true\n",
+        );
+        let streams = vec![SinkInputStream {
+            owner_module: 536_870_917,
+            sink: INVALID_SINK_INDEX,
+        }];
+
+        assert_eq!(
+            dead_branch_modules(listing, "blue2th_combined", Some(&streams)),
+            vec![536_870_917],
+            "the module id comes from the listing's first column"
+        );
+    }
+
+    // Criterion: a sink line naming no node contributes no name. An empty name is
+    // the wildcard shape this project keeps paying for: carried into the register
+    // it would be compared against, and later reported as, a node that does not
+    // exist.
+    #[test]
+    fn test_sink_nodes_skips_a_line_naming_no_node() {
+        let listing = concat!(
+            "39\t\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+            "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
+        );
+
+        assert_eq!(
+            sink_nodes(listing),
+            vec!["bluez_output.80_99_E7_63_50_29.1".to_string()],
+            "the nameless line names no node"
+        );
+        assert!(
+            newly_listed_sinks(&Some(Vec::new()), listing)
+                .iter()
+                .all(|node| !node.is_empty()),
+            "and so no empty name is ever reported as a speaker that came back"
+        );
+    }
+
+    // Criterion: the confirming rebuild lands on the pass *after* the one that
+    // wired the returning speaker. Rebuilding in the same pass was measured not to
+    // repair it and to break a start that worked; the one-tick gap is the fix.
+    #[test]
+    fn test_confirmation_register_defers_the_rebuild_to_the_next_pass() {
+        let mut register = ConfirmationRegister::default();
+
+        assert!(
+            !register.take_and_arm(true),
+            "the pass that wires the returning speaker must not rebuild in the same tick"
+        );
+        assert!(
+            register.take_and_arm(false),
+            "the next pass is the one that owes the rebuild"
+        );
+        assert!(
+            !register.take_and_arm(false),
+            "and only that one: the rebuild is not repeated on the tick after"
+        );
+    }
+
+    // Criterion: the confirming rebuild loads outside the plan, so it cannot arm
+    // itself — a steady graph, where no sink ever appears, never owes a rebuild
+    // however long it runs.
+    #[test]
+    fn test_confirmation_register_on_a_steady_graph_never_owes_a_rebuild() {
+        let mut register = ConfirmationRegister::default();
+
+        for tick in 0..10 {
+            assert!(
+                !register.take_and_arm(false),
+                "no sink appeared, so tick {tick} owes nothing"
+            );
+        }
+    }
+
+    // Criterion: a speaker returning while a rebuild is already owed does not lose
+    // its own rebuild — the register carries one tick of debt and re-arms.
+    #[test]
+    fn test_confirmation_register_rearms_when_a_second_speaker_returns() {
+        let mut register = ConfirmationRegister::default();
+
+        assert!(!register.take_and_arm(true), "first speaker back: armed");
+        assert!(
+            register.take_and_arm(true),
+            "this pass both confirms the first and wires a second"
+        );
+        assert!(
+            register.take_and_arm(false),
+            "the second speaker still gets its own confirming rebuild"
+        );
+        assert!(!register.take_and_arm(false), "then the graph settles");
+    }
+
+    // Criterion: with every selected speaker switched off, nothing is reachable —
+    // and the reconciliation asks for no rebuild at all rather than for the whole
+    // selection. Asking would spawn a load per tick for nodes that do not exist.
+    #[test]
+    fn test_reconcile_branches_with_every_speaker_switched_off_loads_nothing() {
+        let spec = two_speaker_spec();
+        let none_present = CombineSinkSpec {
+            sink_name: spec.sink_name.clone(),
+            branches: reachable_branches(&spec.branches, PACTL_SINKS_WITHOUT_SPEAKER),
+        };
+        let loaded = vec![CombineBranch {
+            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+            latency_ms: branch_latency_ms(0),
+        }];
+
+        assert!(
+            none_present.branches.is_empty(),
+            "neither speaker has a node in this listing"
+        );
+
+        let plan = reconcile_branches(&loaded, &none_present);
+
+        assert!(
+            plan.to_load.is_empty(),
+            "no branch can be loaded onto a node that is not there, got {:?}",
+            plan.to_load
+        );
+        assert_eq!(
+            plan.to_unload, loaded,
+            "the loopback left over from the speaker that is now off is dropped"
+        );
+    }
+
+    // Criterion: a reconciliation either leaves every branch alone or asks for the
+    // whole plan — there is no third answer that loads a subset. `reconcile_combined`
+    // relies on it when it drops the first load report on a confirming pass: the
+    // rebuild that follows re-attempts everything that pass attempted.
+    #[test]
+    fn test_reconcile_branches_loads_all_of_the_plan_or_none_of_it() {
+        let spec = two_speaker_spec();
+        let one_loaded = vec![CombineBranch {
+            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+            latency_ms: branch_latency_ms(0),
+        }];
+        let both_loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
+
+        for loaded in [Vec::new(), one_loaded, both_loaded] {
+            let plan = reconcile_branches(&loaded, &spec);
+            assert!(
+                plan.to_load.is_empty() || plan.to_load == spec.branches,
+                "a partial load would leave a speaker to start on its own, got {:?}",
+                plan.to_load
+            );
+        }
     }
 }
