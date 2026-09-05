@@ -923,35 +923,6 @@ fn parse_first_percent(text: &str) -> Option<f32> {
 mod tests {
     use super::*;
 
-    // Criterion: a lone speaker with an offset needs the combined sink — the
-    // offset is realised as loopback latency, which the direct single-sink route
-    // does not have, so it would otherwise be silently dropped.
-    #[test]
-    fn test_needs_combined_single_target_with_offset() {
-        let delayed = SpeakerTarget {
-            address: "AA:BB:CC:DD:EE:FF".to_string(),
-            offset_ms: 750,
-        };
-        assert!(needs_combined(std::slice::from_ref(&delayed)));
-    }
-
-    // Criterion: a lone speaker with no offset keeps the direct route, and two
-    // speakers always fan out through the combined sink.
-    #[test]
-    fn test_needs_combined_covers_plain_single_and_fan_out() {
-        let plain = SpeakerTarget {
-            address: "AA:BB:CC:DD:EE:FF".to_string(),
-            offset_ms: 0,
-        };
-        let other = SpeakerTarget {
-            address: "11:22:33:44:55:66".to_string(),
-            offset_ms: 0,
-        };
-        assert!(!needs_combined(std::slice::from_ref(&plain)));
-        assert!(needs_combined(&[plain, other]));
-        assert!(!needs_combined(&[]));
-    }
-
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — value below 0 saturates
     // to 0.0.
     #[test]
@@ -1211,6 +1182,81 @@ mod tests {
             second.sink
         );
         assert_eq!(second.latency_ms, 250);
+    }
+
+    // Criterion: `combine_sink_plan` builds exactly one branch for a lone
+    // speaker, naming that speaker's sink prefix and its offset as the branch
+    // latency — including at offset 0, a configuration this code never produced
+    // while a lone plain speaker took the direct route.
+    #[test]
+    fn test_combine_sink_plan_lone_speaker_at_zero_offset_yields_one_branch() {
+        let spec = combine_sink_plan(&[SpeakerTarget {
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            offset_ms: 0,
+        }]);
+
+        assert_eq!(spec.branches.len(), 1);
+        let only = &spec.branches[0];
+        assert_eq!(only.sink, bluez_sink_prefix("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(only.latency_ms, 0);
+    }
+
+    // Criterion: `combine_sink_plan` keeps a lone speaker's offset as the branch
+    // latency — the offset only exists as loopback latency, so a lone speaker
+    // going through the combined sink is the only way it is heard.
+    #[test]
+    fn test_combine_sink_plan_lone_speaker_carries_its_offset_as_latency() {
+        let spec = combine_sink_plan(&[SpeakerTarget {
+            address: "11:22:33:44:55:66".to_string(),
+            offset_ms: 320,
+        }]);
+
+        assert_eq!(spec.branches.len(), 1);
+        let only = &spec.branches[0];
+        assert_eq!(only.sink, bluez_sink_prefix("11:22:33:44:55:66"));
+        assert_eq!(only.latency_ms, 320);
+    }
+
+    // Criterion: `route_for_targets` takes the combined path for every non-empty
+    // selection. The routing itself is a `pactl` seam CI cannot exercise, so the
+    // pure half is pinned instead: the sink the plan names is the sink the
+    // Spotify backend is pointed at, for a lone speaker as much as for two.
+    // If they ever disagree, playback goes somewhere the plan did not build.
+    #[test]
+    fn test_combine_sink_plan_names_the_sink_spotify_is_pointed_at() {
+        let lone = vec![SpeakerTarget {
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            offset_ms: 0,
+        }];
+        let two = vec![
+            SpeakerTarget {
+                address: "AA:BB:CC:DD:EE:FF".to_string(),
+                offset_ms: 0,
+            },
+            SpeakerTarget {
+                address: "11:22:33:44:55:66".to_string(),
+                offset_ms: 250,
+            },
+        ];
+
+        for selection in [&lone, &two] {
+            assert_eq!(
+                combine_sink_plan(selection).sink_name,
+                crate::spotify::spotify_target_sink(selection),
+                "the plan must build the very sink Spotify is pointed at, for {selection:?}"
+            );
+        }
+    }
+
+    // Criterion: `route_for_targets` still refuses an empty selection with
+    // `AudioError::NoSpeakerConnected` — the guard runs before any `pactl` call,
+    // which is what makes this testable without hardware.
+    #[test]
+    fn test_route_for_targets_empty_selection_is_refused() {
+        assert!(matches!(
+            route_for_targets(&[]),
+            Err(AudioError::NoSpeakerConnected)
+        ));
     }
 
     /// A realistic `pactl list short sinks` block: tab-separated columns, the
