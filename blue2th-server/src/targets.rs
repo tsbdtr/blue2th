@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use blue2th_proto::{RoutingMode, SpeakerTarget, TargetsState};
+use blue2th_proto::{NowPlayingState, RoutingMode, SpeakerTarget, TargetsState};
 
 /// Maximum number of speakers that can be selected as playback targets at once.
 pub const MAX_TARGETS: usize = 2;
@@ -26,15 +26,79 @@ pub fn clamp_offset(ms: u32) -> u32 {
     ms.min(MAX_OFFSET_MS)
 }
 
-/// Whether losing the last selected device should quieten the stream (phase 6.3).
+/// What the loss of the last selected speaker calls for (#67).
+///
+/// Three outcomes, because the two paths that empty the selection do not want
+/// the same answer: only one of them promises to bring the speaker back, and a
+/// boolean has no room for the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastLossAction {
+    /// Leave everything alone.
+    Nothing,
+    /// Pause both sources and touch the routing not at all: the speaker is
+    /// coming back, so the pause has to be resumable and nothing may be
+    /// destroyed under a still-running stream.
+    PauseSources,
+    /// Quieten the sources and tear the routing down: nothing will re-select the
+    /// speaker, so the graph must stop pointing at it.
+    QuietenAndTeardown,
+}
+
+/// Which action the loss of the last selected speaker calls for. Pure.
 ///
 /// Pruning the selection leaves the audio graph alone, and PipeWire re-attaches a
 /// returning device's sink, so a stream left running would resume on a device
-/// that is no longer selected. Quietening is skipped when the setting will bring
-/// the device back on its own: pausing then would leave it silent until the user
-/// pressed play. Pure.
-pub fn should_quieten_on_last_loss(lost_last_target: bool, restore_during_playback: bool) -> bool {
-    lost_last_target && !restore_during_playback
+/// that is no longer selected. The setting picks *how* to silence it: it promises
+/// to bring the speaker back, so the sources are merely paused and the routing is
+/// left for them to come back to; with it off nothing will re-select the speaker,
+/// so the graph must stop pointing at it.
+pub fn action_on_last_loss(
+    lost_last_target: bool,
+    restore_during_playback: bool,
+) -> LastLossAction {
+    if !lost_last_target {
+        return LastLossAction::Nothing;
+    }
+    if restore_during_playback {
+        LastLossAction::PauseSources
+    } else {
+        LastLossAction::QuietenAndTeardown
+    }
+}
+
+/// Whether a restoration may resume the sources it finds paused (#67).
+///
+/// Only a pause the backend performed may be undone by the backend: an explicit
+/// transport command from the app clears that claim, so a pause the user asked
+/// for survives a speaker coming back. Pure.
+pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
+    backend_paused_sources
+}
+
+/// Whether the backend may claim the pause it just performed (#67).
+///
+/// The claim means "the backend silenced a source that was playing", and only a
+/// claim licenses a restoration to resume. Clearing it on an explicit transport
+/// command is not enough on its own: the loss path runs afterwards and would
+/// re-claim a pause it never performed, undoing a pause the user asked for. So
+/// each source reports whether it really silenced anything. The engine's pause is
+/// a no-op unless it was `Playing`, so its own status answers for it; Spotify's
+/// half cannot come from the pause call — see [`spotify_was_playing`] — and comes
+/// from the state observed beforehand. Pure.
+pub fn may_claim_pause(spotify_silenced: bool, engine_silenced: bool) -> bool {
+    spotify_silenced || engine_silenced
+}
+
+/// Whether Spotify was playing, from a `now_playing()` snapshot taken **before**
+/// the pause (#67).
+///
+/// The pause call itself cannot answer this: `transport(Pause)` reports success on
+/// any 2xx, and Spotify answers 2xx to a pause on a player that is already paused,
+/// so a call that went through proves nothing about what it stopped. Only the state
+/// observed beforehand does — which is why this takes a snapshot rather than a
+/// result. Pure.
+pub fn spotify_was_playing(state: NowPlayingState) -> bool {
+    matches!(state, NowPlayingState::Playing)
 }
 
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
@@ -1266,28 +1330,149 @@ mod tests {
         assert_eq!(restored.offset_ms, 320);
     }
 
-    // Criterion (phase 6.3): losing the last selected device quietens the stream,
-    // because nothing else will — the routing still points at its sink, and
-    // PipeWire re-attaches that sink when the device comes back.
+    // ---- #67: the three-way answer to losing the last speaker ----
+    //
+    // These four rows replace the three `should_quieten_on_last_loss` tests: that
+    // decision was a boolean, and the row below that now reads `PauseSources` is
+    // exactly the one it had no room for.
+
+    // Criterion: losing the last target with `restore_during_playback` **on**
+    // yields the pause outcome — the case that does nothing today. The speaker is
+    // coming back on its own, so the sources must stop advancing while the
+    // routing is left intact for it to come back to.
     #[test]
-    fn test_should_quieten_when_the_last_device_leaves_and_nothing_restores_it() {
-        assert!(should_quieten_on_last_loss(true, false));
+    fn test_losing_the_last_target_with_restore_on_pauses_the_sources() {
+        assert_eq!(
+            action_on_last_loss(true, true),
+            LastLossAction::PauseSources,
+            "the speakers vanished and will be re-selected: pause, tear nothing down"
+        );
     }
 
-    // Criterion (phase 6.3): with restoration on, the device is re-selected on its
-    // own when it returns, so pausing would leave it silent until the user pressed
-    // play — the opposite of what that setting promises.
+    // Criterion: losing the last target with the setting **off** still yields the
+    // teardown outcome — today's behaviour, which must not regress. Nothing will
+    // re-select the speaker, so the routing must stop pointing at it.
     #[test]
-    fn test_should_not_quieten_when_the_setting_restores_the_device() {
-        assert!(!should_quieten_on_last_loss(true, true));
+    fn test_losing_the_last_target_with_restore_off_quietens_and_tears_down() {
+        assert_eq!(
+            action_on_last_loss(true, false),
+            LastLossAction::QuietenAndTeardown,
+            "nothing will bring the speaker back: quieten and drop the routing"
+        );
     }
 
-    // Criterion (phase 6.3): a poll that did not empty the selection quietens
-    // nothing, whatever the setting says.
+    // Criterion: not losing the last target yields no action — with the setting
+    // on. This runs on every `/devices` poll, so the common row is "do nothing".
     #[test]
-    fn test_should_not_quieten_while_a_target_remains() {
-        assert!(!should_quieten_on_last_loss(false, false));
-        assert!(!should_quieten_on_last_loss(false, true));
+    fn test_keeping_a_target_with_restore_on_does_nothing() {
+        assert_eq!(action_on_last_loss(false, true), LastLossAction::Nothing);
+    }
+
+    // Criterion: not losing the last target yields no action — with the setting
+    // off too. The setting only ever picks between the two loss outcomes.
+    #[test]
+    fn test_keeping_a_target_with_restore_off_does_nothing() {
+        assert_eq!(action_on_last_loss(false, false), LastLossAction::Nothing);
+    }
+
+    // Criterion: a restoration resumes only when the backend is the one that
+    // paused — the claim it sets when the speakers vanish is what licenses the
+    // automatic resume.
+    #[test]
+    fn test_should_resume_after_restore_when_the_backend_paused() {
+        assert!(
+            should_resume_after_restore(true),
+            "the backend paused these sources: bringing the speaker back may undo it"
+        );
+    }
+
+    // Criterion: an explicit transport command from the app clears the backend's
+    // claim, so a pause the *user* asked for is never undone by a restoration —
+    // and neither is a state the backend never paused at all.
+    #[test]
+    fn test_should_not_resume_after_restore_without_the_backend_claim() {
+        assert!(
+            !should_resume_after_restore(false),
+            "no claim: a pause the user asked for must survive a speaker coming back"
+        );
+    }
+
+    // Criterion: the backend may claim the pause only when it actually silenced a
+    // source that was playing — neither silenced means no claim. **This is the
+    // regression this phase exists for**: pausing from the app cleared the claim,
+    // then the last speaker going off re-claimed a pause it had not performed, so
+    // switching the speaker back on resumed music the user had stopped.
+    #[test]
+    fn test_neither_source_silenced_claims_nothing() {
+        assert!(
+            !may_claim_pause(false, false),
+            "nothing was playing to silence: a restoration must resume nothing"
+        );
+    }
+
+    // Criterion: the backend may claim the pause when it silenced a source that
+    // was playing — Spotify was playing and the engine was not.
+    #[test]
+    fn test_spotify_silenced_alone_claims_the_pause() {
+        assert!(
+            may_claim_pause(true, false),
+            "the backend really stopped Spotify: it may resume it later"
+        );
+    }
+
+    // Criterion: the backend may claim the pause when it silenced a source that
+    // was playing — the tone engine was playing and Spotify was not.
+    #[test]
+    fn test_engine_silenced_alone_claims_the_pause() {
+        assert!(
+            may_claim_pause(false, true),
+            "the backend really stopped the engine: it may resume it later"
+        );
+    }
+
+    // Criterion: the backend may claim the pause when it silenced a source that
+    // was playing — both sources were playing, the nominal loss mid-playback.
+    #[test]
+    fn test_both_sources_silenced_claim_the_pause() {
+        assert!(
+            may_claim_pause(true, true),
+            "both sources were silenced by the backend, so both may come back"
+        );
+    }
+
+    // Criterion: the Spotify half of the claim comes from the playback state
+    // observed **before** pausing, and `Playing` is the one state that counts —
+    // the nominal loss mid-playback, where the backend really does stop the music.
+    #[test]
+    fn test_spotify_playing_before_the_pause_was_playing() {
+        assert!(
+            spotify_was_playing(NowPlayingState::Playing),
+            "a track was running: pausing it really silenced something"
+        );
+    }
+
+    // Criterion: `Paused` → false. **This is the defect.** A successful
+    // `transport(Pause)` was read as proof that something had been playing, and
+    // Spotify does not work that way: it answers 2xx to a pause on a player that
+    // is already paused, so the call went through and the backend claimed a pause
+    // it never performed — which is how switching the last speaker off and back on
+    // resumed music the user had stopped from the app.
+    #[test]
+    fn test_spotify_already_paused_was_not_playing() {
+        assert!(
+            !spotify_was_playing(NowPlayingState::Paused),
+            "already paused: pausing again silences nothing, so there is nothing to claim"
+        );
+    }
+
+    // Criterion: `Idle` → false. Nothing loaded, nothing playing, nothing to
+    // claim — the row that also covers "Spotify is not running".
+    #[test]
+    fn test_spotify_idle_was_not_playing() {
+        assert!(
+            !spotify_was_playing(NowPlayingState::Idle),
+            "nothing was playing: a restoration must resume nothing"
+        );
     }
 
     // Criterion: while playback runs, restoration only happens when the flag is

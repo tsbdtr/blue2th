@@ -7,7 +7,14 @@
 //! in-process. Phase 0 only exposed `GET /health`; later phases add Bluetooth
 //! (`bluer`) and audio (PipeWire) routes — see `docs/ROADMAP.md`.
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use axum::{
     extract::{Path, State},
@@ -82,6 +89,11 @@ struct AppState {
     /// due for a dial, and how long to wait after each failure. In memory only —
     /// a restart is deliberately a clean slate, so nothing stays given up on.
     reconnect: Arc<Mutex<reconnect::ReconnectTracker>>,
+    /// The backend's claim that *it* paused both sources when the last speaker
+    /// vanished (#67). It is what licenses the automatic resume on restoration:
+    /// any explicit transport command from the app clears it, so a pause the user
+    /// asked for is never undone by a speaker coming back.
+    backend_paused_sources: Arc<AtomicBool>,
 }
 
 /// One route the backend serves, as a (method, path template) pair plus whether
@@ -616,6 +628,7 @@ fn app_with_auth_and_targets(
         name: Arc::new(Mutex::new(server_name)),
         auth: Arc::new(Mutex::new(auth)),
         reconnect: Arc::new(Mutex::new(reconnect::ReconnectTracker::new())),
+        backend_paused_sources: Arc::new(AtomicBool::new(false)),
     };
 
     spawn_idle_watchdog(state.clone());
@@ -904,6 +917,7 @@ fn spawn_idle_watchdog(state: AppState) {
 /// through the PipeWire combined sink spanning the current target selection. An
 /// empty selection (`Idle`) is rejected (4xx).
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    forget_backend_pause(&state);
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
     audio::route_for_targets(&speakers)?;
@@ -913,14 +927,25 @@ async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
 
 /// `POST /pause` — pause playback (idempotent while stopped).
 async fn pause(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    forget_backend_pause(&state);
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.pause()?))
 }
 
 /// `POST /stop` — stop playback (idempotent while stopped).
 async fn stop(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
+    forget_backend_pause(&state);
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.stop()?))
+}
+
+/// Drop the backend's claim that it paused the sources (#67).
+///
+/// Every explicit transport command from the app goes through here: from that
+/// point on the playback state is the user's, so a speaker coming back must not
+/// undo it.
+fn forget_backend_pause(state: &AppState) {
+    state.backend_paused_sources.store(false, Ordering::SeqCst);
 }
 
 /// `POST /volume` — set the selected speakers' PipeWire sink volume (clamped),
@@ -1039,6 +1064,7 @@ async fn spotify_previous(State(state): State<AppState>) -> Result<StatusCode, A
 /// Drive a transport action on the Spotify Web API, returning 204 on success.
 /// While Disconnected the auth driver rejects before any outbound call (→ 409).
 async fn spotify_transport(state: &AppState, action: Transport) -> Result<StatusCode, AppError> {
+    forget_backend_pause(state);
     let mut auth = state.spotify_auth.lock().await;
     auth.transport(action).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1086,26 +1112,58 @@ async fn client_presence(
     tracing::info!("client presence: {:?}", req.presence);
     state.sse_watch.set_presence(req.presence);
     if req.presence == ClientPresence::Gone {
-        pause_spotify_now(&state).await;
+        // The outcome is only used to decide the backend's resume claim, which
+        // a closing app makes no promise about: nothing here will resume it.
+        let _ = pause_spotify_now(&state).await;
     }
     StatusCode::NO_CONTENT
 }
 
-/// Pause the Spotify Web API playback, best-effort. Used when the app reports it
-/// is closing: nothing here is worth failing that report over, and the backend
-/// answers 409 when there is nothing to pause anyway.
-async fn pause_spotify_now(state: &AppState) {
+/// Pause the Spotify Web API playback, best-effort — a *resumable* pause that
+/// leaves the `librespot` subprocess alive and the Connect device visible.
+///
+/// This is the intent shared by the two situations where playback should stop
+/// but may well come back: the app reporting `Gone`, and the last speaker
+/// vanishing while the setting promises to re-select it. In both the Connect
+/// endpoint must survive — killing it because a phone was swiped away, or
+/// because a speaker blinked, would be wrong. Nothing here is worth failing the
+/// caller over.
+///
+/// It is not the way to silence a teardown: the call returns when Spotify's
+/// servers answer, which says nothing about the audio thread. The
+/// empty-selection branch of `apply_selection_change` stops the subprocess
+/// instead.
+///
+/// Returns whether it really silenced something, which is what licenses the
+/// backend to claim the pause (see [`targets::may_claim_pause`]). That answer
+/// comes from a `now_playing()` snapshot taken *before* the pause, because the
+/// pause call cannot give it: Spotify answers 2xx to a pause on an
+/// already-paused player, so `transport` returning `Ok` proves nothing (see
+/// [`targets::spotify_was_playing`]). A snapshot that cannot be taken at all —
+/// network, token — lands on `false`, and that direction is the safe one: no
+/// claim means a restoration resumes nothing, so the music stays paused rather
+/// than starting again behind the user's back.
+async fn pause_spotify_now(state: &AppState) -> bool {
     let running = {
         let mut spotify = state.spotify.lock().await;
         spotify.poll_liveness().status == SpotifyStatus::Running
     };
     if !running {
-        return;
+        return false;
     }
     let mut auth = state.spotify_auth.lock().await;
+    let was_playing = match auth.now_playing().await {
+        Ok(snapshot) => targets::spotify_was_playing(snapshot.state),
+        Err(e) => {
+            tracing::warn!("could not read the Spotify playback state before pausing: {e}");
+            false
+        },
+    };
     if let Err(e) = auth.transport(Transport::Pause).await {
-        tracing::warn!("could not pause Spotify on client exit: {e}");
+        tracing::warn!("could not pause Spotify: {e}");
+        return false;
     }
+    was_playing
 }
 
 /// `GET /config` — the backend's current name.
@@ -1246,20 +1304,20 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
         )
     };
 
-    // The last selected device just dropped off. Pruning the selection does not
-    // touch the audio graph: the routing still points at that device's sink, and
-    // PipeWire re-attaches the sink when it comes back — so the stream would
-    // resume on a device blue2th no longer considers selected. Quieten it and
-    // tear the routing down.
-    //
-    // Skipped when the setting is on, because the device is then re-selected on
-    // its own when it returns: pausing here would leave it silent until the user
-    // pressed play, which is the opposite of what that setting promises.
-    if targets::should_quieten_on_last_loss(
+    // Pruning the selection does not touch the audio graph: the routing still
+    // points at the sink that just went, and PipeWire re-attaches it when the
+    // device comes back — so a stream left running would play on a speaker
+    // blue2th no longer considers selected. Which of the three answers that
+    // calls for depends on whether anything promises to re-select it, so the
+    // decision is asked for on every pass and is `Nothing` on almost all of them.
+    let action = targets::action_on_last_loss(
         lost_last_target,
         state.name.lock().await.restore_during_playback(),
-    ) {
-        apply_selection_change(state, &[]).await;
+    );
+    match action {
+        targets::LastLossAction::Nothing => {},
+        targets::LastLossAction::PauseSources => pause_sources_until_restored(state).await,
+        targets::LastLossAction::QuietenAndTeardown => apply_selection_change(state, &[]).await,
     }
     // The overwhelmingly common case: this runs on every `/devices` poll (a
     // couple of seconds apart, per client), so a poll where nobody came back
@@ -1296,6 +1354,68 @@ async fn sync_connected(state: &AppState, devices: &[DeviceInfo]) {
         targets.speakers()
     };
     apply_selection_change(state, &speakers).await;
+    // Only a pause the backend performed may be undone by the backend: without
+    // that claim, a speaker coming back would restart music the user had paused.
+    if targets::should_resume_after_restore(state.backend_paused_sources.load(Ordering::SeqCst)) {
+        resume_sources_after_restore(state).await;
+    }
+}
+
+/// Pause both sources because the last selected speaker vanished, and claim that
+/// pause — but only when a source really was silenced — so a restoration may
+/// undo it (#67).
+///
+/// The routing is deliberately left standing: the setting promises the speaker
+/// comes back, so nothing may be destroyed under a still-running stream — which
+/// is also what makes a *resumable* pause safe here, the Web API returning before
+/// `librespot`'s audio thread has stopped no longer orphaning anything.
+async fn pause_sources_until_restored(state: &AppState) {
+    let spotify_silenced = pause_spotify_now(state).await;
+    let engine_silenced = {
+        let mut engine = state.engine.lock().await;
+        // The engine's pause is a no-op unless it was `Playing`, so the status
+        // on either side of the call is what says whether anything stopped.
+        // Spelled out as the one transition `pause` can perform rather than as
+        // `before != after`: both calls reconcile, so a tone that ended between
+        // them also moves the status (Playing → Stopped) without this having
+        // silenced anything, and a claim made there would resume Spotify behind
+        // the user's back.
+        let before = engine.poll_state().status;
+        match engine.pause() {
+            Ok(after) => {
+                before == PlaybackStatus::Playing && after.status == PlaybackStatus::Paused
+            },
+            Err(e) => {
+                tracing::warn!("could not pause playback after the last speaker was lost: {e}");
+                false
+            },
+        }
+    };
+    if targets::may_claim_pause(spotify_silenced, engine_silenced) {
+        state.backend_paused_sources.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Resume the sources the backend paused when the speakers vanished, and drop
+/// the claim: it has been spent, so a later restoration resumes nothing on its
+/// own.
+async fn resume_sources_after_restore(state: &AppState) {
+    state.backend_paused_sources.store(false, Ordering::SeqCst);
+    {
+        let mut auth = state.spotify_auth.lock().await;
+        if let Err(e) = auth.transport(Transport::Play).await {
+            // Nothing to resume, or no login: never worth failing the poll over.
+            tracing::warn!("could not resume Spotify after the speakers came back: {e}");
+        }
+    }
+    let mut engine = state.engine.lock().await;
+    // Only a paused engine is resumed: `play()` on a stopped one would start the
+    // tone from scratch, which the backend never paused.
+    if engine.poll_state().status == PlaybackStatus::Paused {
+        if let Err(e) = engine.play() {
+            tracing::warn!("could not resume playback after the speakers came back: {e}");
+        }
+    }
 }
 
 /// `POST /devices/{addr}/connect` — pair/trust/connect a device, returning its
@@ -1444,9 +1564,24 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
 /// selection kept receiving the stream and playing on.
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
-        // Nothing left to play to. Pause both sources, then tear the combined
+        // Nothing left to play to. Silence both sources, then tear the combined
         // sink down so no loopback keeps feeding a speaker nobody selected.
-        pause_spotify_now(state).await;
+        //
+        // Spotify is *stopped*, not paused through the Web API: a remote pause
+        // returns when Spotify's servers answer, not when `librespot`'s audio
+        // thread has, and a failed call only warns. Unloading the null sink
+        // under a still-streaming child makes PipeWire relocate that stream onto
+        // the fallback, so the music comes out of the PC's own speakers (#67).
+        // `stop()` is local and synchronous, so once it returns there is no
+        // stream left to orphan.
+        {
+            let mut spotify = state.spotify.lock().await;
+            if let Err(e) = spotify.stop() {
+                tracing::warn!(
+                    "could not stop the Spotify backend after the last speaker was dropped: {e}"
+                );
+            }
+        }
         {
             let mut engine = state.engine.lock().await;
             if let Err(e) = engine.pause() {
@@ -1669,6 +1804,39 @@ mod tests {
             spotify_auth::SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
             AuthStore::with_token(TOKEN),
         )
+    }
+
+    /// An `AppState` with every seam kept off the network and off the hardware:
+    /// a `NullOutput` engine, a `SpotifyBackend` holding no child, and a
+    /// Disconnected `SpotifyAuth` — whose `now_playing`/`transport` fail on the
+    /// missing token before any outbound call. That is what lets the claim's
+    /// lifecycle (`backend_paused_sources`) be driven end to end in a test:
+    /// nothing below it reaches PipeWire, `librespot` or the Web API.
+    ///
+    /// Built by hand rather than through `app_with_auth_and_targets`, which
+    /// returns a `Router` and hides the state these tests have to read back.
+    fn test_state() -> AppState {
+        test_state_with_engine(AudioEngine::new())
+    }
+
+    /// The same fixture around an explicit engine, so a test can supply an
+    /// [`audio::AudioOutput`] that behaves differently from `NullOutput`.
+    fn test_state_with_engine(engine: AudioEngine) -> AppState {
+        AppState {
+            engine: Arc::new(Mutex::new(engine)),
+            targets: Arc::new(Mutex::new(SpeakerTargets::new())),
+            connected: Arc::new(Mutex::new(Vec::new())),
+            spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
+            spotify_auth: Arc::new(Mutex::new(SpotifyAuth::with_config(
+                None,
+                "blue2th://spotify-callback".to_string(),
+            ))),
+            sse_watch: Arc::new(watchdog::SseWatch::default()),
+            name: Arc::new(Mutex::new(config::ServerName::new())),
+            auth: Arc::new(Mutex::new(AuthStore::with_token(TOKEN))),
+            reconnect: Arc::new(Mutex::new(reconnect::ReconnectTracker::new())),
+            backend_paused_sources: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// Add the bearer every guarded route requires.
@@ -2177,6 +2345,236 @@ mod tests {
         assert!(
             !banner.contains(store.token()),
             "the banner must never show the API token"
+        );
+    }
+
+    // ---- #67: the claim's lifecycle, end to end ----
+    //
+    // The pure decisions in `targets.rs` are pinned there; what these cover is
+    // the wiring around them, which mutation testing found unpinned: making
+    // `pause_sources_until_restored` a no-op, storing the claim unconditionally
+    // instead of asking `may_claim_pause`, making `resume_sources_after_restore`
+    // a no-op, and dropping `forget_backend_pause` from a transport handler all
+    // left the suite green.
+
+    // Criterion: the backend may claim the pause only when it actually silenced
+    // a source that was playing — with a stopped engine and no `librespot`,
+    // nothing is silenced, so nothing is claimed. This is the row that undid a
+    // user's pause in manual testing: the loss path used to re-claim a pause it
+    // had not performed, and a returning speaker then resumed music the user had
+    // stopped.
+    #[tokio::test]
+    async fn test_pausing_after_the_last_loss_claims_nothing_when_nothing_played() {
+        let state = test_state();
+        // Name what "nothing playing" is worth here, so the assertion below
+        // cannot pass because the fixture happened to be in some other state.
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Stopped,
+            "the fixture must start with a stopped engine"
+        );
+        assert_eq!(
+            state.spotify.lock().await.poll_liveness().status,
+            SpotifyStatus::Stopped,
+            "the fixture must start with no librespot subprocess"
+        );
+
+        pause_sources_until_restored(&state).await;
+
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "neither source was silenced: a restoration must resume nothing"
+        );
+    }
+
+    // Criterion: losing the last speaker pauses the sources, and the engine half
+    // of the claim comes from the status on either side of `AudioEngine::pause`
+    // — a playing engine really stops, and that is worth claiming.
+    #[tokio::test]
+    async fn test_pausing_after_the_last_loss_pauses_a_playing_engine_and_claims_it() {
+        let state = test_state();
+        let started = state.engine.lock().await.play().expect("engine plays");
+        assert_eq!(
+            started.status,
+            PlaybackStatus::Playing,
+            "the engine must really be playing before the loss path runs"
+        );
+
+        pause_sources_until_restored(&state).await;
+
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Paused,
+            "the last speaker went: the engine must be paused, not left running"
+        );
+        assert!(
+            state.backend_paused_sources.load(Ordering::SeqCst),
+            "the backend silenced a playing engine, so it may claim the pause"
+        );
+    }
+
+    // Criterion: a restoration resumes the sources the backend paused, and spends
+    // the claim — so a second restoration, which paused nothing, resumes nothing.
+    #[tokio::test]
+    async fn test_resuming_after_a_restore_plays_the_engine_and_spends_the_claim() {
+        let state = test_state();
+        state.engine.lock().await.play().expect("engine plays");
+        pause_sources_until_restored(&state).await;
+        assert!(
+            state.backend_paused_sources.load(Ordering::SeqCst),
+            "the claim must be set before a restoration can spend it"
+        );
+
+        resume_sources_after_restore(&state).await;
+
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "the speaker came back: the engine the backend paused must play again"
+        );
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "the claim is spent: a later restoration must resume nothing on its own"
+        );
+    }
+
+    // Criterion: a restoration never resumes an engine the backend did not pause
+    // — `resume_sources_after_restore` only ever un-pauses, it does not start the
+    // tone from scratch.
+    #[tokio::test]
+    async fn test_resuming_after_a_restore_never_starts_a_stopped_engine() {
+        let state = test_state();
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Stopped,
+            "the fixture must start with a stopped engine"
+        );
+
+        resume_sources_after_restore(&state).await;
+
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Stopped,
+            "nothing was paused: a restoration must not start the tone from scratch"
+        );
+    }
+
+    /// An output whose tone ends on its own **after** the first `is_finished`
+    /// question, which is what makes the reconcile inside `AudioEngine::pause`
+    /// disagree with the one just before it.
+    ///
+    /// `NullOutput` never finishes, so with it the two reconciles always agree
+    /// and `before != after.status` cannot be told apart from the rule it stands
+    /// for. This is the output that tells them apart.
+    #[derive(Default)]
+    struct FinishesOnTheSecondPoll {
+        polls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl audio::AudioOutput for FinishesOnTheSecondPoll {
+        fn start(&mut self, _tone: &'static [u8]) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn resume(&mut self) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn pause(&mut self) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn is_finished(&self) -> bool {
+            self.polls.fetch_add(1, Ordering::SeqCst) > 0
+        }
+    }
+
+    // Criterion: the backend may claim the pause only when it actually silenced
+    // a source that was playing — a tone that reached its own end between the
+    // two reconciles silenced itself, and claiming it would make a returning
+    // speaker resume Spotify behind the user's back. The status *moves* here
+    // (Playing → Stopped), so a rule written as "the status changed" claims it;
+    // only the rule naming the transition `pause` can perform does not.
+    #[tokio::test]
+    async fn test_a_tone_that_ended_on_its_own_is_not_a_pause_the_backend_may_claim() {
+        let state = test_state_with_engine(AudioEngine::with_output(
+            Box::<FinishesOnTheSecondPoll>::default(),
+        ));
+        let started = state.engine.lock().await.play().expect("engine plays");
+        assert_eq!(
+            started.status,
+            PlaybackStatus::Playing,
+            "the engine must really be playing before the loss path runs"
+        );
+
+        pause_sources_until_restored(&state).await;
+
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Stopped,
+            "the tone ended on its own: the engine is stopped, not paused"
+        );
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "nothing was silenced by the backend: a restoration must resume nothing"
+        );
+    }
+
+    // Criterion: an explicit transport command from the app clears the backend's
+    // claim, so a pause the user asked for is never undone by a speaker coming
+    // back. `POST /pause` is the command that caused the regression.
+    #[tokio::test]
+    async fn test_an_explicit_pause_forgets_the_backend_claim() {
+        let state = test_state();
+        state.backend_paused_sources.store(true, Ordering::SeqCst);
+
+        // Cloned because the handler takes its state by value, as Axum hands
+        // it over; the `Arc`s inside are what the assertion below reads back.
+        let response = pause(State(state.clone())).await;
+        assert!(
+            response.is_ok(),
+            "pausing a stopped engine is a no-op, not an error"
+        );
+
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "the playback state is the user's now: a restoration must not undo it"
+        );
+    }
+
+    // Criterion: the same holds for `POST /stop`.
+    #[tokio::test]
+    async fn test_an_explicit_stop_forgets_the_backend_claim() {
+        let state = test_state();
+        state.backend_paused_sources.store(true, Ordering::SeqCst);
+
+        let response = stop(State(state.clone())).await;
+        assert!(
+            response.is_ok(),
+            "stopping a stopped engine is a no-op, not an error"
+        );
+
+        assert!(!state.backend_paused_sources.load(Ordering::SeqCst));
+    }
+
+    // Criterion: and for a Spotify transport command — including one that fails.
+    // The claim is dropped *before* the call, because what makes the state the
+    // user's is that they asked, not that Spotify obliged: a 409 from a
+    // Disconnected driver must still leave the pause theirs.
+    #[tokio::test]
+    async fn test_a_failed_spotify_transport_still_forgets_the_backend_claim() {
+        let state = test_state();
+        state.backend_paused_sources.store(true, Ordering::SeqCst);
+
+        let response = spotify_transport(&state, Transport::Pause).await;
+        assert!(
+            response.is_err(),
+            "the fixture is Disconnected, so the transport call must be rejected"
+        );
+
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "the user asked for this: the claim goes whether or not Spotify answered"
         );
     }
 }
