@@ -75,6 +75,22 @@ pub fn should_resume_after_restore(backend_paused_sources: bool) -> bool {
     backend_paused_sources
 }
 
+/// Whether the backend may claim the pause it just performed (#67).
+///
+/// The claim means "the backend silenced a source that was playing", and only a
+/// claim licenses a restoration to resume. Clearing it on an explicit transport
+/// command is not enough on its own: the loss path runs afterwards and would
+/// re-claim a pause it never performed, undoing a pause the user asked for. So
+/// each source reports whether it really silenced anything — `transport(Pause)`
+/// fails when Spotify has nothing to pause, and the engine's pause is a no-op
+/// unless it was `Playing`. Pure.
+pub fn may_claim_pause(spotify_silenced: bool, engine_silenced: bool) -> bool {
+    // The wiring in `lib.rs` still claims unconditionally, whatever each source
+    // reported; this is the rule the claim has to obey.
+    let _ = (spotify_silenced, engine_silenced);
+    true
+}
+
 /// Whether a returning speaker may be re-selected right now (phase 6.3).
 ///
 /// Restoring mid-playback puts the returning speaker's branch back into the live
@@ -1368,6 +1384,49 @@ mod tests {
         assert!(
             !should_resume_after_restore(false),
             "no claim: a pause the user asked for must survive a speaker coming back"
+        );
+    }
+
+    // Criterion: the backend may claim the pause only when it actually silenced a
+    // source that was playing — neither silenced means no claim. **This is the
+    // regression this phase exists for**: pausing from the app cleared the claim,
+    // then the last speaker going off re-claimed a pause it had not performed, so
+    // switching the speaker back on resumed music the user had stopped.
+    #[test]
+    fn test_neither_source_silenced_claims_nothing() {
+        assert!(
+            !may_claim_pause(false, false),
+            "nothing was playing to silence: a restoration must resume nothing"
+        );
+    }
+
+    // Criterion: the backend may claim the pause when it silenced a source that
+    // was playing — Spotify was playing and the engine was not.
+    #[test]
+    fn test_spotify_silenced_alone_claims_the_pause() {
+        assert!(
+            may_claim_pause(true, false),
+            "the backend really stopped Spotify: it may resume it later"
+        );
+    }
+
+    // Criterion: the backend may claim the pause when it silenced a source that
+    // was playing — the tone engine was playing and Spotify was not.
+    #[test]
+    fn test_engine_silenced_alone_claims_the_pause() {
+        assert!(
+            may_claim_pause(false, true),
+            "the backend really stopped the engine: it may resume it later"
+        );
+    }
+
+    // Criterion: the backend may claim the pause when it silenced a source that
+    // was playing — both sources were playing, the nominal loss mid-playback.
+    #[test]
+    fn test_both_sources_silenced_claim_the_pause() {
+        assert!(
+            may_claim_pause(true, true),
+            "both sources were silenced by the backend, so both may come back"
         );
     }
 
