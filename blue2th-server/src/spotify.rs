@@ -678,4 +678,84 @@ mod tests {
             "Salon"
         ));
     }
+
+    // Criterion: `stop()` on a backend that never started is a no-op reporting
+    // `Stopped`, not an error. The empty-selection branch of
+    // `apply_selection_change` runs on every deselection of the last speaker,
+    // playing or not, so a `stop()` that failed with nothing to kill would turn
+    // an ordinary deselection into an error path.
+    #[test]
+    fn test_stop_on_a_fresh_backend_is_a_no_op_reporting_stopped() {
+        let mut backend = SpotifyBackend::new();
+        let state = backend
+            .stop()
+            .expect("stop must not fail with no child held");
+        assert_eq!(state.status, SpotifyStatus::Stopped);
+        assert_eq!(
+            backend.status().status,
+            SpotifyStatus::Stopped,
+            "the backend itself must report Stopped afterwards, not only the returned state"
+        );
+    }
+
+    // Criterion: `stop()` leaves the backend reporting `Stopped` and forgets the
+    // sink it was pointed at, so nothing later believes a subprocess is still
+    // targeting it. Asserted through the public `current_sink()`, which is what
+    // `resync_spotify_sink` reads to decide whether a respawn is needed.
+    #[test]
+    fn test_stop_forgets_the_sink_it_was_pointed_at() {
+        // A backend that was pointed at the combined sink, built directly rather
+        // than through `start`: spawning `librespot` is a hardware/process seam
+        // no test may cross, and the field is all `stop` has to clear.
+        let mut backend = SpotifyBackend {
+            child: None,
+            device_name: SPOTIFY_DEVICE_NAME.to_string(),
+            sink: Some(COMBINED_SINK_NAME.to_string()),
+        };
+
+        let state = backend.stop().expect("stop must not fail");
+
+        assert_eq!(state.status, SpotifyStatus::Stopped);
+        assert_eq!(
+            backend.current_sink(),
+            None,
+            "no sink may survive a stop: the combined sink is unloaded right after"
+        );
+        assert!(
+            backend.sink.is_none(),
+            "the remembered sink must be cleared, not merely masked by the absent child"
+        );
+    }
+
+    // Criterion: calling `stop()` twice is still `Stopped`. The empty branch is
+    // reached on every deselection of the last speaker, so the guarantee must not
+    // depend on being reached exactly once.
+    #[test]
+    fn test_stop_twice_still_reports_stopped() {
+        let mut backend = SpotifyBackend {
+            child: None,
+            device_name: SPOTIFY_DEVICE_NAME.to_string(),
+            sink: Some(COMBINED_SINK_NAME.to_string()),
+        };
+
+        let first = backend.stop().expect("first stop must not fail");
+        let second = backend.stop().expect("second stop must not fail");
+
+        assert_eq!(first.status, SpotifyStatus::Stopped);
+        assert_eq!(second.status, SpotifyStatus::Stopped);
+        assert_eq!(backend.current_sink(), None);
+    }
+
+    // Criterion: `stop()` leaves the backend reporting `Stopped` — and nothing
+    // else. Since the empty-selection branch now stops the subprocess on every
+    // deselection of the last speaker, a `stop` that also reset the advertised
+    // name would silently drop the name the app configured (phase 6.2) the first
+    // time a user switched their speakers off.
+    #[test]
+    fn test_stop_keeps_the_configured_device_name() {
+        let mut backend = SpotifyBackend::with_name("Salon");
+        let state = backend.stop().expect("stop must not fail");
+        assert_eq!(state.device_name, "Salon");
+        assert_eq!(backend.device_name(), "Salon");
+    }
 }
