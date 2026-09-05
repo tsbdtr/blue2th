@@ -17,8 +17,8 @@ use blue2th_proto::{SpeakerTarget, SpotifyState, SpotifyStatus};
 /// The Spotify Connect device name the PC advertises.
 pub const SPOTIFY_DEVICE_NAME: &str = "blue2th-PC";
 
-/// Node name of the combined sink used when two speakers are targeted (matches
-/// the `blue2th_combined` convention from `audio.rs`).
+/// Node name of the combined sink every non-empty selection is routed through
+/// (matches the `blue2th_combined` convention from `audio.rs`).
 pub const COMBINED_SINK_NAME: &str = "blue2th_combined";
 
 /// Errors raised while activating/deactivating the Spotify source backend.

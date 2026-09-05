@@ -906,7 +906,6 @@ fn spawn_idle_watchdog(state: AppState) {
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
-    // An empty selection is rejected.
     audio::route_for_targets(&speakers)?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))

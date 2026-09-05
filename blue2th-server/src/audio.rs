@@ -370,12 +370,13 @@ fn run_audio_thread(rx: Receiver<AudioCmd>, ended: Arc<AtomicBool>) {
                 ended.store(false, Ordering::Relaxed);
                 // Reopen the output device on each play so it binds to the
                 // *current* default sink: the route layer points the default at
-                // the connected speaker just before calling play.
+                // the combined sink just before calling play.
                 if let Some(previous) = player.take() {
                     previous.stop();
                 }
                 // Drop the previous device so the new one binds to the current
-                // default sink (pointed at the speaker just before this call).
+                // default sink (pointed at the combined sink just before this
+                // call).
                 drop(device.take());
                 let result = match rodio::DeviceSinkBuilder::open_default_sink() {
                     Ok(mut dev) => {
@@ -438,9 +439,10 @@ pub struct CombineBranch {
     pub latency_ms: u32,
 }
 
-/// Pure plan for a PipeWire combined sink spanning two speakers' sinks, with each
-/// speaker's offset captured as branch latency. Building this performs no I/O; the
-/// hardware seam (`route_to_combined` / `teardown_combined`) consumes it.
+/// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
+/// with each speaker's offset captured as branch latency. Building this performs
+/// no I/O; the hardware seam (`route_to_combined` / `teardown_combined`) consumes
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CombineSinkSpec {
     /// Node name of the combined sink to create.
@@ -485,12 +487,12 @@ pub fn bluez_sink_prefix(mac: &str) -> String {
 }
 
 /// Route playback to a PipeWire combined sink spanning the plan's speakers, so the
-/// player (which opens the default sink) fans out to both, each delayed by its own
+/// player (which opens the default sink) reaches each of them, delayed by its own
 /// offset for tunable sync. Built as a shared null sink the player feeds, plus one
 /// delayed `module-loopback` per speaker into its real `bluez_output.*` sink.
 ///
-/// Hardware seam (PipeWire/`pactl`): not exercised by CI, validated manually on a
-/// real two-speaker setup. Idempotent — when the combined sink is already up it
+/// Hardware seam (PipeWire/`pactl`): not exercised by CI, validated manually on
+/// real speakers. Idempotent — when the combined sink is already up it
 /// reconciles the loopbacks in place instead of rebuilding, so a selection change
 /// does not unload the null sink the player is streaming into; otherwise it
 /// builds the whole graph from scratch.

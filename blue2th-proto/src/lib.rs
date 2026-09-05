@@ -355,15 +355,20 @@ pub struct SpeakerTarget {
     pub offset_ms: u32,
 }
 
-/// How the backend routes playback, derived from the number of selected targets.
+/// How many playback targets the selection carries, as `GET /targets` reports it.
+///
+/// Named for a routing decision the backend no longer makes: a lone target used
+/// to feed its own sink directly while two went through a combined sink (#70).
+/// The variants report the selection count; the names and their lowercase wire
+/// values are kept, since clients parse them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RoutingMode {
     /// No target selected: nothing to play.
     Idle,
-    /// Exactly one target: phase-3 single-speaker path (`set-default-sink`).
+    /// Exactly one target selected.
     Single,
-    /// Two targets: a PipeWire combined sink spanning both speakers.
+    /// Two targets selected.
     Combined,
 }
 

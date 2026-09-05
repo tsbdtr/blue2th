@@ -9,7 +9,7 @@
 //! through the combined sink, it never does. The PipeWire re-route and BlueZ's
 //! own reconnection are hardware seams, validated by hand.
 
-use blue2th_server::spotify::spotify_target_sink;
+use blue2th_server::spotify::{spotify_target_sink, COMBINED_SINK_NAME};
 use blue2th_server::targets::SpeakerTargets;
 
 const A: &str = "AA:BB:CC:DD:EE:FF";
@@ -32,6 +32,14 @@ fn test_restoring_a_second_speaker_keeps_the_librespot_target_sink() {
     // B goes flat: the live selection drops to a lone speaker at offset 0.
     targets.retain_connected(&connected(&[A]));
     let before = spotify_target_sink(&targets.speakers());
+    // Name the value the equality below is about: two targets that are both
+    // *absent* would compare equal just as happily, and that is the shape a
+    // missing target takes here — `spotify_target_sink` returns an empty string
+    // for a selection it cannot route.
+    assert_eq!(
+        before, COMBINED_SINK_NAME,
+        "a lone speaker at offset 0 must already be on the combined sink"
+    );
 
     assert!(targets.restore(&connected(&[A, B])), "B came back");
     let after = spotify_target_sink(&targets.speakers());
