@@ -17,8 +17,8 @@ use blue2th_proto::{SpeakerTarget, SpotifyState, SpotifyStatus};
 /// The Spotify Connect device name the PC advertises.
 pub const SPOTIFY_DEVICE_NAME: &str = "blue2th-PC";
 
-/// Node name of the combined sink used when two speakers are targeted (matches
-/// the `blue2th_combined` convention from `audio.rs`).
+/// Node name of the combined sink every non-empty selection is routed through
+/// (matches the `blue2th_combined` convention from `audio.rs`).
 pub const COMBINED_SINK_NAME: &str = "blue2th_combined";
 
 /// Errors raised while activating/deactivating the Spotify source backend.
@@ -103,23 +103,18 @@ pub fn librespot_cache_dir() -> String {
 }
 
 /// The **logical** playback target for the current selection: the
-/// `blue2th_combined` null sink for two targets, or the single speaker's
-/// `bluez_output.*` sink prefix for one.
+/// `blue2th_combined` null sink for every non-empty selection, and an empty
+/// string when nothing is selected.
 ///
-/// The single-speaker value is a *prefix*, **not** a node name — the live node
-/// BlueZ creates carries a card suffix (`bluez_output.<MAC>.1`) — so the caller
-/// must resolve it (`audio::resolve_target_sink`) before handing it to
-/// `--device`. Pure — performs no I/O, which is what lets `tests/restore.rs`
-/// call it with no hardware.
+/// One shape for every selection is what keeps the target invariant when a
+/// speaker is added or dropped, so `resync_spotify_sink` never respawns
+/// `librespot` over a selection change (#70). Pure — performs no I/O, which is
+/// what lets `tests/restore.rs` call it with no hardware.
 pub fn spotify_target_sink(speakers: &[SpeakerTarget]) -> String {
-    match speakers {
-        [] => String::new(),
-        // Fan-out, or a single speaker carrying an offset: both go through the
-        // combined sink, the only place where the offset exists (loopback latency).
-        _ if crate::audio::needs_combined(speakers) => COMBINED_SINK_NAME.to_string(),
-        // A single target with no offset feeds its own `bluez_output.*` sink.
-        [only, ..] => crate::audio::bluez_sink_prefix(&only.address),
+    if speakers.is_empty() {
+        return String::new();
     }
+    COMBINED_SINK_NAME.to_string()
 }
 
 /// Map a spawn `io::Error` to a typed [`SpotifyError`]: `NotFound` (the binary is
@@ -226,16 +221,14 @@ impl SpotifyBackend {
             return Ok(self.status());
         }
 
-        // Establish PipeWire routing for the selection (single sink vs combined).
+        // Establish PipeWire routing for the selection (the combined sink).
         crate::audio::route_for_targets(speakers)
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
-        // `spotify_target_sink` yields a *logical* target: for a single speaker a
-        // `bluez_output.*` prefix, which names no live node (the node BlueZ
-        // creates carries a card suffix). Resolve it here, at the argv, rather
-        // than in that pure function; a failure is reported instead of letting
-        // librespot fall back to the default sink.
+        // `spotify_target_sink` yields a *logical* target. Resolve it here, at the
+        // argv, rather than in that pure function; a failure is reported instead
+        // of letting librespot fall back to the default sink.
         let resolved = crate::audio::resolve_target_sink(&sink)
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
         // The argv comes from the same seam the tests pin, so the spawned
@@ -451,26 +444,12 @@ mod tests {
         assert_eq!(sink, COMBINED_SINK_NAME);
     }
 
-    // Criterion: `spotify_target_sink(&speakers)` still returns a **logical**
-    // target for a single speaker — the `bluez_output.*` prefix, which is not a
-    // live node name: the node BlueZ creates carries a card suffix
-    // (`bluez_output.<MAC>.1`). The caller must resolve it before handing it to
-    // `--device`; resolving here would pull `pactl` into a pure function that
-    // `tests/restore.rs` calls with no hardware.
+    // Criterion: `spotify_target_sink` returns the combined sink for a lone
+    // speaker with no offset — the case that used to take the direct route, and
+    // whose crossing back and forth is what respawned librespot (#70).
     #[test]
-    fn test_spotify_target_sink_single_target_is_an_unresolved_prefix() {
-        let sink = spotify_target_sink(&[target(A)]);
-        assert_eq!(sink, crate::audio::bluez_sink_prefix(A));
-        assert!(
-            sink.starts_with("bluez_output."),
-            "single-target sink must be a bluez_output.* prefix, got {sink}"
-        );
-        // A prefix, not a node: the live node adds a `.<card>` segment.
-        assert_eq!(
-            sink.matches('.').count(),
-            1,
-            "the logical target must carry no card suffix — it is a prefix the caller resolves, got {sink}"
-        );
+    fn test_spotify_target_sink_lone_target_without_offset_is_combined() {
+        assert_eq!(spotify_target_sink(&[target(A)]), COMBINED_SINK_NAME);
     }
 
     // Criterion: a single target carrying an offset goes through the combined
@@ -483,6 +462,39 @@ mod tests {
             offset_ms: 750,
         };
         assert_eq!(spotify_target_sink(&[delayed]), COMBINED_SINK_NAME);
+    }
+
+    // Criterion: the logical target is *invariant* under a selection change, so
+    // `resync_spotify_sink` never sees a difference and never respawns librespot
+    // (#70). Asserted as an equality between the three selections rather than as
+    // three constant assertions: the equality is the property that matters, and
+    // it keeps holding if the sink is ever renamed, while three constants would
+    // hide one case drifting away from the others.
+    #[test]
+    fn test_spotify_target_sink_is_invariant_across_non_empty_selections() {
+        let lone_plain = spotify_target_sink(&[target(A)]);
+        let lone_delayed = spotify_target_sink(&[SpeakerTarget {
+            address: A.to_string(),
+            offset_ms: 750,
+        }]);
+        let two = spotify_target_sink(&[target(A), target(B)]);
+
+        assert_eq!(
+            lone_plain, lone_delayed,
+            "an offset on a lone speaker must not move the logical target"
+        );
+        assert_eq!(
+            lone_plain, two,
+            "adding or removing a speaker must not move the logical target"
+        );
+    }
+
+    // Criterion: an empty selection still yields no target at all — the guard
+    // that keeps `resync_spotify_sink` and the restore path from pointing
+    // librespot at a sink when nothing is selected.
+    #[test]
+    fn test_spotify_target_sink_empty_selection_is_empty() {
+        assert!(spotify_target_sink(&[]).is_empty());
     }
 
     // Criterion: a `NotFound` spawn error maps to the `BackendMissing` variant.

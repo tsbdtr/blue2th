@@ -101,7 +101,9 @@ of CI.
   acceptable sync. **This realizes the original goal (without Spotify).**
 - **Status**: shipped and **validated on hardware** — explicit two-speaker
   selection (cap 2), per-speaker offset (0–750 ms) applied as `module-loopback`
-  branch latency over a shared null sink, single-speaker path preserved.
+  branch latency over a shared null sink, single-speaker path preserved — that
+  last part was later dropped: every non-empty selection goes through the
+  combined sink (#70).
 
 ### Phase 5 — Spotify source ⭐ (full vision) — ✅ DONE
 - **Backend**: embed/spawn **`librespot`** → PC becomes a Spotify Connect device;

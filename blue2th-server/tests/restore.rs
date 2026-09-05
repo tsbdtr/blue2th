@@ -5,10 +5,11 @@
 //!
 //! What is covered here is the **decision**: whether restoring a returning
 //! speaker moves `librespot`'s target sink, which is the only reason to respawn
-//! it (`--device` is fixed at spawn). The respawn itself, the PipeWire re-route
-//! and BlueZ's own reconnection are hardware seams, validated by hand.
+//! it (`--device` is fixed at spawn). Since every non-empty selection goes
+//! through the combined sink, it never does. The PipeWire re-route and BlueZ's
+//! own reconnection are hardware seams, validated by hand.
 
-use blue2th_server::spotify::spotify_target_sink;
+use blue2th_server::spotify::{spotify_target_sink, COMBINED_SINK_NAME};
 use blue2th_server::targets::SpeakerTargets;
 
 const A: &str = "AA:BB:CC:DD:EE:FF";
@@ -19,31 +20,38 @@ fn connected(addrs: &[&str]) -> Vec<String> {
     addrs.iter().map(|s| s.to_string()).collect()
 }
 
-// Criterion: `librespot` is respawned when the restoration moves the target sink
-// — a lone speaker feeds its `bluez_output.*` directly, two go through the
-// combined sink, so a speaker coming back changes where the stream must go.
+// Criterion: a restoration never moves the target sink, so it never respawns
+// `librespot` — even from a lone speaker at offset 0, the selection that used to
+// take the direct route and whose crossing back is what #70 reports.
 #[test]
-fn test_restoring_a_second_speaker_moves_the_librespot_target_sink() {
+fn test_restoring_a_second_speaker_keeps_the_librespot_target_sink() {
     // Store-free: no test may read or write the real ~/.local/state/blue2th/.
     let mut targets = SpeakerTargets::new();
     targets.select(A, &connected(&[A, B])).expect("select A");
     targets.select(B, &connected(&[A, B])).expect("select B");
-    // B goes flat: the live selection falls back to the single-sink route.
+    // B goes flat: the live selection drops to a lone speaker at offset 0.
     targets.retain_connected(&connected(&[A]));
     let before = spotify_target_sink(&targets.speakers());
+    // Name the value the equality below is about: two targets that are both
+    // *absent* would compare equal just as happily, and that is the shape a
+    // missing target takes here — `spotify_target_sink` returns an empty string
+    // for a selection it cannot route.
+    assert_eq!(
+        before, COMBINED_SINK_NAME,
+        "a lone speaker at offset 0 must already be on the combined sink"
+    );
 
     assert!(targets.restore(&connected(&[A, B])), "B came back");
     let after = spotify_target_sink(&targets.speakers());
 
-    assert_ne!(
+    assert_eq!(
         before, after,
-        "the target sink moved, so librespot must be respawned"
+        "the target sink did not move: librespot must be left alone"
     );
 }
 
-// Criterion: ...and **only** then — a restoration that leaves the target sink
-// where it was must not respawn `librespot`. A lone speaker with a non-zero
-// offset already runs through the combined sink, so the second one joining it
+// Criterion: the same holds when the lone speaker carries an offset — that
+// selection already ran through the combined sink, so the second one joining it
 // changes nothing for `--device`.
 #[test]
 fn test_restoring_into_an_existing_combined_sink_keeps_the_target_sink() {
