@@ -537,7 +537,11 @@ fn build_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
 /// are [`loaded_branches`] and [`reconcile_branches`], which are pure and tested.
 fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
     let listing = module_listing()?;
-    let loaded = loaded_branches(&listing, &spec.sink_name);
+    let loaded = loaded_branches(
+        &listing,
+        &spec.sink_name,
+        sink_input_liveness(&sink_input_listing().unwrap_or_default()).as_deref(),
+    );
     let plan = reconcile_branches(&loaded, spec);
     let source = format!("source={}.monitor", spec.sink_name);
     for branch in &plan.to_unload {
@@ -623,7 +627,12 @@ pub fn retune_combined_branch(sink_name: &str, branch: &CombineBranch) -> Result
 /// The input comes from a subprocess, so anything that does not parse is skipped
 /// rather than reported: a truncated or unexpected listing yields fewer branches,
 /// never a failure.
-pub fn loaded_branches(listing: &str, sink_name: &str) -> Vec<CombineBranch> {
+pub fn loaded_branches(
+    listing: &str,
+    sink_name: &str,
+    live: Option<&[SinkInputStream]>,
+) -> Vec<CombineBranch> {
+    let _ = live;
     let source = format!("source={sink_name}.monitor");
     listing
         .lines()
@@ -657,6 +666,57 @@ pub fn loaded_branches(listing: &str, sink_name: &str) -> Vec<CombineBranch> {
             })
         })
         .collect()
+}
+
+/// One playback stream as `pactl list sink-inputs` reports it: the id of the
+/// module that owns it, and the index of the sink it feeds.
+///
+/// A `module-loopback`'s playback stream reports its own module id in
+/// `Owner Module:`, which is what ties a loaded branch to the audio it is — or is
+/// not — carrying. A plain client reports `n/a` there and owns no module of ours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SinkInputStream {
+    /// The `Owner Module:` field.
+    pub owner_module: u32,
+    /// The `Sink:` field: PulseAudio's index of the sink this stream feeds.
+    pub sink: u32,
+}
+
+/// Read the text `pactl list sink-inputs` prints into one entry per stream that
+/// belongs to a module. Pure — performs no I/O.
+///
+/// The input comes from a subprocess, so anything that does not parse is skipped
+/// rather than reported.
+pub fn parse_sink_inputs(_listing: &str) -> Vec<SinkInputStream> {
+    Vec::new()
+}
+
+/// What a sink-input listing lets us conclude about liveness: `Some(streams)`
+/// when it could be read, `None` when it could not.
+///
+/// The distinction matters because the repair pass only runs while audio is
+/// flowing: with something playing, a listing carrying no stream at all is a
+/// failed `pactl`, not a graph where every branch is dead. Concluding the latter
+/// would rebuild the whole graph and interrupt the audio the pass exists to
+/// protect.
+pub fn sink_input_liveness(_listing: &str) -> Option<Vec<SinkInputStream>> {
+    None
+}
+
+/// Whether a loaded `module-loopback` is actually feeding a speaker: it has a
+/// playback stream, and that stream sits on a real sink.
+///
+/// A module outlives its sink's node — a module is not a node — so a loopback can
+/// stay loaded while carrying nothing (#75).
+pub fn module_is_live(_streams: &[SinkInputStream], _module_id: u32) -> bool {
+    true
+}
+
+/// Whether the periodic repair pass has anything to do: a branch that is missing
+/// or dead only matters while audio is flowing towards it, and skipping keeps the
+/// idle cost at zero.
+pub fn should_repair_branches(_selection: &[SpeakerTarget], _anything_playing: bool) -> bool {
+    false
 }
 
 /// What a selection change has to do to an already-loaded combined sink: the
@@ -712,6 +772,20 @@ fn module_listing() -> Result<String, AudioError> {
     if !output.status.success() {
         return Err(AudioError::PipeWire(
             "pactl list modules failed".to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The text `pactl list sink-inputs` prints, for [`sink_input_liveness`] to read.
+fn sink_input_listing() -> Result<String, AudioError> {
+    let output = Command::new("pactl")
+        .args(["list", "sink-inputs"])
+        .output()
+        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
+    if !output.status.success() {
+        return Err(AudioError::PipeWire(
+            "pactl list sink-inputs failed".to_string(),
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -1444,7 +1518,7 @@ mod tests {
     #[test]
     fn test_loaded_branches_ignores_a_non_loopback_module_shaped_like_a_branch() {
         assert!(
-            !loaded_branches(PACTL_MODULES, "blue2th_combined")
+            !loaded_branches(PACTL_MODULES, "blue2th_combined", None)
                 .iter()
                 .any(|b| b.sink.contains("99_88_77_66_55_44")),
             "only module-loopback lines are branches"
@@ -1465,7 +1539,7 @@ mod tests {
         );
 
         assert!(
-            loaded_branches(line, "blue2th_combined").is_empty(),
+            loaded_branches(line, "blue2th_combined", None).is_empty(),
             "the marker sits inside another token, so this is not one of our branches"
         );
     }
@@ -1477,7 +1551,7 @@ mod tests {
     // branch would put it in `to_unload` and take every other branch with it.
     #[test]
     fn test_loaded_branches_skips_a_loopback_whose_sink_names_no_node() {
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined");
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", None);
 
         assert!(
             branches.iter().all(|b| !b.sink.is_empty()),
@@ -1497,7 +1571,7 @@ mod tests {
     // it feeds and its `latency_msec`.
     #[test]
     fn test_loaded_branches_reads_each_loopback_sink_and_latency() {
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined");
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", None);
 
         assert_eq!(
             branches,
@@ -1520,7 +1594,7 @@ mod tests {
     // which a selection change must never unload.
     #[test]
     fn test_loaded_branches_ignores_other_sinks_and_non_loopback_modules() {
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined");
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", None);
 
         assert!(
             !branches
@@ -1538,7 +1612,7 @@ mod tests {
     // ours up, i.e. the match is on `source=<sink_name>.monitor`.
     #[test]
     fn test_loaded_branches_reads_only_the_named_sinks_branches() {
-        let branches = loaded_branches(PACTL_MODULES, "other_combined");
+        let branches = loaded_branches(PACTL_MODULES, "other_combined", None);
 
         assert_eq!(
             branches,
@@ -1554,14 +1628,15 @@ mod tests {
     // a panic — the input comes from a subprocess and may be anything.
     #[test]
     fn test_loaded_branches_without_a_matching_module_is_empty() {
-        assert!(loaded_branches("", "blue2th_combined").is_empty());
+        assert!(loaded_branches("", "blue2th_combined", None).is_empty());
         assert!(loaded_branches(
             "10\tmodule-device-restore\t\n31\tmodule-switch-on-connect\t\n",
-            "blue2th_combined"
+            "blue2th_combined",
+            None
         )
         .is_empty());
         assert!(
-            loaded_branches("27\tmodule-loopback", "blue2th_combined").is_empty(),
+            loaded_branches("27\tmodule-loopback", "blue2th_combined", None).is_empty(),
             "a truncated line names no sink and no latency, so it is no branch"
         );
     }
@@ -1588,7 +1663,7 @@ mod tests {
     #[test]
     fn test_reconcile_branches_unchanged_selection_changes_nothing() {
         let spec = two_speaker_spec();
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name);
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
 
         let plan = reconcile_branches(&loaded, &spec);
 
@@ -1630,7 +1705,7 @@ mod tests {
             address: "80:99:E7:63:50:29".to_string(),
             offset_ms: 0,
         }]);
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name);
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
 
         let plan = reconcile_branches(&loaded, &spec);
 
@@ -1672,7 +1747,7 @@ mod tests {
                 offset_ms: 400,
             },
         ]);
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name);
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
 
         let plan = reconcile_branches(&loaded, &spec);
 
@@ -1809,5 +1884,264 @@ mod tests {
             }],
             "the other speaker's loopback is not the selected one and goes"
         );
+    }
+
+    /// A realistic `pactl list sink-inputs` block, in the shape captured from a
+    /// live system with a probe loopback loaded: a plain client reports
+    /// `Owner Module: n/a`, while a loopback's playback stream reports the id of
+    /// the module that owns it.
+    ///
+    /// Module 27 is the first branch of [`PACTL_MODULES`] and feeds a real sink;
+    /// module 28 is its second branch, and its stream sits on `4294967295` —
+    /// PulseAudio's invalid index, the signature captured while a returned
+    /// speaker stayed silent (#75).
+    const PACTL_SINK_INPUTS: &str = concat!(
+        "Sink Input #135\n",
+        "\tDriver: PipeWire\n",
+        "\tOwner Module: n/a\n",
+        "\tClient: 134\n",
+        "\tSink: 5691\n",
+        "\tProperties:\n",
+        "\t\tapplication.name = \"speech-dispatcher-dummy\"\n",
+        "\t\tnode.name = \"speech-dispatcher-dummy\"\n",
+        "\n",
+        "Sink Input #28098\n",
+        "\tDriver: PipeWire\n",
+        "\tOwner Module: 27\n",
+        "\tClient: n/a\n",
+        "\tSink: 28091\n",
+        "\tProperties:\n",
+        "\t\tnode.name = \"output.loopback-6815-13\"\n",
+        "\t\tmedia.name = \"loopback-6815-13 output\"\n",
+        "\n",
+        "Sink Input #28099\n",
+        "\tDriver: PipeWire\n",
+        "\tOwner Module: 28\n",
+        "\tClient: n/a\n",
+        "\tSink: 4294967295\n",
+        "\tProperties:\n",
+        "\t\tnode.name = \"output.loopback-6815-14\"\n",
+        "\t\tmedia.name = \"loopback-6815-14 output\"\n",
+    );
+
+    /// PulseAudio's invalid sink index: what a loopback's stream reports once the
+    /// node it was pinned to is gone.
+    const INVALID_SINK_INDEX: u32 = 4_294_967_295;
+
+    // Criterion: a pure function parses `pactl list sink-inputs` into, for each
+    // stream, its owning module id and the sink it feeds.
+    #[test]
+    fn test_parse_sink_inputs_reads_each_streams_module_and_sink() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        assert_eq!(
+            streams,
+            vec![
+                SinkInputStream {
+                    owner_module: 27,
+                    sink: 28091,
+                },
+                SinkInputStream {
+                    owner_module: 28,
+                    sink: INVALID_SINK_INDEX,
+                },
+            ],
+            "one entry per stream owning a module, with the sink it feeds"
+        );
+    }
+
+    // Criterion: a stream with no owning module (`Owner Module: n/a`, what a plain
+    // client reports) is ignored — it belongs to no module of ours, and taking its
+    // `Sink:` would make a foreign stream vouch for one of our branches.
+    #[test]
+    fn test_parse_sink_inputs_skips_a_stream_owning_no_module() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        assert!(
+            !streams.iter().any(|s| s.sink == 5691),
+            "the sink of the `n/a` client must not appear: {streams:?}"
+        );
+        assert_eq!(streams.len(), 2, "only the two module-owned streams");
+    }
+
+    // Criterion: a loopback module with a stream on a real sink is live.
+    #[test]
+    fn test_module_is_live_with_a_stream_on_a_real_sink_is_live() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        assert!(
+            module_is_live(&streams, 27),
+            "module 27's stream feeds sink 28091, so the branch carries audio"
+        );
+    }
+
+    // Criterion: a module whose stream sits on `4294967295` is not live. This is
+    // the captured signature of the defect: the loopback survived its sink's node,
+    // `sink_dont_move=true` kept it from re-attaching, and it now feeds nothing.
+    #[test]
+    fn test_module_is_live_with_a_stream_on_the_invalid_sink_is_not_live() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        assert!(
+            !module_is_live(&streams, 28),
+            "a stream on {INVALID_SINK_INDEX} feeds nothing, so the branch is dead"
+        );
+    }
+
+    // Criterion: a module with no sink-input at all is not live.
+    #[test]
+    fn test_module_is_live_without_any_stream_is_not_live() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        assert!(
+            !streams.iter().any(|s| s.owner_module == 29),
+            "module 29 owns no stream in the fixture, which is the case under test"
+        );
+        assert!(
+            !module_is_live(&streams, 29),
+            "no stream at all is as dead as a stream on the invalid sink"
+        );
+    }
+
+    // Criterion: `loaded_branches` counts only live branches, so a stale loopback
+    // reads as absent — which is what makes the reconciliation rebuild it.
+    #[test]
+    fn test_loaded_branches_drops_a_branch_whose_module_is_not_live() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", Some(&streams));
+
+        assert_eq!(
+            branches,
+            vec![CombineBranch {
+                sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+                latency_ms: 0,
+            }],
+            "module 28's loopback feeds nothing, so its branch is absent"
+        );
+    }
+
+    // Criterion: `loaded_branches` keeps a branch whose module is live — the
+    // healthy graph must stay a no-op, or the pass would churn the audio it
+    // protects.
+    #[test]
+    fn test_loaded_branches_keeps_a_branch_whose_module_is_live() {
+        let streams = vec![
+            SinkInputStream {
+                owner_module: 27,
+                sink: 28091,
+            },
+            SinkInputStream {
+                owner_module: 28,
+                sink: 28092,
+            },
+        ];
+
+        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", Some(&streams));
+        let plan = reconcile_branches(&branches, &two_speaker_spec());
+
+        assert_eq!(branches.len(), 2, "both loopbacks feed a real sink");
+        assert_eq!(
+            plan,
+            BranchReconciliation::default(),
+            "every planned branch is live, so nothing is loaded and nothing unloaded"
+        );
+    }
+
+    // Criterion: the stale module is unloaded before the replacement is loaded.
+    // Only the pure half is pinnable here — once the dead branch reads as absent,
+    // the reconciliation asks for that speaker to be loaded again. Performing the
+    // unload first is `reconcile_combined`'s `pactl` seam, which CI does not run.
+    #[test]
+    fn test_reconcile_branches_asks_to_reload_a_branch_ruled_dead() {
+        let spec = two_speaker_spec();
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, Some(&streams));
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(
+            plan.to_load,
+            vec![CombineBranch {
+                sink: "bluez_output.11_22_33_44_55_66".to_string(),
+                latency_ms: 250,
+            }],
+            "the dead speaker's branch is rebuilt, and only that one"
+        );
+    }
+
+    // Criterion: an empty or truncated listing yields no streams.
+    #[test]
+    fn test_parse_sink_inputs_of_an_unreadable_listing_yields_no_streams() {
+        assert!(parse_sink_inputs("").is_empty());
+        assert!(
+            parse_sink_inputs("Sink Input #28098\n\tDriver: PipeWire\n").is_empty(),
+            "a stream naming neither module nor sink is no stream"
+        );
+    }
+
+    // Criterion: an unreadable listing reads as "cannot tell", not "everything is
+    // dead" — the pass only runs while audio flows, so a listing with no stream at
+    // all is a failed `pactl`, and treating it as death would rebuild the whole
+    // graph and cut the sound.
+    #[test]
+    fn test_sink_input_liveness_of_an_unreadable_listing_is_unknown() {
+        assert!(
+            sink_input_liveness("").is_none(),
+            "an empty listing tells us nothing about any branch"
+        );
+        assert!(
+            sink_input_liveness(PACTL_SINK_INPUTS).is_some(),
+            "a listing that parses does tell us"
+        );
+    }
+
+    // Criterion: an unreadable listing must not empty the branch set — the caller
+    // keeps every loaded branch, so the reconciliation stays a no-op.
+    #[test]
+    fn test_loaded_branches_with_unknown_liveness_keeps_every_branch() {
+        let spec = two_speaker_spec();
+        let unknown = sink_input_liveness("");
+
+        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, unknown.as_deref());
+        let plan = reconcile_branches(&loaded, &spec);
+
+        assert_eq!(loaded.len(), 2, "cannot tell is not everything is dead");
+        assert_eq!(
+            plan,
+            BranchReconciliation::default(),
+            "a transient pactl failure must not rebuild the graph"
+        );
+    }
+
+    // Criterion: a pure decision says whether the repair pass runs at all — a
+    // non-empty selection with something playing runs.
+    #[test]
+    fn test_should_repair_branches_with_a_selection_and_audio_runs() {
+        let selection = vec![SpeakerTarget {
+            address: "80:99:E7:63:50:29".to_string(),
+            offset_ms: 0,
+        }];
+
+        assert!(should_repair_branches(&selection, true));
+    }
+
+    // Criterion: an empty selection does not run — there is nothing to repair, and
+    // the pass must not build a combined sink on its own.
+    #[test]
+    fn test_should_repair_branches_with_an_empty_selection_does_not_run() {
+        assert!(!should_repair_branches(&[], true));
+    }
+
+    // Criterion: nothing playing does not run — a dead branch matters only while
+    // audio flows, and skipping keeps the idle cost at zero.
+    #[test]
+    fn test_should_repair_branches_with_nothing_playing_does_not_run() {
+        let selection = vec![SpeakerTarget {
+            address: "80:99:E7:63:50:29".to_string(),
+            offset_ms: 0,
+        }];
+
+        assert!(!should_repair_branches(&selection, false));
     }
 }
