@@ -633,6 +633,7 @@ fn app_with_auth_and_targets(
 
     spawn_idle_watchdog(state.clone());
     spawn_auto_reconnect(state.clone());
+    spawn_branch_repair(state.clone());
 
     // Built from `ROUTES`, never alongside it: the guard is applied per entry,
     // so a route can only exist here by being listed — and by declaring whether
@@ -873,6 +874,61 @@ async fn auto_reconnect_pass(state: &AppState) {
         } else {
             tracing::warn!("auto-reconnect could not reach {addr}: {failure}");
         }
+    }
+}
+
+/// Start the branch repair pass (#75): re-run the routing reconciliation on a
+/// tick, so a speaker whose branch is missing or dead is fed again without the
+/// user deselecting and reselecting it.
+///
+/// A tick of its own rather than work on the `/devices` poll, which runs per
+/// client: the cost would otherwise multiply by the number of connected apps.
+fn spawn_branch_repair(state: AppState) {
+    // A router built outside an async context (a bare unit test) has no runtime
+    // to spawn on, and a test must never drive the developer's own PipeWire graph.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            // Sleeps first, unlike `spawn_auto_reconnect`: at startup the graph is
+            // whatever the previous run left, nothing is playing yet, and the
+            // selection is restored by its own pass. A repair on the first
+            // instant would only reconcile against a selection nobody asked for.
+            tokio::time::sleep(audio::BRANCH_REPAIR_TICK).await;
+            branch_repair_pass(&state).await;
+        }
+    });
+}
+
+/// One repair pass: reconcile the combined sink against the current selection.
+///
+/// A graph that already matches the plan is left untouched, so the common case
+/// costs nothing and the audio runs on; a branch that failed to load — the race
+/// where PipeWire had not created the `bluez_output.*` node yet — or one ruled
+/// dead is rebuilt, and rebuilding one branch rebuilds the whole selection (see
+/// `audio::reconcile_branches`), so a repair is a brief cut on the speakers that
+/// were already playing. A failure stays a warning: the next tick simply tries
+/// again, which is what repairs the race.
+async fn branch_repair_pass(state: &AppState) {
+    let speakers = state.targets.lock().await.speakers();
+    // "Playing" covers both sources — the local tone and the Spotify backend —
+    // exactly as the restore pass reads it: a branch that carries nothing only
+    // matters while something is flowing towards it.
+    let anything_playing = {
+        let mut engine = state.engine.lock().await;
+        engine.poll_state().status == PlaybackStatus::Playing
+    } || {
+        let mut spotify = state.spotify.lock().await;
+        spotify.poll_liveness().status == SpotifyStatus::Running
+    };
+    // The single guard, and it runs before any `pactl`: an idle backend — no
+    // selection, or nothing playing — spawns nothing at all.
+    if !audio::should_repair_branches(&speakers, anything_playing) {
+        return;
+    }
+    if let Err(e) = audio::route_for_targets(&speakers) {
+        tracing::warn!("branch repair could not re-route: {e}");
     }
 }
 
@@ -1530,7 +1586,7 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     if audio::combined_sink_exists(&plan.sink_name) {
         let branch = audio::CombineBranch {
             sink: audio::bluez_sink_prefix(&target.address),
-            latency_ms: target.offset_ms,
+            latency_ms: audio::branch_latency_ms(target.offset_ms),
         };
         if let Err(e) = audio::retune_combined_branch(&plan.sink_name, &branch) {
             tracing::warn!("could not retune the speaker offset live: {e}");
