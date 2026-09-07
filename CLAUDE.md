@@ -225,7 +225,7 @@ test fixture suggests.
 ## Pull Requests
 
 Every change reaches `develop` through a pull request; `main` only ever receives a
-delivery, tagged `vX.Y.Z`. The branching model is in `docs/PUBLISHING.md`.
+delivery, tagged `vX.Y.Z`. The branching model is in `docs/RELEASING.md`.
 
 **Name the branch after what it delivers**, using the Conventional Commits type
 as the prefix: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`, `refactor/<slug>`, and
