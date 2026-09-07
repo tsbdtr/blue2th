@@ -28,27 +28,9 @@ usage() {
     echo "       ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD, [EXPECTED_CERT_SHA256], [BUILD_TOOLS_VERSION]" >&2
 }
 
-# zipalign and apksigner live in a versioned build-tools directory that is not
-# on PATH; the lookup mirrors scripts/tests/run.sh so both sides resolve the
-# same binary.
-locate_build_tool() {
-    local name="$1"
-    local version="${BUILD_TOOLS_VERSION:-36.0.0}"
-    if [[ -n "${ANDROID_HOME:-}" ]]; then
-        local candidate="$ANDROID_HOME/build-tools/$version/$name"
-        if [[ -x "$candidate" ]]; then
-            echo "$candidate"
-            return 0
-        fi
-        echo "sign-apk.sh: $name not found at $candidate" >&2
-        return 2
-    fi
-    if command -v "$name"; then
-        return 0
-    fi
-    echo "sign-apk.sh: $name not found on PATH and ANDROID_HOME is unset" >&2
-    return 2
-}
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/build-tools.sh
+source "$here/lib/build-tools.sh"
 
 if [[ "${1:-}" == "-h" ]]; then
     usage
@@ -72,6 +54,14 @@ fi
 
 if [[ ! -f "$input" ]]; then
     echo "sign-apk.sh: input APK not found: '$input'" >&2
+    exit 1
+fi
+
+# The caller owns the output directory (`dist/<version>/` in the workflow):
+# creating it here would also create whatever a mistyped path names.
+out_dir="$(dirname "$out")"
+if [[ ! -d "$out_dir" ]]; then
+    echo "sign-apk.sh: output directory not found: '$out_dir'" >&2
     exit 1
 fi
 
@@ -139,6 +129,11 @@ fi
 
 # From here on a failure leaves a partial or wrongly-signed output, which the
 # trap removes: a later step must never pick it up.
+#
+# v4 is off: that scheme lives in a `<out>.idsig` sidecar that only serves
+# adb's incremental install, and a release would have to attest and publish
+# one more file for nothing. v2 and v3 stay on, and they are what the phone
+# and `apksigner verify` check.
 remove_out=1
 if ! "$apksigner" sign \
     --ks "$keystore_file" \
@@ -146,6 +141,7 @@ if ! "$apksigner" sign \
     --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
     --key-pass env:ANDROID_KEY_PASSWORD \
     --ks-key-alias "$ANDROID_KEY_ALIAS" \
+    --v4-signing-enabled false \
     --out "$out" \
     "$aligned"; then
     echo "sign-apk.sh: apksigner sign failed (wrong password, alias or keystore?)" >&2

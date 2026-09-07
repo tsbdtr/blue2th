@@ -58,6 +58,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Every artifact of a release lands under dist/<version>/, which
+      # .gitignore covers: a local rehearsal leaves nothing at the repository
+      # root for a `git add -A` to sweep into a commit.
+      DIST: dist/${{ needs.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -88,21 +94,23 @@ jobs:
         run: cargo build --release -p blue2th-server
 
       # Both licence texts travel with the binary: the project is dual-licensed
-      # and the user picks, which needs both files at hand.
+      # and the user picks, which needs both files at hand. The tarball is
+      # staged outside the checkout so the only thing it leaves behind is the
+      # archive under dist/<version>/.
       - name: Package
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          staging="blue2th-server-${VERSION}-x86_64-linux-gnu"
-          mkdir "$staging"
-          cp target/release/blue2th-server LICENSE-MIT LICENSE-APACHE "$staging/"
-          tar -czf "${staging}.tar.gz" "$staging"
-          sha256sum "${staging}.tar.gz"
+          name="blue2th-server-${VERSION}-x86_64-linux-gnu"
+          staging="$(mktemp -d)"
+          mkdir -p "$DIST" "$staging/$name"
+          cp target/release/blue2th-server LICENSE-MIT LICENSE-APACHE "$staging/$name/"
+          tar -czf "$DIST/${name}.tar.gz" -C "$staging" "$name"
+          rm -rf "$staging"
+          sha256sum "$DIST/${name}.tar.gz"
 
       - uses: actions/upload-artifact@v4
         with:
           name: server
-          path: blue2th-server-${{ needs.version.outputs.version }}-x86_64-linux-gnu.tar.gz
+          path: ${{ env.DIST }}/blue2th-server-${{ env.VERSION }}-x86_64-linux-gnu.tar.gz
           if-no-files-found: error
 
   apk:
@@ -114,6 +122,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       VERSION_CODE: ${{ needs.version.outputs.version_code }}
+      DIST: dist/${{ needs.version.outputs.version }}
       # Every script that shells out to build-tools resolves them under this
       # version; it is the one sdkmanager installs below, so the two agree.
       BUILD_TOOLS_VERSION: '36.0.0'
@@ -192,7 +201,8 @@ jobs:
       # keystore secret cannot sign a release with a different key: an APK
       # signed by the wrong key installs fine and only refuses to update the
       # one already on the phone. An empty file would accept any key, so it
-      # is refused here and again inside the script.
+      # is refused here and again inside the script. The output directory is
+      # made here: the script refuses a missing one rather than creating it.
       - name: Sign
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
@@ -207,21 +217,22 @@ jobs:
             exit 1
           fi
           export EXPECTED_CERT_SHA256
-          scripts/sign-apk.sh "$UNSIGNED_APK" "blue2th-${VERSION}.apk"
+          mkdir -p "$DIST"
+          scripts/sign-apk.sh "$UNSIGNED_APK" "$DIST/blue2th-${VERSION}.apk"
 
       # Read back from the artifact, not from the Gradle file: only the APK
       # can say whether Gradle honoured the rewrite.
       - name: Check the APK carries the derived versionCode
         run: |
-          found="$(scripts/apk-version-code.sh "blue2th-${VERSION}.apk")"
+          found="$(scripts/apk-version-code.sh "$DIST/blue2th-${VERSION}.apk")"
           test "$found" = "$VERSION_CODE" \
             || { echo "APK versionCode is '$found', expected '$VERSION_CODE'" >&2; exit 1; }
-          sha256sum "blue2th-${VERSION}.apk"
+          sha256sum "$DIST/blue2th-${VERSION}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: blue2th-${{ needs.version.outputs.version }}.apk
+          path: ${{ env.DIST }}/blue2th-${{ env.VERSION }}.apk
           if-no-files-found: error
 
   publish:
@@ -237,20 +248,28 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
+      DIST: dist/${{ needs.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
 
+      # Both artifacts are single files, so they land side by side under
+      # dist/<version>/ — the layout the build jobs wrote them in.
       - uses: actions/download-artifact@v4
         with:
           name: server
+          path: ${{ env.DIST }}
 
       - uses: actions/download-artifact@v4
         with:
           name: apk
+          path: ${{ env.DIST }}
 
+      # Bare file names in SHA256SUMS, so `sha256sum -c SHA256SUMS` works in
+      # the directory a user downloaded the three files into.
       - name: Checksums
         run: |
+          cd "$DIST"
           sha256sum "blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz" "blue2th-${VERSION}.apk" \
             | tee SHA256SUMS
 
@@ -260,12 +279,15 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            blue2th-server-${{ needs.version.outputs.version }}-x86_64-linux-gnu.tar.gz
-            blue2th-${{ needs.version.outputs.version }}.apk
+            ${{ env.DIST }}/blue2th-server-${{ env.VERSION }}-x86_64-linux-gnu.tar.gz
+            ${{ env.DIST }}/blue2th-${{ env.VERSION }}.apk
 
+      # The fingerprint file may hold either form the tools print; the notes
+      # show the bare lower-case one, which is what a user sees from the
+      # command quoted next to it.
       - name: Release notes
         run: |
-          fingerprint="$(tr -d '[:space:]' <scripts/android-release-cert.sha256)"
+          fingerprint="$(tr -d ': \n' <scripts/android-release-cert.sha256 | tr '[:upper:]' '[:lower:]')"
           {
             echo "## Verify"
             echo
@@ -285,10 +307,10 @@ jobs:
             echo 'SHA-256:'
             echo
             echo '```'
-            cat SHA256SUMS
+            cat "$DIST/SHA256SUMS"
             echo '```'
-          } >notes.md
-          cat notes.md
+          } >"$DIST/notes.md"
+          cat "$DIST/notes.md"
 
       - name: Create the release
         env:
@@ -297,7 +319,7 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \
-            --notes-file notes.md \
-            "blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz" \
-            "blue2th-${VERSION}.apk" \
-            SHA256SUMS
+            --notes-file "$DIST/notes.md" \
+            "$DIST/blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz" \
+            "$DIST/blue2th-${VERSION}.apk" \
+            "$DIST/SHA256SUMS"

@@ -18,25 +18,9 @@ usage() {
     echo "       $(basename "$0") --parse  < <output of 'aapt dump badging'>" >&2
 }
 
-# aapt lives in a versioned build-tools directory that is not on PATH; the
-# lookup mirrors scripts/tests/run.sh so both sides resolve the same binary.
-locate_aapt() {
-    local version="${BUILD_TOOLS_VERSION:-36.0.0}"
-    if [[ -n "${ANDROID_HOME:-}" ]]; then
-        local candidate="$ANDROID_HOME/build-tools/$version/aapt"
-        if [[ -x "$candidate" ]]; then
-            echo "$candidate"
-            return 0
-        fi
-        echo "apk-version-code.sh: aapt not found at $candidate" >&2
-        return 2
-    fi
-    if command -v aapt; then
-        return 0
-    fi
-    echo "apk-version-code.sh: aapt not found on PATH and ANDROID_HOME is unset" >&2
-    return 2
-}
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/build-tools.sh
+source "$here/lib/build-tools.sh"
 
 # parse_badging: stdin to versionCode on stdout, or exit 1.
 parse_badging() {
@@ -78,7 +62,7 @@ if [[ ! -f "$apk" ]]; then
     exit 1
 fi
 
-aapt="$(locate_aapt)" || exit 2
+aapt="$(locate_build_tool aapt)" || exit 2
 
 if ! badging="$("$aapt" dump badging "$apk" 2>/dev/null)"; then
     echo "apk-version-code.sh: aapt could not read '$apk'" >&2

@@ -160,19 +160,29 @@ by `scripts/tests/run.sh`, which CI runs).
 - **Server binary**: `cargo build --release -p blue2th-server` on `ubuntu-latest`,
   with the same system packages as CI. The direction of glibc compatibility works
   in our favour — built on Ubuntu 24.04 (glibc 2.39), the binary runs on the target
-  Fedora 43 (glibc 2.42); the reverse would have broken. Ship a `.tar.gz`.
+  Fedora 43 (glibc 2.42); the reverse would have broken. Packed with both
+  licence texts as `dist/<version>/blue2th-server-<version>-x86_64-linux-gnu.tar.gz`.
 - **APK**: `dx build --platform android --package blue2th-frontend --release --target aarch64-linux-android` with
   `dioxus-cli` pinned at `0.7.10`, then `scripts/set-version-code.sh` on the
   generated `build.gradle.kts` and `./gradlew assembleRelease` for the unsigned
-  APK, then `scripts/sign-apk.sh`: `zipalign -p 4`, `apksigner sign` with the
-  decoded keystore, `apksigner verify --print-certs`, and the signing
-  certificate compared with `scripts/android-release-cert.sha256`. A last
-  guard reads the `versionCode` back out of the signed APK with
+  APK, then `scripts/sign-apk.sh` into `dist/<version>/blue2th-<version>.apk`:
+  `zipalign -p 4`, `apksigner sign` with the decoded keystore (v2 and v3
+  only — no `.idsig` sidecar), `apksigner verify --print-certs`, and the
+  signing certificate compared with `scripts/android-release-cert.sha256`. A
+  last guard reads the `versionCode` back out of the signed APK with
   `scripts/apk-version-code.sh` and compares it with the derived one.
-- **Publish**: only on a tag ref. `sha256sum` into `SHA256SUMS`, build
-  provenance attested on the signed files, then `gh release create` with both
-  artifacts, the checksums and release notes carrying the verification command
-  and the certificate fingerprint.
+- **Publish**: only on a tag ref. Both artifacts are downloaded into
+  `dist/<version>/`, `sha256sum` writes `SHA256SUMS` there with bare file
+  names, build provenance is attested on the signed files, then
+  `gh release create` uploads both artifacts and the checksums, with release
+  notes carrying the verification commands and the certificate fingerprint.
+
+Every artifact — tarball, APK, `SHA256SUMS`, the notes — is written under
+**`dist/<version>/`** and nothing at the repository root. `.gitignore` already
+covers `dist/`, so a local rehearsal of the same commands leaves a clean tree;
+a stray output at the root would be swept into the next `git add -A`.
+`scripts/tests/run.sh` fails any test that leaves a file there for the same
+reason.
 
 ### Signing
 
@@ -191,13 +201,21 @@ Two routes were considered and rejected:
 `scripts/sign-apk.sh` takes the keystore and its secrets from the environment
 only (`ANDROID_KEYSTORE_B64`, decoded to a file it removes on exit, plus the
 three `ANDROID_KEY*` variables), never from argv, and refuses to start on any
-missing or empty value. The fingerprint of the release certificate lives in
-**`scripts/android-release-cert.sha256`**, in the bare lower-case form
-`apksigner verify --print-certs` prints (the `keytool -list -v` form is accepted
-too). The workflow fails when that file is empty, and `sign-apk.sh` removes the
-output when the certificate that signed it is not the one recorded: an APK
-signed by another key installs fine and only refuses to update the app already
-on the phone. The file is empty until the keystore (#3) exists.
+missing or empty value. Its output path is explicit and its directory must
+already exist — the workflow creates `dist/<version>/` first; a script that
+created it would also create whatever a mistyped path names. It signs with
+v2 and v3 only: the v4 scheme lives in a `<out>.idsig` sidecar that serves
+`adb`'s incremental install and nothing a release needs, and the workflow
+would otherwise have one more file to attest and publish.
+
+The fingerprint of the release certificate (#3) lives in
+**`scripts/android-release-cert.sha256`**, in either form the tools print —
+the colon-separated upper-case of `keytool -list -v` or the bare lower-case
+hex of `apksigner verify --print-certs`; the script normalises both, and the
+release notes show the latter. The workflow fails when that file is empty, and
+`sign-apk.sh` removes the output when the certificate that signed it is not
+the one recorded: an APK signed by another key installs fine and only refuses
+to update the app already on the phone.
 
 ### The Android `versionCode` — `dx` does not derive it
 
@@ -244,7 +262,16 @@ dx build --platform android --package blue2th-frontend --release --target aarch6
 scripts/set-version-code.sh \
   target/dx/blue2th-frontend/release/android/app/app/build.gradle.kts "${VERSION_CODE}"
 (cd target/dx/blue2th-frontend/release/android/app && ./gradlew assembleRelease)
+mkdir -p "dist/${VERSION}"
+EXPECTED_CERT_SHA256="$(cat scripts/android-release-cert.sha256)" \
+  scripts/sign-apk.sh \
+  target/dx/blue2th-frontend/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
+  "dist/${VERSION}/blue2th-${VERSION}.apk"
+scripts/apk-version-code.sh "dist/${VERSION}/blue2th-${VERSION}.apk"   # prints ${VERSION_CODE}
 ```
+
+With the four `ANDROID_KEY*` variables in the environment, as in the
+workflow's `Sign` step.
 
 The script, not a bare `sed`, because a `sed` that finds nothing is a silent
 no-op: the APK builds, signs and verifies with `versionCode = 1`, and fails on

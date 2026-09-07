@@ -263,3 +263,33 @@ test_sign_apk_refuses_missing_arguments() {
     assert_eq 1 "$status" "exit status with no argument"
     assert_dir_empty "$tmp/scratch"
 }
+
+# Criterion: no `<out>.idsig` next to the output. apksigner writes that APK
+# Signature Scheme v4 sidecar by default; it only serves adb's incremental
+# install, and a release would have to attest and publish one more file for
+# nothing. v2/v3 stay on, so `apksigner verify` still accepts the output.
+test_sign_apk_leaves_no_v4_idsig_sidecar() {
+    setup_fixture
+    sign_with "${full_env[@]}"
+    assert_eq 0 "$status" "exit status"$'\n'"stderr: $stderr"
+    assert_signed_output_is_valid
+    assert_file_absent "$out.idsig"
+}
+
+# Criterion: the output's parent directory must already exist. The caller
+# owns `dist/<version>/`; a script that created it would also create
+# whatever a mistyped path names. Refused before any file exists, naming
+# the directory. apksigner would also fail on that path, after zipalign ran
+# and a scratch directory was made, with a message that names it too — so
+# TMPDIR points at a directory that does not exist: had the script got as
+# far as `mktemp`, it would have died with mktemp's error, not the guard's.
+test_sign_apk_refuses_missing_output_directory_before_creating_any_file() {
+    setup_fixture
+    out="$tmp/absent/signed.apk"
+    sign_with "${full_env[@]:0:4}" "TMPDIR=$tmp/nowhere"
+    assert_eq 1 "$status" "exit status with a missing output directory"
+    assert_contains "$stderr" "output directory" "refusal is the script's own guard"
+    assert_contains "$stderr" "$tmp/absent" "refusal names the missing directory"
+    assert_file_absent "$tmp/absent"
+    assert_file_absent "$tmp/nowhere"
+}

@@ -129,3 +129,20 @@ test_set_version_code_refuses_missing_file() {
     assert_contains "$stderr" "$tmp/nope/build.gradle.kts" "refusal names the path"
     assert_file_absent "$tmp/nope/build.gradle.kts"
 }
+
+# Criterion: two `versionCode = 1` lines are refused, not both rewritten —
+# "exactly once" is the rule, and a second statement means the template
+# changed in a way the script does not understand. The file stays
+# byte-identical.
+test_set_version_code_refuses_two_version_code_lines_and_leaves_file_untouched() {
+    write_gradle_fixture "$tmp/build.gradle.kts"
+    sed -i 's/^        versionCode = 1$/        versionCode = 1\n        versionCode = 1/' \
+        "$tmp/build.gradle.kts"
+    local before
+    before="$(sha256sum "$tmp/build.gradle.kts")"
+
+    assert_fails "$script" "$tmp/build.gradle.kts" 1000
+
+    assert_contains "$stderr" "found 2" "refusal names the count"
+    assert_eq "$before" "$(sha256sum "$tmp/build.gradle.kts")" "file unchanged after refusal"
+}

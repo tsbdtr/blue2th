@@ -22,30 +22,12 @@ export TESTS_DIR SCRIPTS_DIR REPO_ROOT FIXTURES_DIR
 
 # ── Tools ────────────────────────────────────────────────────────────────────
 
-# apksigner, zipalign and aapt live in a versioned build-tools directory that
-# is not on PATH; the scripts under test resolve them the same way, so the
-# runner exports the two variables it resolved with and both sides agree.
-BUILD_TOOLS_VERSION="${BUILD_TOOLS_VERSION:-36.0.0}"
+# apksigner, zipalign and aapt are resolved by the same helper the scripts
+# under test source, and the version it settled on is exported so both sides
+# open the same binary.
+# shellcheck source=../lib/build-tools.sh
+source "$SCRIPTS_DIR/lib/build-tools.sh"
 export BUILD_TOOLS_VERSION
-
-locate_build_tool() {
-    local name="$1"
-    if [[ -n "${ANDROID_HOME:-}" ]]; then
-        local candidate="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/$name"
-        if [[ -x "$candidate" ]]; then
-            echo "$candidate"
-            return 0
-        fi
-        echo "scripts/tests/run.sh: $name not found at $candidate" >&2
-        echo "  (ANDROID_HOME=$ANDROID_HOME, BUILD_TOOLS_VERSION=$BUILD_TOOLS_VERSION)" >&2
-        return 2
-    fi
-    if command -v "$name"; then
-        return 0
-    fi
-    echo "scripts/tests/run.sh: $name not found on PATH and ANDROID_HOME is unset" >&2
-    return 2
-}
 
 if ! KEYTOOL="$(command -v keytool)"; then
     echo "scripts/tests/run.sh: keytool not found on PATH (a JDK is required)" >&2
@@ -147,6 +129,25 @@ make_unsigned_apk() {
     rm -rf "$staging"
 }
 
+# ── Repository root guard ────────────────────────────────────────────────────
+
+# The review phase stages with `git add -A`, so a build output a test dropped
+# at the repository root would enter a commit. The root is listed before and
+# after every test and any difference fails that test by name, so a leftover
+# is reported once, by the test that made it.
+root_listing() {
+    (cd "$REPO_ROOT" && ls -A | LC_ALL=C sort)
+}
+
+# report_root_changes <before> <after>: prints what appeared or vanished.
+report_root_changes() {
+    local before="$1" after="$2"
+    comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") \
+        | sed 's|^|left at the repository root: |'
+    comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") \
+        | sed 's|^|removed from the repository root: |'
+}
+
 # ── Runner ───────────────────────────────────────────────────────────────────
 
 run_test() {
@@ -190,7 +191,18 @@ for file in "${test_files[@]}"; do
         # shellcheck disable=SC1090  # the file is one of ours, discovered above
         source "$file"
         for name in "${names[@]}"; do
+            root_before="$(root_listing)"
             if run_test "$name" "$runner_log"; then
+                outcome=PASS
+            else
+                outcome=FAIL
+            fi
+            root_after="$(root_listing)"
+            if [[ "$root_after" != "$root_before" ]]; then
+                outcome=FAIL
+                report_root_changes "$root_before" "$root_after" >>"$runner_log"
+            fi
+            if [[ "$outcome" == PASS ]]; then
                 echo "PASS $name"
                 echo "PASS" >>"$runner_log.status"
             else
