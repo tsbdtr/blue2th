@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The pattern is read from .githooks/commit-msg rather than copied, so the
       # hook and CI cannot drift apart — which is exactly how the test gate ended

@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A bare runner does not compile this workspace. Two families of native
       # libraries are needed, and the failure lands at link time with a message
@@ -82,19 +82,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The signing tests run the real keytool, zipalign and apksigner: a JDK
       # for keytool, then build-tools at the version the scripts resolve them
       # under. The runner refuses to start when any of the three is missing,
       # so a runner without them fails this job instead of skipping the one
       # script that handles the release key.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
 
       - name: Install build-tools
         run: sdkmanager --install "build-tools;36.0.0"
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The current split existed because the header was applied by hand: a whole
       # crate had none, plus one stray file that did. Without a gate it drifts back.
