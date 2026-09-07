@@ -77,6 +77,31 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  scripts:
+    name: "Release scripts: shell tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The signing tests run the real keytool, zipalign and apksigner: a JDK
+      # for keytool, then build-tools at the version the scripts resolve them
+      # under. The runner refuses to start when any of the three is missing,
+      # so a runner without them fails this job instead of skipping the one
+      # script that handles the release key.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install build-tools
+        run: sdkmanager --install "build-tools;36.0.0"
+
+      - name: Run the shell tests
+        run: BUILD_TOOLS_VERSION=36.0.0 scripts/tests/run.sh
+
   licence-headers:
     name: Every .rs carries the SPDX header
     runs-on: ubuntu-latest
