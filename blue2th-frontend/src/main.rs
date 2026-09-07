@@ -15,7 +15,7 @@ rust_i18n::i18n!("locales", fallback = "fr");
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
-const BLUETOOTH_LOGO: Asset = asset!("/assets/bluetooth.svg");
+const BLUETOOTH_ICON: Asset = asset!("/assets/bluetooth.svg");
 
 /// Vertical travel (px) past which a drag on the transport handle is treated as
 /// an expand/collapse gesture rather than a tap.
@@ -443,11 +443,6 @@ fn Home() -> Element {
                     span { class: "app-title-text tl tl-4", "e" }
                     span { class: "app-title-num", "2" }
                     span { class: "app-title-text app-title-suffix", "th" }
-                }
-                img {
-                    class: "app-logo",
-                    src: BLUETOOTH_LOGO,
-                    alt: "Bluetooth",
                 }
             }
             BackendScan {}
@@ -1120,7 +1115,7 @@ fn BackendScan() -> Element {
                             div { class: "device-list-empty",
                                 img {
                                     class: "device-list-empty-icon",
-                                    src: BLUETOOTH_LOGO,
+                                    src: BLUETOOTH_ICON,
                                     alt: "",
                                 }
                                 p { class: "device-list-empty-text", "{empty_label}" }
