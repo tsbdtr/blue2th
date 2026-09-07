@@ -148,14 +148,56 @@ keystore (#3). The keystore is the only irreversible item in the whole plan.
 
 ### The tag workflow
 
-- **Trigger**: `push` on `tags: ['v*']`, two parallel jobs then a publish job.
+`.github/workflows/release.yml`, with the shell scripts under `scripts/` (tested
+by `scripts/tests/run.sh`, which CI runs).
+
+- **Trigger**: `push` on `tags: ['v*']`, and `workflow_dispatch` as the
+  rehearsal: the same build jobs from the workspace version, and no publish job.
+- **Version**: one job derives everything the others name. On a tag,
+  `scripts/check-tag-version.sh` refuses a tag that is not `v` + the
+  `[workspace.package] version`; `scripts/version-code.sh` derives the Android
+  `versionCode` from it.
 - **Server binary**: `cargo build --release -p blue2th-server` on `ubuntu-latest`,
   with the same system packages as CI. The direction of glibc compatibility works
   in our favour — built on Ubuntu 24.04 (glibc 2.39), the binary runs on the target
   Fedora 43 (glibc 2.42); the reverse would have broken. Ship a `.tar.gz`.
-- **APK**: `dx build --platform android --package blue2th-frontend --release`, signed with the decoded
-  keystore, then `zipalign`/`apksigner` depending on what `dx` actually emits.
-- **Publish**: `gh release create` with both artifacts and release notes.
+- **APK**: `dx build --platform android --package blue2th-frontend --release --target aarch64-linux-android` with
+  `dioxus-cli` pinned at `0.7.10`, then `scripts/set-version-code.sh` on the
+  generated `build.gradle.kts` and `./gradlew assembleRelease` for the unsigned
+  APK, then `scripts/sign-apk.sh`: `zipalign -p 4`, `apksigner sign` with the
+  decoded keystore, `apksigner verify --print-certs`, and the signing
+  certificate compared with `scripts/android-release-cert.sha256`. A last
+  guard reads the `versionCode` back out of the signed APK with
+  `scripts/apk-version-code.sh` and compares it with the derived one.
+- **Publish**: only on a tag ref. `sha256sum` into `SHA256SUMS`, build
+  provenance attested on the signed files, then `gh release create` with both
+  artifacts, the checksums and release notes carrying the verification command
+  and the certificate fingerprint.
+
+### Signing
+
+`dx` 0.7.10 emits an **unsigned** release APK, and the workflow signs it itself.
+Two routes were considered and rejected:
+
+- `[bundle.android]` / `[android.signing]` in `Dioxus.toml`: the keys take the
+  keystore password as a value, so a working configuration is a password in a
+  tracked file. They are also not read by `dx` 0.7.10 (checked in
+  `packages/cli/src/build/android.rs`), so the section would be inert on top of
+  being unsafe.
+- Letting Gradle sign through `signingConfigs`: the generated project is
+  rewritten by `dx` on every build, so the configuration would have to be
+  injected after the fact, into a file `dx` owns.
+
+`scripts/sign-apk.sh` takes the keystore and its secrets from the environment
+only (`ANDROID_KEYSTORE_B64`, decoded to a file it removes on exit, plus the
+three `ANDROID_KEY*` variables), never from argv, and refuses to start on any
+missing or empty value. The fingerprint of the release certificate lives in
+**`scripts/android-release-cert.sha256`**, in the bare lower-case form
+`apksigner verify --print-certs` prints (the `keytool -list -v` form is accepted
+too). The workflow fails when that file is empty, and `sign-apk.sh` removes the
+output when the certificate that signed it is not the one recorded: an APK
+signed by another key installs fine and only refuses to update the app already
+on the phone. The file is empty until the keystore (#3) exists.
 
 ### The Android `versionCode` — `dx` does not derive it
 
@@ -198,11 +240,16 @@ build once, rewrite the line, then drive Gradle directly — the Rust `.so` file
 are already staged in `jniLibs`, so only the Android packaging runs again:
 
 ```bash
-dx build --platform android --package blue2th-frontend --release
-sed -i "s/versionCode = 1/versionCode = ${VERSION_CODE}/" \
-  target/dx/blue2th-frontend/release/android/app/app/build.gradle.kts
+dx build --platform android --package blue2th-frontend --release --target aarch64-linux-android
+scripts/set-version-code.sh \
+  target/dx/blue2th-frontend/release/android/app/app/build.gradle.kts "${VERSION_CODE}"
 (cd target/dx/blue2th-frontend/release/android/app && ./gradlew assembleRelease)
 ```
+
+The script, not a bare `sed`, because a `sed` that finds nothing is a silent
+no-op: the APK builds, signs and verifies with `versionCode = 1`, and fails on
+the phone at the second release. The script exits non-zero unless the line is
+there exactly once.
 
 `VERSION_CODE` comes from the tag once the version scheme (#1) is settled. Use
 **`major * 1000000 + minor * 1000 + patch`** — not a formula of our own. It is the
@@ -211,9 +258,10 @@ is the value `dx` will compute by itself tomorrow, and the migration changes
 nothing. It also stays inside Play's `1..=2100000000` range, and leaves room for
 999 minors and 999 patches where a tighter formula would cap them at 99.
 
-> **To confirm on the first real release run**, since neither has been exercised
-> yet: that the second Gradle invocation reuses the staged `jniLibs` rather than
-> rebuilding, and which of the two APKs ends up where.
+The `workflow_dispatch` rehearsal of `release.yml` is where the two open
+points are confirmed: that the second Gradle invocation reuses the staged
+`jniLibs` rather than rebuilding, and which of the two APKs ends up where (the
+workflow fails unless `find` returns exactly one `*-release-unsigned.apk`).
 
 ### This workaround has an expiry date
 
@@ -226,8 +274,8 @@ steps:
 2. `[android] version_code` in `Dioxus.toml`;
 3. failing both, `major * 1000000 + minor * 1000 + patch` from the crate version.
 
-Once it is merged **and released**, drop the `sed` and the second Gradle invocation
-and pass the environment variable instead. That is strictly better for us: it
+Once it is merged **and released**, drop `scripts/set-version-code.sh` and the
+second Gradle invocation and pass the environment variable instead. That is strictly better for us: it
 mutates no generated file, so nothing depends on the internal layout of `target/dx`
 or on the exact text of a line `dx` owns — a coupling whose failure mode is silent,
 since a wrong `versionCode` builds and signs perfectly and only fails on the phone.

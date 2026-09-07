@@ -1,0 +1,303 @@
+name: Release
+
+# A `vX.Y.Z` tag produces a server binary and a signed APK, attached to a
+# GitHub Release (docs/PUBLISHING.md, section 03). The tag is the only trigger
+# that publishes; workflow_dispatch runs the same build jobs as a rehearsal,
+# without a tag to compare against and without touching the Releases page.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# One run per ref: a second push of the same tag (a `git tag -f`) must not
+# race the first for the release it creates.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The version is computed once and read by every other job, so the tar
+  # name, the APK name, the versionCode and the release title cannot disagree.
+  version:
+    name: Version from the tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+      version: ${{ steps.compute.outputs.version }}
+      version_code: ${{ steps.compute.outputs.version_code }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # On a tag, the tag must equal `v` + the workspace version, or the APK
+      # would say one thing and the release another. On a dispatch there is no
+      # tag: the version is read from the manifest and the same shape applied,
+      # so the rehearsal exercises the same names as the real thing.
+      - name: Check the tag against Cargo.toml and derive the versionCode
+        id: compute
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            scripts/check-tag-version.sh "$TAG" Cargo.toml
+          else
+            TAG="v$(scripts/workspace-version.sh Cargo.toml)"
+          fi
+          VERSION="${TAG#v}"
+          VERSION_CODE="$(scripts/version-code.sh "$TAG")"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >>"$GITHUB_OUTPUT"
+          echo "tag=$TAG version=$VERSION versionCode=$VERSION_CODE"
+
+  server:
+    name: Server binary (x86_64-linux-gnu)
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The verified list from ci.yml, copied verbatim: the server alone needs
+      # only D-Bus and ALSA, but the workspace resolves the mobile crate's host
+      # dependencies too, and a shorter list fails at link time with a message
+      # that says very little. Keep the two lists identical.
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libxdo-dev \
+            libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p blue2th-server
+
+      # Both licence texts travel with the binary: the project is dual-licensed
+      # and the user picks, which needs both files at hand.
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          staging="blue2th-server-${VERSION}-x86_64-linux-gnu"
+          mkdir "$staging"
+          cp target/release/blue2th-server LICENSE-MIT LICENSE-APACHE "$staging/"
+          tar -czf "${staging}.tar.gz" "$staging"
+          sha256sum "${staging}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server
+          path: blue2th-server-${{ needs.version.outputs.version }}-x86_64-linux-gnu.tar.gz
+          if-no-files-found: error
+
+  apk:
+    name: Signed APK (arm64-v8a)
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      VERSION_CODE: ${{ needs.version.outputs.version_code }}
+      # Every script that shells out to build-tools resolves them under this
+      # version; it is the one sdkmanager installs below, so the two agree.
+      BUILD_TOOLS_VERSION: '36.0.0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      # NDK r27 is the release the Dioxus 0.7 mobile guide (Getting started >
+      # Mobile > Android) is written against; 27.2.12479018 is its last LTS
+      # point release. dx reads ANDROID_NDK_HOME to find the cross toolchain.
+      - name: Install build-tools and the NDK
+        run: |
+          sdkmanager --install "build-tools;36.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >>"$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      # dx is pinned. The frozen Android files (blue2th-frontend/android/) are
+      # copies of dx's own templates: raising this version silently changes
+      # what they should look like, and the failure lands on the phone, not in
+      # the build. Raise it only after walking the re-diff checklist in
+      # CLAUDE.md. Every `dx` step in this file uses this install.
+      - uses: cargo-bins/cargo-binstall@main
+
+      - name: Install dioxus-cli 0.7.10
+        run: cargo binstall -y dioxus-cli@0.7.10
+
+      # The triple is explicit because dx otherwise picks it from the host
+      # architecture: on an x86_64 host (this runner, a developer's PC) that is
+      # x86_64-linux-android, the emulator ABI, and the APK carries no arm64
+      # library. It builds, signs and attests fine, and the phone refuses it
+      # with INSTALL_FAILED_NO_MATCHING_ABIS. Found on the first local rehearsal.
+      - name: dx build (release, android, arm64)
+        run: dx build --platform android --package blue2th-frontend --release --target aarch64-linux-android
+
+      # dx hardcodes `versionCode = 1` in its Gradle template and nothing in
+      # Dioxus.toml reaches it (docs/PUBLISHING.md, section 03). The generated
+      # project is a standalone Gradle project with the Rust libraries already
+      # staged under jniLibs, so the line is rewritten and Gradle is driven
+      # directly for the packaging pass. The script refuses to run when the
+      # line is not there exactly once: a silent no-op ships versionCode 1 and
+      # fails on the phone, on the second release.
+      - name: Set the versionCode and assemble the unsigned release APK
+        run: |
+          scripts/set-version-code.sh \
+            target/dx/blue2th-frontend/release/android/app/app/build.gradle.kts \
+            "$VERSION_CODE"
+          (cd target/dx/blue2th-frontend/release/android/app && ./gradlew assembleRelease)
+
+      # Exactly one unsigned APK, or the step fails: two would mean an ABI
+      # split or a flavour appeared, and picking the first one would sign
+      # whichever `find` listed first.
+      - name: Locate the unsigned APK
+        id: locate
+        run: |
+          mapfile -t apks < <(find target/dx/blue2th-frontend/release/android/app -name '*-release-unsigned.apk')
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "expected exactly one *-release-unsigned.apk, found ${#apks[@]}:" >&2
+            printf '  %s\n' "${apks[@]}" >&2
+            exit 1
+          fi
+          echo "path=${apks[0]}" >>"$GITHUB_OUTPUT"
+
+      # The expected fingerprint is tracked in the repository so a swapped
+      # keystore secret cannot sign a release with a different key: an APK
+      # signed by the wrong key installs fine and only refuses to update the
+      # one already on the phone. An empty file would accept any key, so it
+      # is refused here and again inside the script.
+      - name: Sign
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          UNSIGNED_APK: ${{ steps.locate.outputs.path }}
+        run: |
+          EXPECTED_CERT_SHA256="$(tr -d '[:space:]' <scripts/android-release-cert.sha256)"
+          if [[ -z "$EXPECTED_CERT_SHA256" ]]; then
+            echo "scripts/android-release-cert.sha256 is empty: record the release certificate fingerprint first" >&2
+            exit 1
+          fi
+          export EXPECTED_CERT_SHA256
+          scripts/sign-apk.sh "$UNSIGNED_APK" "blue2th-${VERSION}.apk"
+
+      # Read back from the artifact, not from the Gradle file: only the APK
+      # can say whether Gradle honoured the rewrite.
+      - name: Check the APK carries the derived versionCode
+        run: |
+          found="$(scripts/apk-version-code.sh "blue2th-${VERSION}.apk")"
+          test "$found" = "$VERSION_CODE" \
+            || { echo "APK versionCode is '$found', expected '$VERSION_CODE'" >&2; exit 1; }
+          sha256sum "blue2th-${VERSION}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: blue2th-${{ needs.version.outputs.version }}.apk
+          if-no-files-found: error
+
+  publish:
+    name: GitHub Release
+    needs: [version, server, apk]
+    # A dispatch is a rehearsal: it builds everything and publishes nothing.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk
+
+      - name: Checksums
+        run: |
+          sha256sum "blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz" "blue2th-${VERSION}.apk" \
+            | tee SHA256SUMS
+
+      # Attested after signing, never before: the attestation binds the digest
+      # of the file as published, and signing rewrites the file. An attestation
+      # on the unsigned APK would verify nothing a user can download.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            blue2th-server-${{ needs.version.outputs.version }}-x86_64-linux-gnu.tar.gz
+            blue2th-${{ needs.version.outputs.version }}.apk
+
+      - name: Release notes
+        run: |
+          fingerprint="$(tr -d '[:space:]' <scripts/android-release-cert.sha256)"
+          {
+            echo "## Verify"
+            echo
+            echo 'Build provenance (GitHub attestation):'
+            echo
+            echo '```'
+            echo "gh attestation verify blue2th-${VERSION}.apk --repo ${{ github.repository }}"
+            echo "gh attestation verify blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz --repo ${{ github.repository }}"
+            echo '```'
+            echo
+            echo "APK signing certificate SHA-256 (\`apksigner verify --print-certs\`):"
+            echo
+            echo '```'
+            echo "$fingerprint"
+            echo '```'
+            echo
+            echo 'SHA-256:'
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >notes.md
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --notes-file notes.md \
+            "blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz" \
+            "blue2th-${VERSION}.apk" \
+            SHA256SUMS
