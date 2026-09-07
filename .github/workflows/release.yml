@@ -1,7 +1,7 @@
 name: Release
 
 # A `vX.Y.Z` tag produces a server binary and a signed APK, attached to a
-# GitHub Release (docs/PUBLISHING.md, section 03). The tag is the only trigger
+# GitHub Release (docs/RELEASING.md). The tag is the only trigger
 # that publishes; workflow_dispatch runs the same build jobs as a rehearsal,
 # without a tag to compare against and without touching the Releases page.
 
@@ -170,7 +170,7 @@ jobs:
         run: dx build --platform android --package blue2th-frontend --release --target aarch64-linux-android
 
       # dx hardcodes `versionCode = 1` in its Gradle template and nothing in
-      # Dioxus.toml reaches it (docs/PUBLISHING.md, section 03). The generated
+      # Dioxus.toml reaches it (docs/RELEASING.md, "The Android versionCode"). The generated
       # project is a standalone Gradle project with the Rust libraries already
       # staged under jniLibs, so the line is rewritten and Gradle is driven
       # directly for the packaging pass. The script refuses to run when the

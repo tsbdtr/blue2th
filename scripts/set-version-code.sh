@@ -4,8 +4,8 @@
 # set-version-code.sh <build.gradle.kts> <code>: rewrite the `versionCode = 1`
 # line dx emits in its generated Gradle project to the given code.
 #
-# dx hardcodes `versionCode = 1` in its template (docs/PUBLISHING.md, section
-# 03); nothing in Dioxus.toml reaches it. A `sed` that finds nothing is a
+# dx hardcodes `versionCode = 1` in its template (docs/RELEASING.md, "The
+# Android versionCode"); nothing in Dioxus.toml reaches it. A `sed` that finds nothing is a
 # silent no-op, and a `versionCode = 1` APK builds, signs and verifies
 # perfectly: it fails on the phone, on the second release, as "cannot install
 # over the existing app". So the line has to be found exactly once, and the

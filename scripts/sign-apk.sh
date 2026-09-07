@@ -10,7 +10,7 @@
 # `apksigner --print-certs` prints or the one `keytool -list -v` prints.
 #
 # Why the guards: the signing key is the one irreversible item of the release
-# (docs/PUBLISHING.md, section 03). Every input is checked before any file is
+# (docs/RELEASING.md, "Signing"). Every input is checked before any file is
 # created, because a partially-run signing leaves a decoded keystore behind;
 # an empty secret is refused rather than passed on, because an empty value is
 # a wildcard in every predicate downstream (CLAUDE.md); and the fingerprint
