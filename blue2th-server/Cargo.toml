@@ -13,7 +13,7 @@ axum = "0.8"
 tokio = { workspace = true, features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 blue2th-proto = { path = "../blue2th-proto" }
 # BlueZ over D-Bus (requires libdbus dev headers at build time and bluetoothd at
 # runtime). The `bluetoothd` feature enables the high-level Adapter/Device API.
