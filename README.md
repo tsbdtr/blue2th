@@ -46,8 +46,8 @@ Three crates, one cargo workspace:
 | `blue2th-server` | server | The backend on the PC. Scans, connects and disconnects speakers through BlueZ, builds a PipeWire combined sink with a per-speaker latency offset, runs `librespot` as a child process. |
 | `blue2th-proto` | proto | The serde types both sides speak. Target-agnostic, no platform dependency. |
 
-The speakers pair with the **PC**, not the phone. The full design and the record
-of decisions are in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+The speakers pair with the **PC**, not the phone. The design and the reasons
+behind it are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Quick start
 
@@ -98,7 +98,7 @@ native API is tracked in the v0.2.0 milestone. The interface is the prototype's
 too, with a redesign under way. It does what it says; expect rough edges around
 it.
 
-Version 0.1.0. Phases 0 to 5 of the roadmap are shipped and validated on
+Version 0.1.0. Everything the design describes is shipped and validated on
 hardware: discovery, connection, playback to one speaker, fan-out to two,
 Spotify. What remains is robustness work — reconnection, background reliability
 on Android, speaker calibration.

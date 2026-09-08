@@ -3,8 +3,8 @@
 //! Shared data-transfer types for the blue2th mobile app <-> PC backend contract.
 //!
 //! Keep this crate target-agnostic (no platform-specific deps): it is compiled
-//! both into the Android app and the Linux backend. DTOs grow per roadmap phase
-//! (see `docs/ROADMAP.md`); phase 0 only needs the health payload.
+//! both into the Android app and the Linux backend. The contract it carries is
+//! described in `docs/ARCHITECTURE.md`.
 
 use serde::{Deserialize, Serialize};
 

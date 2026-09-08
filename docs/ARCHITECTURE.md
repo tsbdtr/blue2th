@@ -1,229 +1,259 @@
-# blue2th Roadmap — Multi-speaker audio via mobile remote + PC backend
+# blue2th architecture
 
-## Vision
+How the system is built and why. This is the design record: what each part
+owns, the decisions that shaped it and the reasons behind them. What is done or
+still to do lives in the [issue tracker](https://github.com/tsbdtr/blue2th/issues)
+and its milestones; how a release is made is in [`RELEASING.md`](RELEASING.md).
 
-Stream music to **two classic Bluetooth speakers at once**, fully controlled from
-the phone. Because Android forbids a third-party app from routing A2DP audio to
-two sinks (the BT stack and A2DP source role are OS-owned, and dual-A2DP is an
-OEM feature à la Samsung), the audio engine moves to a **Linux PC backend** where
-BlueZ + PipeWire give full user-space control. The phone becomes a **remote**.
+## The problem, and the shape of the answer
 
-Spotify is integrated **without forwarding raw audio** (impossible — DRM/licensing):
-the PC becomes a **Spotify Connect** endpoint via `librespot`, and the phone
-drives playback through the Spotify Web API. Audio streams from Spotify directly
-to the PC, then fans out to the two speakers.
+The goal is to play the same music on **two classic Bluetooth speakers at
+once**, controlled from a phone. Android does not allow it: a third-party app
+cannot route A2DP audio to two sinks, because the Bluetooth stack and the A2DP
+source role belong to the OS, and dual-A2DP is an OEM feature (Samsung's, for
+instance), not a platform one.
 
-## Architecture
+So the audio engine lives on a **Linux PC**, where BlueZ and PipeWire give full
+user-space control of both the radio and the audio graph, and the phone is a
+**remote**. Spotify follows the same logic: the phone cannot forward Spotify's
+audio (DRM), so the PC becomes a **Spotify Connect** endpoint through
+`librespot`, the phone drives playback through the Spotify Web API, and the
+audio goes from Spotify's servers to the PC and from there to both speakers.
+The phone never carries audio.
 
 ```
- blue2th (Dioxus / Android)              Spotify Web API
-   remote UI, Spotify OAuth   ──────────▶  play / transfer / volume
-        │  HTTP + SSE/WS                          │
-        ▼                                         ▼
- blue2th-server (Rust / Axum, Linux PC)    Spotify servers
-   - bluer   → BlueZ (connect A2DP)              │ direct stream
-   - librespot → Spotify Connect endpoint  ◀─────┘
-   - PipeWire combine-sink → fan-out
+ blue2th-frontend (Dioxus / Android)        Spotify Web API
+   remote UI, Spotify OAuth   ─────────────▶  play / transfer / volume
+        │  HTTP + SSE                              │
+        ▼                                          ▼
+ blue2th-server (Rust / Axum, Linux PC)      Spotify servers
+   - bluer     → BlueZ (pair, connect A2DP)        │ direct stream
+   - librespot → Spotify Connect endpoint  ◀───────┘
+   - PipeWire combined sink → fan-out
         ├──────────────┐
         ▼              ▼
    🔊 Speaker 1    🔊 Speaker 2
 ```
 
-Speakers pair with the **PC**, not the phone. The PC owns the audio source
-(local files, or librespot). The phone never forwards audio.
+The speakers pair with the **PC**, not the phone. The PC owns the audio source,
+`librespot` or a local test tone; the phone owns nothing but the user's
+intent.
 
-## Recorded decisions
+## Three layers, one workspace
 
-1. **Repository** — single **cargo workspace** in this repo:
-   - `blue2th` — existing Dioxus app (mobile remote).
-   - `blue2th-server` — Axum backend on the Linux PC.
-   - `blue2th-proto` — DTOs shared between mobile and server (typed contract).
-2. **Phone role** — **remote** for the new audio path. The on-phone Android BT
-   JNI/A2DP code was kept as legacy through the transition, then deleted once the
-   backend path was proven (see below).
-3. **Control transport** — **REST first**; **SSE/WebSocket** for the live scan
-   stream (phase 1).
-4. **Spotify** — `librespot` (PC = Connect endpoint) + Web API control with
-   **OAuth Authorization Code + PKCE** (no client secret on mobile). Amazon Music
-   is **out of scope** (no public playback API).
+| Crate | Runs on | Owns |
+|---|---|---|
+| `blue2th-frontend` | the phone (Dioxus 0.7, Android) | The remote UI, the list of known backends and their tokens, backend discovery, the Spotify sign-in redirect. No Bluetooth of its own. |
+| `blue2th-server` | the PC (Axum / Tokio) | Everything with a side effect: BlueZ through `bluer`, the PipeWire graph, the `librespot` child process, the Spotify tokens, the persisted state. |
+| `blue2th-proto` | both | The serde types both sides speak, and the protocol version. Target-agnostic by rule: it is compiled into an Android app and a Linux binary. |
 
-## Legacy: the on-phone Android Bluetooth code, removed
+A single cargo workspace holds the three, with one version for the product:
+the app, the backend and the contract are built from one tag and released
+together, so a server-only fix still moves the app's version. The number
+designates the release, not the crate that changed.
 
-The on-phone Bluetooth stack (scan, pair, multi-profile connect/disconnect via JNI
-+ reflection on hidden A2DP/HFP APIs) was **retained through the transition**,
-hidden behind a flag, in case it became the foundation for an on-phone **LE Audio**
-feature.
+Decisions taken at the start and still standing:
 
-It was **deleted** once the backend path was proven on hardware: 2579 lines that
-compiled on every build, were partly live, and that nobody was going to revive —
-Android still does not expose third-party LE Audio, and the phone is a remote now.
-Should LE Audio ever land, it would be a new stack against a new API, not this one.
+- **REST for control, SSE for what streams**: the Bluetooth scan and the
+  now-playing feed. No WebSocket; nothing needed one.
+- **OAuth Authorization Code with PKCE** for Spotify. No client secret exists
+  anywhere; the phone signs in, the PC holds the tokens.
+- **Amazon Music is out of scope**: it has no public playback API.
+- **`librespot` stays a subprocess, never a crate.** It is GPL-3.0; the process
+  boundary is what lets blue2th be `MIT OR Apache-2.0`. The rule and its
+  consequences are in `CLAUDE.md`.
 
-The JNI that remains in the app is unrelated to audio: `jni_util.rs` (the multicast
-lock for mDNS, phase 6.6) and `lifecycle.rs` (the presence hooks the watchdog
-reads).
+### The phone owns no Bluetooth
 
-## Phases (each ships something testable end-to-end)
+The first blue2th was an on-phone app with its own Bluetooth stack: scan, pair
+and multi-profile connect through JNI and reflection on hidden A2DP and HFP
+APIs. It was kept through the transition to the backend, behind a flag, in case
+it became the base of an on-phone LE Audio feature, then deleted once the
+backend path was proven on hardware: 2579 lines that compiled on every build
+and that nobody was going to revive. Android still exposes no third-party LE
+Audio; should it ever, that would be a new stack against a new API, not this
+one. What remains of JNI on the phone is two small seams: a multicast lock for
+mDNS, and the lifecycle hooks that report presence.
 
-Testing discipline mirrors the existing project: pure logic is unit-tested;
-hardware paths (BlueZ, PipeWire, librespot) are validated manually and gated out
-of CI.
+## The control API
 
-### Phase 0 — Foundations
-- **Backend**: Axum skeleton (`/health`), env config, `tracing`. `blue2th-proto`
-  crate with request/response DTOs.
-- **Mobile**: configurable backend base URL (the PC's IP).
-- **Done when**: `curl /health` returns ok; app reaches the backend; route unit test.
+The backend listens on the PC's LAN address, port 4000 (`BLUE2TH_BIND` overrides
+it), and serves:
 
-### Phase 1 — Bluetooth discovery (`bluer`)
-- **Backend**: adapter enumeration + scan via `bluer`; `GET /adapters`,
-  `GET /devices` (paired), scan stream over SSE/WS.
-- **Mobile**: reuse the existing device-list component, fed by the backend.
-- **Done when**: a scan started from the phone shows the speakers seen by the PC.
-
-### Phase 2 — Connect / disconnect a speaker
-- **Backend**: `POST /devices/{addr}/connect|disconnect` (`bluer`: pair → trust →
-  connect, triggering the A2DP profile).
-- **Mobile**: reuse the existing connect/disconnect buttons, wired to the backend.
-- **Done when**: the phone connects a BT speaker through the PC; test tone audible.
-
-### Phase 3 — Play audio to ONE speaker (PipeWire)
-- **Backend**: on connect, PipeWire creates a sink; play a local audio file to it
-  (`symphonia`/`rodio` or PipeWire routing). `POST /play|/pause|/volume`.
-- **Mobile**: basic transport controls.
-- **Done when**: a local file plays on one speaker, controlled from the phone.
-
-### Phase 4 — Fan-out to TWO speakers ⭐ (original goal) — ✅ DONE
-- **Backend**: PipeWire **combined sink** spanning both BT sinks; route playback
-  to it; expose a **per-speaker latency offset**.
-- **Mobile**: pick the two target speakers + a sync-offset slider.
-- **Done when**: the same track plays on two classic BT speakers, tunable to an
-  acceptable sync. **This realizes the original goal (without Spotify).**
-- **Status**: shipped and **validated on hardware** — explicit two-speaker
-  selection (cap 2), per-speaker offset (0–750 ms) applied as `module-loopback`
-  branch latency over a shared null sink, single-speaker path preserved — that
-  last part was later dropped: every non-empty selection goes through the
-  combined sink (#70).
-
-### Phase 5 — Spotify source ⭐ (full vision) — ✅ DONE
-- **Backend**: embed/spawn **`librespot`** → PC becomes a Spotify Connect device;
-  route its output into the combined sink (Spotify → two speakers).
-- **Mobile**: **Spotify OAuth** (Authorization Code + PKCE); Web API to transfer
-  playback to the blue2th-PC device + play/pause/skip/volume + now-playing metadata.
-- **Done when**: from the phone — log in, "play on blue2th-PC", Spotify audio on two
-  speakers with full transport control.
-- **Status**: shipped in two slices, **validated on hardware**.
-  - **5.1** — `librespot` spawned as a Connect device (`blue2th-PC`), output routed
-    per the current selection. `--system-cache` is required: in plain zeroconf mode
-    librespot never logs into the account, so it stays absent from
-    `GET /me/player/devices` and the Web API cannot target it. The **first** run
-    still needs one manual pick of `blue2th-PC` in a Spotify client to seed the
-    credentials.
-  - **5.2** — OAuth PKCE (no client secret anywhere), tokens held server-side with
-    silent refresh, the refresh token persisted so a restart does not send the user
-    back through the browser. Transport resolves the `blue2th-PC` device and
-    transfers playback to it rather than driving whichever device is active. The
-    redirect comes back through an Android deep link (`blue2th://spotify-callback`,
-    `launchMode="singleTop"` + `onNewIntent` → `setIntent`), and now-playing is
-    pushed over SSE.
-- **Requires**: a Spotify **Premium** account, a registered Developer app whose
-  client id is given to the backend as `BLUE2TH_SPOTIFY_CLIENT_ID` (no default —
-  the server answers 503 naming the variable), and the account listed in that app's
-  Development-mode allowlist.
-
-### Phase 6 — Robustness (optional) — 🚧 IN PROGRESS
-Auto-reconnect, persistence (favorite speakers, offsets), token refresh, **mDNS**
-backend discovery, authenticated LAN-only control API.
-
-- ✅ **Token refresh** — shipped with 5.2: silent refresh before expiry, refresh
-  token persisted, dropped only when Spotify itself rejects the grant (never on a
-  network failure, which would cost a browser round-trip for nothing).
-- ✅ **6.1 — Offset persistence** — each speaker's sync offset is remembered by MAC
-  in `$XDG_STATE_HOME/blue2th/offsets.json` and restored when that speaker is
-  selected again, including after a restart. **Validated on hardware.** Only the
-  offsets were persisted, never the selection — 6.3 below closed that half.
-- ✅ **6.2 — Runtime backend configuration** — the backend address was resolved by
-  `option_env!`, i.e. at compile time, so the APK only worked for whoever built it.
-  `BLUE2TH_BACKEND_URL` is gone: the app holds a list of **named** backends, one
-  active at a time, persisted in `SharedPreferences`, switchable from the status
-  encart or the settings page (both go through `backend::activate_backend`, so they
-  cannot drift apart). Each entry's name is pushed to its backend, which adopts it
-  as its Spotify Connect device name — and as the name the Web API device lookup
-  matches on, which is what keeps transport working after a rename. Unconfigured
-  means unconfigured: no fallback address, calls fail fast instead of timing out
-  against localhost. **Validated on hardware.**
-- ✅ **6.3 — Selection restored when a speaker comes back** — `SpeakerTargets` now
-  separates the **intent** (the addresses the user asked to play on) from the live
-  selection: losing the radio prunes the latter and leaves the former alone, so
-  `sync_connected` re-selects a returning speaker instead of making the user press
-  `+` every time. Only an explicit deselect clears the intent, and the intent is
-  persisted next to the offsets, so it survives a restart too. `restore()` reports
-  whether the selection actually moved and the routing is rebuilt only then —
-  `sync_connected` runs on every `/devices` poll, so re-routing unconditionally
-  would tear the PipeWire graph down every couple of seconds. Reintegrating
-  mid-playback can move the target sink and respawn `librespot`, so it is gated by
-  a per-backend setting (default **on**), carried by `/config`. **Validated on
-  hardware.**
-- ✅ **6.4 — Authenticated, LAN-only control API** — `CorsLayer::permissive()` and
-  the open router are gone: every route but `/health` and `POST /pair` requires a
-  bearer token, and the server binds to its LAN address rather than `0.0.0.0`.
-  Pairing is armed on first run (or with `--pair`) and offered two ways, chosen per
-  backend: a six-character code typed into the app, or a QR whose `blue2th://` deep
-  link carries url, name and code in one scan. The code is one-shot, short-lived
-  and attempt-capped, and every refusal reads the same so the route cannot be used
-  to enumerate. The token is persisted `0600` server-side and per backend on the
-  phone; a 401 surfaces as "not paired", distinct from a backend that simply cannot
-  be reached. **Validated on hardware.**
-- ✅ **6.5 — Auto-reconnect** — 6.3 restored the selection the moment a known
-  speaker reappeared, but something else had to bring it back first. The backend
-  now dials the remembered speakers itself: the persisted playback **intent** is
-  the list, and a paired-but-disconnected address is re-dialled at startup and
-  then on a per-address backoff (15 s → 30 s → 60 s → 120 s, then three attempts
-  at a 5-minute cap before it is given up on). It only *connects* — selection and
-  routing stay with 6.3's `sync_connected`, which picks the speaker up on the next
-  `/devices` poll, so the graph is never rebuilt twice. It also never **pairs**:
-  the pass dials through a paired-only call, so an address that lost its bond is
-  refused rather than bonded unattended. A `/disconnect` from the app **dismisses**
-  the address rather than forgetting it — the intent and its tuned offset are kept,
-  6.3 still restores it if it returns on its own, but the backend stops dialling
-  until the user selects or connects it again: it must not fight the user. The
-  policy is pure and clock-free (`Instant` comes in as a parameter), which is what
-  makes the retry ladder testable at all; the BlueZ dial itself is not. Like 6.3,
-  it is a per-backend setting carried by `/config`, default **on**. **Validated on
-  hardware.**
-- ✅ **6.6 — mDNS discovery** — a backend was identified by its URL, so a new DHCP
-  lease broke every call and re-pairing created a *second* entry for the same
-  machine. Identity moves to a stable id the server mints once
-  (`identity.json`, separate from the token) and publishes over
-  `_blue2th._tcp.local` with its name. **Search the network** in the settings page
-  browses for it and either repairs a known backend's address in place — token and
-  local name kept, no duplicate — or offers an unknown one for the normal pairing
-  flow: discovery announces, it never authenticates, and the 6.4 code is still due.
-  Both behaviours are per-app settings, on by default, and a pre-6.6 entry adopts
-  the id it is matched to by URL, so it survives its *next* move too. The JNI
-  surface is three synchronous calls for the multicast lock — `mdns-sd` browses in
-  pure Rust, no `NsdManager`, no second `.dex`. Finding nothing stays a neutral
-  state: manual entry and the QR remain the way out. **Validated on hardware.**
-- ⬜ **6.7 — Background listening reliability** — Android freezes a backgrounded app,
-  which drops the now-playing SSE stream the backend uses as a liveness signal.
-  Handled today by presence reporting (`onStart`/`onStop`/`onTaskRemoved`) plus a
-  30-minute grace period; a **foreground service** (with its permanent notification)
-  is the only way to stop the freeze outright, to be paid only if the compromise
-  bites.
-
-## Cross-cutting concerns
-
-| Topic | Plan |
+| Area | Routes |
 |---|---|
-| Security | ✅ Authenticated + LAN-only control API (6.4, bearer token + one-shot pairing code/QR); PKCE (no OAuth secret on mobile); never expose Spotify tokens |
-| Network discovery | ✅ Runtime-configured named backends (6.2) → mDNS browse + stable backend id (6.6) |
-| CI / tests | BlueZ/PipeWire/librespot are not CI-testable → pure logic unit-tested, hardware manual (same philosophy as the Android JNI path) |
-| Sync | Imperfect on classic A2DP (no shared clock) but tunable via latency offsets — manage expectations |
-| librespot | Unofficial, requires Premium, may break on Spotify updates |
+| Liveness and pairing | `GET /health`, `POST /pair` |
+| Bluetooth | `GET /adapters`, `GET /devices`, `GET /scan` (SSE), `POST /devices/{addr}/connect` and `/disconnect` |
+| Playback targets | `POST /devices/{addr}/select` and `/deselect`, `POST /devices/{addr}/offset`, `GET /targets` |
+| Local transport | `POST /play`, `/pause`, `/stop`, `/volume`; `GET /playback` |
+| Spotify | `/spotify/start`, `/stop`, `/status`; `/spotify/auth/url`, `/auth/callback`, `/auth/status`; `/spotify/play`, `/pause`, `/next`, `/previous`; `GET /spotify/now-playing` (SSE) |
+| Client | `POST /client/presence`, `GET` and `POST /config` |
 
-## Sequencing note
+### Authentication and pairing
 
-Phases 0→4 already deliver the original goal (two speakers, local files) **without
-Spotify**. Phase 5 layers Spotify on top. The project could have stopped after
-phase 4 if Spotify integration had proved too brittle — it did not: phases 0→5 are
-shipped and validated on hardware, and only the optional phase 6 remains.
+Every route requires `Authorization: Bearer <token>`, with two exceptions that
+exist for a reason each. `GET /health` is open so that a phone holding a wrong
+or missing token reads the backend as *not paired* rather than *offline* — the
+two states are fixed differently, and an open probe is what tells them apart.
+`POST /pair` is open because it is how a phone gets a token in the first place.
+
+Pairing is therefore the one door, and everything rests on the code behind it
+being short-lived, one-shot and rate-limited: a six-character code with
+unlimited attempts is not a secret. The code is armed on a first run, whenever
+the token store is missing or unreadable (a fresh token has just invalidated
+every phone, so someone must be able to pair again), and otherwise only on
+`--pair`. It lives five minutes, works once, and five failed attempts cancel
+it. Every refusal reads the same, so the route cannot be used to enumerate. The
+code reaches the phone typed by hand, or as a QR carrying a `blue2th://pair`
+deep link with the address, the name and the code in one scan.
+
+The token is persisted `0600` on the PC and per backend on the phone. A `401`
+surfaces in the app as *not paired*, distinct from a backend that cannot be
+reached at all.
+
+### Identity and discovery
+
+A backend is identified by a stable id it mints once (`identity.json`), not by
+its address: a new DHCP lease used to break every call and re-pairing created a
+second entry for the same machine. The id and the backend's name are published
+over mDNS as `_blue2th._tcp.local`. The phone browses for it, in pure Rust
+(`mdns-sd`), holding a Wi-Fi multicast lock through JNI because the Wi-Fi driver
+otherwise filters multicast frames to save power. A known backend found at a new
+address is repaired in place, token and local name kept; an unknown one is
+offered for the normal pairing flow. Discovery announces, it never
+authenticates.
+
+### Protocol version
+
+`blue2th-proto` carries a protocol version, compiled into both sides and
+compared on every contact, since the phone and the PC are updated by hand at
+different times and a gap between them is the normal state. The app names the
+side to update; the comparison never trusts what a payload says about itself.
+
+## The audio path
+
+### Speakers, selection, and the combined sink
+
+The backend scans, pairs, trusts and connects speakers through `bluer`; a
+connected A2DP speaker appears in PipeWire as a sink. Playing to two of them is
+a **combined sink**: a shared null sink that the source plays into, and one
+`module-loopback` branch per selected speaker from that null sink to the
+speaker's sink. Every non-empty selection goes through it, one speaker
+included; a separate single-speaker path once existed and was dropped because
+two paths meant two sets of defects.
+
+Classic A2DP gives two speakers no shared clock, so they drift apart by a fixed
+amount that depends on the speaker. Each branch carries a **latency offset**
+the user tunes from the phone, 0 to 750 ms, applied as that loopback's
+latency on top of a base buffer every branch gets. Offsets are remembered by
+speaker address and restored when that speaker is selected again, across
+restarts.
+
+The selection is capped at two speakers. It separates the **intent** — the
+addresses the user asked to play on — from the live selection: losing a
+speaker's radio prunes the latter and leaves the former alone, so a returning
+speaker is re-selected without the user pressing anything, and only an explicit
+deselect clears the intent. Routing is rebuilt only when the selection actually
+moved, because the reconciliation runs on every `/devices` poll and tearing the
+PipeWire graph down every couple of seconds would cut the audio.
+
+### Auto-reconnect
+
+The backend also dials remembered speakers itself: the persisted intent is the
+list, and a paired-but-disconnected address is re-dialled at startup, then on a
+per-address backoff (15 s, 30 s, 60 s, 120 s, then three attempts at a
+five-minute cap before it is given up on). The policy is pure and clock-free —
+the time comes in as a parameter — which is what makes the retry ladder
+testable; the BlueZ dial itself is not. It only *connects*: selection and
+routing stay with the reconciliation above, so the graph is never rebuilt
+twice. It never *pairs*: an address that lost its bond is refused rather than
+bonded unattended. A disconnect from the app **dismisses** the address rather
+than forgetting it — intent and offset are kept, and the backend stops dialling
+until the user asks again. It must not fight the user.
+
+### Spotify
+
+`librespot` runs as a child process named after the backend, with its output
+sent to the combined sink, in Spotify Connect mode. Two details are not
+obvious:
+
+- **`--system-cache` is required.** In plain zeroconf mode `librespot` only
+  advertises itself and is never logged into the account, so it does not appear
+  in the Web API's device list and playback cannot be transferred to it. The
+  first run needs one manual pick of the device in a Spotify client to seed the
+  credentials; the cache logs it in by itself from then on.
+- **Autoplay is off explicitly.** Spotify refuses to hand `librespot` the
+  autoplay context it asks for at the end of a queue, so the feature only logs
+  errors; off, the behaviour is the same and the log says what happened.
+
+The phone signs in with PKCE and hands the code to the backend through the
+`blue2th://spotify-callback` deep link; the backend exchanges it, holds the
+tokens, refreshes them silently before expiry, and persists the refresh token
+so a restart does not send the user back through the browser. The refresh
+token is dropped only when Spotify itself rejects it, never on a network
+failure. Transport resolves the backend's device by name and transfers
+playback to it rather than driving whichever device is active, which is also
+what keeps transport working after the backend is renamed. Now-playing is
+pushed to the phone over SSE.
+
+Running the backend under the name the app gave it matters twice: it is the
+Spotify Connect device name, and the name the Web API lookup matches on.
+
+### Presence and the watchdog
+
+Playback deliberately keeps going while the app sits in the background, so the
+backend needs some other way to notice that nobody is there: a swipe-away, a
+crash or a dropped network would otherwise leave the PC streaming to nobody.
+The app already holds the now-playing SSE stream open for as long as it runs,
+so that connection is the heartbeat, with no extra traffic.
+
+Losing it is ambiguous on its own, because Android freezes a backgrounded app,
+which drops the connection while the user is deliberately listening. So the app
+reports what it is doing through `POST /client/presence`, from the activity's
+lifecycle hooks (`onStart`, `onStop`, and `onTaskRemoved` in a small service,
+the only reliable signal for a swipe out of recents), and the grace period
+follows: short in the foreground, where only a crash can cut the feed; long —
+thirty minutes — in the background, where the freeze is expected; and a *gone*
+report pauses at once. A foreground service with its permanent notification
+would stop the freeze outright; it is the price to pay only if the compromise
+bites.
+
+## The app
+
+The app holds a list of **named backends**, one active at a time, persisted in
+`SharedPreferences`, each with its address, its token, its pairing method and
+the backend's stable id. Every switch goes through one function, so the status
+card and the settings page cannot drift apart. Unconfigured means unconfigured:
+with no backend, calls fail fast instead of timing out against localhost.
+
+Each entry's name is pushed to its backend, which adopts it. Three per-backend
+settings travel over `/config`: whether a returning speaker is reintegrated
+mid-playback (it can move the target sink and respawn `librespot`), whether the
+backend dials remembered speakers, and the backend's name.
+
+Two things the app is not: a Bluetooth controller, and a test subject. Dioxus
+components are not test-runnable here, so what is rendered is specified in
+writing and checked on the phone.
+
+## Testing philosophy
+
+Pure logic is unit-tested; the hardware boundary — BlueZ, PipeWire, `librespot`,
+a real speaker, the Android lifecycle — is validated by hand and kept out of CI.
+The code is shaped for that: policies take the clock as a parameter, selection
+models take the live state as a slice, the audio module hides PipeWire behind
+one interface. A test whose name is the claim beats a comment that states a
+fact, and an empty value is guarded explicitly wherever a prefix or a substring
+is compared; both rules, and the defects that taught them, are in `CLAUDE.md`.
+
+## Known limits
+
+- **Synchronisation is tunable, not perfect.** Classic A2DP has no shared clock;
+  the per-speaker offset compensates. Automatic calibration is a tracked idea,
+  not a feature.
+- **`librespot` is unofficial**, requires a Premium account, and can break when
+  Spotify changes its protocol. The Spotify application must list the account
+  on its Development-mode allowlist, or playback fails with no visible error.
+- **The PipeWire graph is driven through `pactl`**, a prototype choice; the
+  native API is tracked in the v0.2.0 milestone.
+- **Background listening on Android** rests on presence reports and a grace
+  period rather than a foreground service.

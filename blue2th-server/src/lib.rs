@@ -4,8 +4,8 @@
 //!
 //! Exposes the Axum router (`app()`) and the server entry point (`run()`) so
 //! both the binary (`main.rs`) and integration tests can drive the same surface
-//! in-process. Phase 0 only exposed `GET /health`; later phases add Bluetooth
-//! (`bluer`) and audio (PipeWire) routes — see `docs/ROADMAP.md`.
+//! in-process. The route table and what each area owns are described in
+//! `docs/ARCHITECTURE.md`.
 
 use std::{
     convert::Infallible,
