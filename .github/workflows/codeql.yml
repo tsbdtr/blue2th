@@ -1,0 +1,58 @@
+name: CodeQL
+
+# Static analysis of our own code (cargo-deny in ci.yml watches the
+# dependencies; this watches what we write). Kept out of ci.yml on purpose:
+# a CodeQL run takes minutes, and its findings are things to read under
+# Security → Code scanning, not a gate that blocks an unrelated change. Whether
+# it becomes a required check is decided in the rulesets after a few weeks of
+# results (#106).
+#
+# Rust is analysed in build mode "none": the extractor reads the workspace
+# without compiling it, so none of ci.yml's native packages are needed here.
+# "actions" analyses the workflow files themselves (injection through
+# expressions, over-broad permissions).
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+  schedule:
+    # Weekly, so a newly published query runs on code nobody touched.
+    - cron: '17 6 * * 1'
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      # The "actions" language reads workflow runs' metadata.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
