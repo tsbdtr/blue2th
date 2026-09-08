@@ -34,7 +34,7 @@ rodio = { version = "0.22", default-features = false, features = ["wav", "playba
 # URL; `serde`/`serde_json` (de)serialize the DTOs and Web API payloads.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 rand = "0.8"
 # Phase 6.4: the pairing QR, rendered as text a terminal can show. Default
 # features off on purpose — the `image`/`svg` renderers would drag a whole image
