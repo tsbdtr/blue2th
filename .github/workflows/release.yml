@@ -109,7 +109,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: server
+          name: blue2th-server-${{ needs.version.outputs.version }}
           path: ${{ env.DIST }}/blue2th-server-${{ env.VERSION }}-x86_64-linux-gnu.tar.gz
           if-no-files-found: error
 
@@ -231,7 +231,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: apk
+          name: blue2th-apk-${{ needs.version.outputs.version }}
           path: ${{ env.DIST }}/blue2th-${{ env.VERSION }}.apk
           if-no-files-found: error
 
@@ -257,12 +257,12 @@ jobs:
       # dist/<version>/ — the layout the build jobs wrote them in.
       - uses: actions/download-artifact@v8
         with:
-          name: server
+          name: blue2th-server-${{ needs.version.outputs.version }}
           path: ${{ env.DIST }}
 
       - uses: actions/download-artifact@v8
         with:
-          name: apk
+          name: blue2th-apk-${{ needs.version.outputs.version }}
           path: ${{ env.DIST }}
 
       # Bare file names in SHA256SUMS, so `sha256sum -c SHA256SUMS` works in
