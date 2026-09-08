@@ -84,6 +84,11 @@ To build the app yourself, install [`dx`](https://dioxuslabs.com/learn/0.7/getti
 0.7 and the Android NDK, then `dx serve --platform android --package blue2th-frontend`
 with a phone connected.
 
+The longer versions: [`docs/INSTALL.md`](docs/INSTALL.md) for the backend, with
+Spotify and a service unit, and [`docs/PAIRING.md`](docs/PAIRING.md) for the
+phone, with what each status colour means and what to check when it does not
+work.
+
 ## Status
 
 **This is a working prototype**, built for one household: one PC, one phone,
