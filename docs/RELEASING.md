@@ -25,7 +25,8 @@ every subsequent delivery starts in conflict. `gh pr merge --merge` throughout.
 ## Making a release
 
 A `vX.Y.Z` tag on `main` produces a GitHub Release carrying a signed APK and a
-server binary, each with its SHA-256 and a build-provenance attestation. The
+server binary, each with its SHA-256 and, once the repository is public, a
+build-provenance attestation. The
 workflow is `.github/workflows/release.yml`; the logic that can be tested lives
 in the shell scripts under `scripts/`, with their tests under `scripts/tests/`
 (run by `scripts/tests/run.sh`, which CI runs on every pull request).
@@ -109,6 +110,13 @@ workflow?* — Sigstore binds it to the workflow's identity (repository, tag,
 commit, workflow file) in a public transparency log, with no key to store. The
 fingerprint answers *was it signed with the project's key?* — it is derived
 from the certificate, not the private key, so publishing it gives nothing away.
+
+**Only releases made while the repository is public carry an attestation.**
+GitHub's attestation store refuses a user-owned private repository, so the
+workflow skips the step there and the release notes say so instead of quoting a
+command that cannot succeed (#94). A release made while private cannot be
+attested afterwards; its checksums and the certificate fingerprint are its
+checks.
 
 ## Signing
 

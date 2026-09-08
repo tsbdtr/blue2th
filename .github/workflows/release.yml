@@ -276,7 +276,16 @@ jobs:
       # Attested after signing, never before: the attestation binds the digest
       # of the file as published, and signing rewrites the file. An attestation
       # on the unsigned APK would verify nothing a user can download.
+      #
+      # Only on a public repository: GitHub's attestation store refuses a
+      # user-owned private one ("Feature not available for user-owned private
+      # repositories"), which is how the first v0.1.0 run died after building
+      # and signing everything (#94). A release made while private carries no
+      # attestation and cannot get one later; the checksums and the signing
+      # certificate remain its checks, and the notes say so below.
       - uses: actions/attest-build-provenance@v4
+        id: attest
+        if: github.event.repository.private == false
         with:
           subject-path: |
             ${{ env.DIST }}/blue2th-server-${{ env.VERSION }}-x86_64-linux-gnu.tar.gz
@@ -291,12 +300,18 @@ jobs:
           {
             echo "## Verify"
             echo
-            echo 'Build provenance (GitHub attestation):'
-            echo
-            echo '```'
-            echo "gh attestation verify blue2th-${VERSION}.apk --repo ${{ github.repository }}"
-            echo "gh attestation verify blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz --repo ${{ github.repository }}"
-            echo '```'
+            if [[ "${{ steps.attest.outcome }}" == "success" ]]; then
+              echo 'Build provenance (GitHub attestation):'
+              echo
+              echo '```'
+              echo "gh attestation verify blue2th-${VERSION}.apk --repo ${{ github.repository }}"
+              echo "gh attestation verify blue2th-server-${VERSION}-x86_64-linux-gnu.tar.gz --repo ${{ github.repository }}"
+              echo '```'
+            else
+              echo 'Published from a private repository: GitHub issues no build-provenance'
+              echo 'attestation there, so this release carries none. The checksums and the'
+              echo 'APK signing certificate below are the checks.'
+            fi
             echo
             echo "APK signing certificate SHA-256 (\`apksigner verify --print-certs\`):"
             echo
