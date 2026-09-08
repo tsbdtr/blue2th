@@ -8,7 +8,7 @@ Common types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `style`, `perf
 
 ## Architecture
 
-A single **cargo workspace** with three layers (full vision in `docs/ROADMAP.md`):
+A single **cargo workspace** with three layers (design record in `docs/ARCHITECTURE.md`):
 
 - **mobile** — `blue2th-frontend`: Dioxus 0.7 Android remote. Code in
   `blue2th-frontend/src/`, tests in `blue2th-frontend/tests/`. Talks to the
@@ -291,7 +291,7 @@ Rules:
   source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when
   query/path/explain do not surface enough context. For architecture written by a
-  human rather than derived, `docs/ROADMAP.md` and this file come first.
+  human rather than derived, `docs/ARCHITECTURE.md` and this file come first.
 - After modifying code, run `graphify update .` to keep the graph current.
 - Nothing under `graphify-out/` is ever committed, and nothing outside a local
   session reads it — not the build, not the tests, not CI. The two large blobs were

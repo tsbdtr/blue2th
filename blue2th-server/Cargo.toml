@@ -5,9 +5,8 @@ edition = "2021"
 license.workspace = true
 publish.workspace = true
 
-# PC-side backend for the blue2th audio engine (Axum/Tokio). It will drive BlueZ
-# (via `bluer`) and PipeWire in later phases; phase 0 only exposes /health.
-# See docs/ROADMAP.md.
+# PC-side backend for the blue2th audio engine (Axum/Tokio): drives BlueZ (via
+# `bluer`), PipeWire and the librespot subprocess. See docs/ARCHITECTURE.md.
 
 [dependencies]
 axum = "0.8"

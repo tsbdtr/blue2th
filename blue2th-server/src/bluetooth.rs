@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! BlueZ access for the backend, via `bluer` (D-Bus). Requires `bluetoothd`
-//! running on the host. Phase 1 only reads adapters and paired devices; scanning
-//! and connect/disconnect land in later phases (see `docs/ROADMAP.md`).
+//! running on the host: adapters, known devices, scanning, pair/trust/connect
+//! and disconnect (see `docs/ARCHITECTURE.md`).
 
 use async_stream::try_stream;
 use blue2th_proto::{AdapterInfo, DeviceInfo};

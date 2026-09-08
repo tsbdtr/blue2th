@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Thin HTTP client for the blue2th PC backend (see `docs/ROADMAP.md`).
-//!
-//! Phase 0: resolve the backend base URL and ping `GET /health`. Real feature
-//! calls (scan, connect, play…) land in later phases.
+//! Thin HTTP client for the blue2th PC backend (see `docs/ARCHITECTURE.md`):
+//! resolves the active backend's base URL and token, then wraps every route the
+//! app calls, from `GET /health` to the Spotify transport.
 
 use std::time::Duration;
 
