@@ -1,5 +1,5 @@
 # ── Workspace ────────────────────────────────────────────────────────────────
-# Three layers, one workspace; the full vision is in docs/ROADMAP.md.
+# Three layers, one workspace; the design record is docs/ARCHITECTURE.md.
 #
 #   blue2th-frontend — the Dioxus 0.7 Android remote
 #   blue2th-server   — the Axum/Tokio backend driving BlueZ and audio

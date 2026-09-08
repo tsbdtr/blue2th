@@ -8,7 +8,7 @@ Common types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `style`, `perf
 
 ## Architecture
 
-A single **cargo workspace** with three layers (full vision in `docs/ROADMAP.md`):
+A single **cargo workspace** with three layers (design record in `docs/ARCHITECTURE.md`):
 
 - **mobile** — `blue2th-frontend`: Dioxus 0.7 Android remote. Code in
   `blue2th-frontend/src/`, tests in `blue2th-frontend/tests/`. Talks to the
@@ -35,7 +35,9 @@ That boundary is the only reason blue2th can be distributed under
 `Cargo.toml`** — linking it would make the whole server binary GPL-3.0 and
 invalidate the project's licence. If a feature seems to need librespot as a
 library, say so and stop: it is a licensing decision, not an implementation
-detail.
+detail. `deny.toml` holds the licence allowlist and CI runs `cargo deny check`
+on every pull request, so a GPL crate arriving through an update fails there
+rather than being noticed later.
 
 ## Quality Commands
 
@@ -291,7 +293,7 @@ Rules:
   source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when
   query/path/explain do not surface enough context. For architecture written by a
-  human rather than derived, `docs/ROADMAP.md` and this file come first.
+  human rather than derived, `docs/ARCHITECTURE.md` and this file come first.
 - After modifying code, run `graphify update .` to keep the graph current.
 - Nothing under `graphify-out/` is ever committed, and nothing outside a local
   session reads it — not the build, not the tests, not CI. The two large blobs were

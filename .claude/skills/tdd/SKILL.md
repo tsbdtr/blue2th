@@ -4,7 +4,7 @@ Orchestrates the Red → Green → Refactor TDD cycle using three sub-agents, ea
 working in an isolated git worktree and receiving only the context relevant to its
 phase — then opens the pull request and, once a human has merged it, cleans up.
 
-This is a **cargo workspace** with three layers (see `docs/ROADMAP.md`):
+This is a **cargo workspace** with three layers (see `docs/ARCHITECTURE.md`):
 - **mobile** — `blue2th-frontend` (Dioxus/Android app): `blue2th-frontend/`. The
   workspace root holds no package of its own.
 - **server** — `blue2th-server` (Axum/Tokio Linux backend, BlueZ + PipeWire): `blue2th-server/`.

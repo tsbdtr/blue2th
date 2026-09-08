@@ -10,22 +10,43 @@ procedure, not tasks**: anything with a closing condition lives in
 development line. Feature branches (`feat/*`, `fix/*`, `docs/*`, …, see
 `CLAUDE.md`) branch off `develop` and merge back into it.
 
-`hotfix/*` branches off `main`, goes through a PR into `main` (plus a tag), and is
-then propagated with **`git merge main` on `develop`** — not a second
-`hotfix → develop` PR. Absorbing `main`'s merge commit is what keeps `main` a
-strict ancestor of `develop`, so every delivery stays a `merge --ff-only` and
-cannot conflict. Merging only the fix leaves the two lines diverged.
+`main` receives `develop` through a **delivery pull request**, merged with a
+merge commit. That commit is not on `develop`, but its tree is `develop`'s, so
+the next delivery cannot conflict. `hotfix/*` branches off `main`, goes through
+a PR into `main` (plus a tag), and is then propagated with **`git merge main` on
+`develop`** — not a second `hotfix → develop` PR: absorbing `main`'s merge
+commits is what keeps the two lines from diverging. Merging only the fix leaves
+them diverged.
 
 No `release/*` branches: the tag on `main` already triggers the build.
 
-**Never squash a branch-to-branch merge.** A squash-merge of `develop → main`
-creates a commit with no ancestry link, the two lines diverge permanently, and
-every subsequent delivery starts in conflict. `gh pr merge --merge` throughout.
+**Never squash or rebase a branch-to-branch merge.** A squash-merge of
+`develop → main` creates a commit with no ancestry link, a rebase rewrites the
+commits, and either way the two lines diverge permanently and every subsequent
+delivery starts in conflict. The repository only offers the merge-commit
+method, so the interface enforces this.
+
+### Repository rules
+
+Three rulesets, with no bypass actor on the branches — on a solo repository a
+bypass is the same as no rule:
+
+- **`develop`** and **`main`**: a pull request is required, merged with a merge
+  commit; the five CI checks must pass (`fmt, clippy, test`, the SPDX header,
+  the release scripts' shell tests, `cargo deny`, the PR title); force pushes
+  and deletion are blocked. A direct push is refused with `GH013`.
+- **Tags `v*`**: nobody deletes or moves a release tag, and only the repository
+  owner creates one. A release that needs redoing is a new patch version, never
+  a re-pointed tag: once public, someone may already have downloaded it.
+
+They are managed on GitHub under *Settings → Rules*, or through
+`gh api repos/tsbdtr/blue2th/rulesets`.
 
 ## Making a release
 
 A `vX.Y.Z` tag on `main` produces a GitHub Release carrying a signed APK and a
-server binary, each with its SHA-256 and a build-provenance attestation. The
+server binary, each with its SHA-256 and, once the repository is public, a
+build-provenance attestation. The
 workflow is `.github/workflows/release.yml`; the logic that can be tested lives
 in the shell scripts under `scripts/`, with their tests under `scripts/tests/`
 (run by `scripts/tests/run.sh`, which CI runs on every pull request).
@@ -47,12 +68,22 @@ By hand, in this order:
    nothing if it fails. (`workflow_dispatch` only reaches a workflow that
    exists on the default branch, so a change to `release.yml` is rehearsed
    after its pull request lands, not from its branch.)
-3. Merge `develop` into `main` (`--ff-only`), tag, push the tag:
+3. Deliver `develop` to `main` through a pull request, and merge it — with a
+   merge commit, the only method the repository allows. The merge is the human
+   step; the CI checks run on this pull request like on any other:
    ```bash
-   git checkout main && git merge --ff-only develop
-   git tag vX.Y.Z && git push origin main vX.Y.Z
+   gh pr create --base main --head develop --title "chore(release): deliver vX.Y.Z" \
+     --body "Delivery of vX.Y.Z; rehearsed on develop by run <id>."
    ```
-4. Check the Release: download the APK and run the verification commands its
+4. Tag the merge commit, from any checkout, and push the tag — the tag is the
+   act of publishing, and it stays a hand-made gesture on purpose:
+   ```bash
+   git fetch origin
+   git tag -a vX.Y.Z -m "blue2th X.Y.Z" origin/main
+   git push origin vX.Y.Z
+   ```
+   The tag push is not covered by the branch rules; it triggers `release.yml`.
+5. Check the Release: download the APK and run the verification commands its
    notes carry (below). Install it on a phone that already has the previous
    release: it must update in place.
 
@@ -109,6 +140,13 @@ workflow?* — Sigstore binds it to the workflow's identity (repository, tag,
 commit, workflow file) in a public transparency log, with no key to store. The
 fingerprint answers *was it signed with the project's key?* — it is derived
 from the certificate, not the private key, so publishing it gives nothing away.
+
+**Only releases made while the repository is public carry an attestation.**
+GitHub's attestation store refuses a user-owned private repository, so the
+workflow skips the step there and the release notes say so instead of quoting a
+command that cannot succeed (#94). A release made while private cannot be
+attested afterwards; its checksums and the certificate fingerprint are its
+checks.
 
 ## Signing
 

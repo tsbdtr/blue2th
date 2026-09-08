@@ -102,6 +102,19 @@ jobs:
       - name: Run the shell tests
         run: BUILD_TOOLS_VERSION=36.0.0 scripts/tests/run.sh
 
+  # Security advisories, the licence allowlist, duplicate crates and crate
+  # sources, per deny.toml. The licence check is what makes the librespot rule
+  # in CLAUDE.md mechanical: a GPL crate arriving through an update fails here.
+  deny:
+    name: cargo deny (advisories, licences, sources)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
   licence-headers:
     name: Every .rs carries the SPDX header
     runs-on: ubuntu-latest
