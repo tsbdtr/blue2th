@@ -35,7 +35,9 @@ That boundary is the only reason blue2th can be distributed under
 `Cargo.toml`** — linking it would make the whole server binary GPL-3.0 and
 invalidate the project's licence. If a feature seems to need librespot as a
 library, say so and stop: it is a licensing decision, not an implementation
-detail.
+detail. `deny.toml` holds the licence allowlist and CI runs `cargo deny check`
+on every pull request, so a GPL crate arriving through an update fails there
+rather than being noticed later.
 
 ## Quality Commands
 

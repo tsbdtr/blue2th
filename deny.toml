@@ -1,0 +1,59 @@
+# cargo-deny policy: security advisories, licences, duplicate crates, sources.
+# CI runs `cargo deny check` on every pull request (ci.yml); locally,
+# `cargo binstall cargo-deny` then the same command.
+
+[advisories]
+# A known vulnerability or a yanked crate fails the build; the fix is almost
+# always a `cargo update -p <crate>`, and the advisory says so. (cargo-deny
+# 0.14+ treats every advisory as an error; the old per-kind knobs are gone.)
+yanked = "deny"
+# "Unmaintained" only for crates this workspace depends on directly. A
+# transitive one (paste behind rav1e, proc-macro-error behind gtk3-macros) has
+# no fix on our side, and failing every pull request until someone lists an
+# ignore is noise that teaches people to ignore the job.
+unmaintained = "workspace"
+
+[licenses]
+# blue2th is MIT OR Apache-2.0, and its binaries link every crate below; the
+# allowlist is what keeps a copyleft dependency from arriving through a
+# transitive update. GPL is the case that matters: librespot is GPL-3.0 and
+# runs as a subprocess for that reason (CLAUDE.md). Nothing GPL is allowed here,
+# and nothing GPL is in the tree.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    # File-level copyleft: modifying an MPL file means publishing that file,
+    # linking it means nothing. Ten crates in the tree carry it.
+    "MPL-2.0",
+    # University of Illinois / NCSA: permissive. libfuzzer-sys.
+    "NCSA",
+    # Community Data License Agreement, permissive: Mozilla's CA bundle in
+    # webpki-roots. Data, not code.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Several versions of one crate are a size cost, not a defect; reported, not
+# refused, since most come from dependencies we do not choose.
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace crates depend on each other by path, with no version: that is
+# the one wildcard that names nothing on crates.io, and the one to allow.
+allow-wildcard-paths = true
+
+[sources]
+# Everything comes from crates.io. A git dependency is a supply-chain decision
+# that belongs in a pull request body, not in a lock file diff.
+unknown-registry = "deny"
+unknown-git = "deny"

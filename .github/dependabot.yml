@@ -1,0 +1,23 @@
+# Dependabot: weekly, two ecosystems, pull requests titled so that the
+# Conventional Commits check (pr-title.yml) accepts them.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    # One pull request for every minor and patch bump, rather than one per
+    # crate: 660 lock entries would otherwise mean a pull request a day. A
+    # major bump stays on its own, since it is the one that can break.
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci(actions)"
