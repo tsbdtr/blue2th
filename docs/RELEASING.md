@@ -112,6 +112,10 @@ What the tag triggers:
   names, build provenance is attested on the signed files, then
   `gh release create` uploads both artifacts and the checksums, with release
   notes carrying the verification commands and the certificate fingerprint.
+  The generated part of the notes is grouped by labels that `pr-title.yml`
+  derives from each pull request's Conventional Commits type
+  (`.github/release.yml`), so a `feat:` lands under *New features* without
+  anyone labelling by hand.
   A failure here publishes nothing: the two artifacts stay on the run, and the
   tag can be deleted and posed again once the cause is fixed.
 

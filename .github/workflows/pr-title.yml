@@ -26,6 +26,11 @@ jobs:
   commit-convention:
     name: PR title follows Conventional Commits
     runs-on: ubuntu-latest
+    # `pull-requests: write` is for the labelling step below; the validation
+    # itself needs nothing beyond reading the checkout.
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v7
@@ -47,4 +52,36 @@ jobs:
             echo "Expected: <type>(<scope>): <description>"
             echo "Got: $TITLE"
             exit 1
+          fi
+
+      # Derive the pull request's label from its type, so the release notes
+      # (.github/release.yml) can group what was merged. Best-effort: a fork's
+      # token cannot write labels, and a label deleted on the repository must not
+      # turn the title check red. The table lives in scripts/pr-type-label.sh.
+      - name: Label from the type
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event.pull_request.title }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Exit 3 is "valid title, no label to add": the other mapped labels
+          # still come off, so a pull request retitled from feat: to test: does
+          # not keep `enhancement`. Exit 1 or 2 fails this step so its own log
+          # says why; continue-on-error keeps the check green either way, since
+          # the previous step has already judged the title.
+          status=0
+          label=$(scripts/pr-type-label.sh "$TITLE") || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+            exit 1
+          fi
+          remove=$(scripts/pr-type-label.sh --all | grep -vx "$label" | paste -sd,)
+          # An empty label never reaches --add-label: `gh` refuses it rather
+          # than ignoring it. Removing a label the pull request does not carry
+          # is fine with `gh`.
+          if [ -n "$label" ]; then
+            gh pr edit "$NUMBER" --add-label "$label" --remove-label "$remove"
+          else
+            gh pr edit "$NUMBER" --remove-label "$remove"
           fi
