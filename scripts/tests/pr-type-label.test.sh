@@ -6,13 +6,17 @@
 # `enhancement`, `fix` → `bug`, `docs` → `documentation`, `ci` → `ci`,
 # `refactor` → `refactor` — printed alone on stdout with exit 0. A valid type
 # outside that table prints nothing and exits 3; a title that is not
-# Conventional Commits exits 1 with the title named on stderr. `--all` lists
-# the five mapped labels in a fixed order, which the workflow turns into its
-# remove list. The title check reads the `PATTERN` line of
-# `.githooks/commit-msg`, so the hook and the script cannot drift apart (#82).
+# Conventional Commits exits 1 with the title named on stderr; a hook that
+# cannot be read exits 2. `--all` lists the five mapped labels in a fixed
+# order, which the workflow turns into its remove list. The title check reads
+# the `PATTERN` line of `.githooks/commit-msg`, so the hook and the script
+# cannot drift apart (#82).
 # Sourced by scripts/tests/run.sh; each test_* runs in its own subshell.
 
 script="$SCRIPTS_DIR/pr-type-label.sh"
+hook="$REPO_ROOT/.githooks/commit-msg"
+workflow="$REPO_ROOT/.github/workflows/pr-title.yml"
+release_config="$REPO_ROOT/.github/release.yml"
 
 # assert_unmapped <title>: exit status exactly 3 and nothing on stdout — the
 # workflow reads 3 as "valid title, no label to apply". assert_fails cannot
@@ -30,6 +34,29 @@ assert_unmapped() {
 assert_label() {
     assert_succeeds "$script" "$2"
     assert_eq "$1" "$stdout" "label for '$2'"
+}
+
+# assert_unreadable_hook <command...>: exit status exactly 2 and nothing on
+# stdout — the workflow fails its step on 2, so a script that answered 1
+# would make a missing hook read as a refused title, and one that answered 3
+# would strip the labels as if the title were valid.
+assert_unreadable_hook() {
+    run "$@"
+    [[ "$status" -eq 2 ]] \
+        || fail "expected an unreadable hook (exit 2), got exit $status for: $*"$'\n'"stdout: $stdout"$'\n'"stderr: $stderr"
+    assert_eq "" "$stdout" "stdout when the hook cannot be read"
+}
+
+# relocate_script: copies the script under test to $tmp/scripts, so that the
+# hook it resolves — `<script dir>/../.githooks/commit-msg` — is whatever the
+# test puts at $tmp/.githooks/commit-msg, or nothing. Prints the copy's path.
+# A missing script fails here, before any assertion on its behaviour could
+# pass vacuously.
+relocate_script() {
+    [[ -f "$script" ]] || fail "script under test does not exist: $script"
+    mkdir -p "$tmp/scripts" "$tmp/.githooks"
+    cp "$script" "$tmp/scripts/pr-type-label.sh"
+    echo "$tmp/scripts/pr-type-label.sh"
 }
 
 # ── Mapped types ─────────────────────────────────────────────────────────────
@@ -150,11 +177,25 @@ test_pr_type_label_refuses_title_without_type() {
     assert_eq "" "$stdout" "stdout on refusal"
 }
 
-# Criterion: refuses an empty title. The empty string is passed explicitly:
-# a prefix match on "" fails open, and a label printed for an empty title is
-# exactly the wildcard bug this project keeps meeting.
+# Criterion: refuses an empty title, and says so — "empty title" on stderr
+# rather than the generic refusal. The empty string is passed explicitly: a
+# prefix match on "" fails open, and a label printed for an empty title is
+# exactly the wildcard bug this project keeps meeting. The message is what
+# proves the guard is its own check and not a side effect of the pattern.
 test_pr_type_label_refuses_empty_title() {
     assert_fails "$script" ""
+    assert_eq "" "$stdout" "stdout on refusal"
+    assert_contains "$stderr" "empty title" "refusal message"
+}
+
+# Criterion: a title spanning two lines is refused, even when one of the
+# lines is a valid title on its own. `grep` judges lines, so without an
+# explicit guard the second line passes the check by itself and the script
+# answers 3 — "valid title, no label" — for a title that is not valid.
+test_pr_type_label_refuses_multi_line_title() {
+    assert_fails "$script" $'feat: add a thing\nfix: repair a thing'
+    assert_eq "" "$stdout" "stdout on refusal"
+    assert_fails "$script" $'random words\nfeat: add a thing'
     assert_eq "" "$stdout" "stdout on refusal"
 }
 
@@ -162,6 +203,14 @@ test_pr_type_label_refuses_empty_title() {
 # nothing is a different bug from passing an empty expansion.
 test_pr_type_label_refuses_missing_argument() {
     assert_fails "$script"
+    assert_eq "" "$stdout" "stdout on refusal"
+}
+
+# Criterion: refuses a second argument. The workflow quotes `"$TITLE"`; an
+# unquoted one would split a title on its spaces, and the first word of a
+# title is never a label.
+test_pr_type_label_refuses_extra_argument() {
+    assert_fails "$script" "feat:" "add a thing"
     assert_eq "" "$stdout" "stdout on refusal"
 }
 
@@ -180,18 +229,16 @@ test_pr_type_label_names_the_refused_title_on_stderr() {
 # pattern accepts only the type `zzz` must follow that hook — `zzz: x` passes
 # the check (a label or none, but not a refusal) and `feat: x` is refused.
 # A script carrying its own copy of the regex would answer the other way
-# round on both, and a missing script fails here before anything runs.
+# round on both.
 test_pr_type_label_reads_pattern_from_the_commit_msg_hook() {
-    [[ -f "$script" ]] || fail "script under test does not exist: $script"
-    mkdir -p "$tmp/scripts" "$tmp/.githooks"
-    cp "$script" "$tmp/scripts/pr-type-label.sh"
+    local relocated
+    relocated="$(relocate_script)"
     cat >"$tmp/.githooks/commit-msg" <<'HOOK'
 #!/usr/bin/env bash
 FIRST_LINE=$(head -1 "$1")
 PATTERN='^(zzz)(\([a-z0-9/_-]+\))?!?: .{1,100}$'
 echo "$FIRST_LINE" | grep -qE "$PATTERN"
 HOOK
-    local relocated="$tmp/scripts/pr-type-label.sh"
 
     run "$relocated" "zzz: x"
     [[ "$status" -eq 0 || "$status" -eq 3 ]] \
@@ -201,6 +248,39 @@ HOOK
     [[ "$status" -eq 1 ]] \
         || fail "expected the relocated script to refuse 'feat: x' under the fake hook (exit 1), got exit $status"$'\n'"stdout: $stdout"
     assert_eq "" "$stdout" "stdout on refusal under the fake hook"
+}
+
+# Criterion: no hook beside the script is exit 2, not a refusal — the title
+# was never judged — and stderr names the path that was looked for.
+test_pr_type_label_exits_2_when_the_hook_is_missing() {
+    local relocated
+    relocated="$(relocate_script)"
+    assert_file_absent "$tmp/.githooks/commit-msg"
+    assert_unreadable_hook "$relocated" "feat: add a thing"
+    assert_contains "$stderr" ".githooks/commit-msg" "missing-hook message"
+}
+
+# Criterion: a hook with no `PATTERN='…'` line is exit 2 as well. The
+# alternative — an empty pattern — would match every title, the wildcard
+# case again, so the script must stop rather than judge with nothing.
+test_pr_type_label_exits_2_when_the_hook_has_no_pattern_line() {
+    local relocated
+    relocated="$(relocate_script)"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/.githooks/commit-msg"
+    assert_unreadable_hook "$relocated" "feat: add a thing"
+    assert_contains "$stderr" "PATTERN" "unreadable-pattern message"
+}
+
+# Criterion: the script and pr-title.yml read the hook with the same sed
+# expression, character for character. Each reads the `PATTERN` line on its
+# own, so a change to one of the two expressions — or to the hook's line
+# shape — would let CI and the script judge the same title differently.
+test_pr_type_label_reads_pattern_with_the_workflow_sed_expression() {
+    local in_script in_workflow
+    in_script="$(grep -o 'sed -n "[^"]*"' "$script")"
+    in_workflow="$(grep -o 'sed -n "[^"]*"' "$workflow")"
+    [[ -n "$in_script" ]] || fail "no sed expression found in $script"
+    assert_eq "$in_workflow" "$in_script" "sed expression reading PATTERN"
 }
 
 # Criterion: with the real hook, the type set is exactly the hook's — a type
@@ -226,6 +306,51 @@ test_pr_type_label_all_lists_the_five_mapped_labels_in_order() {
 test_pr_type_label_all_is_silent_on_stderr() {
     assert_succeeds "$script" --all
     assert_eq "" "$stderr" "stderr of --all"
+}
+
+# Criterion: `--all` and the mapping are one table. Every type the hook
+# accepts is tried; the set of labels those types produce must be exactly
+# the set `--all` prints — a label `--all` lists that no type produces would
+# be removed for ever and never added, and one a type produces that `--all`
+# omits would survive a retitle. The types come from the hook's own
+# `PATTERN`, so the list tried is the list the script can be given.
+test_pr_type_label_all_is_exactly_what_the_hook_types_map_to() {
+    local pattern types type all mapped=""
+    pattern="$(sed -n "s/^PATTERN='\(.*\)'$/\1/p" "$hook")"
+    types="$(printf '%s' "$pattern" | sed -nE 's/^\^\(([a-z|]+)\).*$/\1/p' | tr '|' '\n')"
+    [[ -n "$types" ]] || fail "could not read the type alternation from $hook: '$pattern'"
+
+    assert_succeeds "$script" --all
+    all="$stdout"
+    [[ -n "$all" ]] || fail "--all printed nothing"
+
+    while IFS= read -r type; do
+        run "$script" "$type: x"
+        [[ "$status" -eq 0 || "$status" -eq 3 ]] \
+            || fail "hook type '$type' neither labelled nor unmapped: exit $status"$'\n'"stderr: $stderr"
+        if [[ "$status" -eq 0 ]]; then
+            [[ -n "$stdout" ]] || fail "type '$type' exited 0 with no label"
+            mapped+="$stdout"$'\n'
+        fi
+    done <<<"$types"
+
+    assert_eq "$(printf '%s' "$all" | sort)" "$(printf '%s' "$mapped" | sort)" \
+        "labels produced by the hook's types vs --all"
+}
+
+# Criterion: every label `--all` prints is one .github/release.yml knows —
+# in a category or in `exclude` — so no labelled pull request falls into
+# *Other changes* for want of a line there. The script's header claims the
+# two files agree; this is what makes the claim checkable.
+test_pr_type_label_every_label_is_classified_by_release_yml() {
+    local label
+    assert_file_exists "$release_config"
+    assert_succeeds "$script" --all
+    [[ -n "$stdout" ]] || fail "--all printed nothing"
+    while IFS= read -r label; do
+        grep -qE "labels: \[.*\b$label\b.*\]" "$release_config" \
+            || fail "label '$label' is not listed in $release_config"
+    done <<<"$stdout"
 }
 
 # ── Usage ────────────────────────────────────────────────────────────────────

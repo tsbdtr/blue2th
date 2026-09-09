@@ -76,7 +76,7 @@ jobs:
           if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
             exit 1
           fi
-          remove=$(scripts/pr-type-label.sh --all | grep -vx "$label" | paste -sd,)
+          remove=$(scripts/pr-type-label.sh --all | grep -vxF "$label" | paste -sd,)
           # An empty label never reaches --add-label: `gh` refuses it rather
           # than ignoring it. Removing a label the pull request does not carry
           # is fine with `gh`.
