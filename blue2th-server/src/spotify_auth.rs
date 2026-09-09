@@ -157,30 +157,47 @@ pub fn parse_now_playing(body: &str) -> NowPlaying {
         album: Option<Album>,
     }
     #[derive(Deserialize)]
+    struct PlayerDevice {
+        volume_percent: Option<u64>,
+    }
+    #[derive(Deserialize)]
     struct Player {
         #[serde(default)]
         is_playing: bool,
         progress_ms: Option<u64>,
         item: Option<Item>,
+        device: Option<PlayerDevice>,
     }
 
     match serde_json::from_str::<Player>(body) {
-        Ok(player) => match player.item {
-            Some(item) => NowPlaying {
-                state: if player.is_playing {
-                    NowPlayingState::Playing
-                } else {
-                    NowPlayingState::Paused
+        Ok(player) => {
+            // Read whether or not a track is loaded: the restore after a
+            // respawn (#58) needs the level of an idle device too.
+            let volume_percent = player
+                .device
+                .and_then(|d| d.volume_percent)
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|v| *v <= 100);
+            match player.item {
+                Some(item) => NowPlaying {
+                    state: if player.is_playing {
+                        NowPlayingState::Playing
+                    } else {
+                        NowPlayingState::Paused
+                    },
+                    title: item.name,
+                    artist: item.artists.into_iter().find_map(|a| a.name),
+                    album: item.album.and_then(|a| a.name),
+                    progress_ms: player.progress_ms,
+                    duration_ms: item.duration_ms,
+                    volume_percent,
                 },
-                title: item.name,
-                artist: item.artists.into_iter().find_map(|a| a.name),
-                album: item.album.and_then(|a| a.name),
-                progress_ms: player.progress_ms,
-                duration_ms: item.duration_ms,
-                volume_percent: None,
-            },
-            // No track loaded (e.g. `{}`): treat as idle.
-            None => idle_now_playing(),
+                // No track loaded (e.g. `{}`): treat as idle.
+                None => NowPlaying {
+                    volume_percent,
+                    ..idle_now_playing()
+                },
+            }
         },
         // A malformed body is treated as idle rather than propagated.
         Err(_) => idle_now_playing(),
@@ -627,6 +644,38 @@ impl SpotifyAuth {
         let response = self
             .client
             .request(method, &url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_LENGTH, 0)
+            .send()
+            .await
+            .map_err(|e| SpotifyApiError::Exchange(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        Err(map_api_status(status.as_u16(), retry_after))
+    }
+
+    /// Set the Connect level of the backend's own device (#58), in `0..=100`:
+    /// `PUT /me/player/volume`. Like [`SpotifyAuth::transport`], it rejects with
+    /// [`SpotifyApiError::NotConnected`] before any network call when no tokens
+    /// are held, and targets the backend's device by name rather than whatever
+    /// is active — the level is `librespot`'s, not the phone's.
+    pub async fn set_volume(&mut self, percent: u8) -> Result<(), SpotifyApiError> {
+        let token = self.valid_access_token().await?;
+        let device = self.blue2th_device().await?;
+        let url = format!(
+            "{API_BASE}/me/player/volume?volume_percent={percent}&device_id={}",
+            device.id
+        );
+        let response = self
+            .client
+            .put(&url)
             .bearer_auth(token)
             .header(reqwest::header::CONTENT_LENGTH, 0)
             .send()

@@ -33,6 +33,9 @@ pub struct ServerName {
     /// Whether the backend dials a remembered-but-disconnected speaker back by
     /// itself (phase 6.5). Persisted next to the name; defaults to on.
     auto_reconnect: bool,
+    /// Whether the Spotify Connect level is pinned to 100 (#58). Persisted next
+    /// to the name; defaults to off, since pinning is an opt-in.
+    spotify_volume_lock: bool,
     /// Where the name is persisted, or `None` to stay in memory only.
     store: Option<std::path::PathBuf>,
 }
@@ -52,6 +55,7 @@ fn save_config(
     name: &str,
     restore_during_playback: bool,
     auto_reconnect: bool,
+    spotify_volume_lock: bool,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -61,7 +65,7 @@ fn save_config(
         name: name.to_string(),
         restore_during_playback,
         auto_reconnect,
-        spotify_volume_lock: false,
+        spotify_volume_lock,
     })
     .map_err(std::io::Error::other)?;
     std::fs::write(path, body)
@@ -75,6 +79,7 @@ impl ServerName {
             name: DEFAULT_BACKEND_NAME.to_string(),
             restore_during_playback: true,
             auto_reconnect: true,
+            spotify_volume_lock: false,
             store: None,
         }
     }
@@ -95,6 +100,12 @@ impl ServerName {
                 .unwrap_or(true),
             // Absent from the store (a pre-6.5 file) or unreadable: on, the default.
             auto_reconnect: stored.as_ref().map(|c| c.auto_reconnect).unwrap_or(true),
+            // Absent from the store (a pre-#58 file) or unreadable: off, the
+            // default — a guard is never turned on by omission.
+            spotify_volume_lock: stored
+                .as_ref()
+                .map(|c| c.spotify_volume_lock)
+                .unwrap_or(false),
             store,
         }
     }
@@ -128,11 +139,14 @@ impl ServerName {
 
     /// Whether the Spotify Connect level is pinned to 100 (#58).
     pub fn spotify_volume_lock(&self) -> bool {
-        false
+        self.spotify_volume_lock
     }
 
     /// Store and persist the Spotify volume lock.
-    pub fn set_spotify_volume_lock(&mut self, _enabled: bool) {}
+    pub fn set_spotify_volume_lock(&mut self, enabled: bool) {
+        self.spotify_volume_lock = enabled;
+        self.persist();
+    }
 
     /// Write name and flag together: they share one file, so a partial write
     /// would drop whichever half it left out.
@@ -145,6 +159,7 @@ impl ServerName {
             &self.name,
             self.restore_during_playback,
             self.auto_reconnect,
+            self.spotify_volume_lock,
         ) {
             tracing::warn!("could not persist the backend config: {e}");
         }
