@@ -61,6 +61,7 @@ fn save_config(
         name: name.to_string(),
         restore_during_playback,
         auto_reconnect,
+        spotify_volume_lock: false,
     })
     .map_err(std::io::Error::other)?;
     std::fs::write(path, body)
@@ -124,6 +125,14 @@ impl ServerName {
         self.auto_reconnect = enabled;
         self.persist();
     }
+
+    /// Whether the Spotify Connect level is pinned to 100 (#58).
+    pub fn spotify_volume_lock(&self) -> bool {
+        false
+    }
+
+    /// Store and persist the Spotify volume lock.
+    pub fn set_spotify_volume_lock(&mut self, _enabled: bool) {}
 
     /// Write name and flag together: they share one file, so a partial write
     /// would drop whichever half it left out.
@@ -472,6 +481,108 @@ mod tests {
             assert!(
                 ServerName::with_store(Some(path.clone())).auto_reconnect(),
                 "blob {blob:?} must fall back to auto-reconnect on"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // ---- #58: the Spotify volume lock ----
+
+    // Criterion: the lock ships **off** — pinning the level to 100 is an opt-in.
+    #[test]
+    fn test_new_defaults_to_spotify_volume_lock_off() {
+        assert!(!ServerName::new().spotify_volume_lock());
+        assert!(!ServerName::with_store(None).spotify_volume_lock());
+    }
+
+    // Criterion: `POST /config` applies the lock — the setter stores it, in
+    // both directions.
+    #[test]
+    fn test_set_spotify_volume_lock_applies_the_value() {
+        let mut config = ServerName::new();
+        config.set_spotify_volume_lock(true);
+        assert!(config.spotify_volume_lock());
+        config.set_spotify_volume_lock(false);
+        assert!(!config.spotify_volume_lock());
+    }
+
+    // Criterion: the lock is persisted in `name.json` and reloaded on restart.
+    #[test]
+    fn test_spotify_volume_lock_round_trips_through_the_store() {
+        let path = store_path("spotify-volume-lock-roundtrip");
+        {
+            let mut config = ServerName::with_store(Some(path.clone()));
+            config.set_name("Salon").expect("store a valid name");
+            config.set_spotify_volume_lock(true);
+        }
+
+        let reloaded = ServerName::with_store(Some(path.clone()));
+        assert_eq!(reloaded.name(), "Salon", "the name must still round-trip");
+        assert!(
+            reloaded.spotify_volume_lock(),
+            "the lock must be persisted next to the name"
+        );
+        assert!(
+            reloaded.auto_reconnect() && reloaded.restore_during_playback(),
+            "the other flags keep their own values"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion: the settings share one file, so renaming or toggling another
+    // flag may not clobber the stored lock.
+    #[test]
+    fn test_setting_the_name_keeps_the_stored_spotify_volume_lock() {
+        let path = store_path("spotify-volume-lock-and-rename");
+        {
+            let mut config = ServerName::with_store(Some(path.clone()));
+            config.set_spotify_volume_lock(true);
+            config.set_auto_reconnect(false);
+            config.set_name("Bureau").expect("store a valid name");
+        }
+
+        let reloaded = ServerName::with_store(Some(path.clone()));
+        assert_eq!(reloaded.name(), "Bureau");
+        assert!(!reloaded.auto_reconnect());
+        assert!(reloaded.spotify_volume_lock());
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal: old store): a `name.json` written before #58
+    // loads with the lock **off**, never silently on.
+    #[test]
+    fn test_a_pre_58_store_loads_with_the_spotify_volume_lock_off() {
+        let path = store_path("legacy-pre-58");
+        std::fs::write(&path, r#"{"name":"Salon","auto_reconnect":false}"#)
+            .expect("write a pre-#58 store");
+
+        let config = ServerName::with_store(Some(path.clone()));
+        assert_eq!(config.name(), "Salon");
+        assert!(
+            !config.auto_reconnect(),
+            "the stored flag is still honoured"
+        );
+        assert!(
+            !config.spotify_volume_lock(),
+            "a store predating the field must default the lock to off"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+    }
+
+    // Criterion (non-nominal): a malformed store yields the default (off)
+    // rather than failing the startup.
+    #[test]
+    fn test_malformed_store_yields_the_default_spotify_volume_lock() {
+        let path = store_path("malformed-spotify-volume-lock");
+        for blob in ["", "not json", r#"{"name": "#, "{}"] {
+            std::fs::write(&path, blob).expect("write the test store");
+            assert!(
+                !ServerName::with_store(Some(path.clone())).spotify_volume_lock(),
+                "blob {blob:?} must fall back to the lock off"
             );
         }
 

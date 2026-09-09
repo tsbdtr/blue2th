@@ -44,6 +44,7 @@ pub mod identity;
 pub mod reconnect;
 pub mod spotify;
 pub mod spotify_auth;
+pub mod spotify_volume;
 mod state_store;
 pub mod targets;
 pub mod watchdog;
@@ -253,6 +254,11 @@ pub const ROUTES: &[RouteSpec] = &[
     RouteSpec {
         method: "GET",
         path: "/spotify/now-playing",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/volume",
         public: false,
     },
     RouteSpec {
@@ -691,6 +697,7 @@ fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
         ("POST", "/spotify/next") => post(spotify_next),
         ("POST", "/spotify/previous") => post(spotify_previous),
         ("GET", "/spotify/now-playing") => get(spotify_now_playing),
+        ("POST", "/spotify/volume") => post(spotify_volume),
         ("POST", "/client/presence") => post(client_presence),
         ("GET", "/config") => get(get_config),
         ("POST", "/config") => post(set_config),
@@ -1126,6 +1133,11 @@ async fn spotify_transport(state: &AppState, action: Transport) -> Result<Status
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /spotify/volume` — set the Spotify Connect level (#58).
+async fn spotify_volume(State(_state): State<AppState>) -> StatusCode {
+    StatusCode::NOT_IMPLEMENTED
+}
+
 /// `GET /spotify/now-playing` — Server-Sent Events stream of now-playing
 /// snapshots polled from the Web API. Emits a `now-playing` event per tick; a
 /// Disconnected server keeps the stream alive with keep-alive comments only.
@@ -1229,6 +1241,7 @@ async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
         name: stored.name().to_string(),
         restore_during_playback: stored.restore_during_playback(),
         auto_reconnect: stored.auto_reconnect(),
+        spotify_volume_lock: stored.spotify_volume_lock(),
     })
 }
 
@@ -1302,6 +1315,7 @@ async fn set_config(
         name,
         restore_during_playback,
         auto_reconnect,
+        spotify_volume_lock: false,
     }))
 }
 

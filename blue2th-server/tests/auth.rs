@@ -212,6 +212,7 @@ fn test_route_table_lists_every_route_the_backend_serves() {
         ("POST", "/spotify/next", false),
         ("POST", "/spotify/previous", false),
         ("GET", "/spotify/now-playing", false),
+        ("POST", "/spotify/volume", false),
         ("POST", "/client/presence", false),
         ("GET", "/config", false),
         ("POST", "/config", false),

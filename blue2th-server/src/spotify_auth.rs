@@ -177,6 +177,7 @@ pub fn parse_now_playing(body: &str) -> NowPlaying {
                 album: item.album.and_then(|a| a.name),
                 progress_ms: player.progress_ms,
                 duration_ms: item.duration_ms,
+                volume_percent: None,
             },
             // No track loaded (e.g. `{}`): treat as idle.
             None => idle_now_playing(),
@@ -195,6 +196,7 @@ fn idle_now_playing() -> NowPlaying {
         album: None,
         progress_ms: None,
         duration_ms: None,
+        volume_percent: None,
     }
 }
 
@@ -880,6 +882,90 @@ mod tests {
     fn test_parse_now_playing_malformed_body_is_idle() {
         let np = parse_now_playing("not json at all");
         assert_eq!(np.state, NowPlayingState::Idle);
+    }
+
+    // Criterion (#58): `parse_now_playing` fills `volume_percent` from
+    // `device.volume_percent`, so the app can show the Connect level.
+    #[test]
+    fn test_parse_now_playing_reads_the_device_volume() {
+        let body = r#"{
+            "is_playing": true,
+            "progress_ms": 12000,
+            "device": {
+                "id": "abc",
+                "is_active": true,
+                "name": "blue2th-PC",
+                "volume_percent": 60
+            },
+            "item": {
+                "name": "Song",
+                "duration_ms": 210000,
+                "artists": [{ "name": "Artist" }],
+                "album": { "name": "Album" }
+            }
+        }"#;
+        let np = parse_now_playing(body);
+        assert_eq!(np.state, NowPlayingState::Playing);
+        assert_eq!(np.volume_percent, Some(60));
+    }
+
+    // Criterion (#58): a level of 0 is a real level, not "unset" — the parser
+    // must carry it as `Some(0)`, never fold it into `None`.
+    #[test]
+    fn test_parse_now_playing_reads_a_zero_device_volume() {
+        let body = r#"{
+            "is_playing": false,
+            "device": { "id": "abc", "volume_percent": 0 },
+            "item": { "name": "Song" }
+        }"#;
+        assert_eq!(parse_now_playing(body).volume_percent, Some(0));
+    }
+
+    // Criterion (#58): no `device` object at all → `None`, never 0.
+    #[test]
+    fn test_parse_now_playing_without_a_device_has_no_volume() {
+        let body = r#"{
+            "is_playing": true,
+            "item": { "name": "Song", "duration_ms": 1000 }
+        }"#;
+        let np = parse_now_playing(body);
+        assert_eq!(np.state, NowPlayingState::Playing);
+        assert_eq!(np.volume_percent, None);
+    }
+
+    // Criterion (#58): a `null` field (the Web API reports it as nullable) and a
+    // `null` device both read as `None`; an empty body (204) too.
+    #[test]
+    fn test_parse_now_playing_null_device_volume_is_none() {
+        let with_null_field = r#"{
+            "is_playing": true,
+            "device": { "id": "abc", "volume_percent": null },
+            "item": { "name": "Song" }
+        }"#;
+        assert_eq!(parse_now_playing(with_null_field).volume_percent, None);
+
+        let with_null_device = r#"{
+            "is_playing": true,
+            "device": null,
+            "item": { "name": "Song" }
+        }"#;
+        assert_eq!(parse_now_playing(with_null_device).volume_percent, None);
+
+        assert_eq!(parse_now_playing("").volume_percent, None);
+    }
+
+    // Criterion (#58): a device that is present on an idle body (no `item`)
+    // still reports its level — the poll needs it to restore after a respawn
+    // even while nothing is playing.
+    #[test]
+    fn test_parse_now_playing_reads_the_device_volume_while_idle() {
+        let body = r#"{
+            "is_playing": false,
+            "device": { "id": "abc", "volume_percent": 100 }
+        }"#;
+        let np = parse_now_playing(body);
+        assert_eq!(np.state, NowPlayingState::Idle);
+        assert_eq!(np.volume_percent, Some(100));
     }
 
     // Criterion: `needs_refresh` is true once `now` is past `expires_at`.

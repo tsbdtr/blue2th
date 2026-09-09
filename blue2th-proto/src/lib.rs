@@ -341,6 +341,18 @@ pub struct VolumeRequest {
     pub level: f32,
 }
 
+/// Body of `POST /spotify/volume` — the desired Spotify Connect level (#58).
+///
+/// A percent, like the Web API's own `volume_percent`, rather than the
+/// `0.0..=1.0` of [`VolumeRequest`]: this one is `librespot`'s level, applied
+/// before PipeWire sees a sample, and it is what the app reads back in
+/// [`NowPlaying::volume_percent`]. The backend refuses anything above 100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyVolumeRequest {
+    /// Desired level in `0..=100`.
+    pub percent: u8,
+}
+
 /// A speaker selected as a playback target, with its per-speaker latency offset.
 ///
 /// Phase 4 (fan-out): the user picks up to two connected speakers and tunes each
@@ -479,6 +491,12 @@ pub struct NowPlaying {
     pub progress_ms: Option<u64>,
     /// Track duration in milliseconds, if known.
     pub duration_ms: Option<u64>,
+    /// The Connect device's volume in `0..=100`, from `device.volume_percent`
+    /// (#58). `None` when no device is active or the field is absent — never 0,
+    /// since an absent level is not a silent one. Defaulted so a backend that
+    /// predates the field still decodes.
+    #[serde(default)]
+    pub volume_percent: Option<u8>,
 }
 
 /// What the app is doing, reported to the backend so it can tell "the user left"
@@ -589,6 +607,13 @@ pub struct ServerConfig {
     /// path re-selects and re-routes. Defaults to on.
     #[serde(default = "auto_reconnect_default")]
     pub auto_reconnect: bool,
+    /// Whether the Spotify Connect level is pinned to 100 (#58): with the lock
+    /// on, the backend re-asserts 100 whenever a poll sees anything else and
+    /// refuses `POST /spotify/volume`. Defaults to **off** — a bare
+    /// `serde(default)` is right here, since pinning is an opt-in a client that
+    /// predates the field must not make by omission.
+    #[serde(default)]
+    pub spotify_volume_lock: bool,
 }
 
 /// The default for `restore_during_playback`: a returning speaker rejoins on its
@@ -679,6 +704,13 @@ pub struct ConfigRequest {
     /// silently disable auto-reconnect for every such client.
     #[serde(default = "auto_reconnect_default")]
     pub auto_reconnect: bool,
+    /// Whether to pin the Spotify Connect level to 100 (#58). `None` when the
+    /// client did not send it, and then the backend **leaves the stored value
+    /// alone**: the app re-pushes its whole config on every activation, so a
+    /// client that does not know the field would otherwise switch the guard
+    /// off each time it comes to the foreground.
+    #[serde(default)]
+    pub spotify_volume_lock: Option<bool>,
 }
 
 #[cfg(test)]
@@ -979,6 +1011,7 @@ mod tests {
             album: Some("Album".to_string()),
             progress_ms: Some(12_000),
             duration_ms: Some(210_000),
+            volume_percent: Some(100),
         };
         let json = serde_json::to_string(&playing).expect("serialize NowPlaying");
         let parsed: NowPlaying = serde_json::from_str(&json).expect("deserialize NowPlaying");
@@ -992,6 +1025,7 @@ mod tests {
             album: None,
             progress_ms: None,
             duration_ms: None,
+            volume_percent: None,
         };
         let json = serde_json::to_string(&idle).expect("serialize idle NowPlaying");
         let parsed: NowPlaying = serde_json::from_str(&json).expect("deserialize idle NowPlaying");
@@ -1029,6 +1063,7 @@ mod tests {
             name: "Salon".to_string(),
             restore_during_playback: false,
             auto_reconnect: true,
+            spotify_volume_lock: false,
         };
         let json = serde_json::to_string(&original).expect("serialize ServerConfig");
         let parsed: ServerConfig = serde_json::from_str(&json).expect("deserialize ServerConfig");
@@ -1051,6 +1086,7 @@ mod tests {
             name: "blue2th-PC".to_string(),
             restore_during_playback: true,
             auto_reconnect: true,
+            spotify_volume_lock: None,
         };
         let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
         let parsed: ConfigRequest = serde_json::from_str(&json).expect("deserialize ConfigRequest");
@@ -1109,6 +1145,7 @@ mod tests {
                 name: "Salon".to_string(),
                 restore_during_playback: true,
                 auto_reconnect,
+                spotify_volume_lock: false,
             };
             let json = serde_json::to_string(&original).expect("serialize ServerConfig");
             let parsed: ServerConfig =
@@ -1130,6 +1167,7 @@ mod tests {
                 name: "Salon".to_string(),
                 restore_during_playback: false,
                 auto_reconnect,
+                spotify_volume_lock: None,
             };
             let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
             let parsed: ConfigRequest =
@@ -1179,6 +1217,139 @@ mod tests {
         assert!(
             parsed.restore_during_playback,
             "the phase 6.3 flag keeps its own default"
+        );
+    }
+
+    // ---- #58: the Spotify Connect level ----
+
+    // Criterion: `NowPlaying` carries `volume_percent` on the wire, and it
+    // round-trips as the level the poll observed.
+    #[test]
+    fn test_now_playing_round_trips_the_volume_percent() {
+        let playing = NowPlaying {
+            state: NowPlayingState::Playing,
+            title: Some("Song".to_string()),
+            artist: None,
+            album: None,
+            progress_ms: None,
+            duration_ms: None,
+            volume_percent: Some(60),
+        };
+        let json = serde_json::to_string(&playing).expect("serialize NowPlaying");
+        assert!(
+            json.contains("\"volume_percent\":60"),
+            "the level must be on the wire, got {json}"
+        );
+        let parsed: NowPlaying = serde_json::from_str(&json).expect("deserialize NowPlaying");
+        assert_eq!(parsed.volume_percent, Some(60));
+    }
+
+    // Criterion: `volume_percent` is `serde(default)` — a payload from a backend
+    // that predates the field decodes with `None`, never 0 (empty is not a level).
+    #[test]
+    fn test_now_playing_without_volume_percent_decodes_as_none() {
+        let parsed: NowPlaying = serde_json::from_str(
+            r#"{"state":"playing","title":"Song","artist":null,"album":null,"progress_ms":null,"duration_ms":null}"#,
+        )
+        .expect("a payload without the field must still parse");
+        assert_eq!(parsed.volume_percent, None);
+    }
+
+    // Criterion: an explicit `null` is `None` too, not an error and not 0.
+    #[test]
+    fn test_now_playing_null_volume_percent_decodes_as_none() {
+        let parsed: NowPlaying = serde_json::from_str(
+            r#"{"state":"idle","title":null,"artist":null,"album":null,"progress_ms":null,"duration_ms":null,"volume_percent":null}"#,
+        )
+        .expect("a null level must parse");
+        assert_eq!(parsed.volume_percent, None);
+    }
+
+    // Criterion: `SpotifyVolumeRequest { percent }` is what `POST /spotify/volume`
+    // reads — it round-trips, and the field is named `percent` on the wire.
+    #[test]
+    fn test_spotify_volume_request_round_trips_through_json() {
+        let original = SpotifyVolumeRequest { percent: 60 };
+        let json = serde_json::to_string(&original).expect("serialize SpotifyVolumeRequest");
+        assert_eq!(json, r#"{"percent":60}"#);
+        let parsed: SpotifyVolumeRequest =
+            serde_json::from_str(&json).expect("deserialize SpotifyVolumeRequest");
+        assert_eq!(original, parsed);
+    }
+
+    // Criterion: `ServerConfig` carries `spotify_volume_lock` on the wire, in
+    // both directions — it is what `GET /config` reports.
+    #[test]
+    fn test_server_config_round_trips_with_spotify_volume_lock() {
+        for lock in [true, false] {
+            let original = ServerConfig {
+                name: "Salon".to_string(),
+                restore_during_playback: true,
+                auto_reconnect: true,
+                spotify_volume_lock: lock,
+            };
+            let json = serde_json::to_string(&original).expect("serialize ServerConfig");
+            let parsed: ServerConfig =
+                serde_json::from_str(&json).expect("deserialize ServerConfig");
+            assert_eq!(original, parsed);
+            assert!(
+                json.contains(&format!("\"spotify_volume_lock\":{lock}")),
+                "the lock must be on the wire, got {json}"
+            );
+        }
+    }
+
+    // Criterion: `ServerConfig.spotify_volume_lock` is `serde(default)` → false
+    // — an on-disk `name.json` written before #58 loads with the lock off.
+    #[test]
+    fn test_server_config_without_the_lock_defaults_to_off() {
+        let parsed: ServerConfig =
+            serde_json::from_str(r#"{"name":"blue2th-PC","auto_reconnect":false}"#)
+                .expect("a payload without the lock must still parse");
+        assert!(!parsed.spotify_volume_lock, "the lock defaults to off");
+        assert!(
+            !parsed.auto_reconnect,
+            "the other flags keep their own values"
+        );
+    }
+
+    // Criterion: `ConfigRequest` carries `spotify_volume_lock` on the wire — an
+    // explicit `true` is honoured, and it round-trips.
+    #[test]
+    fn test_config_request_round_trips_with_spotify_volume_lock() {
+        let original = ConfigRequest {
+            name: "Salon".to_string(),
+            restore_during_playback: true,
+            auto_reconnect: true,
+            spotify_volume_lock: Some(true),
+        };
+        let json = serde_json::to_string(&original).expect("serialize ConfigRequest");
+        let parsed: ConfigRequest = serde_json::from_str(&json).expect("deserialize ConfigRequest");
+        assert_eq!(original, parsed);
+
+        let explicit: ConfigRequest =
+            serde_json::from_str(r#"{"name":"Salon","spotify_volume_lock":true}"#)
+                .expect("an explicit lock must parse");
+        assert_eq!(
+            explicit.spotify_volume_lock,
+            Some(true),
+            "an explicit true is honoured"
+        );
+        assert!(
+            explicit.auto_reconnect && explicit.restore_during_playback,
+            "the phase 6.3/6.5 flags keep their own defaults"
+        );
+    }
+
+    // Criterion (non-nominal: old app): a `POST /config` body without the field
+    // carries no value at all — omission must never turn the guard on *or off*.
+    #[test]
+    fn test_config_request_without_the_lock_carries_none() {
+        let parsed: ConfigRequest =
+            serde_json::from_str(r#"{"name":"Salon"}"#).expect("a name-only body must still parse");
+        assert_eq!(
+            parsed.spotify_volume_lock, None,
+            "a body with no spotify_volume_lock field must not carry a value the backend would apply"
         );
     }
 
