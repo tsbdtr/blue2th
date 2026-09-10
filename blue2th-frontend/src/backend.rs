@@ -343,6 +343,7 @@ fn config_body(entry: &crate::settings::BackendEntry) -> ConfigRequest {
         name: entry.name.clone(),
         restore_during_playback: entry.restore_during_playback,
         auto_reconnect: entry.auto_reconnect,
+        spotify_volume_lock: None,
     }
 }
 
@@ -1230,6 +1231,7 @@ mod tests {
                 name: name.to_string(),
                 restore_during_playback,
                 auto_reconnect,
+                spotify_volume_lock: None,
             },
         )
         .await;

@@ -157,29 +157,47 @@ pub fn parse_now_playing(body: &str) -> NowPlaying {
         album: Option<Album>,
     }
     #[derive(Deserialize)]
+    struct PlayerDevice {
+        volume_percent: Option<u64>,
+    }
+    #[derive(Deserialize)]
     struct Player {
         #[serde(default)]
         is_playing: bool,
         progress_ms: Option<u64>,
         item: Option<Item>,
+        device: Option<PlayerDevice>,
     }
 
     match serde_json::from_str::<Player>(body) {
-        Ok(player) => match player.item {
-            Some(item) => NowPlaying {
-                state: if player.is_playing {
-                    NowPlayingState::Playing
-                } else {
-                    NowPlayingState::Paused
+        Ok(player) => {
+            // Read whether or not a track is loaded: the restore after a
+            // respawn (#58) needs the level of an idle device too.
+            let volume_percent = player
+                .device
+                .and_then(|d| d.volume_percent)
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|v| *v <= 100);
+            match player.item {
+                Some(item) => NowPlaying {
+                    state: if player.is_playing {
+                        NowPlayingState::Playing
+                    } else {
+                        NowPlayingState::Paused
+                    },
+                    title: item.name,
+                    artist: item.artists.into_iter().find_map(|a| a.name),
+                    album: item.album.and_then(|a| a.name),
+                    progress_ms: player.progress_ms,
+                    duration_ms: item.duration_ms,
+                    volume_percent,
                 },
-                title: item.name,
-                artist: item.artists.into_iter().find_map(|a| a.name),
-                album: item.album.and_then(|a| a.name),
-                progress_ms: player.progress_ms,
-                duration_ms: item.duration_ms,
-            },
-            // No track loaded (e.g. `{}`): treat as idle.
-            None => idle_now_playing(),
+                // No track loaded (e.g. `{}`): treat as idle.
+                None => NowPlaying {
+                    volume_percent,
+                    ..idle_now_playing()
+                },
+            }
         },
         // A malformed body is treated as idle rather than propagated.
         Err(_) => idle_now_playing(),
@@ -195,6 +213,7 @@ fn idle_now_playing() -> NowPlaying {
         album: None,
         progress_ms: None,
         duration_ms: None,
+        volume_percent: None,
     }
 }
 
@@ -269,6 +288,15 @@ pub fn find_device(body: &str, name: &str) -> Option<Device> {
                     .unwrap_or(false),
             })
         })
+}
+
+/// The `Retry-After` header of a 429, in seconds, when it carries one.
+fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 /// Map a Spotify Web API HTTP status (and optional `Retry-After`) to a typed
@@ -634,11 +662,35 @@ impl SpotifyAuth {
         if status.is_success() {
             return Ok(());
         }
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok());
+        let retry_after = retry_after_seconds(&response);
+        Err(map_api_status(status.as_u16(), retry_after))
+    }
+
+    /// Set the Connect level of the backend's own device (#58), in `0..=100`:
+    /// `PUT /me/player/volume`. Like [`SpotifyAuth::transport`], it rejects with
+    /// [`SpotifyApiError::NotConnected`] before any network call when no tokens
+    /// are held, and targets the backend's device by name rather than whatever
+    /// is active — the level is `librespot`'s, not the phone's.
+    pub async fn set_volume(&mut self, percent: u8) -> Result<(), SpotifyApiError> {
+        let token = self.valid_access_token().await?;
+        let device = self.blue2th_device().await?;
+        let url = format!(
+            "{API_BASE}/me/player/volume?volume_percent={percent}&device_id={}",
+            device.id
+        );
+        let response = self
+            .client
+            .put(&url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_LENGTH, 0)
+            .send()
+            .await
+            .map_err(|e| SpotifyApiError::Exchange(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let retry_after = retry_after_seconds(&response);
         Err(map_api_status(status.as_u16(), retry_after))
     }
 
@@ -708,11 +760,7 @@ impl SpotifyAuth {
             return Ok(idle_now_playing());
         }
         if !status.is_success() {
-            let retry_after = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok());
+            let retry_after = retry_after_seconds(&response);
             return Err(map_api_status(status.as_u16(), retry_after));
         }
         let body = response
@@ -880,6 +928,110 @@ mod tests {
     fn test_parse_now_playing_malformed_body_is_idle() {
         let np = parse_now_playing("not json at all");
         assert_eq!(np.state, NowPlayingState::Idle);
+    }
+
+    // Criterion (#58): `parse_now_playing` fills `volume_percent` from
+    // `device.volume_percent`, so the app can show the Connect level.
+    #[test]
+    fn test_parse_now_playing_reads_the_device_volume() {
+        let body = r#"{
+            "is_playing": true,
+            "progress_ms": 12000,
+            "device": {
+                "id": "abc",
+                "is_active": true,
+                "name": "blue2th-PC",
+                "volume_percent": 60
+            },
+            "item": {
+                "name": "Song",
+                "duration_ms": 210000,
+                "artists": [{ "name": "Artist" }],
+                "album": { "name": "Album" }
+            }
+        }"#;
+        let np = parse_now_playing(body);
+        assert_eq!(np.state, NowPlayingState::Playing);
+        assert_eq!(np.volume_percent, Some(60));
+    }
+
+    // Criterion (#58): a level of 0 is a real level, not "unset" — the parser
+    // must carry it as `Some(0)`, never fold it into `None`.
+    #[test]
+    fn test_parse_now_playing_reads_a_zero_device_volume() {
+        let body = r#"{
+            "is_playing": false,
+            "device": { "id": "abc", "volume_percent": 0 },
+            "item": { "name": "Song" }
+        }"#;
+        assert_eq!(parse_now_playing(body).volume_percent, Some(0));
+    }
+
+    // Criterion (#58): no `device` object at all → `None`, never 0.
+    #[test]
+    fn test_parse_now_playing_without_a_device_has_no_volume() {
+        let body = r#"{
+            "is_playing": true,
+            "item": { "name": "Song", "duration_ms": 1000 }
+        }"#;
+        let np = parse_now_playing(body);
+        assert_eq!(np.state, NowPlayingState::Playing);
+        assert_eq!(np.volume_percent, None);
+    }
+
+    // Criterion (#58): a `null` field (the Web API reports it as nullable) and a
+    // `null` device both read as `None`; an empty body (204) too.
+    #[test]
+    fn test_parse_now_playing_null_device_volume_is_none() {
+        let with_null_field = r#"{
+            "is_playing": true,
+            "device": { "id": "abc", "volume_percent": null },
+            "item": { "name": "Song" }
+        }"#;
+        assert_eq!(parse_now_playing(with_null_field).volume_percent, None);
+
+        let with_null_device = r#"{
+            "is_playing": true,
+            "device": null,
+            "item": { "name": "Song" }
+        }"#;
+        assert_eq!(parse_now_playing(with_null_device).volume_percent, None);
+
+        assert_eq!(parse_now_playing("").volume_percent, None);
+    }
+
+    // Rule: a level above 100 is not one the Web API documents, and it is not
+    // one the policy may adopt — a remembered 200 would be written back after
+    // a respawn, refused by the API, and retried at every poll. Dropped to
+    // `None` at the parser, like an absent field.
+    #[test]
+    fn test_parse_now_playing_drops_a_device_volume_above_100() {
+        for level in ["101", "200", "1000000000000"] {
+            let body = format!(
+                r#"{{"is_playing": true, "device": {{"id": "abc", "volume_percent": {level}}}, "item": {{"name": "Song"}}}}"#
+            );
+            let np = parse_now_playing(&body);
+            assert_eq!(np.volume_percent, None, "{level} % must not be a level");
+            assert_eq!(
+                np.title.as_deref(),
+                Some("Song"),
+                "the rest of the snapshot must survive a bad level"
+            );
+        }
+    }
+
+    // Criterion (#58): a device that is present on an idle body (no `item`)
+    // still reports its level — the poll needs it to restore after a respawn
+    // even while nothing is playing.
+    #[test]
+    fn test_parse_now_playing_reads_the_device_volume_while_idle() {
+        let body = r#"{
+            "is_playing": false,
+            "device": { "id": "abc", "volume_percent": 100 }
+        }"#;
+        let np = parse_now_playing(body);
+        assert_eq!(np.state, NowPlayingState::Idle);
+        assert_eq!(np.volume_percent, Some(100));
     }
 
     // Criterion: `needs_refresh` is true once `now` is past `expires_at`.

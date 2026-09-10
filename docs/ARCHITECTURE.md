@@ -86,7 +86,7 @@ it), and serves:
 | Bluetooth | `GET /adapters`, `GET /devices`, `GET /scan` (SSE), `POST /devices/{addr}/connect` and `/disconnect` |
 | Playback targets | `POST /devices/{addr}/select` and `/deselect`, `POST /devices/{addr}/offset`, `GET /targets` |
 | Local transport | `POST /play`, `/pause`, `/stop`, `/volume`; `GET /playback` |
-| Spotify | `/spotify/start`, `/stop`, `/status`; `/spotify/auth/url`, `/auth/callback`, `/auth/status`; `/spotify/play`, `/pause`, `/next`, `/previous`; `GET /spotify/now-playing` (SSE) |
+| Spotify | `/spotify/start`, `/stop`, `/status`; `/spotify/auth/url`, `/auth/callback`, `/auth/status`; `/spotify/play`, `/pause`, `/next`, `/previous`, `/volume`; `GET /spotify/now-playing` (SSE) |
 | Client | `POST /client/presence`, `GET` and `POST /config` |
 
 ### Authentication and pairing
@@ -195,6 +195,21 @@ failure. Transport resolves the backend's device by name and transfers
 playback to it rather than driving whichever device is active, which is also
 what keeps transport working after the backend is renamed. Now-playing is
 pushed to the phone over SSE.
+
+The backend owns the Connect level too (#58). `librespot` applies that level
+before PipeWire sees a sample, so it is a separate control from the local
+`/volume`: the poll reads it from `/me/player` into now-playing's
+`volume_percent`, and `POST /spotify/volume` writes it through the Web API,
+targeting the backend's own device. Every `librespot` start is
+`--initial-volume 100`, so a respawn — a re-routing, a rename, a fresh
+`/spotify/start` — snaps the level back to full scale; the start marks the
+respawn, and the policy in `spotify_volume.rs` writes the last chosen level
+back at the next poll, keeping the mark until the write succeeds. Without a
+mark, a level seen changing is a choice made in some client and is adopted, not
+fought. The `spotify_volume_lock` setting pins the level to 100 instead:
+`POST /spotify/volume` is refused with a 409 that names the lock, and the poll
+re-asserts 100 whenever it sees anything else. The app's own bar for that level
+is #120's.
 
 Running the backend under the name the app gave it matters twice: it is the
 Spotify Connect device name, and the name the Web API lookup matches on.

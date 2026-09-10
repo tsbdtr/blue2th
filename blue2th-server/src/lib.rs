@@ -30,7 +30,7 @@ use blue2th_proto::{
     AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
     HealthStatus, OffsetRequest, PairRequest, PairResponse, PlaybackState, PlaybackStatus,
     PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus,
-    TargetsState, VolumeRequest,
+    SpotifyVolumeRequest, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -44,6 +44,7 @@ pub mod identity;
 pub mod reconnect;
 pub mod spotify;
 pub mod spotify_auth;
+pub mod spotify_volume;
 mod state_store;
 pub mod targets;
 pub mod watchdog;
@@ -94,6 +95,10 @@ struct AppState {
     /// any explicit transport command from the app clears it, so a pause the user
     /// asked for is never undone by a speaker coming back.
     backend_paused_sources: Arc<AtomicBool>,
+    /// The Spotify Connect volume policy (#58): the level the user chose, and
+    /// whether a `librespot` respawn has reset it since. The now-playing poll
+    /// runs it and performs the write it asks for.
+    spotify_volume: Arc<Mutex<spotify_volume::Policy>>,
 }
 
 /// One route the backend serves, as a (method, path template) pair plus whether
@@ -253,6 +258,11 @@ pub const ROUTES: &[RouteSpec] = &[
     RouteSpec {
         method: "GET",
         path: "/spotify/now-playing",
+        public: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/spotify/volume",
         public: false,
     },
     RouteSpec {
@@ -614,6 +624,10 @@ fn app_with_auth_and_targets(
     // advertises.
     spotify_auth.set_device_name(server_name.name());
     let spotify = SpotifyBackend::with_name(server_name.name());
+    // The persisted lock must guard from the first poll on, not from the next
+    // `POST /config`.
+    let mut volume_policy = spotify_volume::Policy::new();
+    volume_policy.set_lock(server_name.spotify_volume_lock());
     let state = AppState {
         // Real playback output (rodio → PipeWire); the device is opened lazily on
         // the first `/play`, so building the router stays cheap and CI-safe.
@@ -629,6 +643,7 @@ fn app_with_auth_and_targets(
         auth: Arc::new(Mutex::new(auth)),
         reconnect: Arc::new(Mutex::new(reconnect::ReconnectTracker::new())),
         backend_paused_sources: Arc::new(AtomicBool::new(false)),
+        spotify_volume: Arc::new(Mutex::new(volume_policy)),
     };
 
     spawn_idle_watchdog(state.clone());
@@ -691,6 +706,7 @@ fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
         ("POST", "/spotify/next") => post(spotify_next),
         ("POST", "/spotify/previous") => post(spotify_previous),
         ("GET", "/spotify/now-playing") => get(spotify_now_playing),
+        ("POST", "/spotify/volume") => post(spotify_volume),
         ("POST", "/client/presence") => post(client_presence),
         ("GET", "/config") => get(get_config),
         ("POST", "/config") => post(set_config),
@@ -1050,7 +1066,22 @@ async fn spotify_start(State(state): State<AppState>) -> Result<Json<SpotifyStat
     // Snapshot the selection and release the guard before touching the backend.
     let speakers = state.targets.lock().await.speakers();
     let mut spotify = state.spotify.lock().await;
-    Ok(Json(spotify.start(&speakers)?))
+    Ok(Json(start_spotify(&state, &mut spotify, &speakers).await?))
+}
+
+/// Spawn `librespot` through the caller's guard and mark the respawn for the
+/// volume policy (#58): every start is `--initial-volume 100`, so the level the
+/// user chose is gone until the next poll writes it back. Every start site goes
+/// through here, or one path would silently leave the Connect level at full
+/// scale.
+async fn start_spotify(
+    state: &AppState,
+    spotify: &mut SpotifyBackend,
+    speakers: &[SpeakerTarget],
+) -> Result<SpotifyState, SpotifyError> {
+    let started = spotify.start(speakers)?;
+    state.spotify_volume.lock().await.mark_respawned();
+    Ok(started)
 }
 
 /// `POST /spotify/stop` — deactivate the Spotify source backend (kill the
@@ -1126,6 +1157,39 @@ async fn spotify_transport(state: &AppState, action: Transport) -> Result<Status
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /spotify/volume` — set the Spotify Connect level (#58), 204 on success.
+///
+/// The checks answer in this order: the body (400), then the lock (409, naming
+/// it — a Disconnected backend is a 409 too, and the app must tell them apart),
+/// then the Web API, whose errors map exactly as the transport routes' do.
+async fn spotify_volume(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, AppError> {
+    // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
+    let req: SpotifyVolumeRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::bad_request(format!("invalid volume body: {e}")))?;
+    if req.percent > 100 {
+        return Err(AppError::bad_request(format!(
+            "volume {} % is above 100",
+            req.percent
+        )));
+    }
+    if state.name.lock().await.spotify_volume_lock() {
+        return Err(AppError::conflict(
+            "the Spotify volume is pinned to 100 by spotify_volume_lock",
+        ));
+    }
+    state
+        .spotify_auth
+        .lock()
+        .await
+        .set_volume(req.percent)
+        .await?;
+    state.spotify_volume.lock().await.on_user_set(req.percent);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `GET /spotify/now-playing` — Server-Sent Events stream of now-playing
 /// snapshots polled from the Web API. Emits a `now-playing` event per tick; a
 /// Disconnected server keeps the stream alive with keep-alive comments only.
@@ -1133,6 +1197,8 @@ async fn spotify_now_playing(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let auth = state.spotify_auth.clone();
+    // Shared with the stream, which outlives this handler's borrow of `state`.
+    let policy = state.spotify_volume.clone();
     let guard = state.sse_watch.subscribe();
     let stream = async_stream::stream! {
         // Held for the stream's lifetime: whichever way the stream ends (client
@@ -1144,6 +1210,19 @@ async fn spotify_now_playing(
                 guard.now_playing().await
             };
             if let Ok(now_playing) = snapshot {
+                // The policy lock is never held across the Web API call: the
+                // route and the start sites take it too.
+                let action = policy.lock().await.on_observed(now_playing.volume_percent);
+                if let Some(percent) = action {
+                    let written = auth.lock().await.set_volume(percent).await;
+                    match written {
+                        Ok(()) => policy.lock().await.written(),
+                        // The mark stays: the write is retried at the next poll.
+                        Err(e) => tracing::warn!(
+                            "could not restore the Spotify Connect level to {percent} %: {e}"
+                        ),
+                    }
+                }
                 let event = Event::default()
                     .event("now-playing")
                     .json_data(now_playing)
@@ -1229,6 +1308,7 @@ async fn get_config(State(state): State<AppState>) -> Json<ServerConfig> {
         name: stored.name().to_string(),
         restore_during_playback: stored.restore_during_playback(),
         auto_reconnect: stored.auto_reconnect(),
+        spotify_volume_lock: stored.spotify_volume_lock(),
     })
 }
 
@@ -1244,7 +1324,7 @@ async fn set_config(
     // Parsed leniently so a malformed body is a 400 rather than Axum's 422.
     let req: ConfigRequest = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("invalid config body: {e}")))?;
-    let (name, restore_during_playback, auto_reconnect, resumed) = {
+    let (name, restore_during_playback, auto_reconnect, spotify_volume_lock, resumed) = {
         let mut stored = state.name.lock().await;
         let name = stored
             .set_name(&req.name)
@@ -1257,15 +1337,29 @@ async fn set_config(
         // backoff ladder on each one.
         let resumed = !stored.auto_reconnect() && req.auto_reconnect;
         stored.set_auto_reconnect(req.auto_reconnect);
+        // Absent means "not mentioned", never "off": the app re-pushes its whole
+        // config on activation, and a client without the field must not undo
+        // the guard each time (#58).
+        if let Some(lock) = req.spotify_volume_lock {
+            stored.set_spotify_volume_lock(lock);
+        }
         // Read back rather than echoed: the response reports what the backend
         // actually holds, exactly as it does for the (trimmed) name.
         (
             name,
             stored.restore_during_playback(),
             stored.auto_reconnect(),
+            stored.spotify_volume_lock(),
             resumed,
         )
     };
+    // The policy is what the poll runs: the stored flag alone would not pin
+    // anything until a restart.
+    state
+        .spotify_volume
+        .lock()
+        .await
+        .set_lock(spotify_volume_lock);
     // Switching the setting back on is the user asking for their speakers now:
     // a ladder that ran out (or a hang-up recorded) while it was off must not
     // leave the toggle looking inert.
@@ -1293,7 +1387,7 @@ async fn set_config(
         if let Err(e) = spotify.stop() {
             tracing::warn!("could not stop the Spotify backend before a rename: {e}");
         }
-        if let Err(e) = spotify.start(&speakers) {
+        if let Err(e) = start_spotify(&state, &mut spotify, &speakers).await {
             tracing::warn!("could not restart the Spotify backend after a rename: {e}");
         }
     }
@@ -1302,6 +1396,7 @@ async fn set_config(
         name,
         restore_during_playback,
         auto_reconnect,
+        spotify_volume_lock,
     }))
 }
 
@@ -1607,7 +1702,7 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
         return false;
     }
     let _ = spotify.stop();
-    if let Err(e) = spotify.start(speakers) {
+    if let Err(e) = start_spotify(state, &mut spotify, speakers).await {
         tracing::warn!("could not restart the Spotify backend after a routing change: {e}");
     }
     true
@@ -1892,6 +1987,7 @@ mod tests {
             auth: Arc::new(Mutex::new(AuthStore::with_token(TOKEN))),
             reconnect: Arc::new(Mutex::new(reconnect::ReconnectTracker::new())),
             backend_paused_sources: Arc::new(AtomicBool::new(false)),
+            spotify_volume: Arc::new(Mutex::new(spotify_volume::Policy::new())),
         }
     }
 
