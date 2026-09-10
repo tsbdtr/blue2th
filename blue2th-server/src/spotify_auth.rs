@@ -290,6 +290,15 @@ pub fn find_device(body: &str, name: &str) -> Option<Device> {
         })
 }
 
+/// The `Retry-After` header of a 429, in seconds, when it carries one.
+fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
 /// Map a Spotify Web API HTTP status (and optional `Retry-After`) to a typed
 /// [`SpotifyApiError`]. Pure.
 pub fn map_api_status(code: u16, retry_after: Option<u64>) -> SpotifyApiError {
@@ -653,11 +662,7 @@ impl SpotifyAuth {
         if status.is_success() {
             return Ok(());
         }
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok());
+        let retry_after = retry_after_seconds(&response);
         Err(map_api_status(status.as_u16(), retry_after))
     }
 
@@ -685,11 +690,7 @@ impl SpotifyAuth {
         if status.is_success() {
             return Ok(());
         }
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok());
+        let retry_after = retry_after_seconds(&response);
         Err(map_api_status(status.as_u16(), retry_after))
     }
 
@@ -759,11 +760,7 @@ impl SpotifyAuth {
             return Ok(idle_now_playing());
         }
         if !status.is_success() {
-            let retry_after = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok());
+            let retry_after = retry_after_seconds(&response);
             return Err(map_api_status(status.as_u16(), retry_after));
         }
         let body = response
@@ -1001,6 +998,26 @@ mod tests {
         assert_eq!(parse_now_playing(with_null_device).volume_percent, None);
 
         assert_eq!(parse_now_playing("").volume_percent, None);
+    }
+
+    // Rule: a level above 100 is not one the Web API documents, and it is not
+    // one the policy may adopt — a remembered 200 would be written back after
+    // a respawn, refused by the API, and retried at every poll. Dropped to
+    // `None` at the parser, like an absent field.
+    #[test]
+    fn test_parse_now_playing_drops_a_device_volume_above_100() {
+        for level in ["101", "200", "1000000000000"] {
+            let body = format!(
+                r#"{{"is_playing": true, "device": {{"id": "abc", "volume_percent": {level}}}, "item": {{"name": "Song"}}}}"#
+            );
+            let np = parse_now_playing(&body);
+            assert_eq!(np.volume_percent, None, "{level} % must not be a level");
+            assert_eq!(
+                np.title.as_deref(),
+                Some("Song"),
+                "the rest of the snapshot must survive a bad level"
+            );
+        }
     }
 
     // Criterion (#58): a device that is present on an idle body (no `item`)

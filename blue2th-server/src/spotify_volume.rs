@@ -304,6 +304,38 @@ mod tests {
         assert_eq!(policy.on_observed(Some(40)), Some(100));
     }
 
+    // Rule: only the edge of the lock acts. `POST /config` re-applies the
+    // stored lock on every push, and the app pushes its whole config on each
+    // activation — so an unchanged `false` must keep the remembered level and
+    // a pending restore, or the next respawn would have nothing to put back.
+    #[test]
+    fn test_policy_reapplying_an_unchanged_lock_keeps_the_desired_level_and_the_mark() {
+        let mut policy = Policy::new();
+        policy.on_user_set(60);
+        policy.mark_respawned();
+
+        policy.set_lock(false);
+        assert_eq!(
+            policy.desired(),
+            Some(60),
+            "re-applying lock=false must not forget the user's level"
+        );
+        assert_eq!(
+            policy.on_observed(Some(100)),
+            Some(60),
+            "re-applying lock=false must not drop a pending restore"
+        );
+
+        policy.set_lock(true);
+        policy.mark_respawned();
+        policy.set_lock(true);
+        assert_eq!(
+            policy.on_observed(Some(40)),
+            Some(100),
+            "re-applying lock=true keeps pinning 100"
+        );
+    }
+
     // Criterion (non-nominal): lock off → desired becomes the next observed
     // level, and nothing is written; the pinned 100 does not linger.
     #[test]
