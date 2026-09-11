@@ -386,8 +386,8 @@ pub async fn shutdown_signal() {
 /// routed across a restart.
 pub async fn stop_sources_for_shutdown(state: &AppState) -> SpotifyState {
     let mut spotify = state.spotify.lock().await;
-    // `stop()` never fails today; should it, the reconciled state is still the
-    // right thing to report — the process is exiting either way.
+    // The process is exiting either way, so a failed stop has no error path
+    // worth taking: the reconciled state is still the right thing to report.
     spotify.stop().unwrap_or_else(|_| spotify.poll_liveness())
 }
 
@@ -2057,6 +2057,36 @@ mod tests {
     /// Add the bearer every guarded route requires.
     fn authorized(builder: axum::http::request::Builder) -> axum::http::request::Builder {
         builder.header("authorization", format!("Bearer {TOKEN}"))
+    }
+
+    // Criterion (#122): the shutdown stop goes through `SpotifyBackend::stop`
+    // — the child the backend holds is killed and reaped, and the reconciled
+    // state reads `Stopped`. Driven against a real subprocess (`sleep 30`)
+    // adopted by the backend: without it, a shutdown path that merely reported
+    // the state, or dropped the handle without killing, stayed green.
+    #[tokio::test]
+    async fn test_stop_sources_for_shutdown_kills_the_running_child() {
+        let state = test_state();
+        let child =
+            spotify::spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+        let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).expect("pid fits an i32"));
+        state.spotify.lock().await.adopt_child_for_test(child);
+        assert_eq!(
+            state.spotify.lock().await.status().status,
+            blue2th_proto::SpotifyStatus::Running,
+            "the fixture must start from a Running backend"
+        );
+
+        let reconciled = stop_sources_for_shutdown(&state).await;
+
+        assert_eq!(reconciled.status, blue2th_proto::SpotifyStatus::Stopped);
+        // Signal 0 probes without delivering: `ESRCH` means the child was
+        // killed *and* reaped, not left as a zombie or still sleeping.
+        assert_eq!(
+            nix::sys::signal::kill(pid, None),
+            Err(nix::errno::Errno::ESRCH),
+            "the child must be gone after the shutdown stop"
+        );
     }
 
     #[tokio::test]

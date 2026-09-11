@@ -283,6 +283,13 @@ impl SpotifyBackend {
         Ok(self.status())
     }
 
+    /// Hold `child` as if [`Self::start`] had spawned it, so a test can drive
+    /// the stop paths against a live subprocess without reaching PipeWire.
+    #[cfg(test)]
+    pub(crate) fn adopt_child_for_test(&mut self, child: Child) {
+        self.child = Some(child);
+    }
+
     /// Detect a subprocess that exited on its own and reset the state to
     /// `Stopped`, then return the reconciled state.
     pub fn poll_liveness(&mut self) -> SpotifyState {

@@ -105,22 +105,30 @@ fn assert_probe_completed(output: &std::process::Output) -> String {
     stdout
 }
 
-/// Probe body for the signal tests: arm `shutdown_signal()`, deliver `signal`
-/// to this very process once the future has been polled, and report whether it
-/// resolved within 2 s. The caller prints the marker on `Ok`.
-async fn probe_shutdown_signal(signal: Signal) -> Result<(), tokio::time::error::Elapsed> {
+/// Probe body for the signal tests: arm `shutdown_signal()`, check it is still
+/// pending with no signal delivered, then deliver `signal` to this very
+/// process and report whether it resolved within 2 s. The caller prints the
+/// marker on `Ok`.
+///
+/// The pending check is what makes the test a test: a `shutdown_signal()` that
+/// resolves on its own passed this probe until it was added, since the marker
+/// was printed either way. It also orders the two steps without a race — the
+/// first poll registers the handlers, and the `kill` only happens after it.
+/// Delivered before that poll, the signal would take its default action and
+/// the probe would simply die, which the outer role reports as "never took it".
+async fn probe_shutdown_signal(signal: Signal) -> Result<(), String> {
     let shutdown = blue2th_server::shutdown_signal();
     tokio::pin!(shutdown);
-    // Sent from a task that yields first: on this single-threaded runtime the
-    // future below is polled — and its handlers registered — before the sleep
-    // ends. Delivered earlier, the signal takes its default action and the
-    // probe simply dies, which the outer role reports as "never took it". A
-    // `kill` that fails surfaces the same way, as the timeout below.
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let _ = kill(Pid::this(), signal);
-    });
-    tokio::time::timeout(Duration::from_secs(2), shutdown).await
+    if tokio::time::timeout(Duration::from_millis(100), &mut shutdown)
+        .await
+        .is_ok()
+    {
+        return Err("shutdown_signal() resolved before any signal was delivered".to_string());
+    }
+    kill(Pid::this(), signal).map_err(|err| format!("kill({signal}) failed: {err}"))?;
+    tokio::time::timeout(Duration::from_secs(2), shutdown)
+        .await
+        .map_err(|_| format!("shutdown_signal() did not resolve within 2 s of {signal}"))
 }
 
 // Criterion (#122): `shutdown_signal()` resolves on SIGTERM — `kill`, systemd.
