@@ -142,6 +142,34 @@ pub fn should_restart_for_rename(current: SpotifyStatus, running: &str, wanted: 
     matches!(current, SpotifyStatus::Running) && running != wanted
 }
 
+/// Spawn `program` with `args`, bound to the lifetime of **the calling thread**
+/// (#122): the child receives SIGTERM when that thread ends, whether the server
+/// exits, crashes or is killed.
+///
+/// Linux ties `PR_SET_PDEATHSIG` to the *thread* that forked, not to the
+/// process. Every spawn happens on a tokio worker thread, which lives as long
+/// as the runtime, so the binding lasts as long as the server does. A spawn
+/// must never move to `spawn_blocking`: its pool threads exit after an idle
+/// timeout and would take the child with them mid-playback.
+pub fn spawn_bound_to_this_thread(program: &str, args: &[String]) -> std::io::Result<Child> {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    // SAFETY: the closure runs in the forked child, between `fork` and `exec`,
+    // where only async-signal-safe calls are allowed: no allocation, no locks,
+    // no logging, nothing that touches the parent's runtime. `prctl` is a
+    // single syscall and qualifies. Its failure is mapped to an `io::Error`, so
+    // the spawn fails rather than leaving an unprotected child behind.
+    unsafe {
+        command.pre_exec(|| {
+            nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
+                .map_err(std::io::Error::from)
+        });
+    }
+    command.spawn()
+}
+
 /// Owns the `librespot` subprocess lifecycle. Held behind the router's
 /// `Arc<Mutex<_>>`. A dead child must never poison the server, so `poll_liveness`
 /// reconciles the state back to `Stopped` once the child exits.
@@ -234,10 +262,7 @@ impl SpotifyBackend {
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
         let args = self.librespot_args(&resolved);
-        let child = std::process::Command::new("librespot")
-            .args(&args)
-            .spawn()
-            .map_err(map_spawn_error)?;
+        let child = spawn_bound_to_this_thread("librespot", &args).map_err(map_spawn_error)?;
         self.child = Some(child);
         // Remember the *logical* target, not the resolved node: `resync_spotify_sink`
         // compares this against `spotify_target_sink(...)`, and storing the resolved
@@ -256,6 +281,13 @@ impl SpotifyBackend {
         }
         self.sink = None;
         Ok(self.status())
+    }
+
+    /// Hold `child` as if [`Self::start`] had spawned it, so a test can drive
+    /// the stop paths against a live subprocess without reaching PipeWire.
+    #[cfg(test)]
+    pub(crate) fn adopt_child_for_test(&mut self, child: Child) {
+        self.child = Some(child);
     }
 
     /// Detect a subprocess that exited on its own and reset the state to
@@ -757,5 +789,102 @@ mod tests {
         let state = backend.stop().expect("stop must not fail");
         assert_eq!(state.device_name, "Salon");
         assert_eq!(backend.device_name(), "Salon");
+    }
+
+    /// Everything before the `#[cfg(test)]` attribute — the code that ships.
+    fn production_source() -> &'static str {
+        let source = include_str!("spotify.rs");
+        source.split("#[cfg(test)]").next().unwrap_or_default()
+    }
+
+    /// Poll `child` for up to `budget`, returning its exit status once it has
+    /// one. `None` means it was still running when the budget ran out.
+    fn wait_up_to(
+        child: &mut Child,
+        budget: std::time::Duration,
+    ) -> Option<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
+    }
+
+    // Criterion (#122): a child spawned through the seam from a thread that then
+    // exits is gone — terminated by SIGTERM (signal 15) — within 2 s. `sleep 30`
+    // stands in for `librespot`: it is in coreutils on every CI runner and would
+    // outlive the test on its own.
+    #[test]
+    fn test_spawn_bound_to_this_thread_terminates_the_child_when_the_spawning_thread_exits() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let spawner = std::thread::spawn(|| {
+            spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep")
+        });
+        let mut child = spawner.join().expect("spawning thread joined");
+
+        let status = wait_up_to(&mut child, std::time::Duration::from_secs(2));
+        // Never leave a 30 s sleeper behind, whatever the assertion says.
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            status.is_some(),
+            "the child outlived the thread that spawned it: no parent-death signal"
+        );
+        assert_eq!(
+            status.and_then(|s| s.signal()),
+            Some(15),
+            "the child must be terminated by SIGTERM, got {status:?}"
+        );
+    }
+
+    // Criterion (#122): the binding is to the thread's *life*, not to the spawn
+    // call — a child spawned from a thread that keeps living is still running
+    // 200 ms later.
+    #[test]
+    fn test_spawn_bound_to_this_thread_keeps_the_child_while_the_thread_lives() {
+        let mut child =
+            spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let exited = child.try_wait().expect("try_wait");
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            exited.is_none(),
+            "the child died while its spawning thread was alive: {exited:?}"
+        );
+    }
+
+    // Criterion (#122): `SpotifyBackend::start` spawns through the seam and
+    // nothing else in this module builds a `Command` — the seam is the one place
+    // the parent-death signal is set, so a second spawn site would be an
+    // unprotected `librespot`. The real `start` reaches PipeWire, so the rule is
+    // pinned on the source rather than exercised.
+    #[test]
+    fn test_start_spawns_librespot_only_through_the_bound_seam() {
+        let source = production_source();
+        assert!(
+            !source.is_empty(),
+            "the production half of spotify.rs could not be isolated"
+        );
+
+        let command_sites = source.matches("Command::new(").count();
+        assert_eq!(
+            command_sites, 1,
+            "exactly one `Command::new(` — inside `spawn_bound_to_this_thread` — is allowed, found {command_sites}"
+        );
+
+        // One definition plus at least one call site (`start`).
+        let seam_uses = source.matches("spawn_bound_to_this_thread(").count();
+        assert!(
+            seam_uses >= 2,
+            "`start` must call `spawn_bound_to_this_thread`, found {seam_uses} mention(s) (the definition alone is 1)"
+        );
     }
 }
