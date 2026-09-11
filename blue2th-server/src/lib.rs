@@ -1034,16 +1034,23 @@ fn spawn_idle_watchdog(state: AppState) {
             };
             // A backgrounded app is frozen by Android, so its feed drops without
             // the user having left: the grace period follows what the app reported.
-            let grace = watchdog::grace_for(state.sse_watch.presence());
-            if !running
-                || state
-                    .sse_watch
-                    .claim_idle_pause(grace, std::time::Instant::now())
-                    .is_none()
-            {
+            // Read once, so the log names the presence the grace was derived from.
+            let presence = state.sse_watch.presence();
+            let grace = watchdog::grace_for(presence);
+            if !running {
                 continue;
             }
-            tracing::info!("no now-playing reader for {grace:?}: pausing Spotify");
+            let Some(idle) = state
+                .sse_watch
+                .claim_idle_pause(grace, std::time::Instant::now())
+            else {
+                continue;
+            };
+            let idle = idle.as_secs();
+            let grace = grace.as_secs();
+            tracing::info!(
+                "no now-playing reader for {idle}s under {presence:?} (grace {grace}s): pausing Spotify"
+            );
             let mut auth = state.spotify_auth.lock().await;
             if let Err(e) = auth.transport(Transport::Pause).await {
                 // Nothing playing, or no login: not worth more than a trace.

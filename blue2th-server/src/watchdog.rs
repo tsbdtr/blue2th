@@ -19,6 +19,14 @@
 //! there), long in the background (the freeze is expected), and a `Gone` report
 //! pauses at once without waiting for any of it.
 //!
+//! A presence report is positive evidence of liveness, so on any report other
+//! than `Gone` the idle clock restarts while no reader is connected. Without
+//! that, a `Foreground` report arriving after a long background idle would apply
+//! the shorter foreground grace to time already spent under the longer one, and
+//! the very next tick would pause the playback the user just came back to.
+//! Accounting the elapsed time per presence was considered and rejected: more
+//! bookkeeping for the same outcome, and a second clock to keep honest.
+//!
 //! The clock is a parameter (`now: Instant`) rather than `Instant::now()` read
 //! inside, so the arithmetic — minutes of idle time against a grace period — is a
 //! unit test instead of a sleep.
@@ -121,14 +129,23 @@ impl SseWatch {
         }
     }
 
-    /// Record what the app says it is doing, as reported at `now`.
-    pub fn set_presence(&self, presence: ClientPresence, _now: Instant) {
+    /// Record what the app says it is doing, as reported at `now`. Any report
+    /// other than `Gone` is proof the app is alive at `now`, so while no reader is
+    /// connected the idle clock restarts there. `Gone` leaves it alone: the handler
+    /// pauses at once, and the clock keeps counting from the reader's departure.
+    /// The pause claim is untouched either way — only a returning reader
+    /// (`subscribe`) re-arms it, so an app that thaws for a moment, reports and
+    /// freezes again is not paused twice for the same idle period.
+    pub fn set_presence(&self, presence: ClientPresence, now: Instant) {
         if let Ok(mut slot) = self.presence.lock() {
             *slot = Some(presence);
         }
-        // A report means the app is alive right now, so the next departure gets a
-        // fresh claim — otherwise a pause claimed earlier would suppress it.
-        self.paused.store(false, Ordering::SeqCst);
+        if presence == ClientPresence::Gone || self.readers.load(Ordering::SeqCst) != 0 {
+            return;
+        }
+        if let Ok(mut empty_since) = self.empty_since.lock() {
+            *empty_since = Some(now);
+        }
     }
 
     /// The app's last reported presence, defaulting to foreground.

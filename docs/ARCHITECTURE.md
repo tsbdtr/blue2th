@@ -234,9 +234,12 @@ lifecycle hooks (`onStart`, `onStop`, and `onTaskRemoved` in a small service,
 the only reliable signal for a swipe out of recents), and the grace period
 follows: short in the foreground, where only a crash can cut the feed; long —
 thirty minutes — in the background, where the freeze is expected; and a *gone*
-report pauses at once. A foreground service with its permanent notification
-would stop the freeze outright; it is the price to pay only if the compromise
-bites.
+report pauses at once. Any report other than *gone* also restarts the idle
+clock, because it is positive evidence the app is alive: otherwise a *foreground*
+report after a long background idle would apply the shorter grace to time
+already spent under the longer one and pause at the next tick. A foreground
+service with its permanent notification would stop the freeze outright; it is
+the price to pay only if the compromise bites.
 
 ## The app
 
