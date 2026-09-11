@@ -57,7 +57,7 @@ use targets::{SelectError, SpeakerTargets};
 
 /// Shared application state injected through the Axum router (no globals).
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     /// The audio engine, guarded for concurrent access.
     engine: Arc<Mutex<AudioEngine>>,
     /// The user's playback-target selection (0–2 speakers + offsets). `/play`
@@ -333,7 +333,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let _mdns = advertise(&record);
 
-    let router = app_with_auth_and_targets(
+    let (router, _state) = app_with_auth_and_targets(
         SpotifyAuth::new(),
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
@@ -345,6 +345,22 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Resolves once the process is asked to stop: SIGINT (Ctrl-C) or SIGTERM
+/// (`kill`, systemd). RED-phase stub: never resolves.
+pub fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    std::future::pending()
+}
+
+/// Stop every source the server owns before it exits (#122): the Spotify
+/// backend through the same `stop()` `POST /spotify/stop` uses. Returns the
+/// reconciled state. RED-phase stub: touches nothing and reports `Running`.
+pub async fn stop_sources_for_shutdown(_state: &AppState) -> blue2th_proto::SpotifyState {
+    blue2th_proto::SpotifyState {
+        status: blue2th_proto::SpotifyStatus::Running,
+        device_name: String::new(),
+    }
 }
 
 /// Publish `record` as `_blue2th._tcp.local.`, returning the daemon that must be
@@ -592,6 +608,7 @@ pub fn app() -> Router {
         // minting or rotating this would unpair the operator's own phone.
         AuthStore::with_store(auth::auth_store_path()),
     )
+    .0
 }
 
 /// Build the router around an explicit Spotify auth driver **and an explicit API
@@ -609,6 +626,22 @@ pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router
         config::ServerName::new(),
         auth,
     )
+    .0
+}
+
+/// [`app_with_auth_store`], also handing back the [`AppState`] the router was
+/// built around, so a test can drive the shutdown path against the very same
+/// `SpotifyBackend` the routes hold (#122).
+pub fn app_with_auth_store_and_state(
+    spotify_auth: SpotifyAuth,
+    auth: AuthStore,
+) -> (Router, AppState) {
+    app_with_auth_and_targets(
+        spotify_auth,
+        SpeakerTargets::new(),
+        config::ServerName::new(),
+        auth,
+    )
 }
 
 /// Build the router around an explicit Spotify auth driver and an explicit
@@ -618,7 +651,7 @@ fn app_with_auth_and_targets(
     speaker_targets: SpeakerTargets,
     server_name: config::ServerName,
     auth: AuthStore,
-) -> Router {
+) -> (Router, AppState) {
     // The auth driver and the subprocess must start out agreeing with the stored
     // name, or the very first transport call would look up a device nobody
     // advertises.
@@ -669,7 +702,9 @@ fn app_with_auth_and_targets(
     // No CORS layer at all. The permissive one this replaces answered the
     // preflight for any web page the user happened to open, which made a LAN
     // service reachable from the internet by proxy. The app is not a browser.
-    router.with_state(state)
+    // Cheap: every field is an `Arc`, and the shutdown path needs the same
+    // handles the routes hold.
+    (router.with_state(state.clone()), state)
 }
 
 /// The handler behind one table entry.
