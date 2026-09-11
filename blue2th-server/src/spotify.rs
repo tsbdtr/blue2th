@@ -143,9 +143,31 @@ pub fn should_restart_for_rename(current: SpotifyStatus, running: &str, wanted: 
 }
 
 /// Spawn `program` with `args`, bound to the lifetime of **the calling thread**
-/// (#122). RED-phase stub: a plain spawn, no parent-death signal.
+/// (#122): the child receives SIGTERM when that thread ends, whether the server
+/// exits, crashes or is killed.
+///
+/// Linux ties `PR_SET_PDEATHSIG` to the *thread* that forked, not to the
+/// process. Every spawn happens on a tokio worker thread, which lives as long
+/// as the runtime, so the binding lasts as long as the server does. A spawn
+/// must never move to `spawn_blocking`: its pool threads exit after an idle
+/// timeout and would take the child with them mid-playback.
 pub fn spawn_bound_to_this_thread(program: &str, args: &[String]) -> std::io::Result<Child> {
-    std::process::Command::new(program).args(args).spawn()
+    use std::os::unix::process::CommandExt;
+
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    // SAFETY: the closure runs in the forked child, between `fork` and `exec`,
+    // where only async-signal-safe calls are allowed: no allocation, no locks,
+    // no logging, nothing that touches the parent's runtime. `prctl` is a
+    // single syscall and qualifies. Its failure is mapped to an `io::Error`, so
+    // the spawn fails rather than leaving an unprotected child behind.
+    unsafe {
+        command.pre_exec(|| {
+            nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
+                .map_err(std::io::Error::from)
+        });
+    }
+    command.spawn()
 }
 
 /// Owns the `librespot` subprocess lifecycle. Held behind the router's
@@ -240,10 +262,7 @@ impl SpotifyBackend {
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
         let args = self.librespot_args(&resolved);
-        let child = std::process::Command::new("librespot")
-            .args(&args)
-            .spawn()
-            .map_err(map_spawn_error)?;
+        let child = spawn_bound_to_this_thread("librespot", &args).map_err(map_spawn_error)?;
         self.child = Some(child);
         // Remember the *logical* target, not the resolved node: `resync_spotify_sink`
         // compares this against `spotify_target_sink(...)`, and storing the resolved

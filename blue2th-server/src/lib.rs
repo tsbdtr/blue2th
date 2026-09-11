@@ -333,7 +333,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let _mdns = advertise(&record);
 
-    let (router, _state) = app_with_auth_and_targets(
+    let (router, state) = app_with_auth_and_targets(
         SpotifyAuth::new(),
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
@@ -343,24 +343,52 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("blue2th-server listening on http://{addr}");
 
-    axum::serve(listener, router).await?;
+    // No graceful drain: the SSE streams never end, so waiting on the open
+    // connections would wait forever. The serve future is simply dropped once
+    // the signal wins, and the sources are stopped before returning.
+    tokio::select! {
+        served = axum::serve(listener, router) => served?,
+        () = shutdown_signal() => {
+            tracing::info!("shutting down: stopping the Spotify source");
+            stop_sources_for_shutdown(&state).await;
+        }
+    }
     Ok(())
 }
 
 /// Resolves once the process is asked to stop: SIGINT (Ctrl-C) or SIGTERM
-/// (`kill`, systemd). RED-phase stub: never resolves.
-pub fn shutdown_signal() -> impl std::future::Future<Output = ()> {
-    std::future::pending()
+/// (`kill`, systemd). Handlers are registered on the first poll; a failure to
+/// register one leaves that signal to its default action, which still stops
+/// the process — only the `librespot` stop is lost, and the parent-death
+/// signal covers that case.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                let _ = sigterm.recv().await;
+            },
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }
 
 /// Stop every source the server owns before it exits (#122): the Spotify
 /// backend through the same `stop()` `POST /spotify/stop` uses. Returns the
-/// reconciled state. RED-phase stub: touches nothing and reports `Running`.
-pub async fn stop_sources_for_shutdown(_state: &AppState) -> blue2th_proto::SpotifyState {
-    blue2th_proto::SpotifyState {
-        status: blue2th_proto::SpotifyStatus::Running,
-        device_name: String::new(),
-    }
+/// reconciled state. Idempotent: on a stopped backend it reports `Stopped`
+/// again. The PipeWire graph is left in place — it is what keeps the speakers
+/// routed across a restart.
+pub async fn stop_sources_for_shutdown(state: &AppState) -> SpotifyState {
+    let mut spotify = state.spotify.lock().await;
+    // `stop()` never fails today; should it, the reconciled state is still the
+    // right thing to report — the process is exiting either way.
+    spotify.stop().unwrap_or_else(|_| spotify.poll_liveness())
 }
 
 /// Publish `record` as `_blue2th._tcp.local.`, returning the daemon that must be

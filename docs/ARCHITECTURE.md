@@ -214,6 +214,11 @@ is #120's.
 Running the backend under the name the app gave it matters twice: it is the
 Spotify Connect device name, and the name the Web API lookup matches on.
 
+The child's lifetime is bound to the server's twice (#122): the child carries a
+parent-death signal (`PR_SET_PDEATHSIG`, SIGTERM) so it dies with the server
+however the server goes, and the server itself handles SIGTERM/SIGINT by
+stopping the Spotify source cleanly and leaving the PipeWire graph in place.
+
 ### Presence and the watchdog
 
 Playback deliberately keeps going while the app sits in the background, so the
