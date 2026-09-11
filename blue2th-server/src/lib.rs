@@ -1035,7 +1035,12 @@ fn spawn_idle_watchdog(state: AppState) {
             // A backgrounded app is frozen by Android, so its feed drops without
             // the user having left: the grace period follows what the app reported.
             let grace = watchdog::grace_for(state.sse_watch.presence());
-            if !running || !state.sse_watch.claim_idle_pause(grace) {
+            if !running
+                || state
+                    .sse_watch
+                    .claim_idle_pause(grace, std::time::Instant::now())
+                    .is_none()
+            {
                 continue;
             }
             tracing::info!("no now-playing reader for {grace:?}: pausing Spotify");
@@ -1308,7 +1313,9 @@ async fn client_presence(
     // Logged: this is the only visible trace that the app's lifecycle hooks are
     // reaching the backend at all (Android does not guarantee `onDestroy`).
     tracing::info!("client presence: {:?}", req.presence);
-    state.sse_watch.set_presence(req.presence);
+    state
+        .sse_watch
+        .set_presence(req.presence, std::time::Instant::now());
     if req.presence == ClientPresence::Gone {
         // The outcome is only used to decide the backend's resume claim, which
         // a closing app makes no promise about: nothing here will resume it.
