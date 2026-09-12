@@ -161,6 +161,14 @@ impl SseWatch {
     pub fn readers(&self) -> usize {
         self.readers.load(Ordering::SeqCst)
     }
+
+    /// The raw idle-clock stamp, so a test can pin the invariant the field
+    /// documents (`None` while a reader is connected). Nothing outside the tests
+    /// reads it: `claim_idle_pause` is the production view of this clock.
+    #[cfg(test)]
+    fn empty_since(&self) -> Option<Instant> {
+        self.empty_since.lock().ok().and_then(|since| *since)
+    }
 }
 
 /// Keeps a reader counted for as long as it is held. Dropping it — the stream
@@ -435,6 +443,33 @@ mod tests {
             watch.claim_idle_pause(FOREGROUND_GRACE, t2 + FOREGROUND_GRACE),
             Some(FOREGROUND_GRACE)
         );
+    }
+
+    // Criterion: a report while a reader is connected leaves `empty_since` as
+    // `None` — the field's invariant, which `claim_idle_pause` cannot observe
+    // (it gates on the reader count first, and the departure re-stamps the clock
+    // anyway). Dropping the reader check in `set_presence` survives every other
+    // test; this one names the value on both sides of the departure.
+    #[test]
+    fn test_report_while_a_reader_is_connected_keeps_empty_since_none() {
+        let t0 = Instant::now();
+        let watch = std::sync::Arc::new(SseWatch::default());
+        let feed = watch.subscribe();
+        assert_eq!(watch.empty_since(), None);
+
+        let t1 = t0 + secs(100);
+        watch.set_presence(ClientPresence::Foreground, t1);
+        assert_eq!(
+            watch.empty_since(),
+            None,
+            "a report must not start the idle clock while a reader is connected"
+        );
+        watch.set_presence(ClientPresence::Background, t1 + secs(1));
+        assert_eq!(watch.empty_since(), None);
+
+        let t2 = t1 + secs(300);
+        feed.release_at(t2);
+        assert_eq!(watch.empty_since(), Some(t2));
     }
 
     // Criterion: the pause claim survives a presence report (an app that thaws for
