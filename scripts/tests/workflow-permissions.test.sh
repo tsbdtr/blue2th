@@ -6,9 +6,10 @@
 # GITHUB_TOKEN — a column-0 `permissions:` key, or one on every job at the
 # job's indentation + 2. Exit 0 when they all do; exit 1 with
 # `<file>: job <name> has no permissions block` per offending job, or
-# `<file>: no jobs found` for a file without a `jobs:` key; exit 2 when `dir`
-# does not exist. A `permissions:` in a comment or inside a step is not a
-# block and must not rescue a job.
+# `<file>: no jobs found` for a file without a `jobs:` key, or
+# `<dir>: no workflows found` for a directory with no `*.yml`/`*.yaml`; exit 2
+# when `dir` does not exist. A `permissions:` in a comment or inside a step is
+# not a block and must not rescue a job.
 # Sourced by scripts/tests/run.sh; each test_* runs in its own subshell.
 
 script="$SCRIPTS_DIR/check-workflow-permissions.sh"
@@ -56,8 +57,38 @@ YAML
     assert_eq "" "$stdout" "stdout when every job is scoped"
 }
 
+# Criterion: YAML keys are unordered, so a column-0 `permissions:` written
+# after the `jobs:` block covers the jobs just as one written before does.
+# Pins the deferred report: a job with no block of its own is not a finding
+# until the end of the file rules out a top-level block further down.
+test_top_level_block_after_jobs_covers_them() {
+    dir="$(workflows_dir top-level-after)"
+    cat >"$dir/ci.yml" <<'YAML'
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+permissions:
+  contents: read
+YAML
+    assert_succeeds "$script" "$dir"
+    assert_eq "" "$stdout" "stdout when a trailing top-level block scopes every job"
+}
+
 # Criterion: no top-level block, but every job carries its own at the job's
-# indentation + 2 — the shape of release.yml and pr-title.yml today.
+# indentation + 2 — the per-job shape (release.yml, pr-title.yml).
 test_per_job_permissions_pass() {
     dir="$(workflows_dir per-job)"
     cat >"$dir/release.yml" <<'YAML'
@@ -200,6 +231,61 @@ YAML
     assert_contains "$stdout$stderr" "decoy.yml: job unscoped has no permissions block" "decoys do not rescue the job"
 }
 
+# Criterion: comments are dropped before any line is read as a job. A comment
+# at two spaces between jobs — the way ci.yml and release.yml annotate theirs —
+# must not be reported as a job without a block, and the fixture has no
+# top-level block so nothing else would hide such a false finding.
+test_comment_at_job_indentation_is_not_a_job() {
+    dir="$(workflows_dir job-comment)"
+    cat >"$dir/release.yml" <<'YAML'
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  # The version is computed once and read by every other job.
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+  # Publishes the release: needs write on contents.
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+YAML
+    assert_succeeds "$script" "$dir"
+    assert_eq "" "$stdout" "stdout when the only two-space lines besides jobs are comments"
+}
+
+# Criterion: GitHub reads `*.yaml` as a workflow too, so an unscoped job in one
+# is a finding — a check that only globbed `*.yml` would let it through.
+test_yaml_extension_is_checked_too() {
+    dir="$(workflows_dir yaml-ext)"
+    cat >"$dir/nightly.yaml" <<'YAML'
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+YAML
+    assert_fails "$script" "$dir"
+    assert_contains "$stdout$stderr" "nightly.yaml: job sweep has no permissions block" "a .yaml workflow is read"
+}
+
 # Criterion: a directory that does not exist exits 2 with a message — distinct
 # from a failing check, so a mistyped path is never read as "all scoped".
 test_missing_directory_exits_2() {
@@ -208,10 +294,20 @@ test_missing_directory_exits_2() {
     assert_contains "$stderr" "does-not-exist" "message names the missing directory"
 }
 
+# Criterion: a directory that exists but holds no `*.yml`/`*.yaml` is a
+# refusal, not a pass — "every workflow is scoped" over no workflow is true of
+# `.github/workflow` mistyped just as it is of an empty one, and the check
+# must never vouch for nothing.
+test_directory_without_workflows_fails() {
+    dir="$(workflows_dir no-workflows)"
+    echo "not a workflow" >"$dir/README.md"
+    assert_fails "$script" "$dir"
+    assert_contains "$stderr" "no-workflows: no workflows found" "refusal names the directory"
+}
+
 # Criterion: the repository's own `.github/workflows` passes — the check the
-# `scripts` CI job runs with no argument. RED by design: ci.yml has no
-# permissions block today, which is the defect #126 fixes; this test goes
-# green only once the GREEN phase adds the top-level block to ci.yml.
+# `scripts` CI job runs with no argument (#126: ci.yml carried no permissions
+# block, which is what this test caught first).
 test_the_repository_workflows_pass() {
     assert_succeeds "$script" "$REPO_ROOT/.github/workflows"
     assert_eq "" "$stdout" "stdout when the repository workflows are scoped"

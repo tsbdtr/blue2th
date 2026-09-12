@@ -4,7 +4,7 @@
 # check-workflow-permissions.sh [dir]: fail when a workflow under `dir`
 # (default `.github/workflows`) leaves any job on the default GITHUB_TOKEN
 # permissions — no column-0 `permissions:` key and at least one job without
-# its own. Only bash, grep and awk: the runner has no yq.
+# its own. Only bash and awk: the runner has no yq.
 #
 # The parse is deliberately shallow, and it is what keeps decoys out: a job
 # is a key at exactly two spaces under a column-0 `jobs:` line (until the
@@ -16,7 +16,7 @@
 # rather than reported as they are met.
 #
 # Exit codes: 0 every job is scoped, 1 at least one job is not (or a file has
-# no `jobs:` key), 2 `dir` does not exist.
+# no `jobs:` key, or `dir` holds no workflow at all), 2 `dir` does not exist.
 set -euo pipefail
 
 dir="${1:-.github/workflows}"
@@ -29,6 +29,13 @@ fi
 shopt -s nullglob
 files=("$dir"/*.yml "$dir"/*.yaml)
 shopt -u nullglob
+
+# A directory with nothing to check must not pass: `.github/workflow` exists as
+# a typo just as easily as it does not, and "every workflow" over none is true.
+if [[ ${#files[@]} -eq 0 ]]; then
+    echo "$dir: no workflows found" >&2
+    exit 1
+fi
 
 # check_file <file>: prints one line per unscoped job (or `no jobs found`) on
 # stderr and returns 1 when it printed anything, 0 otherwise.
