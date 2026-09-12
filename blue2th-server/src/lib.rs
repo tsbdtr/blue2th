@@ -1032,13 +1032,25 @@ fn spawn_idle_watchdog(state: AppState) {
                 let mut spotify = state.spotify.lock().await;
                 spotify.poll_liveness().status == SpotifyStatus::Running
             };
-            // A backgrounded app is frozen by Android, so its feed drops without
-            // the user having left: the grace period follows what the app reported.
-            let grace = watchdog::grace_for(state.sse_watch.presence());
-            if !running || !state.sse_watch.claim_idle_pause(grace) {
+            if !running {
                 continue;
             }
-            tracing::info!("no now-playing reader for {grace:?}: pausing Spotify");
+            // A backgrounded app is frozen by Android, so its feed drops without
+            // the user having left: the grace period follows what the app reported.
+            // Read once, so the log names the presence the grace was derived from.
+            let presence = state.sse_watch.presence();
+            let grace = watchdog::grace_for(presence);
+            let Some(idle) = state
+                .sse_watch
+                .claim_idle_pause(grace, std::time::Instant::now())
+            else {
+                continue;
+            };
+            let idle = idle.as_secs();
+            let grace = grace.as_secs();
+            tracing::info!(
+                "no now-playing reader for {idle}s under {presence:?} (grace {grace}s): pausing Spotify"
+            );
             let mut auth = state.spotify_auth.lock().await;
             if let Err(e) = auth.transport(Transport::Pause).await {
                 // Nothing playing, or no login: not worth more than a trace.
@@ -1308,7 +1320,9 @@ async fn client_presence(
     // Logged: this is the only visible trace that the app's lifecycle hooks are
     // reaching the backend at all (Android does not guarantee `onDestroy`).
     tracing::info!("client presence: {:?}", req.presence);
-    state.sse_watch.set_presence(req.presence);
+    state
+        .sse_watch
+        .set_presence(req.presence, std::time::Instant::now());
     if req.presence == ClientPresence::Gone {
         // The outcome is only used to decide the backend's resume claim, which
         // a closing app makes no promise about: nothing here will resume it.
@@ -2820,6 +2834,45 @@ mod tests {
         assert!(
             !state.backend_paused_sources.load(Ordering::SeqCst),
             "the user asked for this: the claim goes whether or not Spotify answered"
+        );
+    }
+
+    // Criterion: `POST /client/presence` records the report and stamps it with
+    // `Instant::now()`. The route pins in `tests/presence.rs` only see the 204,
+    // which a handler that never touched the watch would still return; this one
+    // reads the watch back. `t1` is taken strictly after the departure at `t0`, so
+    // a handler that left the clock at `t0` would report a non-zero idle time.
+    #[tokio::test]
+    async fn test_client_presence_records_the_report_and_restarts_the_idle_clock() {
+        let state = test_state();
+        let watch = Arc::clone(&state.sse_watch);
+        assert_eq!(watch.presence(), ClientPresence::Foreground);
+
+        let t0 = std::time::Instant::now();
+        watch.subscribe().release_at(t0);
+        let t1 = loop {
+            let now = std::time::Instant::now();
+            if now > t0 {
+                break now;
+            }
+        };
+
+        let status = client_presence(
+            State(state),
+            Json(PresenceRequest {
+                presence: ClientPresence::Background,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        assert_eq!(watch.presence(), ClientPresence::Background);
+        // The handler stamped `Instant::now()`, at or after `t1`: read at `t1`, the
+        // idle time saturates to zero. Left at `t0`, it would be `t1 - t0 > 0`.
+        assert_eq!(
+            watch.claim_idle_pause(Duration::ZERO, t1),
+            Some(Duration::ZERO),
+            "the handler must restart the idle clock at the report"
         );
     }
 }
