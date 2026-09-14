@@ -16,8 +16,8 @@
 
 /* App-wide styling */
 body {
-    background-color: #0f1116;
-    color: #ffffff;
+    background-color: var(--bg-base);
+    color: var(--text-primary);
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     /* No top margin so the header sits flush against the top of the screen. */
     margin: 0 20px 20px;
@@ -35,23 +35,23 @@ body {
     width: 400px;
     text-align: left;
     font-size: x-large;
-    color: white;
+    color: var(--text-primary);
     display: flex;
     flex-direction: column;
 }
 
 #links a {
-    color: white;
+    color: var(--text-primary);
     text-decoration: none;
     margin-top: 20px;
     margin: 10px 0px;
-    border: white 1px solid;
-    border-radius: 5px;
+    border: var(--border-strong) 1px solid;
+    border-radius: var(--radius-sm);
     padding: 10px;
 }
 
 #links a:hover {
-    background-color: #1f1f1f;
+    background-color: var(--bg-inset);
     cursor: pointer;
 }
 
@@ -75,9 +75,9 @@ body {
     transform: translateX(-50%);
     /* Blue-tinted "hero" gradient echoing the title, fading toward the page
        background at the bottom of the full-bleed banner. */
-    background: linear-gradient(180deg, #1a2740 0%, #11192a 100%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.25);
-    border: 1px solid #2c3040;
+    background: linear-gradient(180deg, var(--accent-subtle) 0%, var(--bg-base) 100%);
+    box-shadow: inset 0 1px 0 color-mix(in oklch, var(--text-primary) 5%, transparent), var(--shadow-md);
+    border: 1px solid var(--border-subtle);
     /* No rounded corners while full-bleed so it sits flush to the edges. */
     border-radius: 0;
     padding: 34px 32px;
@@ -99,25 +99,26 @@ body {
     height: 116px;
     transform: translate(-50%, -50%);
     border: 1.5px solid transparent;
-    border-radius: 50%;
+    border-radius: var(--radius-full);
     z-index: 0;
     pointer-events: none;
 }
 
 .app-header::before {
     top: 52%;
-    border-top-color: rgba(147, 197, 253, 0.4);
-    /* Fade the arc from its crest (top centre) outward toward the ends. */
-    -webkit-mask-image: radial-gradient(circle at 50% 0%, #000 0%, transparent 62%);
-    mask-image: radial-gradient(circle at 50% 0%, #000 0%, transparent 62%);
+    border-top-color: color-mix(in oklch, var(--accent-hover) 40%, transparent);
+    /* Fade the arc from its crest (top centre) outward toward the ends. A mask
+       reads alpha only, so its colour is a keyword, not a token. */
+    -webkit-mask-image: radial-gradient(circle at 50% 0%, black 0%, transparent 62%);
+    mask-image: radial-gradient(circle at 50% 0%, black 0%, transparent 62%);
 }
 
 .app-header::after {
     top: 48%;
-    border-bottom-color: rgba(147, 197, 253, 0.4);
+    border-bottom-color: color-mix(in oklch, var(--accent-hover) 40%, transparent);
     /* Fade the arc from its crest (bottom centre) outward toward the ends. */
-    -webkit-mask-image: radial-gradient(circle at 50% 100%, #000 0%, transparent 62%);
-    mask-image: radial-gradient(circle at 50% 100%, #000 0%, transparent 62%);
+    -webkit-mask-image: radial-gradient(circle at 50% 100%, black 0%, transparent 62%);
+    mask-image: radial-gradient(circle at 50% 100%, black 0%, transparent 62%);
 }
 
 .app-title {
@@ -129,11 +130,11 @@ body {
     letter-spacing: 0.02em;
     line-height: 1.3;
     /* Shadow under the letters so they stay legible over the banner gradient. */
-    filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.75));
+    filter: drop-shadow(0 3px 4px color-mix(in oklch, var(--bg-sunken) 75%, transparent));
 }
 
 .app-title-text {
-    background: linear-gradient(135deg, #2563eb 0%, #ffffff 50%, #06b6d4 100%);
+    background: linear-gradient(135deg, var(--accent) 0%, var(--text-primary) 50%, var(--accent-hover) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -165,12 +166,12 @@ body {
     top: 0.26em;
     font-size: 0.78em;
     font-weight: 800;
-    background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
     transform: perspective(230px) translateZ(34px);
-    filter: drop-shadow(0 6px 6px rgba(0, 0, 0, 0.65)) drop-shadow(0 0 12px rgba(37, 99, 235, 0.7));
+    filter: drop-shadow(0 6px 6px color-mix(in oklch, var(--bg-sunken) 65%, transparent)) drop-shadow(0 0 12px color-mix(in oklch, var(--accent) 70%, transparent));
     letter-spacing: 0;
 }
 
@@ -182,9 +183,9 @@ body {
     gap: 10px;
     margin: 0 0 8px;
     padding: 4px 10px;
-    background: #1e222d;
-    border: 1px solid #374151;
-    border-radius: 8px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
     /* Border-box so the height below is the height the row sees, borders
        included — the gear next to it is sized the same way. */
     box-sizing: border-box;
@@ -196,14 +197,14 @@ body {
 
 .backend-status-label {
     font-size: 0.85rem;
-    color: #9ca3af;
+    color: var(--text-muted);
 }
 
 /* Light divider splitting the encart into a label zone and a status zone. */
 .backend-status-sep {
     align-self: stretch;
     width: 1px;
-    background: rgba(255, 255, 255, 0.12);
+    background: color-mix(in oklch, var(--text-primary) 12%, transparent);
 }
 
 /* Enable bluetooth button */
@@ -216,26 +217,26 @@ body {
     box-sizing: border-box;
     margin: 24px 0 20px 0;
     padding: 14px 28px;
-    background: #92400e;
-    color: #fde68a;
+    background: var(--state-degraded-subtle);
+    color: var(--state-degraded);
     border: none;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     font-size: 1em;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.2s;
-    box-shadow: 0 4px 14px rgba(146, 64, 14, 0.4);
+    box-shadow: 0 4px 14px color-mix(in oklch, var(--state-degraded) 40%, transparent);
 }
 
 .btn-enable-bt:hover {
-    background: #b45309;
+    background: color-mix(in oklch, var(--state-degraded-subtle) 85%, var(--text-primary));
 }
 
 /* Modal */
 .modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: color-mix(in oklch, var(--bg-sunken) 60%, transparent);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -244,9 +245,9 @@ body {
 }
 
 .modal-box {
-    background: #1e222d;
-    border: 1px solid #2c3040;
-    border-radius: 14px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
     padding: 28px 32px;
     min-width: 280px;
     max-width: 360px;
@@ -261,7 +262,7 @@ body {
 
 .modal-subtitle {
     font-size: 0.88em;
-    color: #9ca3af;
+    color: var(--text-secondary);
     margin: 0 0 24px 0;
 }
 
@@ -273,7 +274,7 @@ body {
 
 .modal-btn {
     padding: 9px 20px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     font-size: 0.9em;
     font-weight: 600;
     cursor: pointer;
@@ -281,21 +282,21 @@ body {
 }
 
 .modal-btn-cancel {
-    background: #374151;
-    color: #d1d5db;
+    background: var(--bg-inset);
+    color: var(--text-secondary);
 }
 
 .modal-btn-cancel:hover {
-    background: #4b5563;
+    background: var(--bg-sunken);
 }
 
 .modal-btn-confirm {
-    background: #2563eb;
-    color: #fff;
+    background: var(--accent);
+    color: var(--text-on-accent);
 }
 
 .modal-btn-confirm:hover {
-    background: #1d4ed8;
+    background: var(--accent-hover);
 }
 
 /* Scan button */
@@ -308,21 +309,21 @@ body {
     box-sizing: border-box;
     margin: 8px 0 20px 0;
     padding: 10px 28px;
-    background: #2563eb;
-    color: #fff;
+    background: var(--accent);
+    color: var(--text-on-accent);
     border: none;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     font-size: 1em;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.2s, transform 0.1s;
-    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+    box-shadow: 0 4px 14px color-mix(in oklch, var(--accent) 35%, transparent);
 }
 
 .btn-scan:hover:not(:disabled) {
-    background: #1d4ed8;
+    background: var(--accent-hover);
     transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45);
+    box-shadow: 0 6px 18px color-mix(in oklch, var(--accent) 45%, transparent);
 }
 
 .btn-scan:active:not(:disabled) {
@@ -330,8 +331,8 @@ body {
 }
 
 .btn-scan:disabled {
-    background: #374151;
-    color: #6b7280;
+    background: var(--bg-inset);
+    color: var(--text-disabled);
     cursor: not-allowed;
     box-shadow: none;
 }
@@ -349,7 +350,7 @@ body {
 .home {
     width: 100%;
     box-sizing: border-box;
-    padding: 0 16px;
+    padding: 0 var(--pad-screen);
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
@@ -365,22 +366,22 @@ body {
     position: absolute;
     top: -5px;
     right: 12px;
-    background: #243058;
-    border: 1px solid #3d4a6a;
-    border-radius: 10px;
+    background: var(--state-ok-subtle);
+    border: 1px solid var(--state-ok);
+    border-radius: var(--radius-md);
     padding: 3px 10px;
     font-size: 0.75rem;
-    color: #8b9cc8;
+    color: var(--state-ok);
     z-index: 1;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-sm);
     white-space: nowrap;
 }
 
 .device-list-wrapper {
     width: 100%;
-    border: 1px solid #2c3040;
-    border-radius: 10px;
-    background: #1e222d;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
     overflow: hidden;
 }
 
@@ -389,8 +390,8 @@ body {
     list-style: none;
     margin: 0;
     padding: 0;
-    background: #1a2035;
-    border-bottom: 1px solid #2c3040;
+    background: var(--state-ok-subtle);
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 /* Scrollable rest */
@@ -401,7 +402,7 @@ body {
     overflow-y: auto;
     max-height: calc(100vh - 340px);
     scrollbar-width: thin;
-    scrollbar-color: #3b4258 transparent;
+    scrollbar-color: var(--border-strong) transparent;
 }
 
 .device-list::-webkit-scrollbar {
@@ -413,12 +414,12 @@ body {
 }
 
 .device-list::-webkit-scrollbar-thumb {
-    background: #3b4258;
-    border-radius: 10px;
+    background: var(--border-strong);
+    border-radius: var(--radius-md);
 }
 
 .device-list::-webkit-scrollbar-thumb:hover {
-    background: #5a6480;
+    background: var(--text-muted);
 }
 
 .device-list-empty {
@@ -439,7 +440,7 @@ body {
 .device-list-empty-text {
     margin: 0;
     font-size: 0.9em;
-    color: #555e72;
+    color: var(--text-muted);
 }
 
 .device-row {
@@ -449,7 +450,7 @@ body {
     align-items: center;
     min-height: 56px;
     padding: 0 16px;
-    border-bottom: 1px solid #2c3040;
+    border-bottom: 1px solid var(--border-subtle);
     cursor: pointer;
     transition: background 0.15s;
 }
@@ -462,8 +463,8 @@ body {
     width: 100%;
     padding-top: 100%;
     translate: -50% -50%;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(139, 156, 200, 0.22) 0%, transparent 65%);
+    border-radius: var(--radius-full);
+    background: radial-gradient(circle, color-mix(in oklch, var(--text-primary) 22%, transparent) 0%, transparent 65%);
     transform: scale(0);
     opacity: 0;
     pointer-events: none;
@@ -492,8 +493,8 @@ body {
     justify-content: center;
     width: 32px;
     height: 32px;
-    border-radius: 50%;
-    background: #1a1f2b;
+    border-radius: var(--radius-full);
+    background: var(--bg-inset);
     flex-shrink: 0;
     margin-left: 12px;
 }
@@ -507,7 +508,7 @@ body {
     top: 50%;
     height: 2px;
     border-radius: 1px;
-    background: #ef4444;
+    background: var(--state-error);
     transform: rotate(-45deg);
     transform-origin: center;
 }
@@ -520,7 +521,7 @@ body {
     cursor: default;
 }
 
-/* Pinned rows have a lighter (#1a2035) background, so the badge needs a darker
+/* Pinned rows have a tinted (--state-ok-subtle) background, so the badge needs a darker
    fill there to stay visible. */
 .pinned-devices .signal-badge {
     /* Hidden in the pinned zone: a connected speaker is reachable by definition,
@@ -540,7 +541,7 @@ body {
     width: 1px;
     height: 24px;
     align-self: center;
-    background: rgba(255, 255, 255, 0.12);
+    background: color-mix(in oklch, var(--text-primary) 12%, transparent);
     flex-shrink: 0;
 }
 
@@ -563,7 +564,7 @@ body {
 
 .signal-bar {
     width: 3px;
-    background: #374151;
+    background: var(--border-subtle);
     border-radius: 1px;
 }
 
@@ -586,7 +587,7 @@ body {
 
 @media (hover: hover) {
     .device-row:hover {
-        background: #252a38;
+        background: var(--bg-inset);
     }
 }
 
@@ -600,7 +601,7 @@ body {
     position: absolute;
     top: 5px;
     left: 5px;
-    color: #facc15;
+    color: var(--state-degraded);
     font-size: 0.7rem;
     line-height: 1;
     /* Decoration only: the whole row is the tap target for connecting. */
@@ -614,16 +615,16 @@ body {
 }
 
 .device-icon.disconnected {
-    color: #e05252;
+    color: var(--state-error);
 }
 
 .device-icon.connecting {
-    color: #888;
+    color: var(--state-unknown);
     animation: spin 1s linear infinite;
 }
 
 .device-icon.connected {
-    color: #4caf50;
+    color: var(--state-ok);
 }
 
 @keyframes spin {
@@ -637,13 +638,13 @@ body {
     justify-content: center;
     margin-left: 12px;
     margin-right: 8px;
-    width: 44px;
+    width: var(--tap-min);
     height: 28px;
     padding: 0;
     background: transparent;
-    color: #e05252;
-    border: 1px solid #e05252;
-    border-radius: 8px;
+    color: var(--state-error);
+    border: 1px solid var(--state-error);
+    border-radius: var(--radius-md);
     cursor: pointer;
 }
 
@@ -653,8 +654,8 @@ body {
 }
 
 .btn-disconnect:hover {
-    background: #e05252;
-    color: #fff;
+    background: var(--state-error);
+    color: var(--text-on-accent);
 }
 
 /* Phase 4: fan-out target selection + per-speaker latency offset. The row wraps
@@ -667,20 +668,20 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
+    width: var(--tap-min);
     height: 28px;
     padding: 0;
     background: transparent;
-    color: #4caf50;
-    border: 1px solid #4caf50;
-    border-radius: 8px;
+    color: var(--state-ok);
+    border: 1px solid var(--state-ok);
+    border-radius: var(--radius-md);
     cursor: pointer;
     font-weight: 700;
 }
 
 .btn-target.selected {
-    background: #4caf50;
-    color: #fff;
+    background: var(--state-ok);
+    color: var(--text-on-accent);
 }
 
 .btn-target-icon {
@@ -690,8 +691,8 @@ body {
 
 @media (hover: hover) {
     .btn-target:hover {
-        background: #4caf50;
-        color: #fff;
+        background: var(--state-ok);
+        color: var(--text-on-accent);
     }
 }
 
@@ -705,13 +706,13 @@ body {
 
 .target-offset-label {
     font-size: 0.8em;
-    color: #9aa0b0;
+    color: var(--text-muted);
     white-space: nowrap;
 }
 
 .target-offset-slider {
     flex: 1;
-    accent-color: #8b5cf6;
+    accent-color: var(--accent);
 }
 
 .btn-settings {
@@ -720,9 +721,9 @@ body {
     height: 28px;
     padding: 0;
     background: transparent;
-    color: #888;
-    border: 1px solid #555;
-    border-radius: 50%;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-full);
     cursor: pointer;
     font-size: 1em;
     line-height: 28px;
@@ -730,15 +731,15 @@ body {
 }
 
 .btn-settings:hover {
-    color: #fff;
-    border-color: #aaa;
+    color: var(--text-primary);
+    border-color: var(--text-muted);
 }
 
 /* Settings page */
 .settings-page {
     max-width: 480px;
     margin: 0 auto;
-    padding: 16px;
+    padding: 16px var(--pad-screen);
 }
 
 .settings-header {
@@ -754,22 +755,22 @@ body {
 
 .btn-back {
     background: transparent;
-    color: #aaa;
-    border: 1px solid #555;
-    border-radius: 6px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
     padding: 6px 12px;
     cursor: pointer;
     font-size: 0.9em;
 }
 
 .btn-back:hover {
-    color: #fff;
-    border-color: #aaa;
+    color: var(--text-primary);
+    border-color: var(--text-muted);
 }
 
 .settings-section {
-    background: #1e222d;
-    border-radius: 10px;
+    background: var(--bg-raised);
+    border-radius: var(--radius-md);
     padding: 16px 20px;
     margin-bottom: 16px;
 }
@@ -779,7 +780,7 @@ body {
     font-size: 0.85em;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #888;
+    color: var(--text-muted);
 }
 
 .settings-row {
@@ -787,7 +788,7 @@ body {
     justify-content: space-between;
     align-items: center;
     padding: 10px 0;
-    border-bottom: 1px solid #2c3040;
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .settings-row:last-child {
@@ -800,10 +801,10 @@ body {
 
 .settings-row input[type="text"],
 .settings-row select {
-    background: #2c3040;
-    color: #fff;
-    border: 1px solid #444;
-    border-radius: 4px;
+    background: var(--bg-inset);
+    color: var(--text-primary);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
     padding: 4px 8px;
     font-size: 0.9em;
     max-width: 160px;
@@ -814,18 +815,18 @@ body {
 }
 
 .danger-section {
-    border: 1px solid #5a2020;
+    border: 1px solid var(--state-error-subtle);
 }
 
 .danger-section h3 {
-    color: #e05252;
+    color: var(--state-error);
 }
 
 .btn-forget {
     background: transparent;
-    color: #e05252;
-    border: 1px solid #e05252;
-    border-radius: 6px;
+    color: var(--state-error);
+    border: 1px solid var(--state-error);
+    border-radius: var(--radius-sm);
     padding: 8px 16px;
     cursor: pointer;
     font-size: 0.9em;
@@ -833,8 +834,8 @@ body {
 }
 
 .btn-forget:hover {
-    background: #e05252;
-    color: #fff;
+    background: var(--state-error);
+    color: var(--text-on-accent);
 }
 
 /* Echo */
@@ -843,9 +844,9 @@ body {
     margin-left: auto;
     margin-right: auto;
     margin-top: 50px;
-    background-color: #1e222d;
+    background-color: var(--bg-raised);
     padding: 20px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
 }
 
 #echo>h4 {
@@ -855,9 +856,9 @@ body {
 
 #echo>input {
     border: none;
-    border-bottom: 1px white solid;
+    border-bottom: 1px var(--border-strong) solid;
     background-color: transparent;
-    color: #ffffff;
+    color: var(--text-primary);
     transition: border-bottom-color 0.2s ease;
     outline: none;
     display: block;
@@ -866,7 +867,7 @@ body {
 }
 
 #echo>input:focus {
-    border-bottom-color: #6d85c6;
+    border-bottom-color: var(--border-focus);
 }
 
 #echo>p {
@@ -880,10 +881,10 @@ body {
     /* Aligned with the full-width scan button just below it, and tucked under
        the status cards' own 8px gap. */
     margin: 0 0 4px;
-    background: #431407;
-    color: #fed7aa;
-    border: 1px solid #f97316;
-    border-radius: 12px;
+    background: var(--state-degraded-subtle);
+    color: var(--state-degraded);
+    border: 1px solid var(--state-degraded);
+    border-radius: var(--radius-md);
     padding: 10px 14px;
     font-size: 0.8rem;
     line-height: 1.35;
@@ -893,11 +894,11 @@ body {
 
 /* The unpaired variant (#37) is a <button>, because pairing is one tap away —
    unlike the incompatibility above, which can only be fixed on the other
-   machine. Amber rather than orange, to match the status dot for that state. */
+   machine. Drawn in the same amber as the status dot for that state. */
 .device-list-warning.unpaired {
-    background: #451a03;
-    color: #fde68a;
-    border-color: #f59e0b;
+    background: var(--state-degraded-subtle);
+    color: var(--state-degraded);
+    border-color: var(--state-degraded);
     /* A button carries its own font, box sizing and width; reset them so it
        reads exactly like the div variant. */
     display: block;
@@ -909,7 +910,7 @@ body {
 }
 
 .device-list-warning.unpaired:active {
-    background: #5a2206;
+    background: color-mix(in oklch, var(--state-degraded-subtle) 85%, var(--text-primary));
 }
 
 .toast-error {
@@ -917,15 +918,15 @@ body {
     bottom: 32px;
     left: 50%;
     transform: translateX(-50%);
-    background: #7f1d1d;
-    color: #ffffff;
-    border: 1px solid #b91c1c;
-    border-radius: 12px;
+    background: var(--state-error-subtle);
+    color: var(--text-primary);
+    border: 1px solid var(--state-error);
+    border-radius: var(--radius-md);
     padding: 10px 20px;
     font-size: 0.8rem;
     font-family: monospace;
     z-index: 200;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+    box-shadow: var(--shadow-md);
     width: max-content;
     max-width: 88%;
     text-align: center;
@@ -942,9 +943,9 @@ body {
 
 /* Pinned speakers card — always visible above the player stage. */
 .pinned-card {
-    border: 1px solid #2c3040;
-    border-radius: 10px;
-    background: #1e222d;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
     overflow: hidden;
     margin-top: 12px;
     flex: 0 0 auto;
@@ -964,11 +965,11 @@ body {
     position: absolute;
     inset: 0;
     overflow-y: auto;
-    border: 1px solid #2c3040;
-    border-radius: 10px;
-    background: #1e222d;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
     scrollbar-width: thin;
-    scrollbar-color: #3b4258 transparent;
+    scrollbar-color: var(--border-strong) transparent;
 }
 
 /* Keep the last rows clear of the collapsed transport bar when it is shown. */
@@ -994,10 +995,10 @@ body {
     flex-direction: column;
     gap: 10px;
     padding: 10px 14px 14px;
-    background: #171b26;
-    border: 1px solid #2c3040;
-    border-radius: 12px;
-    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.55);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
     transition: top 0.22s ease;
     z-index: 10;
     /* Vertical drags on the bar expand/collapse it instead of scrolling. */
@@ -1023,16 +1024,16 @@ body {
     height: 26px;
     padding: 0;
     border: none;
-    border-radius: 12px 12px 0 0;
-    background: #2a3142;
-    color: #8b9cc8;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background: var(--bg-inset);
+    color: var(--text-secondary);
     font-size: 0.9rem;
     line-height: 1;
     cursor: pointer;
     /* Let the vertical drag gesture work instead of scrolling the page. */
     touch-action: none;
 }
-.transport-handle:hover { background: #343d52; }
+.transport-handle:hover { background: var(--bg-sunken); }
 .transport-handle .transport-handle-icon {
     position: relative;
     z-index: 1;
@@ -1046,8 +1047,8 @@ body {
     top: 50%;
     width: 120%;
     aspect-ratio: 1;
-    border-radius: 50%;
-    background: rgba(139, 156, 200, 0.35);
+    border-radius: var(--radius-full);
+    background: color-mix(in oklch, var(--text-primary) 35%, transparent);
     transform: translate(-50%, -50%) scale(0);
     animation: handle-ripple 0.45s ease-out;
     pointer-events: none;
@@ -1059,9 +1060,9 @@ body {
 }
 
 .transport-meta { text-align: center; }
-.transport-title { font-size: 0.95rem; color: #e6ebf5; font-weight: 600; }
-.transport-track { font-size: 0.85rem; color: #8b9cc8; margin-top: 2px; }
-.transport-status { font-size: 0.8rem; color: #5a6480; margin-top: 6px; }
+.transport-title { font-size: 0.95rem; color: var(--text-primary); font-weight: 600; }
+.transport-track { font-size: 0.85rem; color: var(--text-secondary); margin-top: 2px; }
+.transport-status { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; }
 
 .transport-controls {
     display: flex;
@@ -1074,22 +1075,22 @@ body {
 
 .transport-btn {
     flex: 0 0 auto;
-    width: 44px;
-    height: 44px;
+    width: var(--tap-min);
+    height: var(--tap-min);
     border: none;
-    border-radius: 50%;
-    background: #2a3142;
-    color: #e6ebf5;
+    border-radius: var(--radius-full);
+    background: var(--bg-inset);
+    color: var(--text-primary);
     font-size: 1.1rem;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
 }
-.transport-btn:hover:not(:disabled) { background: #343d52; }
+.transport-btn:hover:not(:disabled) { background: var(--bg-sunken); }
 .transport-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.transport-play { background: #2563eb; }
-.transport-play:hover:not(:disabled) { background: #3b76f0; }
+.transport-play { background: var(--accent); }
+.transport-play:hover:not(:disabled) { background: var(--accent-hover); }
 
 /* Left counterweight to the volume block: both take an equal share of the free
    space, so the play/stop (or Spotify) buttons sit centred in the bar. */
@@ -1112,7 +1113,7 @@ body {
 .transport-volume-slider {
     flex: 1 1 auto;
     min-width: 0;
-    accent-color: #2563eb;
+    accent-color: var(--accent);
     cursor: pointer;
     /* Keep horizontal dragging on the slider despite the bar's touch-action:none
        (a non-auto value is not overridden by the ancestor). */
@@ -1123,7 +1124,7 @@ body {
 .transport-hint {
     text-align: center;
     font-size: 0.78rem;
-    color: #5a6480;
+    color: var(--text-muted);
 }
 
 /* ---- Phase 5.1: Spotify source -------------------------------------------- */
@@ -1146,8 +1147,8 @@ body {
     transition: border-color 0.15s ease, background 0.15s ease;
 }
 .spotify-card:hover:not(.disabled) {
-    border-color: #4b5563;
-    background: #232733;
+    border-color: var(--text-muted);
+    background: var(--bg-inset);
 }
 .spotify-card.disabled {
     opacity: 0.5;
@@ -1158,18 +1159,18 @@ body {
 /* Transport buttons in the bottom bar: same shape as the tone controls, with
    Spotify green on the primary action so the source is obvious at a glance. */
 .spotify-transport-btn {
-    background: #1f2937;
+    background: var(--bg-inset);
 }
 .spotify-transport-btn:hover:not(:disabled) {
-    background: #2f3a4d;
+    background: var(--bg-sunken);
 }
 /* The play/pause toggle is the main action, so it carries the accent. */
 .spotify-transport-btn.primary {
-    background: #1db954;
-    color: #08130c;
+    background: var(--state-ok);
+    color: var(--text-inverse);
 }
 .spotify-transport-btn.primary:hover:not(:disabled) {
-    background: #24d366;
+    background: color-mix(in oklch, var(--state-ok) 85%, var(--text-primary));
 }
 
 /* Volume: a tap target in the bar that opens a vertical slider above it. The
@@ -1180,19 +1181,19 @@ body {
 }
 button.transport-volume-icon {
     flex: 0 0 auto;
-    width: 44px;
-    height: 44px;
+    width: var(--tap-min);
+    height: var(--tap-min);
     border: none;
-    border-radius: 50%;
-    background: #2a3142;
-    color: #e6ebf5;
+    border-radius: var(--radius-full);
+    background: var(--bg-inset);
+    color: var(--text-primary);
     font-size: 1.1rem;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
 }
-button.transport-volume-icon:hover:not(:disabled) { background: #343d52; }
+button.transport-volume-icon:hover:not(:disabled) { background: var(--bg-sunken); }
 button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
 .transport-volume-panel {
     position: absolute;
@@ -1204,10 +1205,10 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     align-items: center;
     gap: 8px;
     padding: 12px 10px;
-    border: 1px solid #2f3a4d;
-    border-radius: 12px;
-    background: #171b26;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-overlay);
+    box-shadow: var(--shadow-md);
 }
 /* `slider-vertical` is the WebView-supported form; `writing-mode` is the
    standard one newer Chromium honours. Both are set so the orientation holds
@@ -1231,7 +1232,7 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(9, 12, 20, 0.72);
+    background: color-mix(in oklch, var(--bg-sunken) 72%, transparent);
 }
 .spotify-dialog {
     width: 100%;
@@ -1240,34 +1241,34 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     flex-direction: column;
     gap: 12px;
     padding: 20px;
-    border: 1px solid #2f3a4d;
-    border-radius: 14px;
-    background: #171b26;
-    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-overlay);
+    box-shadow: var(--shadow-lg);
 }
 .spotify-dialog-title {
     font-size: 1.05rem;
     font-weight: 600;
-    color: #e6ebf5;
+    color: var(--text-primary);
 }
 .spotify-dialog-hint {
     font-size: 0.85rem;
     line-height: 1.4;
-    color: #9aa4b8;
+    color: var(--text-secondary);
 }
 .btn-spotify-connect {
     width: 100%;
     padding: 12px 16px;
     border: none;
-    border-radius: 10px;
-    background: #1db954;
-    color: #08130c;
+    border-radius: var(--radius-md);
+    background: var(--state-ok);
+    color: var(--text-inverse);
     font-size: 0.95rem;
     font-weight: 600;
     cursor: pointer;
 }
 .btn-spotify-connect:hover:not(:disabled) {
-    background: #24d366;
+    background: color-mix(in oklch, var(--state-ok) 85%, var(--text-primary));
 }
 .btn-spotify-connect:disabled {
     opacity: 0.5;
@@ -1276,16 +1277,16 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
 .spotify-dialog-cancel {
     width: 100%;
     padding: 10px 16px;
-    border: 1px solid #2f3a4d;
-    border-radius: 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
     background: transparent;
-    color: #9aa4b8;
+    color: var(--text-secondary);
     font-size: 0.9rem;
     cursor: pointer;
 }
 .spotify-dialog-cancel:hover {
-    border-color: #4b5563;
-    color: #e6ebf5;
+    border-color: var(--text-muted);
+    color: var(--text-primary);
 }
 
 /* ── Settings (phase 6.2) ────────────────────────────────────────────────── */
@@ -1300,8 +1301,8 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     transition: border-color 0.15s ease, background 0.15s ease;
 }
 .backend-card:hover {
-    border-color: #4b5563;
-    background: #232733;
+    border-color: var(--text-muted);
+    background: var(--bg-inset);
 }
 .backend-menu {
     position: absolute;
@@ -1313,23 +1314,23 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     flex-direction: column;
     padding: 6px;
     gap: 2px;
-    border: 1px solid #2f3a4d;
-    border-radius: 10px;
-    background: #171b26;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-overlay);
+    box-shadow: var(--shadow-md);
 }
 .backend-menu-item {
     padding: 9px 12px;
     border: none;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     background: transparent;
-    color: #e6ebf5;
+    color: var(--text-primary);
     font-size: 0.9rem;
     text-align: left;
     cursor: pointer;
 }
-.backend-menu-item:hover { background: #232a38; }
-.backend-menu-item.active { color: #22c55e; }
+.backend-menu-item:hover { background: var(--bg-inset); }
+.backend-menu-item.active { color: var(--state-ok); }
 
 /* Gear closing the status row, pushed against the right edge. */
 .settings-button {
@@ -1341,14 +1342,14 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     box-sizing: border-box;
     width: 36px;
     height: 36px;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    background: #1e222d;
-    color: #9ca3af;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
+    color: var(--text-secondary);
     font-size: 1rem;
     cursor: pointer;
 }
-.settings-button:hover { border-color: #4b5563; color: #e6ebf5; }
+.settings-button:hover { border-color: var(--text-muted); color: var(--text-primary); }
 
 .settings-page { padding-bottom: 24px; }
 .settings-header {
@@ -1360,10 +1361,10 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
 .settings-back {
     width: 34px;
     height: 34px;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    background: #1e222d;
-    color: #e6ebf5;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
+    color: var(--text-primary);
     font-size: 1.2rem;
     cursor: pointer;
 }
@@ -1373,20 +1374,20 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     flex-direction: column;
     gap: 10px;
     padding: 16px;
-    border: 1px solid #2c3040;
-    border-radius: 12px;
-    background: #171b26;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
 }
 .settings-section-title {
     font-size: 0.8rem;
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: #9aa4b8;
+    color: var(--text-muted);
 }
 .settings-empty, .settings-notice {
     font-size: 0.85rem;
-    color: #9aa4b8;
+    color: var(--text-secondary);
 }
 
 .backend-row {
@@ -1394,21 +1395,21 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    border: 1px solid #2f3a4d;
-    border-radius: 10px;
-    background: #1b2130;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-inset);
 }
-.backend-row.active { border-color: #22c55e; }
+.backend-row.active { border-color: var(--state-ok); }
 .backend-row-meta {
     flex: 1 1 auto;
     min-width: 0;
     display: flex;
     flex-direction: column;
 }
-.backend-row-name { font-size: 0.95rem; color: #e6ebf5; }
+.backend-row-name { font-size: 0.95rem; color: var(--text-primary); }
 .backend-row-url {
     font-size: 0.75rem;
-    color: #8b9cc8;
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1416,16 +1417,16 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
 .backend-row-action {
     flex: 0 0 auto;
     padding: 7px 12px;
-    border: 1px solid #2f3a4d;
-    border-radius: 8px;
-    background: #232a38;
-    color: #e6ebf5;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-overlay);
+    color: var(--text-primary);
     font-size: 0.8rem;
     cursor: pointer;
 }
 .backend-row-action:disabled {
-    color: #22c55e;
-    border-color: #22c55e;
+    color: var(--state-ok);
+    border-color: var(--state-ok);
     cursor: default;
 }
 .backend-row-delete {
@@ -1433,15 +1434,15 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     width: 32px;
     height: 32px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: transparent;
     /* Red at rest, not only on hover: deleting a backend now also quietens the
        machine and stops its Spotify source, so the button must read as
        destructive before it is touched — and a phone has no hover at all. */
-    color: #ef4444;
+    color: var(--state-error);
     cursor: pointer;
 }
-.backend-row-delete:hover { color: #f87171; }
+.backend-row-delete:hover { color: color-mix(in oklch, var(--state-error) 85%, var(--text-primary)); }
 
 .backend-form {
     display: flex;
@@ -1453,33 +1454,33 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     width: 100%;
     box-sizing: border-box;
     padding: 10px 12px;
-    border: 1px solid #2f3a4d;
-    border-radius: 8px;
-    background: #10141d;
-    color: #e6ebf5;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-inset);
+    color: var(--text-primary);
     font-size: 0.9rem;
 }
 .backend-form-actions { display: flex; gap: 8px; }
 .backend-test, .backend-add {
     flex: 1 1 0;
     padding: 10px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     font-size: 0.9rem;
     font-weight: 600;
     cursor: pointer;
 }
 .backend-test {
-    border: 1px solid #2f3a4d;
+    border: 1px solid var(--border-strong);
     background: transparent;
-    color: #9aa4b8;
+    color: var(--text-secondary);
 }
-.backend-test:hover { border-color: #4b5563; color: #e6ebf5; }
+.backend-test:hover { border-color: var(--text-muted); color: var(--text-primary); }
 .backend-add {
     border: none;
-    background: #2563eb;
-    color: #ffffff;
+    background: var(--accent);
+    color: var(--text-on-accent);
 }
-.backend-add:hover { background: #3b76f0; }
+.backend-add:hover { background: var(--accent-hover); }
 
 /* ── Settings: playback section (phase 6.3) ──────────────────────────────── */
 
@@ -1490,39 +1491,39 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    border: 1px solid #2f3a4d;
-    border-radius: 10px;
-    background: #1b2130;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-inset);
     cursor: pointer;
 }
 .settings-toggle input {
     flex: 0 0 auto;
     width: 18px;
     height: 18px;
-    accent-color: #2563eb;
+    accent-color: var(--accent);
     cursor: pointer;
 }
 .settings-toggle-label {
     font-size: 0.9rem;
-    color: #e6ebf5;
+    color: var(--text-primary);
 }
 /* The consequence of the toggle, stated where it is made. */
 .settings-hint {
     font-size: 0.78rem;
     line-height: 1.4;
-    color: #8b9cc8;
+    color: var(--text-muted);
 }
 
 /* ── Settings: pairing section (phase 6.4) ───────────────────────────────── */
 
 /* The paired state is the one line the user looks for on this page. */
 .settings-hint.paired {
-    color: #22c55e;
+    color: var(--state-ok);
 }
 /* The chosen pairing method, marked like the active backend row. */
 .backend-row-action.active {
-    border-color: #2563eb;
-    color: #e6ebf5;
+    border-color: var(--accent);
+    color: var(--text-primary);
 }
 
 /* ── Settings: discovery section (phase 6.6) ─────────────────────────────── */
@@ -1536,21 +1537,21 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     margin-top: 4px;
     padding: 10px 14px;
     border: none;
-    border-radius: 8px;
-    background: #2563eb;
-    color: #ffffff;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: var(--text-on-accent);
     font-size: 0.9rem;
     font-weight: 600;
     cursor: pointer;
 }
 .settings-action:hover:not(:disabled) {
-    background: #3b76f0;
+    background: var(--accent-hover);
 }
 /* Disabled means "this ROM cannot search", which the hint below spells out —
    so the button recedes instead of inviting a tap that would do nothing. */
 .settings-action:disabled {
-    background: #2a3140;
-    color: #6b7688;
+    background: var(--bg-inset);
+    color: var(--text-disabled);
     cursor: default;
 }
 /* The search action and its results, framed as one block: the toggles above
@@ -1562,9 +1563,9 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     gap: 10px;
     margin-top: 4px;
     padding: 14px;
-    border: 1px solid #2c3040;
-    border-radius: 10px;
-    background: #141822;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-inset);
 }
 
 /* One found backend: name, then address. Nothing else competes on the card —
@@ -1578,20 +1579,20 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     /* Right padding leaves the corner badges a lane of their own, so a long
        name can never run underneath them. */
     padding-right: 52px;
-    border: 1px solid #2c3040;
-    border-radius: 10px;
-    background: #1b2029;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
 }
 .discovery-card-name {
     font-size: 0.92rem;
     font-weight: 600;
-    color: #e6ebf5;
+    color: var(--text-primary);
 }
 /* An IPv4 address plus a port is narrow, but a hostname need not be: wrap
    anywhere rather than push the card wider than the screen. */
 .discovery-card-url {
     font-size: 0.78rem;
-    color: #8b9cc8;
+    color: var(--text-muted);
     overflow-wrap: anywhere;
 }
 
@@ -1612,10 +1613,10 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     justify-content: center;
     width: 26px;
     height: 26px;
-    border-radius: 50%;
-    border: 1px solid #22c55e;
-    background: #171b26;
-    color: #22c55e;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--state-ok);
+    background: var(--bg-raised);
+    color: var(--state-ok);
     font-size: 0.85rem;
     line-height: 1;
 }
@@ -1629,26 +1630,26 @@ button.transport-volume-icon:disabled { opacity: 0.4; cursor: not-allowed; }
     height: 26px;
     padding: 0;
     border: none;
-    border-radius: 50%;
-    background: #2563eb;
-    color: #ffffff;
+    border-radius: var(--radius-full);
+    background: var(--accent);
+    color: var(--text-on-accent);
     font-size: 1.1rem;
     line-height: 1;
     cursor: pointer;
 }
-.discovery-add:hover { background: #3b76f0; }
+.discovery-add:hover { background: var(--accent-hover); }
 
 /* The confirm-a-move question: a full sentence, so it wraps and sits under the
    address rather than beside it. */
 .discovery-confirm {
     margin-top: 8px;
     padding: 8px 12px;
-    border: 1px solid #2563eb;
-    border-radius: 8px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
     background: transparent;
-    color: #e6ebf5;
+    color: var(--text-primary);
     font-size: 0.8rem;
     text-align: left;
     cursor: pointer;
 }
-.discovery-confirm:hover { background: rgba(37, 99, 235, 0.12); }
+.discovery-confirm:hover { background: var(--accent-subtle); }

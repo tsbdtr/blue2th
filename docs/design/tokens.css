@@ -5,3 +5,88 @@
  * its text form: the same tokens, copied verbatim, so `main.css` and the
  * Tailwind theme in `blue2th-frontend/tailwind.css` share one vocabulary.
  */
+:root {
+  color-scheme: dark;
+  --bg-sunken: oklch(0.132 0.012 265);
+  --bg-base: oklch(0.175 0.013 265);
+  --bg-raised: oklch(0.222 0.014 265);
+  --bg-overlay: oklch(0.262 0.015 265);
+  --bg-inset: oklch(0.150 0.012 265);
+  --border-subtle: oklch(0.300 0.014 265);
+  --border-strong: oklch(0.420 0.016 265);
+  --border-focus: oklch(0.760 0.130 258);
+  --text-primary: oklch(0.962 0.004 265);
+  --text-secondary: oklch(0.762 0.012 265);
+  --text-muted: oklch(0.605 0.013 265);
+  --text-disabled: oklch(0.450 0.011 265);
+  --text-inverse: oklch(0.180 0.012 265);
+  --accent: oklch(0.650 0.170 258);
+  --accent-hover: oklch(0.712 0.155 258);
+  --accent-pressed: oklch(0.578 0.175 258);
+  --accent-subtle: oklch(0.300 0.070 258);
+  --accent-border: oklch(0.430 0.110 258);
+  --text-on-accent: oklch(0.995 0 0);
+  --state-ok: oklch(0.735 0.155 152);
+  --state-ok-subtle: oklch(0.290 0.062 152);
+  --state-degraded: oklch(0.805 0.150 82);
+  --state-degraded-subtle: oklch(0.310 0.062 82);
+  --state-error: oklch(0.672 0.185 25);
+  --state-error-subtle: oklch(0.298 0.075 25);
+  --state-unknown: oklch(0.620 0.018 265);
+  --state-unknown-subtle: oklch(0.278 0.012 265);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.45);
+  --shadow-md: 0 6px 16px -4px oklch(0 0 0 / 0.55);
+  --shadow-lg: 0 24px 48px -12px oklch(0 0 0 / 0.65);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+}
+:root[data-theme="light"], body[data-theme="light"] {
+  color-scheme: light;
+  --bg-sunken: oklch(0.955 0.004 265);
+  --bg-base: oklch(0.988 0.003 265);
+  --bg-raised: oklch(1 0 0);
+  --bg-overlay: oklch(1 0 0);
+  --bg-inset: oklch(0.968 0.004 265);
+  --border-subtle: oklch(0.906 0.006 265);
+  --border-strong: oklch(0.782 0.009 265);
+  --border-focus: oklch(0.560 0.170 258);
+  --text-primary: oklch(0.225 0.013 265);
+  --text-secondary: oklch(0.430 0.013 265);
+  --text-muted: oklch(0.552 0.012 265);
+  --text-disabled: oklch(0.700 0.008 265);
+  --text-inverse: oklch(0.988 0.003 265);
+  --accent: oklch(0.548 0.190 258);
+  --accent-hover: oklch(0.488 0.195 258);
+  --accent-pressed: oklch(0.432 0.180 258);
+  --accent-subtle: oklch(0.948 0.030 258);
+  --accent-border: oklch(0.860 0.070 258);
+  --text-on-accent: oklch(0.995 0 0);
+  --state-ok: oklch(0.510 0.135 152);
+  --state-ok-subtle: oklch(0.948 0.040 152);
+  --state-degraded: oklch(0.578 0.135 72);
+  --state-degraded-subtle: oklch(0.958 0.048 82);
+  --state-error: oklch(0.522 0.195 25);
+  --state-error-subtle: oklch(0.952 0.032 25);
+  --state-unknown: oklch(0.552 0.014 265);
+  --state-unknown-subtle: oklch(0.938 0.006 265);
+  --shadow-sm: 0 1px 2px oklch(0.4 0.02 265 / 0.10);
+  --shadow-md: 0 6px 16px -4px oklch(0.4 0.02 265 / 0.14);
+  --shadow-lg: 0 24px 48px -12px oklch(0.4 0.02 265 / 0.20);
+}
+
+/* density, not colour */
+:root {
+  --tap-min: 44px;
+  --row-h: 60px;
+  --pad-screen: 16px;
+}
+@media (min-width: 900px) and
+       (pointer: fine) {
+  :root {
+    --tap-min: 32px;
+    --row-h: 40px;
+    --pad-screen: 24px;
+  }
+}
