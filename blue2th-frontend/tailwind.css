@@ -27,8 +27,8 @@
   --color-state-unknown:   var(--state-unknown);
 
   --radius-md: var(--radius-md);
-  /* The fonts are declared here and applied by #112, which ships the woff2
-     files; nothing in main.css uses them. */
+  /* Declared, not applied: `body` in main.css keeps 'Segoe UI', and no woff2
+     ships with the app (#112). */
   --font-sans: "Inter Tight", Helvetica, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }

@@ -138,8 +138,9 @@ struct Block {
     depth: usize,
 }
 
-/// Replaces every `/* … */` with a single space so nothing inside a comment
-/// is ever scanned, and adjacent tokens do not fuse.
+/// Replaces every `/* … */` with a single space plus the comment's own
+/// newlines, so nothing inside a comment is ever scanned, adjacent tokens do
+/// not fuse, and the line numbers `colour_literals` reports stay the sheet's.
 fn strip_comments(css: &str) -> String {
     let mut out = String::with_capacity(css.len());
     let mut rest = css;
@@ -147,7 +148,11 @@ fn strip_comments(css: &str) -> String {
         out.push_str(&rest[..start]);
         out.push(' ');
         match rest[start + 2..].find("*/") {
-            Some(end) => rest = &rest[start + 2 + end + 2..],
+            Some(end) => {
+                let comment = &rest[start + 2..start + 2 + end];
+                out.extend(comment.chars().filter(|c| *c == '\n'));
+                rest = &rest[start + 2 + end + 2..];
+            },
             // An unterminated comment swallows the rest of the sheet, as in CSS.
             None => return out,
         }
@@ -227,6 +232,14 @@ fn block_of(css: &str, prefix: &str) -> Option<Block> {
         .find(|b| b.selector.starts_with(prefix))
 }
 
+/// The first block whose collapsed selector is exactly `selector`, for the
+/// sheets where a prefix is ambiguous (`.btn-disconnect` is also the prefix of
+/// `.btn-disconnect-icon`). Equality needs no empty-string guard: unlike a
+/// prefix, `""` equals only itself.
+fn exact_block(css: &str, selector: &str) -> Option<Block> {
+    blocks(css).into_iter().find(|b| b.selector == selector)
+}
+
 /// The body with every nested `{ … }` blanked out, so a declaration inside a
 /// nested block is attributed to that block only.
 fn top_level(body: &str) -> String {
@@ -294,9 +307,16 @@ fn used_tokens(css: &str) -> BTreeSet<String> {
     out
 }
 
-/// Every `#hex` (3 to 8 digits), `rgb(` and `rgba(` outside comments and
-/// inside a block, as `"<line>: <literal>"`. An id selector such as `#hero`
-/// sits outside any block in a flat sheet, so it is not reported.
+/// The CSS colour functions. `color-mix(` is not one: it mixes tokens, and its
+/// `in oklch,` interpolation space is not a call either.
+const COLOUR_FUNCTIONS: [&str; 10] = [
+    "rgba(", "rgb(", "hsla(", "hsl(", "hwb(", "lab(", "lch(", "oklab(", "oklch(", "color(",
+];
+
+/// Every `#hex` (3 to 8 digits) and every colour function call (`rgb(`,
+/// `hsl(`, `oklch(`, …) outside comments and inside a block, as
+/// `"<line>: <literal>"`. An id selector such as `#hero` sits outside any
+/// block in a flat sheet, so it is not reported.
 fn colour_literals(css: &str) -> Vec<String> {
     let css = strip_comments(css);
     let bytes = css.as_bytes();
@@ -323,8 +343,8 @@ fn colour_literals(css: &str) -> Vec<String> {
                     continue;
                 }
             },
-            b'r' if depth > 0 && !prev_is_ident => {
-                if let Some(func) = ["rgba(", "rgb("]
+            b'r' | b'h' | b'l' | b'o' | b'c' if depth > 0 && !prev_is_ident => {
+                if let Some(func) = COLOUR_FUNCTIONS
                     .into_iter()
                     .find(|func| css[i..].starts_with(func))
                 {
@@ -349,7 +369,9 @@ fn position_of(css: &str, needle: &str) -> Option<usize> {
 // Tests.
 // ---------------------------------------------------------------------------
 
-// Criterion: `main.css` contains no `#hex` colour literal and no `rgb(`/`rgba(`.
+// Criterion: `main.css` contains no `#hex` colour literal and no `rgb(`/`rgba(`
+// — nor any other colour function: an `hsl(` or a bare `oklch(` would be a
+// literal by another name.
 #[test]
 fn test_main_css_has_no_colour_literal() {
     let offenders = colour_literals(MAIN_CSS);
@@ -596,29 +618,108 @@ fn test_main_rs_keeps_linking_both_stylesheets() {
     );
 }
 
+// Criterion: every `border-radius` in `main.css` is a radius token, except the
+// exemptions the GREEN commit names: `.app-header` is full-bleed and square on
+// purpose, `.signal-bar` (3px wide) and `.signal-badge.struck::after` (2px
+// tall) are thinner than twice `--radius-sm`, and `.transport-handle` rounds
+// its top corners only. The non-token values must be exactly those four: a
+// fifth literal fails, and so does an exemption that stops being one.
+#[test]
+fn test_main_css_border_radii_are_tokens_except_the_named_exemptions() {
+    let is_radius_token = |part: &str| RADII.iter().any(|r| part == format!("var({r})"));
+    let radii: Vec<(String, String)> = blocks(MAIN_CSS)
+        .into_iter()
+        .flat_map(|b| {
+            declarations(&b.body)
+                .into_iter()
+                .filter(|(name, _)| name.ends_with("radius"))
+                .map(move |(_, value)| (b.selector.clone(), value))
+        })
+        .collect();
+    let (tokenised, literal): (Vec<_>, Vec<_>) = radii
+        .into_iter()
+        .partition(|(_, value)| value.split(' ').all(is_radius_token));
+    assert!(
+        !tokenised.is_empty(),
+        "the scanner found no tokenised border-radius in main.css"
+    );
+    let literal: BTreeSet<(String, String)> = literal.into_iter().collect();
+    let expected: BTreeSet<(String, String)> = [
+        (".app-header", "0"),
+        (".signal-bar", "1px"),
+        (".signal-badge.struck::after", "1px"),
+        (".transport-handle", "var(--radius-md) var(--radius-md) 0 0"),
+    ]
+    .into_iter()
+    .map(|(s, v)| (s.to_string(), v.to_string()))
+    .collect();
+    assert_eq!(
+        literal, expected,
+        "the radius literals in main.css must be exactly the named exemptions"
+    );
+}
+
+// Criterion: tap targets and screen padding use the density tokens — the
+// transport buttons and the volume icon are `--tap-min` square, the row
+// buttons `--tap-min` wide, and the two screens pad horizontally with
+// `--pad-screen`. (`--row-h` is declared but unused: no 60px row exists.)
+#[test]
+fn test_main_css_tap_targets_and_screen_padding_use_the_density_tokens() {
+    let expect = |selector: &str, property: &str, value: &str| {
+        let block = exact_block(MAIN_CSS, selector);
+        assert!(block.is_some(), "main.css has no `{selector}` block");
+        let decls = declarations(&block.unwrap_or_default().body);
+        assert_eq!(
+            decls.get(property).map(String::as_str),
+            Some(value),
+            "`{selector}` must set `{property}: {value}`"
+        );
+    };
+    for selector in [".transport-btn", "button.transport-volume-icon"] {
+        expect(selector, "width", "var(--tap-min)");
+        expect(selector, "height", "var(--tap-min)");
+    }
+    for selector in [".btn-disconnect", ".btn-target"] {
+        expect(selector, "width", "var(--tap-min)");
+    }
+    expect(".home", "padding", "0 var(--pad-screen)");
+    expect(".settings-page", "padding", "16px var(--pad-screen)");
+}
+
 // Test strategy: the helpers themselves, on a small fixture — a commented-out
-// literal is not reported, a `var()` nested in `color-mix()` is found, a
-// declaration inside a nested `@media` belongs to that block only.
+// literal is not reported (outside a block and, on its own line count, inside
+// one), every colour function is, a `var()` is found nested in `color-mix()`
+// as well as first in a value with or without a space, and a declaration
+// inside a nested `@media` belongs to that block only.
 #[test]
 fn test_the_helpers_strip_comments_and_find_every_var() {
     let fixture = "\
 /* #123456 rgb(1, 2, 3) var(--commented) */
 .a { color: color-mix(in oklch, var(--a) 60%, var(--b)); background: #fff; }
-#hero { margin: 0; border-color: rgba(0, 0, 0, 0.5); }
-:root { --x: 1px; @media (min-width: 1px) { --y: 2px; } }
+#hero { margin: 0; border-color: rgba(0, 0, 0, 0.5); /* a two-line comment
+   with #abcdef and var(--hidden) inside a block */ outline-color: rgb(1, 2, 3); }
+.b { color: var(--c); border:var(--d) 1px solid; fill: hsl(0 0% 0%); stroke: oklch(0.5 0 0); }
+:root { --x: 1px; @media (min-width: 1px) { --y: 2px; --z: 3px; } }
 ";
 
     assert_eq!(
         colour_literals(fixture),
-        vec!["2: #fff".to_string(), "3: rgba(".to_string()],
-        "comments are skipped, id selectors are not colours, the rest is found"
+        ["2: #fff", "3: rgba(", "4: rgb(", "5: hsl(", "5: oklch("]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>(),
+        "comments are skipped, id selectors are not colours, the rest is found \
+         on its own line"
     );
 
     let used = used_tokens(fixture);
-    let expected: BTreeSet<String> = ["--a", "--b"].iter().map(|s| (*s).to_string()).collect();
+    let expected: BTreeSet<String> = ["--a", "--b", "--c", "--d"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     assert_eq!(
         used, expected,
-        "var() inside color-mix() is found, commented ones are not"
+        "var() is found inside color-mix() and first in a value; commented ones are not"
     );
 
     let root = block_of(fixture, ":root");
@@ -634,8 +735,12 @@ fn test_the_helpers_strip_comments_and_find_every_var() {
     assert_eq!(media.depth, 1, "the @media is nested inside :root");
     assert_eq!(
         declared_tokens(&media.body),
-        ["--y"].iter().map(|s| (*s).to_string()).collect(),
-        "a --x inside a nested @media belongs to that block"
+        ["--y", "--z"].iter().map(|s| (*s).to_string()).collect(),
+        "the declarations inside a nested @media belong to that block"
+    );
+    assert!(
+        exact_block(fixture, ".a").is_some() && exact_block(fixture, ".").is_none(),
+        "an exact selector matches itself and no prefix of it"
     );
 
     assert!(

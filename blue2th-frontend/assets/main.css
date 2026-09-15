@@ -73,7 +73,7 @@ body {
     width: 100vw;
     left: 50%;
     transform: translateX(-50%);
-    /* Blue-tinted "hero" gradient echoing the title, fading toward the page
+    /* Accent-tinted "hero" gradient echoing the title, fading toward the page
        background at the bottom of the full-bleed banner. */
     background: linear-gradient(180deg, var(--accent-subtle) 0%, var(--bg-base) 100%);
     box-shadow: inset 0 1px 0 color-mix(in oklch, var(--text-primary) 5%, transparent), var(--shadow-md);
@@ -521,8 +521,6 @@ body {
     cursor: default;
 }
 
-/* Pinned rows have a tinted (--state-ok-subtle) background, so the badge needs a darker
-   fill there to stay visible. */
 .pinned-devices .signal-badge {
     /* Hidden in the pinned zone: a connected speaker is reachable by definition,
        so its range indicator carries no useful information there. */
@@ -1157,14 +1155,15 @@ body {
 /* ── Spotify (phase 5.2) ─────────────────────────────────────────────────── */
 
 /* Transport buttons in the bottom bar: same shape as the tone controls, with
-   Spotify green on the primary action so the source is obvious at a glance. */
+   the connected-state green on the primary action so the source is obvious at
+   a glance. */
 .spotify-transport-btn {
     background: var(--bg-inset);
 }
 .spotify-transport-btn:hover:not(:disabled) {
     background: var(--bg-sunken);
 }
-/* The play/pause toggle is the main action, so it carries the accent. */
+/* The play/pause toggle is the main action, so it is filled rather than flat. */
 .spotify-transport-btn.primary {
     background: var(--state-ok);
     color: var(--text-inverse);
