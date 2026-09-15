@@ -1,1 +1,34 @@
 @import "tailwindcss";
+@import "../docs/design/tokens.css";
+
+@theme inline {
+  --color-bg-sunken:   var(--bg-sunken);
+  --color-bg-base:     var(--bg-base);
+  --color-bg-raised:   var(--bg-raised);
+  --color-bg-overlay:  var(--bg-overlay);
+  --color-bg-inset:    var(--bg-inset);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-text-primary:   var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted:     var(--text-muted);
+  --color-text-disabled:  var(--text-disabled);
+
+  --color-accent:         var(--accent);
+  --color-accent-hover:   var(--accent-hover);
+  --color-accent-subtle:  var(--accent-subtle);
+  --color-on-accent:      var(--text-on-accent);
+
+  --color-state-ok:        var(--state-ok);
+  --color-state-degraded:  var(--state-degraded);
+  --color-state-error:     var(--state-error);
+  --color-state-unknown:   var(--state-unknown);
+
+  --radius-md: var(--radius-md);
+  /* Declared, not applied: `body` in main.css keeps 'Segoe UI', and no woff2
+     ships with the app (#112). */
+  --font-sans: "Inter Tight", Helvetica, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}

@@ -254,6 +254,10 @@ settings travel over `/config`: whether a returning speaker is reintegrated
 mid-playback (it can move the target sink and respawn `librespot`), whether the
 backend dials remembered speakers, and the backend's name.
 
+The design tokens live in `docs/design/tokens.css` and reach the app through
+`blue2th-frontend/tailwind.css`, which `dx` regenerates into
+`assets/tailwind.css`; `main.css` speaks only that vocabulary.
+
 Two things the app is not: a Bluetooth controller, and a test subject. Dioxus
 components are not test-runnable here, so what is rendered is specified in
 writing and checked on the phone.
