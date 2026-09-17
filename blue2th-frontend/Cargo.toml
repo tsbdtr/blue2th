@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 dioxus = { version = "0.7.10", features = ["mobile", "router"] }
-rust-i18n = "3"
+rust-i18n = "4"
 tokio = { version = "1", features = ["time", "rt"] }
 blue2th-proto = { path = "../blue2th-proto" }
 # No TLS backend: the backend is reached over plain HTTP on the LAN (a TLS option
