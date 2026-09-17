@@ -26,6 +26,8 @@ use std::{
 
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
 
+use crate::graph::Graph;
+
 /// The embedded test tone shipped with the backend (2s 440Hz stereo sine,
 /// 48kHz PCM 16-bit).
 pub const TEST_TONE_WAV: &[u8] = include_bytes!("../assets/test-tone.wav");
@@ -1343,6 +1345,83 @@ fn parse_first_percent(text: &str) -> Option<f32> {
         .collect();
     let pct: u32 = digits.parse().ok()?;
     Some(pct as f32 / 100.0)
+}
+
+/// The routing logic, driven through a [`Graph`] rather than through `pactl`
+/// directly (#79). It owns the two registers the reconciliation carries from one
+/// pass to the next, so two routers never see each other's history.
+pub struct AudioRouter {
+    /// The graph every routing decision is read from and applied to.
+    // Not read while the methods below are unwired.
+    #[allow(dead_code)]
+    graph: Box<dyn Graph>,
+    /// The sink node names listed at the previous reconciliation; `None` until
+    /// the first pass. See [`newly_listed_sinks`].
+    #[allow(dead_code)]
+    sinks_last_pass: Option<Vec<String>>,
+    /// Whether the previous pass owes this one a rebuild. See
+    /// [`wires_a_new_sink`].
+    #[allow(dead_code)]
+    confirmation: ConfirmationRegister,
+}
+
+impl AudioRouter {
+    /// A router over `graph`, with no history: its first pass treats every
+    /// listed sink as already known.
+    pub fn new(graph: Box<dyn Graph>) -> Self {
+        Self {
+            graph,
+            sinks_last_pass: None,
+            confirmation: ConfirmationRegister::default(),
+        }
+    }
+
+    /// The error every unwired method answers.
+    fn not_wired(method: &str) -> AudioError {
+        AudioError::PipeWire(format!("AudioRouter::{method} is not implemented"))
+    }
+
+    /// Apply the routing a selection calls for. See the free
+    /// [`route_for_targets`].
+    pub fn route_for_targets(&mut self, _speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
+        Err(Self::not_wired("route_for_targets"))
+    }
+
+    /// Re-apply one branch's latency without touching the combined sink or the
+    /// other branches. See the free [`retune_combined_branch`].
+    pub fn retune_branch(
+        &mut self,
+        _sink_name: &str,
+        _branch: &CombineBranch,
+    ) -> Result<(), AudioError> {
+        Err(Self::not_wired("retune_branch"))
+    }
+
+    /// Tear the combined sink `sink_name` down, with every branch it carries.
+    pub fn teardown(&mut self, _sink_name: &str) -> Result<(), AudioError> {
+        Err(Self::not_wired("teardown"))
+    }
+
+    /// Whether the combined sink `sink_name` is currently present.
+    pub fn combined_sink_exists(&mut self, _sink_name: &str) -> bool {
+        false
+    }
+
+    /// Resolve a logical playback target to the live node name. See the free
+    /// [`resolve_target_sink`].
+    pub fn resolve_target_sink(&mut self, _target: &str) -> Result<String, AudioError> {
+        Err(Self::not_wired("resolve_target_sink"))
+    }
+
+    /// Set the volume of the sink of the speaker at `mac`.
+    pub fn set_sink_volume(&mut self, _mac: &str, _level: f32) -> Result<(), AudioError> {
+        Err(Self::not_wired("set_sink_volume"))
+    }
+
+    /// Read the volume of the sink of the speaker at `mac`.
+    pub fn sink_volume(&mut self, _mac: &str) -> Option<f32> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -3245,5 +3324,718 @@ mod tests {
                 plan.to_load
             );
         }
+    }
+}
+
+/// [`AudioRouter`] driven through the in-memory graph. Every assertion is made on
+/// the calls the graph recorded, against literals: two values the code computed
+/// compare equal when both are absent.
+#[cfg(test)]
+mod router_tests {
+    use super::*;
+    use crate::graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+    const COMBINED: &str = "blue2th_combined";
+    const MAC_A: &str = "AA:BB:CC:DD:EE:01";
+    const MAC_B: &str = "AA:BB:CC:DD:EE:02";
+    const SINK_A: &str = "bluez_output.AA_BB_CC_DD_EE_01.1";
+    const SINK_B: &str = "bluez_output.AA_BB_CC_DD_EE_02.1";
+
+    fn target(mac: &str, offset_ms: u32) -> SpeakerTarget {
+        SpeakerTarget {
+            address: mac.to_string(),
+            offset_ms,
+        }
+    }
+
+    /// A router over `fake`. The fake is cloned because a clone is a handle onto
+    /// the same state: the router owns one, the test keeps the other to read the
+    /// recorded calls.
+    fn router_on(fake: &FakeGraph) -> AudioRouter {
+        AudioRouter::new(Box::new(fake.clone()))
+    }
+
+    fn create(sink_name: &str) -> GraphCall {
+        GraphCall::CreateCombinedSink {
+            sink_name: sink_name.to_string(),
+        }
+    }
+
+    fn load(real_sink: &str, latency_ms: u32) -> GraphCall {
+        GraphCall::LoadBranch {
+            sink_name: COMBINED.to_string(),
+            real_sink: real_sink.to_string(),
+            latency_ms,
+        }
+    }
+
+    fn unload(id: u32) -> GraphCall {
+        GraphCall::UnloadBranch { id }
+    }
+
+    fn teardown(sink_name: &str) -> GraphCall {
+        GraphCall::Teardown {
+            sink_name: sink_name.to_string(),
+        }
+    }
+
+    fn set_default(sink: &str) -> GraphCall {
+        GraphCall::SetDefaultSink {
+            sink: sink.to_string(),
+        }
+    }
+
+    /// Whether `call` removes or adds something — everything mutating except
+    /// re-pointing the default sink.
+    fn changes_the_graph(call: &GraphCall) -> bool {
+        call.is_mutating() && !matches!(call, GraphCall::SetDefaultSink { .. })
+    }
+
+    /// A graph where both speakers are connected and the combined sink carries a
+    /// live branch for each, at the latency of offsets 0 and 30. Returns the fake
+    /// and the two branch ids.
+    fn steady_graph(live: Option<bool>) -> (FakeGraph, u32, u32) {
+        let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
+        fake.add_sink(COMBINED);
+        let a = fake.seed_branch(COMBINED, SINK_A, 50, live);
+        let b = fake.seed_branch(COMBINED, SINK_B, 80, live);
+        (fake, a, b)
+    }
+
+    fn steady_selection() -> Vec<SpeakerTarget> {
+        vec![target(MAC_A, 0), target(MAC_B, 30)]
+    }
+
+    // Criterion: on an empty graph, `route_for_targets` creates the sink, loads
+    // one branch per reachable speaker at `branch_latency_ms(offset)`, then sets
+    // the default sink. The leading teardown is today's guard against stacking
+    // modules on a leftover.
+    #[test]
+    fn test_route_on_an_empty_graph_creates_the_sink_loads_each_branch_then_sets_the_default() {
+        let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0), target(MAC_B, 250)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 50),
+                load(SINK_B, 300),
+                set_default(COMBINED),
+            ]
+        );
+        assert_eq!(fake.default_sink().as_deref(), Some(COMBINED));
+    }
+
+    // Criterion: a build tears a leftover down first, so branches that outlived
+    // their null sink are not stacked under the new ones.
+    #[test]
+    fn test_route_without_a_combined_sink_clears_leftover_branches_before_building() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        let leftover = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        let loaded = fake.loaded(COMBINED);
+        assert_eq!(loaded.len(), 1, "one branch for one speaker: {loaded:?}");
+        assert_ne!(loaded[0].id, leftover);
+        assert_eq!(loaded[0].branch.sink, SINK_A);
+    }
+
+    // Criterion: on a graph that already matches the plan, a pass performs no
+    // mutating call except `set_default_sink`.
+    #[test]
+    fn test_route_on_a_steady_graph_makes_no_mutating_call_but_the_default_sink() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Criterion: a steady graph stays steady pass after pass — the repair tick
+    // runs this every five seconds.
+    #[test]
+    fn test_route_on_a_steady_graph_stays_quiet_over_several_passes() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        for pass in 0..3 {
+            let result = router.route_for_targets(&steady_selection());
+            assert!(result.is_ok(), "pass {pass} failed: {result:?}");
+        }
+
+        assert_eq!(
+            fake.calls(),
+            vec![
+                set_default(COMBINED),
+                set_default(COMBINED),
+                set_default(COMBINED)
+            ]
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Criterion: a dead branch (`live == Some(false)`) is unloaded by id before
+    // its replacement is loaded.
+    #[test]
+    fn test_route_unloads_a_dead_branch_before_loading_its_replacement() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let dead = fake.seed_branch(COMBINED, SINK_B, 80, Some(false));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        let calls = fake.calls();
+        let unloaded_at = calls.iter().position(|c| *c == unload(dead));
+        let reloaded_at = calls.iter().position(|c| *c == load(SINK_B, 80));
+        assert!(
+            unloaded_at.is_some(),
+            "dead branch never unloaded: {calls:?}"
+        );
+        assert!(reloaded_at.is_some(), "replacement never loaded: {calls:?}");
+        assert!(
+            unloaded_at < reloaded_at,
+            "loaded before unloading: {calls:?}"
+        );
+        // A missing branch rebuilds the whole selection (#75), so the live one
+        // goes too; the dead one goes first.
+        assert_eq!(
+            calls,
+            vec![
+                unload(dead),
+                unload(a),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+        // Exactly one branch per speaker is left: never two loopbacks onto one.
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_A, SINK_B]);
+    }
+
+    // Non-nominal: the graph cannot be read (`Graph::sinks` errs on every read).
+    // "Cannot tell" is never "no sink exists": nothing is unloaded, torn down,
+    // created or loaded — even though a stale branch is there for the taking.
+    #[test]
+    fn test_route_with_an_unreadable_sink_list_unloads_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let stale = fake.seed_branch(COMBINED, "bluez_output.AA_BB_CC_DD_EE_03.1", 50, Some(true));
+        fake.fail(GraphOp::Sinks);
+        let mut router = router_on(&fake);
+
+        let _ = router.route_for_targets(&steady_selection());
+
+        let calls = fake.calls();
+        assert!(
+            !calls.iter().any(changes_the_graph),
+            "acted on an unreadable graph: {calls:?}"
+        );
+        assert!(
+            fake.all_calls().contains(&GraphCall::Sinks),
+            "the sink list was never asked for"
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b, stale]);
+    }
+
+    // Non-nominal: the sink list stops being readable in the middle of a pass —
+    // the reconciliation returns `Ok(())` without unloading anything.
+    #[test]
+    fn test_route_with_a_sink_list_lost_mid_pass_returns_ok_and_unloads_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail_after(GraphOp::Sinks, 1);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        let calls = fake.calls();
+        assert!(
+            !calls.iter().any(changes_the_graph),
+            "acted on an unreadable graph: {calls:?}"
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Non-nominal: liveness cannot be read (`live == None`) — every branch is
+    // kept, none is ruled dead.
+    #[test]
+    fn test_route_with_unknown_liveness_keeps_every_branch() {
+        let (fake, a, b) = steady_graph(None);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Non-nominal: a planned speaker's sink is absent — it is dropped from the
+    // reachable plan, no rebuild is requested for it, the other branch is
+    // untouched.
+    #[test]
+    fn test_route_with_an_absent_speaker_leaves_the_other_branch_alone() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        let a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut router = router_on(&fake);
+
+        for pass in 0..2 {
+            let result = router.route_for_targets(&steady_selection());
+            assert!(result.is_ok(), "pass {pass} failed: {result:?}");
+        }
+
+        assert_eq!(
+            fake.calls(),
+            vec![set_default(COMBINED), set_default(COMBINED)]
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a]);
+    }
+
+    // Nominal: a selection that only lost a speaker unloads that branch by id
+    // and leaves the other streaming.
+    #[test]
+    fn test_route_after_a_deselection_unloads_only_that_branch() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(b), set_default(COMBINED)]);
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a]);
+    }
+
+    // Non-nominal: one branch fails to load — the other is still attempted, the
+    // default sink is still set, the failure comes back as `PipeWire`.
+    #[test]
+    fn test_route_with_one_failing_branch_still_loads_the_other_and_sets_the_default() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail_for(GraphOp::LoadBranch, SINK_A);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert_eq!(
+            fake.calls(),
+            vec![
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(message.contains(SINK_A), "unexpected error: {message}");
+        assert!(!message.contains(SINK_B), "unexpected error: {message}");
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_B]);
+    }
+
+    // Non-nominal: several failures come back joined in one `PipeWire` error.
+    #[test]
+    fn test_route_with_every_branch_failing_reports_all_failures_in_one_error() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail(GraphOp::LoadBranch);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(message.contains(SINK_A), "unexpected error: {message}");
+        assert!(message.contains(SINK_B), "unexpected error: {message}");
+        assert_eq!(fake.calls().last(), Some(&set_default(COMBINED)));
+    }
+
+    // Non-nominal: empty selection — `NoSpeakerConnected`, and the graph receives
+    // no call at all, not even a read.
+    #[test]
+    fn test_route_with_an_empty_selection_never_calls_the_graph() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[]);
+
+        assert!(
+            matches!(result, Err(AudioError::NoSpeakerConnected)),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+    }
+
+    // Non-nominal: an empty target resolves to nothing, and the trait never
+    // receives an empty node name.
+    #[test]
+    fn test_resolve_target_sink_with_an_empty_target_resolves_nothing() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.resolve_target_sink("");
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.empty_names_refused(), 0);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Non-nominal: an empty sink name is not "the combined sink exists", and it
+    // never reaches the trait as a node name.
+    #[test]
+    fn test_empty_sink_name_never_reaches_the_graph() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        assert!(!router.combined_sink_exists(""));
+        let retuned = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: String::new(),
+                latency_ms: 70,
+            },
+        );
+
+        let message = match retuned {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.empty_names_refused(), 0);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Criterion: `resolve_target_sink` resolves a `bluez_output.*` prefix to the
+    // live node and an exact node name to itself, reading the graph only.
+    #[test]
+    fn test_resolve_target_sink_resolves_a_prefix_and_an_exact_name() {
+        let fake = FakeGraph::with_sinks(&["blue2th_combined_old", SINK_A, COMBINED]);
+        let mut router = router_on(&fake);
+
+        assert_eq!(
+            router.resolve_target_sink(&bluez_sink_prefix(MAC_A)).ok(),
+            Some(SINK_A.to_string())
+        );
+        assert_eq!(
+            router.resolve_target_sink(COMBINED).ok(),
+            Some(COMBINED.to_string())
+        );
+        assert!(matches!(
+            router.resolve_target_sink(&bluez_sink_prefix(MAC_B)),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: `combined_sink_exists` answers from the graph's sinks — a
+    // namesake sharing the opening characters is not the combined sink, and an
+    // unreadable list is not "exists".
+    #[test]
+    fn test_combined_sink_exists_reads_the_graph() {
+        let present = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        assert!(router_on(&present).combined_sink_exists(COMBINED));
+
+        let namesake = FakeGraph::with_sinks(&[SINK_A, "blue2th_combined_old"]);
+        assert!(!router_on(&namesake).combined_sink_exists(COMBINED));
+
+        let unreadable = FakeGraph::with_sinks(&[COMBINED]);
+        unreadable.fail(GraphOp::Sinks);
+        assert!(!router_on(&unreadable).combined_sink_exists(COMBINED));
+    }
+
+    // Non-nominal: a speaker that came back. The pass that wires it arms the
+    // confirmation register; the next pass rebuilds every branch once, and does
+    // not re-arm itself.
+    #[test]
+    fn test_route_after_a_speaker_came_back_rebuilds_once_on_the_next_pass() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        let first_a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut router = router_on(&fake);
+
+        // Pass 1: speaker B is off. Nothing to do, and the sink list is learnt.
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+
+        // Pass 2: B is back. One missing branch rebuilds the selection.
+        fake.add_sink(SINK_B);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                unload(first_a),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+        let wired: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(wired.len(), 2);
+
+        // Pass 3: the graph matches the plan, and is rebuilt all the same — the
+        // confirming rebuild, one tick after the load that wired B.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 3 failed: {result:?}");
+        let calls = fake.calls();
+        let rebuild: Vec<GraphCall> = calls
+            .iter()
+            .filter(|c| changes_the_graph(c))
+            // Cloned to compare against literals below.
+            .cloned()
+            .collect();
+        assert_eq!(
+            rebuild,
+            vec![
+                unload(wired[0]),
+                unload(wired[1]),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+            ]
+        );
+        assert_eq!(calls.last(), Some(&set_default(COMBINED)));
+        let confirmed: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(confirmed.len(), 2);
+
+        // Pass 4: the confirming rebuild did not arm another one.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 4 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        let kept: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(kept, confirmed);
+    }
+
+    // Criterion: nothing listed on a router's first pass is new — wiring a
+    // speaker then costs no confirming rebuild.
+    #[test]
+    fn test_route_first_pass_wiring_does_not_arm_a_rebuild() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![load(SINK_A, 50), load(SINK_B, 80), set_default(COMBINED)]
+        );
+
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Criterion: the confirmation register and the last-pass sink list are
+    // fields of `AudioRouter` — a router that armed a rebuild, and that has seen
+    // other sinks, changes nothing for a second router in the same process.
+    #[test]
+    fn test_two_routers_do_not_share_the_confirmation_register() {
+        // The first router goes through a speaker coming back, which arms it.
+        let first_fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        first_fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut first = router_on(&first_fake);
+        let result = first.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first router, pass 1: {result:?}");
+        first_fake.add_sink(SINK_B);
+        let result = first.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first router, pass 2: {result:?}");
+        assert!(
+            first_fake.calls().contains(&load(SINK_B, 80)),
+            "the first router never wired the returning speaker"
+        );
+
+        // The second router owes nothing: its steady graph stays untouched, and
+        // sinks the first router never listed are not "new" to it.
+        let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let second_fake = FakeGraph::with_sinks(&[sink_c, COMBINED]);
+        let c = second_fake.seed_branch(COMBINED, sink_c, 50, Some(true));
+        let mut second = router_on(&second_fake);
+        for pass in 0..2 {
+            let result = second.route_for_targets(&[target("AA:BB:CC:DD:EE:03", 0)]);
+            assert!(result.is_ok(), "second router, pass {pass}: {result:?}");
+        }
+        assert_eq!(
+            second_fake.calls(),
+            vec![set_default(COMBINED), set_default(COMBINED)]
+        );
+        let ids: Vec<u32> = second_fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![c]);
+
+        // And the first router still owes its own rebuild.
+        first_fake.clear_calls();
+        let result = first.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first router, pass 3: {result:?}");
+        assert!(
+            first_fake.calls().iter().any(changes_the_graph),
+            "the first router lost its armed rebuild: {:?}",
+            first_fake.calls()
+        );
+    }
+
+    // Criterion: `retune_branch` unloads only that speaker's branch and reloads
+    // it; the combined sink and the other branch receive no call.
+    #[test]
+    fn test_retune_branch_touches_only_that_speakers_branch() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+
+        assert!(result.is_ok(), "retune failed: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(a), load(SINK_A, 120)]);
+        let loaded = fake.loaded(COMBINED);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, b);
+        assert_eq!(loaded[0].branch.latency_ms, 80);
+        assert_eq!(loaded[1].branch.sink, SINK_A);
+        assert_eq!(loaded[1].branch.latency_ms, 120);
+    }
+
+    // Non-nominal: retuning a speaker whose sink has vanished errs rather than
+    // touching anything.
+    #[test]
+    fn test_retune_branch_for_a_vanished_speaker_changes_nothing() {
+        let (fake, _, _) = steady_graph(Some(true));
+        fake.remove_sink(SINK_A);
+        let mut router = router_on(&fake);
+
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: `teardown` hands the whole job to the graph — one call, and the
+    // sink and its branches are gone.
+    #[test]
+    fn test_teardown_asks_the_graph_once_and_leaves_nothing() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.teardown(COMBINED);
+
+        assert!(result.is_ok(), "teardown failed: {result:?}");
+        assert_eq!(fake.calls(), vec![teardown(COMBINED)]);
+        assert!(fake.loaded(COMBINED).is_empty());
+        assert!(!fake.sink_names().iter().any(|s| s == COMBINED));
+    }
+
+    // Criterion: the volume is written per speaker sink — the MAC is resolved to
+    // the live node, and the level is clamped before it reaches the graph.
+    #[test]
+    fn test_set_sink_volume_resolves_the_speaker_sink_and_clamps_the_level() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.set_sink_volume(MAC_B, 1.5);
+
+        assert!(result.is_ok(), "set volume failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetSinkVolume {
+                sink: SINK_B.to_string(),
+                level: 1.0
+            }]
+        );
+    }
+
+    // Non-nominal: no sink for that speaker — an error, and no write.
+    #[test]
+    fn test_set_sink_volume_without_a_sink_writes_nothing() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        let mut router = router_on(&fake);
+
+        let result = router.set_sink_volume(MAC_B, 0.4);
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: the volume is read per speaker sink, over-amplification
+    // included, and an absent speaker reads as `None`.
+    #[test]
+    fn test_sink_volume_reads_the_speaker_sink() {
+        let (fake, _, _) = steady_graph(Some(true));
+        fake.set_volume(SINK_A, 0.59);
+        fake.set_volume(SINK_B, 1.53);
+        let mut router = router_on(&fake);
+
+        assert_eq!(router.sink_volume(MAC_A), Some(0.59));
+        assert_eq!(router.sink_volume(MAC_B), Some(1.53));
+        assert_eq!(router.sink_volume("AA:BB:CC:DD:EE:03"), None);
+        assert!(fake.all_calls().contains(&GraphCall::SinkVolume {
+            sink: SINK_A.to_string()
+        }));
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
     }
 }

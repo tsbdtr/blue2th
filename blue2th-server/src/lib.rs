@@ -40,6 +40,7 @@ pub mod audio;
 pub mod auth;
 mod bluetooth;
 pub mod config;
+pub mod graph;
 pub mod identity;
 pub mod reconnect;
 pub mod spotify;
