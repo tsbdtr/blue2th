@@ -40,6 +40,8 @@ pub mod audio;
 pub mod auth;
 mod bluetooth;
 pub mod config;
+pub mod graph;
+pub mod graph_pactl;
 pub mod identity;
 pub mod reconnect;
 pub mod spotify;
@@ -49,7 +51,7 @@ mod state_store;
 pub mod targets;
 pub mod watchdog;
 
-use audio::{AudioEngine, AudioError, RodioOutput};
+use audio::{AudioEngine, AudioError, AudioRouter, RodioOutput};
 use auth::AuthStore;
 use spotify::{SpotifyBackend, SpotifyError};
 use spotify_auth::{SpotifyApiError, SpotifyAuth, Transport};
@@ -60,6 +62,11 @@ use targets::{SelectError, SpeakerTargets};
 pub struct AppState {
     /// The audio engine, guarded for concurrent access.
     engine: Arc<Mutex<AudioEngine>>,
+    /// The routing logic over the audio graph, with the history its
+    /// reconciliation carries from one pass to the next. Never locked while
+    /// another guard is awaited: a caller already holding `spotify` may take
+    /// it, never the other way round.
+    router: Arc<Mutex<AudioRouter>>,
     /// The user's playback-target selection (0–2 speakers + offsets). `/play`
     /// derives its routing mode from this; an empty selection (`Idle`) is
     /// rejected with a 4xx so a stream never starts with nowhere to go.
@@ -338,6 +345,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
         auth_store,
+        Box::new(graph_pactl::PactlGraph::new()),
     );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -635,6 +643,7 @@ pub fn app() -> Router {
         // The real, persisted API token: **no test may call `app()`**, since
         // minting or rotating this would unpair the operator's own phone.
         AuthStore::with_store(auth::auth_store_path()),
+        Box::new(graph_pactl::PactlGraph::new()),
     )
     .0
 }
@@ -653,6 +662,7 @@ pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
+        Box::new(graph_pactl::PactlGraph::new()),
     )
     .0
 }
@@ -669,6 +679,7 @@ pub fn app_with_auth_store_and_state(
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
+        Box::new(graph_pactl::PactlGraph::new()),
     )
 }
 
@@ -679,6 +690,7 @@ fn app_with_auth_and_targets(
     speaker_targets: SpeakerTargets,
     server_name: config::ServerName,
     auth: AuthStore,
+    graph: Box<dyn graph::Graph>,
 ) -> (Router, AppState) {
     // The auth driver and the subprocess must start out agreeing with the stored
     // name, or the very first transport call would look up a device nobody
@@ -695,6 +707,7 @@ fn app_with_auth_and_targets(
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
             RodioOutput::new(),
         )))),
+        router: Arc::new(Mutex::new(AudioRouter::new(graph))),
         targets: Arc::new(Mutex::new(speaker_targets)),
         connected: Arc::new(Mutex::new(Vec::new())),
         spotify: Arc::new(Mutex::new(spotify)),
@@ -1006,7 +1019,7 @@ async fn branch_repair_pass(state: &AppState) {
     if !audio::should_repair_branches(&speakers, anything_playing) {
         return;
     }
-    if let Err(e) = audio::route_for_targets(&speakers) {
+    if let Err(e) = state.router.lock().await.route_for_targets(&speakers) {
         tracing::warn!("branch repair could not re-route: {e}");
     }
 }
@@ -1067,7 +1080,7 @@ async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
     forget_backend_pause(&state);
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
-    audio::route_for_targets(&speakers)?;
+    state.router.lock().await.route_for_targets(&speakers)?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
 }
@@ -1107,8 +1120,11 @@ async fn volume(
     if speakers.is_empty() {
         return Err(AudioError::NoSpeakerConnected.into());
     }
-    for target in &speakers {
-        audio::set_sink_volume(&target.address, req.level)?;
+    {
+        let mut router = state.router.lock().await;
+        for target in &speakers {
+            router.set_sink_volume(&target.address, req.level)?;
+        }
     }
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.set_volume(req.level)?))
@@ -1126,10 +1142,13 @@ async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     };
     // Snapshot the selection and release the guard before the PipeWire reads.
     let speakers = state.targets.lock().await.speakers();
-    let levels: Vec<Option<f32>> = speakers
-        .iter()
-        .map(|target| audio::sink_volume(&target.address))
-        .collect();
+    let levels: Vec<Option<f32>> = {
+        let mut router = state.router.lock().await;
+        speakers
+            .iter()
+            .map(|target| router.sink_volume(&target.address))
+            .collect()
+    };
     snapshot.volume = audio::reported_volume(&levels, snapshot.volume);
     Json(snapshot)
 }
@@ -1154,7 +1173,10 @@ async fn start_spotify(
     spotify: &mut SpotifyBackend,
     speakers: &[SpeakerTarget],
 ) -> Result<SpotifyState, SpotifyError> {
-    let started = spotify.start(speakers)?;
+    let started = {
+        let mut router = state.router.lock().await;
+        spotify.start(&mut router, speakers)?
+    };
     state.spotify_volume.lock().await.mark_respawned();
     Ok(started)
 }
@@ -1755,12 +1777,13 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
         return;
     }
 
-    if audio::combined_sink_exists(&plan.sink_name) {
+    let mut router = state.router.lock().await;
+    if router.combined_sink_exists(&plan.sink_name) {
         let branch = audio::CombineBranch {
             sink: audio::bluez_sink_prefix(&target.address),
             latency_ms: audio::branch_latency_ms(target.offset_ms),
         };
-        if let Err(e) = audio::retune_combined_branch(&plan.sink_name, &branch) {
+        if let Err(e) = router.retune_branch(&plan.sink_name, &branch) {
             tracing::warn!("could not retune the speaker offset live: {e}");
         }
     }
@@ -1816,14 +1839,19 @@ async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
                 tracing::warn!("could not pause playback after the last speaker was dropped: {e}");
             }
         }
-        if let Err(e) = audio::teardown_combined(spotify::COMBINED_SINK_NAME) {
+        if let Err(e) = state
+            .router
+            .lock()
+            .await
+            .teardown(spotify::COMBINED_SINK_NAME)
+        {
             tracing::warn!("could not tear the combined sink down: {e}");
         }
         return;
     }
     // Still a target: rebuild the routing so it spans exactly the current
     // selection (this is what stops feeding a speaker that was just dropped).
-    if let Err(e) = audio::route_for_targets(speakers) {
+    if let Err(e) = state.router.lock().await.route_for_targets(speakers) {
         tracing::warn!("could not re-route after a selection change: {e}");
         return;
     }
@@ -2028,10 +2056,16 @@ mod tests {
 
     /// A store-free router with a known API token.
     fn build_app() -> Router {
-        app_with_auth_store(
+        app_with_auth_and_targets(
             spotify_auth::SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+            SpeakerTargets::new(),
+            config::ServerName::new(),
             AuthStore::with_token(TOKEN),
+            // In memory: a route test must never drive the developer's own
+            // PipeWire graph.
+            Box::new(graph::fake::FakeGraph::new()),
         )
+        .0
     }
 
     /// An `AppState` with every seam kept off the network and off the hardware:
@@ -2050,8 +2084,17 @@ mod tests {
     /// The same fixture around an explicit engine, so a test can supply an
     /// [`audio::AudioOutput`] that behaves differently from `NullOutput`.
     fn test_state_with_engine(engine: AudioEngine) -> AppState {
+        test_state_on(engine, &graph::fake::FakeGraph::new())
+    }
+
+    /// The same fixture over an explicit in-memory graph, so a test can seed it
+    /// and read back the calls the routes made.
+    fn test_state_on(engine: AudioEngine, fake: &graph::fake::FakeGraph) -> AppState {
         AppState {
             engine: Arc::new(Mutex::new(engine)),
+            // A clone of the fake is a handle onto the same state: the router
+            // owns one, the test keeps the other.
+            router: Arc::new(Mutex::new(AudioRouter::new(Box::new(fake.clone())))),
             targets: Arc::new(Mutex::new(SpeakerTargets::new())),
             connected: Arc::new(Mutex::new(Vec::new())),
             spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
@@ -2873,6 +2916,52 @@ mod tests {
             watch.claim_idle_pause(Duration::ZERO, t1),
             Some(Duration::ZERO),
             "the handler must restart the idle clock at the report"
+        );
+    }
+
+    // Criterion (#79): `/play` with a selection routes through the state's
+    // `AudioRouter` — the in-memory graph receives the build calls, in order,
+    // and the engine plays.
+    #[tokio::test]
+    async fn test_play_with_a_selection_builds_the_combined_sink_on_the_graph() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let mac = "AA:BB:CC:DD:EE:01";
+        let sink = "bluez_output.AA_BB_CC_DD_EE_01.1";
+        let fake = FakeGraph::with_sinks(&[sink]);
+        let state = test_state_on(AudioEngine::new(), &fake);
+        state
+            .targets
+            .lock()
+            .await
+            .select(mac, &[mac.to_string()])
+            .expect("a connected speaker can be selected");
+
+        let played = play(State(state)).await;
+
+        assert!(
+            matches!(&played, Ok(Json(p)) if p.status == PlaybackStatus::Playing),
+            "play failed: {:?}",
+            played.map(|Json(p)| p.status).map_err(|_| "error response")
+        );
+        assert_eq!(
+            fake.calls(),
+            vec![
+                GraphCall::Teardown {
+                    sink_name: "blue2th_combined".to_string()
+                },
+                GraphCall::CreateCombinedSink {
+                    sink_name: "blue2th_combined".to_string()
+                },
+                GraphCall::LoadBranch {
+                    sink_name: "blue2th_combined".to_string(),
+                    real_sink: sink.to_string(),
+                    latency_ms: 50
+                },
+                GraphCall::SetDefaultSink {
+                    sink: "blue2th_combined".to_string()
+                },
+            ]
         );
     }
 }

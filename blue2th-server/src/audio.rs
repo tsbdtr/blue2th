@@ -13,18 +13,20 @@
 //! swapped out later without touching the route layer.
 
 use std::{
+    cell::RefCell,
     io::Cursor,
-    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
-        Arc, Mutex, MutexGuard,
+        Arc,
     },
     thread::JoinHandle,
     time::Duration,
 };
 
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
+
+use crate::graph::{Graph, LoadedBranch};
 
 /// The embedded test tone shipped with the backend (2s 440Hz stereo sine,
 /// 48kHz PCM 16-bit).
@@ -452,8 +454,7 @@ pub fn branch_latency_ms(offset_ms: u32) -> u32 {
 
 /// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
 /// each branch carrying [`branch_latency_ms`] of its speaker's offset. Building
-/// this performs no I/O; the hardware seam (`route_to_combined` /
-/// `teardown_combined`) consumes it.
+/// this performs no I/O; [`AudioRouter`] applies it to its [`Graph`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CombineSinkSpec {
     /// Node name of the combined sink to create.
@@ -479,168 +480,10 @@ pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
     }
 }
 
-/// Apply the PipeWire routing a selection calls for: every non-empty selection
-/// goes through the combined sink, so the target never moves when a speaker is
-/// added or dropped — a moving target respawns `librespot` and leaves an open
-/// stream behind (#70, #53). The single seam used by `/play` and by the Spotify
-/// backend, so both agree on where audio goes.
-pub fn route_for_targets(speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
-    if speakers.is_empty() {
-        return Err(AudioError::NoSpeakerConnected);
-    }
-    route_to_combined(&combine_sink_plan(speakers))
-}
-
 /// Derive the `bluez_output.*` PipeWire sink node-name prefix for a speaker MAC
 /// (colons → underscores, upper-cased), matching what BlueZ creates.
 pub fn bluez_sink_prefix(mac: &str) -> String {
     format!("bluez_output.{}", mac.to_uppercase().replace(':', "_"))
-}
-
-/// Route playback to a PipeWire combined sink spanning the plan's speakers, so the
-/// player (which opens the default sink) reaches each of them, delayed by its own
-/// offset for tunable sync. Built as a shared null sink the player feeds, plus one
-/// delayed `module-loopback` per speaker into its real `bluez_output.*` sink.
-///
-/// Hardware seam (PipeWire/`pactl`): not exercised by CI, validated manually on
-/// real speakers. Idempotent — when the combined sink is already up it
-/// reconciles the loopbacks in place instead of rebuilding, so a selection change
-/// does not unload the null sink the player is streaming into; otherwise it
-/// builds the whole graph from scratch.
-pub fn route_to_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
-    if combined_sink_exists(&spec.sink_name) {
-        return reconcile_combined(spec);
-    }
-    build_combined(spec)
-}
-
-/// Build the combined sink from nothing: the shared null sink, then one delayed
-/// loopback per speaker. Tears any leftover down first so repeated calls do not
-/// stack modules.
-fn build_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
-    teardown_combined(&spec.sink_name)?;
-    // The shared virtual sink the player streams into.
-    load_module(&[
-        "module-null-sink".to_string(),
-        format!("sink_name={}", spec.sink_name),
-        format!("sink_properties=node.description={}", spec.sink_name),
-    ])?;
-    // One delayed loopback per speaker: combined.monitor -> real sink, carrying
-    // the branch latency the plan computed (base buffer plus the speaker's offset,
-    // the per-branch sync tuning).
-    let report = load_planned_branches_live(&spec.sink_name, &spec.branches);
-    // Make the player target the combined sink. Done even when a branch failed, so
-    // the speakers that did load are fed while the next tick retries the others.
-    set_default_sink(&spec.sink_name)?;
-    report.into_result()
-}
-
-/// Bring an already-loaded combined sink in line with the plan, without ever
-/// touching the null sink: that is what keeps a live stream playing across a
-/// selection change, since `set_default_sink` does not move a stream that is
-/// already open.
-///
-/// What happens to the branches is [`reconcile_branches`]'s decision, and it is
-/// not "only what differs": a graph that matches the plan is left entirely alone,
-/// while a single missing or dead branch rebuilds every branch of the selection —
-/// see that function for the measurement behind it.
-///
-/// Hardware seam (PipeWire/`pactl`): not exercised by CI; the decisions it acts on
-/// are [`loaded_branches`], [`dead_branch_modules`], [`reachable_branches`] and
-/// [`reconcile_branches`], which are pure and tested.
-fn reconcile_combined(spec: &CombineSinkSpec) -> Result<(), AudioError> {
-    let listing = module_listing()?;
-    // A failed `pactl` yields an empty listing, which `sink_input_liveness` reads
-    // as "cannot tell" rather than as a graph where every branch is dead.
-    let live = sink_input_liveness(&sink_input_listing().unwrap_or_default());
-    // A dead branch reads as absent below, so the reconciliation would load its
-    // replacement without ever asking for the stale module to go. Unloaded here,
-    // before that load, so the speaker never has two loopbacks feeding it.
-    for module_id in dead_branch_modules(&listing, &spec.sink_name, live.as_deref()) {
-        unload_module_id(module_id);
-    }
-    let loaded = loaded_branches(&listing, &spec.sink_name, live.as_deref());
-    let sinks = sink_listing().unwrap_or_default();
-    if sinks.trim().is_empty() {
-        // Same rule as `sink_input_liveness`: nothing read is "cannot tell", not
-        // "every speaker is gone". Acting on it would unload every branch.
-        return Ok(());
-    }
-    // A speaker that is switched off is absent, not broken: asking for it on every
-    // tick is what rebuilds the graph under the ones that are playing.
-    let reachable = CombineSinkSpec {
-        sink_name: spec.sink_name.clone(),
-        branches: reachable_branches(&spec.branches, &sinks),
-    };
-    let fresh = {
-        let mut previous = lock_or_recover(&SINKS_LAST_PASS);
-        let fresh = newly_listed_sinks(&previous, &sinks);
-        *previous = Some(sink_nodes(&sinks));
-        fresh
-    };
-    let plan = reconcile_branches(&loaded, &reachable);
-    let source = format!("source={}.monitor", spec.sink_name);
-    for branch in &plan.to_unload {
-        // Match on both ends, as `retune_combined_branch` does: on `sink=` alone a
-        // module merely feeding *into* the combined sink would be unloaded too.
-        unload_modules_matching(&[&source, &format!("sink={}", branch.sink)])?;
-    }
-    let report = load_planned_branches_live(&spec.sink_name, &plan.to_load);
-    // The sink already exists, so it is usually already the default; this repairs
-    // the case where the default moved away meanwhile — another application, or a
-    // device that came back. Re-pointing the default at the sink a stream is
-    // already on leaves that stream where it is.
-    set_default_sink(&spec.sink_name)?;
-
-    // Arm the next pass if this one wired a speaker that came back, and learn
-    // whether the previous one armed us — one exchange, so a pass can both confirm
-    // and arm, and so the confirming rebuild below (which loads outside `plan`)
-    // can never arm itself into a loop.
-    let arms_the_next_pass = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
-    let confirm = lock_or_recover(&CONFIRMATION_DUE).take_and_arm(arms_the_next_pass);
-    if !confirm {
-        return report.into_result();
-    }
-    // The previous pass wired a speaker that had just come back, and that load did
-    // not start it; see `wires_a_new_sink`. Rebuilding every branch now — one tick
-    // later, which is the measured gap — starts it.
-    //
-    // `report` is dropped rather than merged into the answer: `plan.to_load` is
-    // either empty or the whole of `reachable.branches`, so this rebuild
-    // re-attempts every branch the pass attempted and `second` reports the same
-    // failures against a fresher reading of the graph.
-    let listing = module_listing()?;
-    for branch in loaded_branches(&listing, &spec.sink_name, None) {
-        unload_modules_matching(&[&source, &format!("sink={}", branch.sink)])?;
-    }
-    let second = load_planned_branches_live(&spec.sink_name, &reachable.branches);
-    set_default_sink(&spec.sink_name)?;
-    second.into_result()
-}
-
-/// Resolve a branch's `bluez_output.*` prefix to the live node name, erroring
-/// rather than sending audio elsewhere when the speaker's sink has vanished.
-fn resolve_branch_sink(branch: &CombineBranch) -> Result<String, AudioError> {
-    find_sink_with_prefix(&branch.sink)
-        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for prefix {}", branch.sink)))
-}
-
-/// Load one delayed loopback from the combined sink's monitor into a resolved
-/// speaker sink. `*_dont_move=true` pins both ends, so a default-sink change
-/// cannot drag the branch off the speaker it was built for.
-fn load_branch_loopback(
-    sink_name: &str,
-    real_sink: &str,
-    latency_ms: u32,
-) -> Result<(), AudioError> {
-    load_module(&[
-        "module-loopback".to_string(),
-        format!("source={sink_name}.monitor"),
-        format!("sink={real_sink}"),
-        format!("latency_msec={latency_ms}"),
-        "source_dont_move=true".to_string(),
-        "sink_dont_move=true".to_string(),
-    ])
 }
 
 /// What attempting a plan's branches produced: the branches that were loaded, and
@@ -659,8 +502,9 @@ pub struct BranchLoadReport {
 /// previous speaker and fail on the current one (#75). The failures come back as
 /// a set so the caller can still warn and let the next tick retry.
 ///
-/// `resolve` and `load` are injected so the decision is testable away from
-/// `pactl`; production passes [`resolve_branch_sink`] and [`load_branch_loopback`].
+/// `resolve` and `load` are injected so the decision is testable on its own;
+/// [`AudioRouter`] passes closures over its [`Graph`], resolving each prefix
+/// against the graph's sinks and loading through [`Graph::load_branch`].
 pub fn load_planned_branches<R, L>(
     branches: &[CombineBranch],
     mut resolve: R,
@@ -700,211 +544,6 @@ impl BranchLoadReport {
     }
 }
 
-/// Attempt every branch against the live PipeWire graph, resolving each prefix to
-/// its node and loading a delayed loopback from `sink_name`'s monitor.
-fn load_planned_branches_live(sink_name: &str, branches: &[CombineBranch]) -> BranchLoadReport {
-    load_planned_branches(branches, resolve_branch_sink, |branch, real_sink| {
-        load_branch_loopback(sink_name, real_sink, branch.latency_ms)
-    })
-}
-
-/// Tear down a combined sink built by [`route_to_combined`]: unload the null sink
-/// and every loopback whose arguments reference `sink_name`. Best-effort — a
-/// missing module is not an error (the combined sink may simply not exist yet).
-pub fn teardown_combined(sink_name: &str) -> Result<(), AudioError> {
-    unload_modules_matching(&[sink_name])
-}
-
-/// Whether the combined null sink is currently loaded, i.e. whether the graph can
-/// be reconciled in place — a branch retuned, a selection change applied — rather
-/// than built from scratch.
-pub fn combined_sink_exists(sink_name: &str) -> bool {
-    find_sink_with_prefix(sink_name).is_some()
-}
-
-/// Re-apply one branch's latency **without** tearing the combined sink down:
-/// unload just that speaker's loopback and reload it with the new offset. The
-/// shared null sink stays up, so whatever feeds it — the tone player or
-/// `librespot` — keeps streaming while the speaker is retuned.
-///
-/// Hardware seam (PipeWire/`pactl`): not exercised by CI.
-pub fn retune_combined_branch(sink_name: &str, branch: &CombineBranch) -> Result<(), AudioError> {
-    let real = resolve_branch_sink(branch)?;
-    // Match on both ends so only this branch's loopback is unloaded, leaving the
-    // null sink and the other speaker's branch untouched.
-    unload_modules_matching(&[
-        &format!("source={sink_name}.monitor"),
-        &format!("sink={real}"),
-    ])?;
-    load_branch_loopback(sink_name, &real, branch.latency_ms)
-}
-
-/// The loopback branches currently loaded for the combined sink `sink_name`,
-/// read out of the text `pactl list short modules` prints: one entry per
-/// `module-loopback` fed by `<sink_name>.monitor`, carrying the **resolved** sink
-/// node it feeds and its `latency_msec`. Pure — performs no I/O.
-///
-/// The input comes from a subprocess, so anything that does not parse is skipped
-/// rather than reported: a truncated or unexpected listing yields fewer branches,
-/// never a failure.
-pub fn loaded_branches(
-    listing: &str,
-    sink_name: &str,
-    live: Option<&[SinkInputStream]>,
-) -> Vec<CombineBranch> {
-    branch_modules(listing, sink_name)
-        .into_iter()
-        .filter(|(module_id, _)| match live {
-            // Nothing could be read about liveness: keep every branch, or a
-            // transient `pactl` failure would read as "everything is dead" and
-            // rebuild the whole graph under the audio it protects.
-            None => true,
-            Some(streams) => module_is_live(streams, *module_id),
-        })
-        .map(|(_, branch)| branch)
-        .collect()
-}
-
-/// Every loopback branch loaded for `sink_name`, paired with the id of the module
-/// carrying it — the id `pactl unload-module` takes, and the one a sink-input
-/// reports in `Owner Module:`. Pure — performs no I/O.
-fn branch_modules(listing: &str, sink_name: &str) -> Vec<(u32, CombineBranch)> {
-    let source = format!("source={sink_name}.monitor");
-    listing
-        .lines()
-        .filter_map(|line| {
-            let mut columns = line.split('\t');
-            let module_id: u32 = columns.next()?.parse().ok()?;
-            if columns.next()? != "module-loopback" {
-                return None;
-            }
-            let args: Vec<&str> = columns.next()?.split_whitespace().collect();
-            if !args.contains(&source.as_str()) {
-                return None;
-            }
-            let sink = args.iter().find_map(|a| a.strip_prefix("sink="))?;
-            // `pactl` accepts a `sink=` carrying no value and prints it back
-            // verbatim. It names no node, and `reconcile_combined` builds its
-            // unload pattern from that name: `sink=` is a substring of *every*
-            // loopback line of the combined sink, so admitting such a module as a
-            // branch would unload all of them.
-            if sink.is_empty() {
-                return None;
-            }
-            let latency_ms = args
-                .iter()
-                .find_map(|a| a.strip_prefix("latency_msec="))?
-                .parse()
-                .ok()?;
-            Some((
-                module_id,
-                CombineBranch {
-                    sink: sink.to_string(),
-                    latency_ms,
-                },
-            ))
-        })
-        .collect()
-}
-
-/// The module ids of the loopbacks loaded for `sink_name` that are loaded but
-/// dead: listed, yet feeding nothing. Empty when liveness could not be read.
-///
-/// They are invisible to [`reconcile_branches`], which only sees the branches
-/// [`loaded_branches`] hands it — and a dead branch is deliberately absent from
-/// those. So the caller unloads them by id before loading the replacement: two
-/// loopbacks onto the same speaker would double the audio (#75).
-fn dead_branch_modules(
-    listing: &str,
-    sink_name: &str,
-    live: Option<&[SinkInputStream]>,
-) -> Vec<u32> {
-    let Some(streams) = live else {
-        return Vec::new();
-    };
-    branch_modules(listing, sink_name)
-        .into_iter()
-        .filter(|(module_id, _)| !module_is_live(streams, *module_id))
-        .map(|(module_id, _)| module_id)
-        .collect()
-}
-
-/// One playback stream as `pactl list sink-inputs` reports it: the id of the
-/// module that owns it, and the index of the sink it feeds.
-///
-/// A `module-loopback`'s playback stream reports its own module id in
-/// `Owner Module:`, which is what ties a loaded branch to the audio it is — or is
-/// not — carrying. A plain client reports `n/a` there and owns no module of ours.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SinkInputStream {
-    /// The `Owner Module:` field.
-    pub owner_module: u32,
-    /// The `Sink:` field: PulseAudio's index of the sink this stream feeds.
-    pub sink: u32,
-}
-
-/// Read the text `pactl list sink-inputs` prints into one entry per stream that
-/// belongs to a module. Pure — performs no I/O.
-///
-/// The input comes from a subprocess, so anything that does not parse is skipped
-/// rather than reported.
-pub fn parse_sink_inputs(listing: &str) -> Vec<SinkInputStream> {
-    let mut streams = Vec::new();
-    let mut owner_module: Option<u32> = None;
-    let mut sink: Option<u32> = None;
-    let mut flush = |owner_module: &mut Option<u32>, sink: &mut Option<u32>| {
-        if let (Some(owner_module), Some(sink)) = (owner_module.take(), sink.take()) {
-            streams.push(SinkInputStream { owner_module, sink });
-        }
-    };
-    for line in listing.lines() {
-        let field = line.trim();
-        if field.starts_with("Sink Input #") {
-            // A new block starts: whatever the previous one gathered is complete.
-            flush(&mut owner_module, &mut sink);
-        } else if let Some(value) = field.strip_prefix("Owner Module:") {
-            // `n/a` (a plain client) fails to parse, which is exactly the skip
-            // wanted: its `Sink:` vouches for no module of ours.
-            owner_module = value.trim().parse().ok();
-        } else if let Some(value) = field.strip_prefix("Sink:") {
-            sink = value.trim().parse().ok();
-        }
-    }
-    flush(&mut owner_module, &mut sink);
-    streams
-}
-
-/// What a sink-input listing lets us conclude about liveness: `Some(streams)`
-/// when it could be read, `None` when it could not.
-///
-/// The distinction matters because the repair pass only runs while audio is
-/// flowing: with something playing, a listing carrying no stream at all is a
-/// failed `pactl`, not a graph where every branch is dead. Concluding the latter
-/// would rebuild the whole graph and interrupt the audio the pass exists to
-/// protect.
-pub fn sink_input_liveness(listing: &str) -> Option<Vec<SinkInputStream>> {
-    let streams = parse_sink_inputs(listing);
-    if streams.is_empty() {
-        return None;
-    }
-    Some(streams)
-}
-
-/// Whether a loaded `module-loopback` is actually feeding a speaker: it has a
-/// playback stream, and that stream sits on a real sink.
-///
-/// A module outlives its sink's node — a module is not a node — so a loopback can
-/// stay loaded while carrying nothing (#75).
-pub fn module_is_live(streams: &[SinkInputStream], module_id: u32) -> bool {
-    streams
-        .iter()
-        .any(|s| s.owner_module == module_id && s.sink != INVALID_SINK_INDEX)
-}
-
-/// PulseAudio's invalid sink index: what a loopback's playback stream reports
-/// once the node it was pinned to is gone.
-const INVALID_SINK_INDEX: u32 = u32::MAX;
-
 /// Whether the periodic repair pass has anything to do: a branch that is missing
 /// or dead only matters while audio is flowing towards it, and skipping keeps the
 /// idle cost at zero.
@@ -913,17 +552,17 @@ pub fn should_repair_branches(selection: &[SpeakerTarget], anything_playing: boo
 }
 
 /// How often the repair pass looks at the graph. Short enough that a speaker
-/// coming back is fed again within seconds, and it costs two `pactl` calls only
-/// while a selection is actually playing.
+/// coming back is fed again within seconds, and it reads the graph only while a
+/// selection is actually playing.
 pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 
 /// What a selection change has to do to an already-loaded combined sink: the
 /// branches to load and the loaded ones to unload.
 ///
-/// `to_unload` carries the branches as they were read from the module listing —
-/// i.e. with the **resolved** node name — because that is what the unload seam
-/// matches its `sink=` pattern on, while `to_load` carries the plan's
-/// `bluez_output.*` prefixes, which the load seam resolves.
+/// `to_unload` carries the branches as the graph reported them — i.e. with the
+/// **resolved** node name — because that is what [`AudioRouter`] matches against
+/// the loaded branches to find the ids to unload, while `to_load` carries the
+/// plan's `bluez_output.*` prefixes, which the router resolves at load time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchReconciliation {
     /// Branches of the spec that are not loaded as-is and must be loaded.
@@ -974,21 +613,11 @@ pub fn reconcile_branches(
     }
 }
 
-/// The sink node names listed at the previous reconciliation, so a node that has
-/// just appeared can be told from one that was already there. `None` until the
-/// first pass: what is listed then predates this process and is not new.
-static SINKS_LAST_PASS: Mutex<Option<Vec<String>>> = Mutex::new(None);
-
-/// Whether the previous pass wired a speaker that had just come back, and so owes
-/// this one a rebuild. See [`wires_a_new_sink`] for what that rebuild is for.
-static CONFIRMATION_DUE: Mutex<ConfirmationRegister> =
-    Mutex::new(ConfirmationRegister { due: false });
-
 /// The one-tick delay line that carries the confirming rebuild from the pass that
 /// armed it to the next one.
 ///
-/// Split out of [`reconcile_combined`] so the transition itself is pure and can be
-/// driven pass by pass in a test; the `pactl` seam around it cannot be.
+/// Split out of `AudioRouter::reconcile_combined` so the transition itself is
+/// pure and can be driven tick by tick in a test, without a graph around it.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ConfirmationRegister {
     due: bool,
@@ -1007,20 +636,8 @@ impl ConfirmationRegister {
     }
 }
 
-/// Take one of the repair pass's process-global registers, recovering the value a
-/// panicking pass left behind rather than propagating the poison.
-///
-/// A stale register costs one pass that rebuilds when it need not, or skips a
-/// rebuild it owed; every routing decision is re-read from `pactl` on the tick
-/// that uses it, so nothing here can send audio to the wrong place.
-fn lock_or_recover<T>(register: &Mutex<T>) -> MutexGuard<'_, T> {
-    register
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// The node names `pactl list short sinks` lists, second column.
-fn sink_nodes(sink_listing: &str) -> Vec<String> {
+pub(crate) fn sink_nodes(sink_listing: &str) -> Vec<String> {
     sink_listing
         .lines()
         .filter_map(|line| line.split('\t').nth(1))
@@ -1086,119 +703,6 @@ fn branch_is(up: &CombineBranch, planned: &CombineBranch) -> bool {
     up.latency_ms == planned.latency_ms && prefix_names_node(&planned.sink, &up.sink)
 }
 
-/// A `pactl` invocation described as data — program, arguments, environment —
-/// rather than as a built [`Command`], which cannot be inspected once created.
-/// Same seam as `build_librespot_args`: it is what lets a test pin what the
-/// subprocess is actually asked to do without spawning anything.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PactlCommand {
-    /// The program to run.
-    pub program: String,
-    /// The arguments, in order.
-    pub args: Vec<String>,
-    /// Environment variables set on top of the inherited environment.
-    pub env: Vec<(String, String)>,
-}
-
-/// Describe a `pactl` invocation carrying `args`, forcing `LC_ALL=C`: `pactl`'s
-/// long listings are translated, so under a non-English locale every label the
-/// parsers look for is absent and a dead branch reads as "cannot tell" forever
-/// (#75). The locale is added; the program and the arguments travel untouched.
-pub fn build_pactl_command(args: &[&str]) -> PactlCommand {
-    PactlCommand {
-        program: "pactl".to_string(),
-        // Owned copies: the description outlives the borrowed argument slice.
-        args: args.iter().map(|arg| (*arg).to_string()).collect(),
-        env: vec![("LC_ALL".to_string(), "C".to_string())],
-    }
-}
-
-/// The one place a [`PactlCommand`] becomes a runnable [`Command`]. Every call
-/// site goes through it, so the locale cannot be forgotten at a single seam —
-/// a built `Command` is opaque, so this is the only reviewable guarantee.
-fn pactl(args: &[&str]) -> Command {
-    let described = build_pactl_command(args);
-    let mut command = Command::new(&described.program);
-    command.args(&described.args);
-    for (key, value) in &described.env {
-        command.env(key, value);
-    }
-    command
-}
-
-/// The text `pactl list short modules` prints, for [`loaded_branches`] and
-/// [`unload_modules_matching`] to read.
-fn module_listing() -> Result<String, AudioError> {
-    let output = pactl(&["list", "short", "modules"])
-        .output()
-        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
-    if !output.status.success() {
-        return Err(AudioError::PipeWire(
-            "pactl list modules failed".to_string(),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// The text `pactl list sink-inputs` prints, for [`sink_input_liveness`] to read.
-fn sink_input_listing() -> Result<String, AudioError> {
-    let output = pactl(&["list", "sink-inputs"])
-        .output()
-        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
-    if !output.status.success() {
-        return Err(AudioError::PipeWire(
-            "pactl list sink-inputs failed".to_string(),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Unload every loaded module whose `pactl list short modules` line contains all
-/// of `patterns`. Best-effort — a missing module is not an error.
-fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
-    for line in module_listing()?.lines() {
-        if patterns.iter().all(|pattern| line.contains(pattern)) {
-            if let Some(id) = line.split('\t').next() {
-                // Best-effort: ignore failures so one stale module cannot block teardown.
-                let _ = pactl(&["unload-module", id]).status();
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Unload one module by the id `pactl` printed for it. Best-effort, like
-/// [`unload_modules_matching`]: a module that is already gone is not an error,
-/// and one failure must not stop the rest of a repair.
-fn unload_module_id(module_id: u32) {
-    let _ = pactl(&["unload-module", &module_id.to_string()]).status();
-}
-
-/// Load a PipeWire module via `pactl load-module <args...>`, mapping a failure to
-/// an [`AudioError::PipeWire`].
-fn load_module(args: &[String]) -> Result<(), AudioError> {
-    let mut argv: Vec<&str> = vec!["load-module"];
-    argv.extend(args.iter().map(String::as_str));
-    let status = pactl(&argv)
-        .status()
-        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(AudioError::PipeWire(format!(
-            "pactl load-module failed: {status}"
-        )))
-    }
-}
-
-/// Find the PipeWire sink BlueZ created for a speaker, matched by its MAC. The
-/// node name looks like `bluez_output.AA_BB_CC_DD_EE_FF.1` (colons → underscores),
-/// matched against the prefix from [`bluez_sink_prefix`].
-fn bluetooth_sink_for(mac: &str) -> Result<String, AudioError> {
-    find_sink_with_prefix(&bluez_sink_prefix(mac))
-        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
-}
-
 /// Pick the live PipeWire sink node-name matching `prefix` out of the text
 /// `pactl list short sinks` prints: tab-separated columns, the node name in the
 /// second one. A `bluez_output.<MAC>` prefix resolves to the line carrying the
@@ -1252,97 +756,308 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
                 .is_some_and(|rest| rest.starts_with('.')))
 }
 
-/// Resolve a live PipeWire sink node-name from its `bluez_output.*` prefix (which
-/// the combined-sink plan stores without the trailing card suffix). Returns
-/// `None` if no sink currently matches or `pactl` is unavailable.
-fn find_sink_with_prefix(prefix: &str) -> Option<String> {
-    sink_matching_prefix(&sink_listing()?, prefix)
+/// Render sink node names back into the listing shape the planning layer reads:
+/// one line per sink, tab-separated, the node name in the second column.
+///
+/// It exists because [`reachable_branches`], [`newly_listed_sinks`],
+/// [`wires_a_new_sink`] and [`sink_matching_prefix`] keep their text signatures
+/// while the [`Graph`] hands names over typed; keeping the conversion in one
+/// place is what lets those functions stay as they are.
+fn render_sink_listing(sinks: &[String]) -> String {
+    sinks
+        .iter()
+        .enumerate()
+        .map(|(index, name)| format!("{index}\t{name}\n"))
+        .collect()
 }
 
-/// The text `pactl list short sinks` prints, or `None` when it could not be read.
-/// The distinction matters: an unreadable listing is "cannot tell", and reading
-/// it as "no sink exists" would unload every branch and cut the sound.
-fn sink_listing() -> Option<String> {
-    let output = pactl(&["list", "short", "sinks"]).output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+/// The routing logic, driven through a [`Graph`] rather than through `pactl`
+/// directly (#79). It owns the two registers the reconciliation carries from one
+/// pass to the next, so two routers never see each other's history.
+pub struct AudioRouter {
+    /// The graph every routing decision is read from and applied to.
+    graph: Box<dyn Graph>,
+    /// The sink node names listed at the previous reconciliation; `None` until
+    /// the first pass. See [`newly_listed_sinks`].
+    sinks_last_pass: Option<Vec<String>>,
+    /// Whether the previous pass owes this one a rebuild. See
+    /// [`wires_a_new_sink`].
+    confirmation: ConfirmationRegister,
 }
 
-/// Resolve a logical playback target to the live PipeWire node name to hand a
-/// player. The target is either a `bluez_output.*` prefix (from
-/// [`bluez_sink_prefix`], which carries no card suffix) or an exact node name
-/// such as `blue2th_combined`, which resolves to itself. Errors rather than
-/// falling back to the default sink, so a vanished speaker — or an empty target,
-/// which no sink can carry — is reported instead of silently sending audio
-/// elsewhere.
-pub fn resolve_target_sink(target: &str) -> Result<String, AudioError> {
-    find_sink_with_prefix(target)
-        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for target {target}")))
-}
+impl AudioRouter {
+    /// A router over `graph`, with no history: its first pass treats every
+    /// listed sink as already known.
+    pub fn new(graph: Box<dyn Graph>) -> Self {
+        Self {
+            graph,
+            sinks_last_pass: None,
+            confirmation: ConfirmationRegister::default(),
+        }
+    }
 
-/// Make `sink` the default PipeWire sink (by node name) via `pactl`.
-fn set_default_sink(sink: &str) -> Result<(), AudioError> {
-    let status = pactl(&["set-default-sink", sink])
-        .status()
-        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(AudioError::PipeWire(format!(
-            "pactl set-default-sink failed: {status}"
-        )))
+    /// Apply the PipeWire routing a selection calls for: every non-empty selection
+    /// goes through the combined sink, so the target never moves when a speaker is
+    /// added or dropped — a moving target respawns `librespot` and leaves an open
+    /// stream behind (#70, #53). The single seam used by `/play` and by the Spotify
+    /// backend, so both agree on where audio goes.
+    pub fn route_for_targets(&mut self, speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
+        if speakers.is_empty() {
+            return Err(AudioError::NoSpeakerConnected);
+        }
+        self.route_to_combined(&combine_sink_plan(speakers))
+    }
+
+    /// Route playback to a combined sink spanning the plan's speakers, so the
+    /// player (which opens the default sink) reaches each of them, delayed by its
+    /// own offset for tunable sync. Built as a shared null sink the player feeds,
+    /// plus one delayed loopback per speaker into its real `bluez_output.*` sink.
+    ///
+    /// Idempotent — when the combined sink is already up it reconciles the
+    /// loopbacks in place instead of rebuilding, so a selection change does not
+    /// unload the null sink the player is streaming into; otherwise it builds the
+    /// whole graph from scratch.
+    fn route_to_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
+        // A sink list that cannot be read is "cannot tell", never "the combined
+        // sink does not exist": building on it would tear down a graph that is
+        // playing. The error goes back and the graph is left alone.
+        if self.find_sink_with_prefix(&spec.sink_name)?.is_some() {
+            return self.reconcile_combined(spec);
+        }
+        self.build_combined(spec)
+    }
+
+    /// Build the combined sink from nothing: the shared null sink, then one delayed
+    /// loopback per speaker. Tears any leftover down first so repeated calls do not
+    /// stack modules.
+    fn build_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
+        self.graph.teardown(&spec.sink_name)?;
+        // The shared virtual sink the player streams into.
+        self.graph.create_combined_sink(&spec.sink_name)?;
+        // One delayed loopback per speaker: combined.monitor -> real sink, carrying
+        // the branch latency the plan computed (base buffer plus the speaker's offset,
+        // the per-branch sync tuning).
+        let report = self.load_planned_branches_live(&spec.sink_name, &spec.branches);
+        // Make the player target the combined sink. Done even when a branch failed, so
+        // the speakers that did load are fed while the next tick retries the others.
+        self.graph.set_default_sink(&spec.sink_name)?;
+        report.into_result()
+    }
+
+    /// Bring an already-loaded combined sink in line with the plan, without ever
+    /// touching the null sink: that is what keeps a live stream playing across a
+    /// selection change, since re-pointing the default sink does not move a stream
+    /// that is already open.
+    ///
+    /// What happens to the branches is [`reconcile_branches`]'s decision, and it is
+    /// not "only what differs": a graph that matches the plan is left entirely alone,
+    /// while a single missing or dead branch rebuilds every branch of the selection —
+    /// see that function for the measurement behind it.
+    fn reconcile_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
+        let listed = self.graph.branches(&spec.sink_name)?;
+        // A dead branch reads as absent below, so the reconciliation would load its
+        // replacement without ever asking for the stale one to go. Unloaded here,
+        // before that load, so the speaker never has two loopbacks feeding it.
+        for dead in listed.iter().filter(|b| b.live == Some(false)) {
+            // Best-effort: a branch that is already gone is not an error, and one
+            // failure must not stop the rest of a repair.
+            let _ = self.graph.unload_branch(dead.id);
+        }
+        // Unknown liveness keeps the branch: a transient read failure would
+        // otherwise read as "everything is dead" and rebuild the whole graph
+        // under the audio it protects.
+        let kept: Vec<&LoadedBranch> = listed.iter().filter(|b| b.live != Some(false)).collect();
+        let loaded: Vec<CombineBranch> = kept
+            .iter()
+            // Cloned because `reconcile_branches` compares plain branches, and
+            // the ids stay behind in `kept` for the unloads below.
+            .map(|b| b.branch.clone())
+            .collect();
+        // Nothing read is "cannot tell", not "every speaker is gone": acting on
+        // it would unload every branch. So an unreadable list ends the pass, and
+        // so does one naming no sink at all — the same answer with the same
+        // meaning, in the shape a graph over text can only give.
+        let sinks = match self.graph.sinks() {
+            Ok(names) if !names.is_empty() => render_sink_listing(&names),
+            _ => return Ok(()),
+        };
+        // A speaker that is switched off is absent, not broken: asking for it on every
+        // tick is what rebuilds the graph under the ones that are playing.
+        let reachable = CombineSinkSpec {
+            // Cloned because the reachable plan is a spec of its own.
+            sink_name: spec.sink_name.clone(),
+            branches: reachable_branches(&spec.branches, &sinks),
+        };
+        let fresh = newly_listed_sinks(&self.sinks_last_pass, &sinks);
+        self.sinks_last_pass = Some(sink_nodes(&sinks));
+        let plan = reconcile_branches(&loaded, &reachable);
+        for up in kept.iter().filter(|up| {
+            plan.to_unload
+                .iter()
+                .any(|gone| gone.sink == up.branch.sink)
+        }) {
+            self.graph.unload_branch(up.id)?;
+        }
+        let report = self.load_planned_branches_live(&spec.sink_name, &plan.to_load);
+        // The sink already exists, so it is usually already the default; this repairs
+        // the case where the default moved away meanwhile — another application, or a
+        // device that came back. Re-pointing the default at the sink a stream is
+        // already on leaves that stream where it is.
+        self.graph.set_default_sink(&spec.sink_name)?;
+
+        // Arm the next pass if this one wired a speaker that came back, and learn
+        // whether the previous one armed us — one exchange, so a pass can both confirm
+        // and arm, and so the confirming rebuild below (which loads outside `plan`)
+        // can never arm itself into a loop.
+        let arms_the_next_pass = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
+        let confirm = self.confirmation.take_and_arm(arms_the_next_pass);
+        if !confirm {
+            return report.into_result();
+        }
+        // The previous pass wired a speaker that had just come back, and that load did
+        // not start it; see `wires_a_new_sink`. Rebuilding every branch now — one tick
+        // later, which is the measured gap — starts it.
+        //
+        // `report` is dropped rather than merged into the answer: `plan.to_load` is
+        // either empty or the whole of `reachable.branches`, so this rebuild
+        // re-attempts every branch the pass attempted and `second` reports the same
+        // failures against a fresher reading of the graph.
+        for branch in self.graph.branches(&spec.sink_name)? {
+            self.graph.unload_branch(branch.id)?;
+        }
+        let second = self.load_planned_branches_live(&spec.sink_name, &reachable.branches);
+        self.graph.set_default_sink(&spec.sink_name)?;
+        second.into_result()
+    }
+
+    /// Attempt every branch against the graph, resolving each prefix to its node
+    /// and loading a delayed loopback from `sink_name`'s monitor.
+    fn load_planned_branches_live(
+        &mut self,
+        sink_name: &str,
+        branches: &[CombineBranch],
+    ) -> BranchLoadReport {
+        // `load_planned_branches` holds both closures at once and each one needs
+        // the graph, so the exclusive borrow is handed out per call instead.
+        let graph = RefCell::new(&mut self.graph);
+        load_planned_branches(
+            branches,
+            |branch| resolve_branch_sink(graph.borrow_mut().as_mut(), branch),
+            |branch, real_sink| {
+                graph
+                    .borrow_mut()
+                    .load_branch(sink_name, real_sink, branch.latency_ms)
+            },
+        )
+    }
+
+    /// Re-apply one branch's latency **without** tearing the combined sink down:
+    /// unload just that speaker's loopback and reload it with the new offset. The
+    /// shared null sink stays up, so whatever feeds it — the tone player or
+    /// `librespot` — keeps streaming while the speaker is retuned.
+    pub fn retune_branch(
+        &mut self,
+        sink_name: &str,
+        branch: &CombineBranch,
+    ) -> Result<(), AudioError> {
+        let real = resolve_branch_sink(self.graph.as_mut(), branch)?;
+        // Only the branches feeding this speaker's node are unloaded, leaving the
+        // null sink and the other speaker's branch untouched.
+        for up in self.graph.branches(sink_name)? {
+            if up.branch.sink == real {
+                self.graph.unload_branch(up.id)?;
+            }
+        }
+        self.graph.load_branch(sink_name, &real, branch.latency_ms)
+    }
+
+    /// Tear down a combined sink built by [`Self::route_for_targets`]: the null
+    /// sink and every branch belonging to it. A sink that does not exist yet is
+    /// not an error.
+    pub fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        self.graph.teardown(sink_name)
+    }
+
+    /// Whether the combined null sink is currently loaded, i.e. whether the graph can
+    /// be reconciled in place — a branch retuned, a selection change applied — rather
+    /// than built from scratch. An unreadable graph answers `false`.
+    pub fn combined_sink_exists(&mut self, sink_name: &str) -> bool {
+        matches!(self.find_sink_with_prefix(sink_name), Ok(Some(_)))
+    }
+
+    /// Resolve a logical playback target to the live PipeWire node name to hand a
+    /// player. The target is either a `bluez_output.*` prefix (from
+    /// [`bluez_sink_prefix`], which carries no card suffix) or an exact node name
+    /// such as `blue2th_combined`, which resolves to itself. Errors rather than
+    /// falling back to the default sink, so a vanished speaker — or an empty target,
+    /// which no sink can carry — is reported instead of silently sending audio
+    /// elsewhere.
+    pub fn resolve_target_sink(&mut self, target: &str) -> Result<String, AudioError> {
+        find_sink_with_prefix(self.graph.as_mut(), target)
+            .ok()
+            .flatten()
+            .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for target {target}")))
+    }
+
+    /// Set the speaker's sink volume by sink name, so it matches what
+    /// [`Self::sink_volume`] reads back even if the system default differs. The
+    /// level is clamped here, before it reaches the graph.
+    pub fn set_sink_volume(&mut self, mac: &str, level: f32) -> Result<(), AudioError> {
+        let sink = self.bluetooth_sink_for(mac)?;
+        self.graph.set_sink_volume(&sink, clamp_volume(level))
+    }
+
+    /// Read the live volume of the speaker's sink — picks up a change made on the
+    /// speaker itself (AVRCP). Returns `None` on any failure.
+    pub fn sink_volume(&mut self, mac: &str) -> Option<f32> {
+        let sink = self.bluetooth_sink_for(mac).ok()?;
+        self.graph.sink_volume(&sink)
+    }
+
+    /// Find the sink BlueZ created for a speaker, matched by its MAC. The node
+    /// name looks like `bluez_output.AA_BB_CC_DD_EE_FF.1` (colons → underscores),
+    /// matched against the prefix from [`bluez_sink_prefix`].
+    fn bluetooth_sink_for(&mut self, mac: &str) -> Result<String, AudioError> {
+        find_sink_with_prefix(self.graph.as_mut(), &bluez_sink_prefix(mac))
+            .ok()
+            .flatten()
+            .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
+    }
+
+    /// [`find_sink_with_prefix`] over this router's graph.
+    fn find_sink_with_prefix(&mut self, prefix: &str) -> Result<Option<String>, AudioError> {
+        find_sink_with_prefix(self.graph.as_mut(), prefix)
     }
 }
 
-/// Set the speaker's PipeWire sink volume (`0.0..=1.0`) by sink name, so it
-/// matches what `sink_volume` reads back even if the system default differs.
-pub fn set_sink_volume(mac: &str, level: f32) -> Result<(), AudioError> {
-    let sink = bluetooth_sink_for(mac)?;
-    let pct = (clamp_volume(level) * 100.0).round() as u32;
-    let level_arg = format!("{pct}%");
-    let status = pactl(&["set-sink-volume", &sink, &level_arg])
-        .status()
-        .map_err(|e| AudioError::PipeWire(format!("failed to run pactl: {e}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(AudioError::PipeWire(format!(
-            "pactl set-sink-volume failed: {status}"
-        )))
+/// Resolve a live sink node-name from its `bluez_output.*` prefix (which the
+/// combined-sink plan stores without the trailing card suffix). `Ok(None)` when
+/// no sink currently matches; an `Err` is a sink list that could not be read,
+/// which a caller must not take for an absent sink.
+///
+/// An empty prefix names no node, so it resolves to nothing without the graph
+/// being asked.
+fn find_sink_with_prefix(
+    graph: &mut dyn Graph,
+    prefix: &str,
+) -> Result<Option<String>, AudioError> {
+    if prefix.is_empty() {
+        return Ok(None);
     }
+    let sinks = graph.sinks()?;
+    Ok(sink_matching_prefix(&render_sink_listing(&sinks), prefix))
 }
 
-/// Read the live volume of the speaker's PipeWire sink — picks up a change made
-/// on the speaker itself (AVRCP). Normally `0.0..=1.0`, but an over-amplified
-/// sink reads above `1.0` (pactl prints e.g. "153%"). Returns `None` on any
-/// failure.
-pub fn sink_volume(mac: &str) -> Option<f32> {
-    let sink = bluetooth_sink_for(mac).ok()?;
-    let output = pactl(&["get-sink-volume", &sink]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    // e.g. "Volume: front-left: 38666 /  59% / -13.75 dB,   front-right: ..."
-    parse_first_percent(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Extract the first `<n>%` from `pactl get-sink-volume` output as a fraction
-/// (`59%` -> `0.59`). Above `1.0` for an over-amplified sink, which prints `153%`.
-fn parse_first_percent(text: &str) -> Option<f32> {
-    let pct_end = text.find('%')?;
-    // Collect the digit run immediately before '%' (char-wise, no byte slicing).
-    let digits: String = text[..pct_end]
-        .chars()
-        .rev()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    let pct: u32 = digits.parse().ok()?;
-    Some(pct as f32 / 100.0)
+/// Resolve a branch's `bluez_output.*` prefix to the live node name, erroring
+/// rather than sending audio elsewhere when the speaker's sink has vanished.
+fn resolve_branch_sink(
+    graph: &mut dyn Graph,
+    branch: &CombineBranch,
+) -> Result<String, AudioError> {
+    find_sink_with_prefix(graph, &branch.sink)
+        .ok()
+        .flatten()
+        .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for prefix {}", branch.sink)))
 }
 
 #[cfg(test)]
@@ -1425,19 +1140,6 @@ mod tests {
         let mut engine = AudioEngine::new();
         let state = engine.stop().expect("idempotent stop succeeds");
         assert_eq!(state.status, PlaybackStatus::Stopped);
-    }
-
-    // The live sink volume read from `pactl get-sink-volume` is parsed into
-    // `0.0..=1.0`.
-    #[test]
-    fn test_parse_first_percent_reads_volume_fraction() {
-        let line = "Volume: front-left: 38666 /  59% / -13.75 dB,   front-right: 38666 /  59%";
-        assert_eq!(parse_first_percent(line), Some(0.59));
-        assert_eq!(
-            parse_first_percent("Volume: front-left: 0 / 0% / -inf dB"),
-            Some(0.0)
-        );
-        assert_eq!(parse_first_percent("no percentage here"), None);
     }
 
     // Criterion: all levels readable and equal -> that value is reported.
@@ -1704,55 +1406,6 @@ mod tests {
         );
     }
 
-    // Criterion: that function is the single place the base is applied, so what
-    // `loaded_branches` parses out of a loaded module and what the plan asks for
-    // are the same quantity. Applying the base only at load time would have every
-    // reconciliation compare a loaded 120 against a planned 70, see a mismatch and
-    // reload every branch on every tick — an audio interruption every five seconds.
-    #[test]
-    fn test_branch_latency_round_trips_from_the_plan_through_the_module_listing() {
-        let spec = combine_sink_plan(&[
-            SpeakerTarget {
-                address: "80:99:E7:63:50:29".to_string(),
-                offset_ms: 0,
-            },
-            SpeakerTarget {
-                address: "11:22:33:44:55:66".to_string(),
-                offset_ms: 70,
-            },
-        ]);
-        // What `pactl list short modules` prints back for a graph loaded from this
-        // very plan: one loopback per branch, on the resolved node, carrying the
-        // latency the plan asked for.
-        let listing: String = spec
-            .branches
-            .iter()
-            .enumerate()
-            .map(|(index, branch)| {
-                format!(
-                    "{}\tmodule-loopback\tsource={}.monitor sink={}.1 latency_msec={} source_dont_move=true sink_dont_move=true\n",
-                    27 + index,
-                    spec.sink_name,
-                    branch.sink,
-                    branch.latency_ms,
-                )
-            })
-            .collect();
-
-        let loaded = loaded_branches(&listing, &spec.sink_name, None);
-
-        assert_eq!(
-            loaded.iter().map(|b| b.latency_ms).collect::<Vec<_>>(),
-            vec![50, 120],
-            "the plan already carries the base, so the loaded modules do too"
-        );
-        assert_eq!(
-            reconcile_branches(&loaded, &spec),
-            BranchReconciliation::default(),
-            "a graph loaded from the plan reconciles against it as a no-op"
-        );
-    }
-
     // Criterion: `route_for_targets` takes the combined path for every non-empty
     // selection. The routing itself is a `pactl` seam CI cannot exercise, so the
     // pure half is pinned instead: the sink the plan names is the sink the
@@ -1789,8 +1442,9 @@ mod tests {
     // which is what makes this testable without hardware.
     #[test]
     fn test_route_for_targets_empty_selection_is_refused() {
+        let mut router = AudioRouter::new(Box::new(crate::graph::fake::FakeGraph::new()));
         assert!(matches!(
-            route_for_targets(&[]),
+            router.route_for_targets(&[]),
             Err(AudioError::NoSpeakerConnected)
         ));
     }
@@ -1943,187 +1597,6 @@ mod tests {
         );
     }
 
-    // Criterion: `start()` propagates a *resolution failure*, so the resolver
-    // must report one rather than hand the target back unresolved — a silent
-    // fallback to the default sink is the defect this change fixes. Needs no
-    // hardware and holds either way: with no `pactl` the lookup fails outright,
-    // and with a live one no sink can carry this name.
-    #[test]
-    fn test_resolve_target_sink_for_an_absent_node_is_an_error() {
-        assert!(
-            resolve_target_sink("blue2th_no_such_sink_ever").is_err(),
-            "an unresolvable target must be an error, never the target handed back"
-        );
-    }
-
-    // The empty target `spotify_target_sink(&[])` yields must not resolve to the
-    // first sink `pactl` happens to list.
-    #[test]
-    fn test_resolve_target_sink_for_an_empty_target_is_an_error() {
-        assert!(
-            resolve_target_sink("").is_err(),
-            "an empty target names no node and must not resolve to an arbitrary sink"
-        );
-    }
-
-    /// A realistic `pactl list short modules` block: index, module name and the
-    /// argument string, tab-separated. It carries the combined sink's own null
-    /// sink, its two delayed loopbacks, a loopback belonging to a *different*
-    /// combined sink, a loopback feeding *into* the combined sink (whose
-    /// `sink=` mentions it but which is not one of its branches) and ordinary
-    /// unrelated modules.
-    ///
-    /// The last three lines are the near misses, each shaped like a branch on one
-    /// axis only: a module that is not a loopback, a loopback whose `source=`
-    /// merely *contains* ours inside a longer token, and a loopback whose `sink=`
-    /// carries no value. The module ids are the wide ones PipeWire hands out.
-    ///
-    /// The two branch latencies are what a plan at offsets 0 and 250 loads, base
-    /// included, so a listing captured from a healthy graph reconciles clean
-    /// against [`two_speaker_spec`].
-    const PACTL_MODULES: &str = concat!(
-        "10\tmodule-device-restore\t\n",
-        "26\tmodule-null-sink\tsink_name=blue2th_combined sink_properties=node.description=blue2th_combined\n",
-        "27\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.80_99_E7_63_50_29.1 latency_msec=50 source_dont_move=true sink_dont_move=true\n",
-        "28\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.11_22_33_44_55_66.1 latency_msec=300 source_dont_move=true sink_dont_move=true\n",
-        "29\tmodule-loopback\tsource=other_combined.monitor sink=bluez_output.AA_BB_CC_DD_EE_FF.1 latency_msec=120 source_dont_move=true sink_dont_move=true\n",
-        "30\tmodule-loopback\tsource=alsa_input.pci-0000_00_1f.3.analog-stereo sink=blue2th_combined latency_msec=40\n",
-        "31\tmodule-switch-on-connect\t\n",
-        "536870915\tmodule-remap-sink\tsink_name=remap source=blue2th_combined.monitor sink=bluez_output.99_88_77_66_55_44.1 latency_msec=0\n",
-        "536870916\tmodule-loopback\tsource=alsa_input.pci-0000_00_1f.3.analog-stereo sink=bluez_output.99_88_77_66_55_44.1 latency_msec=0 sink_properties=media.name=source=blue2th_combined.monitor\n",
-        "536870917\tmodule-loopback\tsource=blue2th_combined.monitor sink= latency_msec=20\t\n",
-    );
-
-    // A module is a branch because of the *name* in its second column, not because
-    // its arguments look like one: `unload_modules_matching` would otherwise unload
-    // a module blue2th never created. Nothing else in the listing distinguishes the
-    // `module-remap-sink` line, so dropping the name check leaves no other trace.
-    #[test]
-    fn test_loaded_branches_ignores_a_non_loopback_module_shaped_like_a_branch() {
-        assert!(
-            !loaded_branches(PACTL_MODULES, "blue2th_combined", None)
-                .iter()
-                .any(|b| b.sink.contains("99_88_77_66_55_44")),
-            "only module-loopback lines are branches"
-        );
-    }
-
-    // `source=` identifies a branch as a whole argument token: a loopback carrying
-    // `source=blue2th_combined.monitor` *inside* a longer token (here a
-    // `sink_properties=media.name=…`) belongs to another source entirely, and
-    // matching it as a substring would hand back a branch pointing at the wrong
-    // speaker.
-    #[test]
-    fn test_loaded_branches_ignores_a_loopback_whose_source_only_contains_ours() {
-        let line = "536870916\tmodule-loopback\tsource=alsa_input.pci-0000_00_1f.3.analog-stereo sink=bluez_output.99_88_77_66_55_44.1 latency_msec=0 sink_properties=media.name=source=blue2th_combined.monitor\n";
-        assert!(
-            line.contains("source=blue2th_combined.monitor"),
-            "the line does contain the marker, so only a token-wise match rejects it"
-        );
-
-        assert!(
-            loaded_branches(line, "blue2th_combined", None).is_empty(),
-            "the marker sits inside another token, so this is not one of our branches"
-        );
-    }
-
-    // `pactl` accepts a `sink=` carrying no value and prints it back verbatim
-    // (checked against PipeWire). Such a module names no node, and
-    // `reconcile_combined` builds its unload pattern from that name — `sink=`,
-    // which every loopback line of the combined sink contains. Admitting it as a
-    // branch would put it in `to_unload` and take every other branch with it.
-    #[test]
-    fn test_loaded_branches_skips_a_loopback_whose_sink_names_no_node() {
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", None);
-
-        assert!(
-            branches.iter().all(|b| !b.sink.is_empty()),
-            "a branch must name a node, got {branches:?}"
-        );
-        assert!(
-            PACTL_MODULES
-                .lines()
-                .filter(|l| l.contains("source=blue2th_combined.monitor"))
-                .all(|l| l.contains("sink=")),
-            "the unload pattern an empty sink builds matches every branch line"
-        );
-    }
-
-    // Criterion: a pure function reads `pactl list short modules` and returns the
-    // loopback branches loaded for a given combined sink, each with the real sink
-    // it feeds and its `latency_msec`.
-    #[test]
-    fn test_loaded_branches_reads_each_loopback_sink_and_latency() {
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", None);
-
-        assert_eq!(
-            branches,
-            vec![
-                CombineBranch {
-                    sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-                    latency_ms: 50,
-                },
-                CombineBranch {
-                    sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                    latency_ms: 300,
-                },
-            ],
-            "the two loopbacks fed by blue2th_combined.monitor, with their latencies"
-        );
-    }
-
-    // Criterion: the parser ignores modules belonging to another sink name, and
-    // any module that is not a `module-loopback` — in particular the null sink,
-    // which a selection change must never unload.
-    #[test]
-    fn test_loaded_branches_ignores_other_sinks_and_non_loopback_modules() {
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", None);
-
-        assert!(
-            !branches
-                .iter()
-                .any(|b| b.sink.contains("AA_BB_CC_DD_EE_FF")),
-            "a loopback of another combined sink is not one of our branches: {branches:?}"
-        );
-        assert!(
-            !branches.iter().any(|b| b.sink.contains("blue2th_combined")),
-            "neither the null sink nor a loopback feeding into it is a branch: {branches:?}"
-        );
-    }
-
-    // Criterion: the same parser reads another sink's branches without picking
-    // ours up, i.e. the match is on `source=<sink_name>.monitor`.
-    #[test]
-    fn test_loaded_branches_reads_only_the_named_sinks_branches() {
-        let branches = loaded_branches(PACTL_MODULES, "other_combined", None);
-
-        assert_eq!(
-            branches,
-            vec![CombineBranch {
-                sink: "bluez_output.AA_BB_CC_DD_EE_FF.1".to_string(),
-                latency_ms: 120,
-            }],
-            "only the loopback fed by other_combined.monitor"
-        );
-    }
-
-    // Criterion: a listing with nothing matching yields an empty set rather than
-    // a panic — the input comes from a subprocess and may be anything.
-    #[test]
-    fn test_loaded_branches_without_a_matching_module_is_empty() {
-        assert!(loaded_branches("", "blue2th_combined", None).is_empty());
-        assert!(loaded_branches(
-            "10\tmodule-device-restore\t\n31\tmodule-switch-on-connect\t\n",
-            "blue2th_combined",
-            None
-        )
-        .is_empty());
-        assert!(
-            loaded_branches("27\tmodule-loopback", "blue2th_combined", None).is_empty(),
-            "a truncated line names no sink and no latency, so it is no branch"
-        );
-    }
-
     /// The spec the reconciliation tests compare a loaded graph against: two
     /// speakers, offsets 0 and 250 ms, branch sinks held as `bluez_output.*`
     /// **prefixes** the way [`combine_sink_plan`] builds them.
@@ -2138,19 +1611,6 @@ mod tests {
                 offset_ms: 250,
             },
         ])
-    }
-
-    // Criterion: a speaker present in both the loaded set and the spec with the
-    // same latency appears in neither list — an unchanged selection touches
-    // nothing, which is what keeps the stream alive.
-    #[test]
-    fn test_reconcile_branches_unchanged_selection_changes_nothing() {
-        let spec = two_speaker_spec();
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
-
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert_eq!(plan, BranchReconciliation::default());
     }
 
     // Criterion: a speaker added to the selection rebuilds *every* branch, the
@@ -2293,77 +1753,6 @@ mod tests {
         );
     }
 
-    // Criterion: a speaker dropped from the selection yields exactly one unload,
-    // naming the resolved node its loopback feeds, and never the null sink.
-    #[test]
-    fn test_reconcile_branches_dropped_speaker_unloads_only_that_branch() {
-        let spec = combine_sink_plan(&[SpeakerTarget {
-            address: "80:99:E7:63:50:29".to_string(),
-            offset_ms: 0,
-        }]);
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
-
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert!(
-            plan.to_load.is_empty(),
-            "the remaining speaker's loopback is already loaded, got {:?}",
-            plan.to_load
-        );
-        assert_eq!(
-            plan.to_unload,
-            vec![CombineBranch {
-                sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: branch_latency_ms(250),
-            }],
-            "only the deselected speaker's loopback is unloaded"
-        );
-        assert!(
-            !plan
-                .to_unload
-                .iter()
-                .any(|b| b.sink.contains(&spec.sink_name)),
-            "the null sink is never unloaded by a selection change: {:?}",
-            plan.to_unload
-        );
-    }
-
-    // Criterion: a speaker present in both but with a different latency is
-    // reloaded — the new branch is loaded and the stale loopback must not
-    // survive.
-    #[test]
-    fn test_reconcile_branches_latency_change_replaces_the_stale_loopback() {
-        let spec = combine_sink_plan(&[
-            SpeakerTarget {
-                address: "80:99:E7:63:50:29".to_string(),
-                offset_ms: 0,
-            },
-            SpeakerTarget {
-                address: "11:22:33:44:55:66".to_string(),
-                offset_ms: 400,
-            },
-        ]);
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
-
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert_eq!(
-            plan.to_load, spec.branches,
-            "the retuned speaker carries its new latency, and every branch is reloaded with it"
-        );
-        assert_eq!(
-            plan.to_unload, loaded,
-            "every loaded loopback is unloaded, the stale one included"
-        );
-        assert!(
-            plan.to_load
-                .iter()
-                .any(|b| b.latency_ms == branch_latency_ms(400)),
-            "the new offset reaches the plan, got {:?}",
-            plan.to_load
-        );
-    }
-
     // Criterion: `CombineBranch::sink` holds the `bluez_output.<MAC>` prefix while
     // a loaded module names the resolved node `bluez_output.<MAC>.1`. Without
     // this, reconciliation would believe nothing is loaded and rebuild the whole
@@ -2478,230 +1867,6 @@ mod tests {
                 latency_ms: 0,
             }],
             "the other speaker's loopback is not the selected one and goes"
-        );
-    }
-
-    /// A realistic `pactl list sink-inputs` block, in the shape captured from a
-    /// live system with a probe loopback loaded: a plain client reports
-    /// `Owner Module: n/a`, while a loopback's playback stream reports the id of
-    /// the module that owns it.
-    ///
-    /// Module 27 is the first branch of [`PACTL_MODULES`] and feeds a real sink;
-    /// module 28 is its second branch, and its stream sits on `4294967295` —
-    /// PulseAudio's invalid index, the signature captured while a returned
-    /// speaker stayed silent (#75).
-    const PACTL_SINK_INPUTS: &str = concat!(
-        "Sink Input #135\n",
-        "\tDriver: PipeWire\n",
-        "\tOwner Module: n/a\n",
-        "\tClient: 134\n",
-        "\tSink: 5691\n",
-        "\tProperties:\n",
-        "\t\tapplication.name = \"speech-dispatcher-dummy\"\n",
-        "\t\tnode.name = \"speech-dispatcher-dummy\"\n",
-        "\n",
-        "Sink Input #28098\n",
-        "\tDriver: PipeWire\n",
-        "\tOwner Module: 27\n",
-        "\tClient: n/a\n",
-        "\tSink: 28091\n",
-        "\tProperties:\n",
-        "\t\tnode.name = \"output.loopback-6815-13\"\n",
-        "\t\tmedia.name = \"loopback-6815-13 output\"\n",
-        "\n",
-        "Sink Input #28099\n",
-        "\tDriver: PipeWire\n",
-        "\tOwner Module: 28\n",
-        "\tClient: n/a\n",
-        "\tSink: 4294967295\n",
-        "\tProperties:\n",
-        "\t\tnode.name = \"output.loopback-6815-14\"\n",
-        "\t\tmedia.name = \"loopback-6815-14 output\"\n",
-    );
-
-    // Criterion: a pure function parses `pactl list sink-inputs` into, for each
-    // stream, its owning module id and the sink it feeds.
-    #[test]
-    fn test_parse_sink_inputs_reads_each_streams_module_and_sink() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        assert_eq!(
-            streams,
-            vec![
-                SinkInputStream {
-                    owner_module: 27,
-                    sink: 28091,
-                },
-                SinkInputStream {
-                    owner_module: 28,
-                    sink: INVALID_SINK_INDEX,
-                },
-            ],
-            "one entry per stream owning a module, with the sink it feeds"
-        );
-    }
-
-    // Criterion: a stream with no owning module (`Owner Module: n/a`, what a plain
-    // client reports) is ignored — it belongs to no module of ours, and taking its
-    // `Sink:` would make a foreign stream vouch for one of our branches.
-    #[test]
-    fn test_parse_sink_inputs_skips_a_stream_owning_no_module() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        assert!(
-            !streams.iter().any(|s| s.sink == 5691),
-            "the sink of the `n/a` client must not appear: {streams:?}"
-        );
-        assert_eq!(streams.len(), 2, "only the two module-owned streams");
-    }
-
-    // Criterion: a loopback module with a stream on a real sink is live.
-    #[test]
-    fn test_module_is_live_with_a_stream_on_a_real_sink_is_live() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        assert!(
-            module_is_live(&streams, 27),
-            "module 27's stream feeds sink 28091, so the branch carries audio"
-        );
-    }
-
-    // Criterion: a module whose stream sits on `4294967295` is not live. This is
-    // the captured signature of the defect: the loopback survived its sink's node,
-    // `sink_dont_move=true` kept it from re-attaching, and it now feeds nothing.
-    #[test]
-    fn test_module_is_live_with_a_stream_on_the_invalid_sink_is_not_live() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        assert!(
-            !module_is_live(&streams, 28),
-            "a stream on {INVALID_SINK_INDEX} feeds nothing, so the branch is dead"
-        );
-    }
-
-    // Criterion: a module with no sink-input at all is not live.
-    #[test]
-    fn test_module_is_live_without_any_stream_is_not_live() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        assert!(
-            !streams.iter().any(|s| s.owner_module == 29),
-            "module 29 owns no stream in the fixture, which is the case under test"
-        );
-        assert!(
-            !module_is_live(&streams, 29),
-            "no stream at all is as dead as a stream on the invalid sink"
-        );
-    }
-
-    // Criterion: `loaded_branches` counts only live branches, so a stale loopback
-    // reads as absent — which is what makes the reconciliation rebuild it.
-    #[test]
-    fn test_loaded_branches_drops_a_branch_whose_module_is_not_live() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", Some(&streams));
-
-        assert_eq!(
-            branches,
-            vec![CombineBranch {
-                sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-                latency_ms: 50,
-            }],
-            "module 28's loopback feeds nothing, so its branch is absent"
-        );
-    }
-
-    // Criterion: `loaded_branches` keeps a branch whose module is live — the
-    // healthy graph must stay a no-op, or the pass would churn the audio it
-    // protects.
-    #[test]
-    fn test_loaded_branches_keeps_a_branch_whose_module_is_live() {
-        let streams = vec![
-            SinkInputStream {
-                owner_module: 27,
-                sink: 28091,
-            },
-            SinkInputStream {
-                owner_module: 28,
-                sink: 28092,
-            },
-        ];
-
-        let branches = loaded_branches(PACTL_MODULES, "blue2th_combined", Some(&streams));
-        let plan = reconcile_branches(&branches, &two_speaker_spec());
-
-        assert_eq!(branches.len(), 2, "both loopbacks feed a real sink");
-        assert_eq!(
-            plan,
-            BranchReconciliation::default(),
-            "every planned branch is live, so nothing is loaded and nothing unloaded"
-        );
-    }
-
-    // Criterion: the stale module is unloaded before the replacement is loaded.
-    // Only the pure half is pinnable here — once the dead branch reads as absent,
-    // the reconciliation asks for that speaker to be loaded again. Performing the
-    // unload first is `reconcile_combined`'s `pactl` seam, which CI does not run.
-    #[test]
-    fn test_reconcile_branches_asks_to_reload_a_branch_ruled_dead() {
-        let spec = two_speaker_spec();
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, Some(&streams));
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert_eq!(
-            plan.to_load, spec.branches,
-            "the dead speaker's branch is rebuilt, and the live ones with it"
-        );
-        assert_eq!(
-            plan.to_unload, loaded,
-            "the branch that survived is torn down too, so both start in one pass"
-        );
-    }
-
-    // Criterion: an empty or truncated listing yields no streams.
-    #[test]
-    fn test_parse_sink_inputs_of_an_unreadable_listing_yields_no_streams() {
-        assert!(parse_sink_inputs("").is_empty());
-        assert!(
-            parse_sink_inputs("Sink Input #28098\n\tDriver: PipeWire\n").is_empty(),
-            "a stream naming neither module nor sink is no stream"
-        );
-    }
-
-    // Criterion: an unreadable listing reads as "cannot tell", not "everything is
-    // dead" — the pass only runs while audio flows, so a listing with no stream at
-    // all is a failed `pactl`, and treating it as death would rebuild the whole
-    // graph and cut the sound.
-    #[test]
-    fn test_sink_input_liveness_of_an_unreadable_listing_is_unknown() {
-        assert!(
-            sink_input_liveness("").is_none(),
-            "an empty listing tells us nothing about any branch"
-        );
-        assert!(
-            sink_input_liveness(PACTL_SINK_INPUTS).is_some(),
-            "a listing that parses does tell us"
-        );
-    }
-
-    // Criterion: an unreadable listing must not empty the branch set — the caller
-    // keeps every loaded branch, so the reconciliation stays a no-op.
-    #[test]
-    fn test_loaded_branches_with_unknown_liveness_keeps_every_branch() {
-        let spec = two_speaker_spec();
-        let unknown = sink_input_liveness("");
-
-        let loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, unknown.as_deref());
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert_eq!(loaded.len(), 2, "cannot tell is not everything is dead");
-        assert_eq!(
-            plan,
-            BranchReconciliation::default(),
-            "a transient pactl failure must not rebuild the graph"
         );
     }
 
@@ -2912,207 +2077,6 @@ mod tests {
         );
     }
 
-    /// A `pactl list sink-inputs` block as it really prints under the operator's
-    /// `fr_FR.UTF-8`: every label is translated, the block header included —
-    /// captured from the running backend, where `sink_input_listing ok=true
-    /// len=7172` came with `live=None` on every tick (#75).
-    const PACTL_SINK_INPUTS_FR: &str = concat!(
-        "Entrée de la destination #135\n",
-        "\tPilote : PipeWire\n",
-        "\tModule du propriétaire : n/d\n",
-        "\tClient : 134\n",
-        "\tDestination : 29979\n",
-        "\tSpécification de l’échantillon : s16le 1ch 44100Hz\n",
-        "Entrée de la destination #31519\n",
-        "\tPilote : PipeWire\n",
-        "\tModule du propriétaire : 536870917\n",
-        "\tClient : n/d\n",
-        "\tDestination : 31506\n",
-        "\tSpécification de l’échantillon : float32le 2ch 48000Hz\n",
-    );
-
-    // Criterion: every `pactl` invocation carries `LC_ALL=C`. The rule is pinned on
-    // the pure description of the command, because a `std::process::Command` cannot
-    // be inspected once built — the same seam `build_librespot_args` uses for argv.
-    #[test]
-    fn test_build_pactl_command_forces_the_c_locale() {
-        let described = build_pactl_command(&["list", "sink-inputs"]);
-
-        assert!(
-            described
-                .env
-                .iter()
-                .any(|(key, value)| key == "LC_ALL" && value == "C"),
-            "the invocation must force LC_ALL=C: {described:?}"
-        );
-    }
-
-    // Criterion: the locale is *added*, nothing else is rewritten — the program is
-    // still `pactl` and the arguments arrive unchanged, in order.
-    #[test]
-    fn test_build_pactl_command_keeps_program_and_arguments_unchanged() {
-        let described = build_pactl_command(&["list", "short", "modules"]);
-
-        assert_eq!(described.program, "pactl");
-        assert_eq!(
-            described.args,
-            vec![
-                "list".to_string(),
-                "short".to_string(),
-                "modules".to_string()
-            ],
-            "the arguments must travel through untouched: {described:?}"
-        );
-    }
-
-    // Criterion: the locale rule holds for *every* call site, not only the two long
-    // listings — the parse-breaking translation is the reason, but a description
-    // that only sometimes carries the locale would leave the rule to be
-    // rediscovered one seam at a time.
-    #[test]
-    fn test_build_pactl_command_forces_the_locale_for_every_call_site() {
-        for args in [
-            vec!["list", "short", "modules"],
-            vec!["list", "sink-inputs"],
-            vec!["list", "short", "sinks"],
-            vec!["load-module", "module-null-sink"],
-            vec!["unload-module", "536870917"],
-            vec!["set-default-sink", "blue2th_combined"],
-            vec!["set-sink-volume", "blue2th_combined", "50%"],
-            vec!["get-sink-volume", "blue2th_combined"],
-        ] {
-            let described = build_pactl_command(&args);
-            assert!(
-                described
-                    .env
-                    .iter()
-                    .any(|(key, value)| key == "LC_ALL" && value == "C"),
-                "every pactl call site must force the locale, {args:?} does not"
-            );
-            assert_eq!(
-                described.args,
-                args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-                "adding the locale must not rewrite the arguments of {args:?}"
-            );
-        }
-    }
-
-    // Criterion: a French listing yields no streams. This is a regression guard
-    // that documents *why* the `LC_ALL=C` exists, and it must not be answered by
-    // teaching the parser French: `Owner Module:` and `Sink:` are absent from every
-    // translated locale, so chasing labels language by language would be endless.
-    // Keep the locale forced, and this test stays the reason it is not noise.
-    #[test]
-    fn test_parse_sink_inputs_of_a_french_listing_yields_no_streams() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS_FR);
-
-        assert!(
-            streams.is_empty(),
-            "a translated listing names no field the parser knows: {streams:?}"
-        );
-    }
-
-    // Criterion: and because it yields no streams, a French listing reads as
-    // "cannot tell" — which is exactly what was observed live (`live=None` on every
-    // tick, with 7 KB of listing read fine): the liveness filter is skipped and a
-    // dead branch is never detected. Forcing the locale is what closes it.
-    #[test]
-    fn test_sink_input_liveness_of_a_french_listing_is_unknown() {
-        assert!(
-            sink_input_liveness(PACTL_SINK_INPUTS_FR).is_none(),
-            "an untranslated parser learns nothing from a translated listing"
-        );
-    }
-
-    // Criterion: the invalid index the liveness rule tests against is the one
-    // `pactl` really prints — the fixture carries the literal 4294967295, and the
-    // production constant must be that same number. Without this the fixture and
-    // `module_is_live` could drift apart while both tests stayed green.
-    #[test]
-    fn test_invalid_sink_index_is_the_number_pactl_prints() {
-        assert_eq!(INVALID_SINK_INDEX, 4_294_967_295);
-        assert!(
-            PACTL_SINK_INPUTS.contains("Sink: 4294967295"),
-            "the fixture must carry the literal the parser has to read"
-        );
-    }
-
-    // Criterion: the stale module is unloaded before the replacement is loaded,
-    // and `reconcile_branches` cannot ask for it — a dead branch is deliberately
-    // absent from `loaded_branches`, so it is named by module id or not at all.
-    // Module 28's loopback sits on the invalid sink and must be the one named.
-    #[test]
-    fn test_dead_branch_modules_names_the_module_of_a_branch_feeding_nothing() {
-        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
-
-        assert_eq!(
-            dead_branch_modules(PACTL_MODULES, "blue2th_combined", Some(&streams)),
-            vec![28],
-            "only the loopback whose stream feeds nothing is unloaded by id"
-        );
-    }
-
-    // Criterion: the module ids to unload and the branches that survive partition
-    // the loaded loopbacks — a live branch is never unloaded out from under the
-    // audio it is carrying, which is the whole risk of unloading by id.
-    #[test]
-    fn test_dead_branch_modules_never_names_a_live_branchs_module() {
-        let streams = vec![
-            SinkInputStream {
-                owner_module: 27,
-                sink: 28091,
-            },
-            SinkInputStream {
-                owner_module: 28,
-                sink: 28092,
-            },
-        ];
-
-        assert!(
-            dead_branch_modules(PACTL_MODULES, "blue2th_combined", Some(&streams)).is_empty(),
-            "both loopbacks feed a real sink, so neither is stale"
-        );
-        assert_eq!(
-            loaded_branches(PACTL_MODULES, "blue2th_combined", Some(&streams)).len(),
-            2,
-            "and both are still counted as branches"
-        );
-    }
-
-    // Criterion: an unreadable listing yields "cannot tell", not "everything is
-    // dead". Unloading by id bypasses `reconcile_branches` entirely, so this guard
-    // is the only thing standing between a transient `pactl` failure and every
-    // loopback of a playing selection being torn down.
-    #[test]
-    fn test_dead_branch_modules_with_unknown_liveness_names_nothing() {
-        assert!(
-            dead_branch_modules(PACTL_MODULES, "blue2th_combined", None).is_empty(),
-            "with liveness unknown no module may be unloaded"
-        );
-    }
-
-    // Criterion: the ids are the ones `pactl unload-module` takes, i.e. the first
-    // column of the module listing — not the position of the branch in the plan.
-    // PipeWire hands out wide ids, and a 0-based index would happily unload
-    // `module-device-restore`.
-    #[test]
-    fn test_dead_branch_modules_names_the_id_pactl_printed() {
-        let listing = concat!(
-            "10\tmodule-device-restore\t\n",
-            "536870917\tmodule-loopback\tsource=blue2th_combined.monitor sink=bluez_output.80_99_E7_63_50_29.1 latency_msec=50 sink_dont_move=true\n",
-        );
-        let streams = vec![SinkInputStream {
-            owner_module: 536_870_917,
-            sink: INVALID_SINK_INDEX,
-        }];
-
-        assert_eq!(
-            dead_branch_modules(listing, "blue2th_combined", Some(&streams)),
-            vec![536_870_917],
-            "the module id comes from the listing's first column"
-        );
-    }
-
     // Criterion: a sink line naming no node contributes no name. An empty name is
     // the wildcard shape this project keeps paying for: carried into the register
     // it would be compared against, and later reported as, a node that does not
@@ -3223,27 +2187,796 @@ mod tests {
             "the loopback left over from the speaker that is now off is dropped"
         );
     }
+}
 
-    // Criterion: a reconciliation either leaves every branch alone or asks for the
-    // whole plan — there is no third answer that loads a subset. `reconcile_combined`
-    // relies on it when it drops the first load report on a confirming pass: the
-    // rebuild that follows re-attempts everything that pass attempted.
-    #[test]
-    fn test_reconcile_branches_loads_all_of_the_plan_or_none_of_it() {
-        let spec = two_speaker_spec();
-        let one_loaded = vec![CombineBranch {
-            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
-        }];
-        let both_loaded = loaded_branches(PACTL_MODULES, &spec.sink_name, None);
+/// [`AudioRouter`] driven through the in-memory graph. Every assertion is made on
+/// the calls the graph recorded, against literals: two values the code computed
+/// compare equal when both are absent.
+#[cfg(test)]
+mod router_tests {
+    use super::*;
+    use crate::graph::fake::{FakeGraph, GraphCall, GraphOp};
 
-        for loaded in [Vec::new(), one_loaded, both_loaded] {
-            let plan = reconcile_branches(&loaded, &spec);
-            assert!(
-                plan.to_load.is_empty() || plan.to_load == spec.branches,
-                "a partial load would leave a speaker to start on its own, got {:?}",
-                plan.to_load
-            );
+    const COMBINED: &str = "blue2th_combined";
+    const MAC_A: &str = "AA:BB:CC:DD:EE:01";
+    const MAC_B: &str = "AA:BB:CC:DD:EE:02";
+    const SINK_A: &str = "bluez_output.AA_BB_CC_DD_EE_01.1";
+    const SINK_B: &str = "bluez_output.AA_BB_CC_DD_EE_02.1";
+
+    fn target(mac: &str, offset_ms: u32) -> SpeakerTarget {
+        SpeakerTarget {
+            address: mac.to_string(),
+            offset_ms,
         }
+    }
+
+    /// A router over `fake`. The fake is cloned because a clone is a handle onto
+    /// the same state: the router owns one, the test keeps the other to read the
+    /// recorded calls.
+    fn router_on(fake: &FakeGraph) -> AudioRouter {
+        AudioRouter::new(Box::new(fake.clone()))
+    }
+
+    fn create(sink_name: &str) -> GraphCall {
+        GraphCall::CreateCombinedSink {
+            sink_name: sink_name.to_string(),
+        }
+    }
+
+    fn load(real_sink: &str, latency_ms: u32) -> GraphCall {
+        GraphCall::LoadBranch {
+            sink_name: COMBINED.to_string(),
+            real_sink: real_sink.to_string(),
+            latency_ms,
+        }
+    }
+
+    fn unload(id: u32) -> GraphCall {
+        GraphCall::UnloadBranch { id }
+    }
+
+    fn teardown(sink_name: &str) -> GraphCall {
+        GraphCall::Teardown {
+            sink_name: sink_name.to_string(),
+        }
+    }
+
+    fn set_default(sink: &str) -> GraphCall {
+        GraphCall::SetDefaultSink {
+            sink: sink.to_string(),
+        }
+    }
+
+    /// Whether `call` removes or adds something — everything mutating except
+    /// re-pointing the default sink.
+    fn changes_the_graph(call: &GraphCall) -> bool {
+        call.is_mutating() && !matches!(call, GraphCall::SetDefaultSink { .. })
+    }
+
+    /// A graph where both speakers are connected and the combined sink carries a
+    /// live branch for each, at the latency of offsets 0 and 30. Returns the fake
+    /// and the two branch ids.
+    fn steady_graph(live: Option<bool>) -> (FakeGraph, u32, u32) {
+        let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
+        fake.add_sink(COMBINED);
+        let a = fake.seed_branch(COMBINED, SINK_A, 50, live);
+        let b = fake.seed_branch(COMBINED, SINK_B, 80, live);
+        (fake, a, b)
+    }
+
+    fn steady_selection() -> Vec<SpeakerTarget> {
+        vec![target(MAC_A, 0), target(MAC_B, 30)]
+    }
+
+    // Criterion: on an empty graph, `route_for_targets` creates the sink, loads
+    // one branch per reachable speaker at `branch_latency_ms(offset)`, then sets
+    // the default sink. The leading teardown is today's guard against stacking
+    // modules on a leftover.
+    #[test]
+    fn test_route_on_an_empty_graph_creates_the_sink_loads_each_branch_then_sets_the_default() {
+        let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0), target(MAC_B, 250)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 50),
+                load(SINK_B, 300),
+                set_default(COMBINED),
+            ]
+        );
+        assert_eq!(fake.default_sink().as_deref(), Some(COMBINED));
+    }
+
+    // Criterion: a build tears a leftover down first, so branches that outlived
+    // their null sink are not stacked under the new ones.
+    #[test]
+    fn test_route_without_a_combined_sink_clears_leftover_branches_before_building() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        let leftover = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        let loaded = fake.loaded(COMBINED);
+        assert_eq!(loaded.len(), 1, "one branch for one speaker: {loaded:?}");
+        assert_ne!(loaded[0].id, leftover);
+        assert_eq!(loaded[0].branch.sink, SINK_A);
+    }
+
+    // Criterion: on a graph that already matches the plan, a pass performs no
+    // mutating call except `set_default_sink`.
+    #[test]
+    fn test_route_on_a_steady_graph_makes_no_mutating_call_but_the_default_sink() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Criterion: a steady graph stays steady pass after pass — the repair tick
+    // runs this every five seconds.
+    #[test]
+    fn test_route_on_a_steady_graph_stays_quiet_over_several_passes() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        for pass in 0..3 {
+            let result = router.route_for_targets(&steady_selection());
+            assert!(result.is_ok(), "pass {pass} failed: {result:?}");
+        }
+
+        assert_eq!(
+            fake.calls(),
+            vec![
+                set_default(COMBINED),
+                set_default(COMBINED),
+                set_default(COMBINED)
+            ]
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Criterion: a dead branch (`live == Some(false)`) is unloaded by id before
+    // its replacement is loaded.
+    #[test]
+    fn test_route_unloads_a_dead_branch_before_loading_its_replacement() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let dead = fake.seed_branch(COMBINED, SINK_B, 80, Some(false));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        let calls = fake.calls();
+        let unloaded_at = calls.iter().position(|c| *c == unload(dead));
+        let reloaded_at = calls.iter().position(|c| *c == load(SINK_B, 80));
+        assert!(
+            unloaded_at.is_some(),
+            "dead branch never unloaded: {calls:?}"
+        );
+        assert!(reloaded_at.is_some(), "replacement never loaded: {calls:?}");
+        assert!(
+            unloaded_at < reloaded_at,
+            "loaded before unloading: {calls:?}"
+        );
+        // A missing branch rebuilds the whole selection (#75), so the live one
+        // goes too; the dead one goes first.
+        assert_eq!(
+            calls,
+            vec![
+                unload(dead),
+                unload(a),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+        // Exactly one branch per speaker is left: never two loopbacks onto one.
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_A, SINK_B]);
+    }
+
+    // Non-nominal: the graph cannot be read (`Graph::sinks` errs on every read).
+    // "Cannot tell" is never "no sink exists": nothing is unloaded, torn down,
+    // created or loaded — even though a stale branch is there for the taking.
+    #[test]
+    fn test_route_with_an_unreadable_sink_list_unloads_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let stale = fake.seed_branch(COMBINED, "bluez_output.AA_BB_CC_DD_EE_03.1", 50, Some(true));
+        fake.fail(GraphOp::Sinks);
+        let mut router = router_on(&fake);
+
+        let _ = router.route_for_targets(&steady_selection());
+
+        let calls = fake.calls();
+        assert!(
+            !calls.iter().any(changes_the_graph),
+            "acted on an unreadable graph: {calls:?}"
+        );
+        assert!(
+            fake.all_calls().contains(&GraphCall::Sinks),
+            "the sink list was never asked for"
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b, stale]);
+    }
+
+    // Non-nominal: the sink list stops being readable in the middle of a pass —
+    // the reconciliation returns `Ok(())` without unloading anything.
+    #[test]
+    fn test_route_with_a_sink_list_lost_mid_pass_returns_ok_and_unloads_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail_after(GraphOp::Sinks, 1);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        let calls = fake.calls();
+        assert!(
+            !calls.iter().any(changes_the_graph),
+            "acted on an unreadable graph: {calls:?}"
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Non-nominal: the sink list reads back naming nothing — not even the
+    // combined sink the pass was entered for. Under `pactl` that is a
+    // subprocess that printed nothing, so it is treated exactly like an
+    // unreadable list: the pass ends without unloading anything. Driven through
+    // `reconcile_combined` directly, since the route entry point would already
+    // have turned an empty list into a build.
+    #[test]
+    fn test_reconcile_with_a_sink_list_naming_nothing_unloads_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        for sink in fake.sink_names() {
+            fake.remove_sink(&sink);
+        }
+        let mut router = router_on(&fake);
+
+        let result = router.reconcile_combined(&combine_sink_plan(&steady_selection()));
+
+        assert!(result.is_ok(), "reconcile failed: {result:?}");
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Non-nominal: liveness cannot be read (`live == None`) — every branch is
+    // kept, none is ruled dead.
+    #[test]
+    fn test_route_with_unknown_liveness_keeps_every_branch() {
+        let (fake, a, b) = steady_graph(None);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Non-nominal: a planned speaker's sink is absent — it is dropped from the
+    // reachable plan, no rebuild is requested for it, the other branch is
+    // untouched.
+    #[test]
+    fn test_route_with_an_absent_speaker_leaves_the_other_branch_alone() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        let a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut router = router_on(&fake);
+
+        for pass in 0..2 {
+            let result = router.route_for_targets(&steady_selection());
+            assert!(result.is_ok(), "pass {pass} failed: {result:?}");
+        }
+
+        assert_eq!(
+            fake.calls(),
+            vec![set_default(COMBINED), set_default(COMBINED)]
+        );
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a]);
+    }
+
+    // Nominal: a selection that only lost a speaker unloads that branch by id
+    // and leaves the other streaming.
+    #[test]
+    fn test_route_after_a_deselection_unloads_only_that_branch() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(b), set_default(COMBINED)]);
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a]);
+    }
+
+    // Non-nominal: one branch fails to load — the other is still attempted, the
+    // default sink is still set, the failure comes back as `PipeWire`.
+    #[test]
+    fn test_route_with_one_failing_branch_still_loads_the_other_and_sets_the_default() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail_for(GraphOp::LoadBranch, SINK_A);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert_eq!(
+            fake.calls(),
+            vec![
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(message.contains(SINK_A), "unexpected error: {message}");
+        assert!(!message.contains(SINK_B), "unexpected error: {message}");
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_B]);
+    }
+
+    // Non-nominal: several failures come back joined in one `PipeWire` error.
+    #[test]
+    fn test_route_with_every_branch_failing_reports_all_failures_in_one_error() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail(GraphOp::LoadBranch);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(message.contains(SINK_A), "unexpected error: {message}");
+        assert!(message.contains(SINK_B), "unexpected error: {message}");
+        assert_eq!(fake.calls().last(), Some(&set_default(COMBINED)));
+    }
+
+    // Non-nominal: empty selection — `NoSpeakerConnected`, and the graph receives
+    // no call at all, not even a read.
+    #[test]
+    fn test_route_with_an_empty_selection_never_calls_the_graph() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[]);
+
+        assert!(
+            matches!(result, Err(AudioError::NoSpeakerConnected)),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+    }
+
+    // Non-nominal: an empty target resolves to nothing, and the trait never
+    // receives an empty node name.
+    #[test]
+    fn test_resolve_target_sink_with_an_empty_target_resolves_nothing() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.resolve_target_sink("");
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.empty_names_refused(), 0);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Non-nominal: an empty sink name is not "the combined sink exists", and it
+    // never reaches the trait as a node name.
+    #[test]
+    fn test_empty_sink_name_never_reaches_the_graph() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        assert!(!router.combined_sink_exists(""));
+        let retuned = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: String::new(),
+                latency_ms: 70,
+            },
+        );
+
+        let message = match retuned {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.empty_names_refused(), 0);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Criterion: `resolve_target_sink` resolves a `bluez_output.*` prefix to the
+    // live node and an exact node name to itself, reading the graph only.
+    #[test]
+    fn test_resolve_target_sink_resolves_a_prefix_and_an_exact_name() {
+        let fake = FakeGraph::with_sinks(&["blue2th_combined_old", SINK_A, COMBINED]);
+        let mut router = router_on(&fake);
+
+        assert_eq!(
+            router.resolve_target_sink(&bluez_sink_prefix(MAC_A)).ok(),
+            Some(SINK_A.to_string())
+        );
+        assert_eq!(
+            router.resolve_target_sink(COMBINED).ok(),
+            Some(COMBINED.to_string())
+        );
+        assert!(matches!(
+            router.resolve_target_sink(&bluez_sink_prefix(MAC_B)),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: `combined_sink_exists` answers from the graph's sinks — a
+    // namesake sharing the opening characters is not the combined sink, and an
+    // unreadable list is not "exists".
+    #[test]
+    fn test_combined_sink_exists_reads_the_graph() {
+        let present = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        assert!(router_on(&present).combined_sink_exists(COMBINED));
+
+        let namesake = FakeGraph::with_sinks(&[SINK_A, "blue2th_combined_old"]);
+        assert!(!router_on(&namesake).combined_sink_exists(COMBINED));
+
+        let unreadable = FakeGraph::with_sinks(&[COMBINED]);
+        unreadable.fail(GraphOp::Sinks);
+        assert!(!router_on(&unreadable).combined_sink_exists(COMBINED));
+    }
+
+    // Non-nominal: a speaker that came back. The pass that wires it arms the
+    // confirmation register; the next pass rebuilds every branch once, and does
+    // not re-arm itself.
+    #[test]
+    fn test_route_after_a_speaker_came_back_rebuilds_once_on_the_next_pass() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        let first_a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut router = router_on(&fake);
+
+        // Pass 1: speaker B is off. Nothing to do, and the sink list is learnt.
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+
+        // Pass 2: B is back. One missing branch rebuilds the selection.
+        fake.add_sink(SINK_B);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                unload(first_a),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+        let wired: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(wired.len(), 2);
+
+        // Pass 3: the graph matches the plan, and is rebuilt all the same — the
+        // confirming rebuild, one tick after the load that wired B.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 3 failed: {result:?}");
+        let calls = fake.calls();
+        let rebuild: Vec<GraphCall> = calls
+            .iter()
+            .filter(|c| changes_the_graph(c))
+            // Cloned to compare against literals below.
+            .cloned()
+            .collect();
+        assert_eq!(
+            rebuild,
+            vec![
+                unload(wired[0]),
+                unload(wired[1]),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+            ]
+        );
+        assert_eq!(calls.last(), Some(&set_default(COMBINED)));
+        let confirmed: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(confirmed.len(), 2);
+
+        // Pass 4: the confirming rebuild did not arm another one.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 4 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        let kept: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(kept, confirmed);
+    }
+
+    // Criterion: nothing listed on a router's first pass is new — wiring a
+    // speaker then costs no confirming rebuild.
+    #[test]
+    fn test_route_first_pass_wiring_does_not_arm_a_rebuild() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![load(SINK_A, 50), load(SINK_B, 80), set_default(COMBINED)]
+        );
+
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Criterion: only a sink that was absent from the previous pass is "a
+    // speaker that came back". A speaker deselected and reselected while its
+    // sink never left is reloaded, and that reload owes no confirming rebuild —
+    // the one-tick-later cut exists for a node PipeWire has just created, not
+    // for every load. Pinned because a router that forgets what it listed sees
+    // every sink as new on every pass, and every reload then costs a second cut.
+    #[test]
+    fn test_route_reselecting_a_speaker_whose_sink_never_left_owes_no_confirming_rebuild() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        // Pass 1: steady. Pass 2: B deselected, its branch goes.
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![set_default(COMBINED), unload(b), set_default(COMBINED)]
+        );
+
+        // Pass 3: B reselected. One missing branch rebuilds the selection, and
+        // B's sink was listed on every pass so far.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 3 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                unload(a),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+
+        // Pass 4: no sink appeared, so nothing is owed.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 4 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Non-nominal: an empty target names no node, so it is answered without the
+    // graph being read at all — not even the sink list. With `pactl` underneath
+    // a read is a spawn, and one that could only ever answer "nothing".
+    #[test]
+    fn test_empty_target_is_answered_without_reading_the_graph() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        assert!(router.resolve_target_sink("").is_err());
+        assert!(!router.combined_sink_exists(""));
+
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: the confirmation register and the last-pass sink list are
+    // fields of `AudioRouter` — a router that armed a rebuild, and that has seen
+    // other sinks, changes nothing for a second router in the same process.
+    #[test]
+    fn test_two_routers_do_not_share_the_confirmation_register() {
+        // The first router goes through a speaker coming back, which arms it.
+        let first_fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        first_fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let mut first = router_on(&first_fake);
+        let result = first.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first router, pass 1: {result:?}");
+        first_fake.add_sink(SINK_B);
+        let result = first.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first router, pass 2: {result:?}");
+        assert!(
+            first_fake.calls().contains(&load(SINK_B, 80)),
+            "the first router never wired the returning speaker"
+        );
+
+        // The second router owes nothing: its steady graph stays untouched, and
+        // sinks the first router never listed are not "new" to it.
+        let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let second_fake = FakeGraph::with_sinks(&[sink_c, COMBINED]);
+        let c = second_fake.seed_branch(COMBINED, sink_c, 50, Some(true));
+        let mut second = router_on(&second_fake);
+        for pass in 0..2 {
+            let result = second.route_for_targets(&[target("AA:BB:CC:DD:EE:03", 0)]);
+            assert!(result.is_ok(), "second router, pass {pass}: {result:?}");
+        }
+        assert_eq!(
+            second_fake.calls(),
+            vec![set_default(COMBINED), set_default(COMBINED)]
+        );
+        let ids: Vec<u32> = second_fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![c]);
+
+        // And the first router still owes its own rebuild.
+        first_fake.clear_calls();
+        let result = first.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first router, pass 3: {result:?}");
+        assert!(
+            first_fake.calls().iter().any(changes_the_graph),
+            "the first router lost its armed rebuild: {:?}",
+            first_fake.calls()
+        );
+    }
+
+    // Criterion: `retune_branch` unloads only that speaker's branch and reloads
+    // it; the combined sink and the other branch receive no call.
+    #[test]
+    fn test_retune_branch_touches_only_that_speakers_branch() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+
+        assert!(result.is_ok(), "retune failed: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(a), load(SINK_A, 120)]);
+        let loaded = fake.loaded(COMBINED);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, b);
+        assert_eq!(loaded[0].branch.latency_ms, 80);
+        assert_eq!(loaded[1].branch.sink, SINK_A);
+        assert_eq!(loaded[1].branch.latency_ms, 120);
+    }
+
+    // Non-nominal: retuning a speaker whose sink has vanished errs rather than
+    // touching anything.
+    #[test]
+    fn test_retune_branch_for_a_vanished_speaker_changes_nothing() {
+        let (fake, _, _) = steady_graph(Some(true));
+        fake.remove_sink(SINK_A);
+        let mut router = router_on(&fake);
+
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: `teardown` hands the whole job to the graph — one call, and the
+    // sink and its branches are gone.
+    #[test]
+    fn test_teardown_asks_the_graph_once_and_leaves_nothing() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.teardown(COMBINED);
+
+        assert!(result.is_ok(), "teardown failed: {result:?}");
+        assert_eq!(fake.calls(), vec![teardown(COMBINED)]);
+        assert!(fake.loaded(COMBINED).is_empty());
+        assert!(!fake.sink_names().iter().any(|s| s == COMBINED));
+    }
+
+    // Criterion: the volume is written per speaker sink — the MAC is resolved to
+    // the live node, and the level is clamped before it reaches the graph.
+    #[test]
+    fn test_set_sink_volume_resolves_the_speaker_sink_and_clamps_the_level() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.set_sink_volume(MAC_B, 1.5);
+
+        assert!(result.is_ok(), "set volume failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetSinkVolume {
+                sink: SINK_B.to_string(),
+                level: 1.0
+            }]
+        );
+    }
+
+    // Non-nominal: no sink for that speaker — an error, and no write.
+    #[test]
+    fn test_set_sink_volume_without_a_sink_writes_nothing() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        let mut router = router_on(&fake);
+
+        let result = router.set_sink_volume(MAC_B, 0.4);
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("no PipeWire sink"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion: the volume is read per speaker sink, over-amplification
+    // included, and an absent speaker reads as `None`.
+    #[test]
+    fn test_sink_volume_reads_the_speaker_sink() {
+        let (fake, _, _) = steady_graph(Some(true));
+        fake.set_volume(SINK_A, 0.59);
+        fake.set_volume(SINK_B, 1.53);
+        let mut router = router_on(&fake);
+
+        assert_eq!(router.sink_volume(MAC_A), Some(0.59));
+        assert_eq!(router.sink_volume(MAC_B), Some(1.53));
+        assert_eq!(router.sink_volume("AA:BB:CC:DD:EE:03"), None);
+        assert!(fake.all_calls().contains(&GraphCall::SinkVolume {
+            sink: SINK_A.to_string()
+        }));
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
     }
 }

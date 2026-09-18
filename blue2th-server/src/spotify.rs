@@ -239,7 +239,11 @@ impl SpotifyBackend {
 
     /// Establish routing for the selection and spawn `librespot` (idempotent while
     /// already running). The real spawn is a manual process seam.
-    pub fn start(&mut self, speakers: &[SpeakerTarget]) -> Result<SpotifyState, SpotifyError> {
+    pub fn start(
+        &mut self,
+        router: &mut crate::audio::AudioRouter,
+        speakers: &[SpeakerTarget],
+    ) -> Result<SpotifyState, SpotifyError> {
         if speakers.is_empty() {
             return Err(SpotifyError::NoSpeakerSelected);
         }
@@ -250,14 +254,16 @@ impl SpotifyBackend {
         }
 
         // Establish PipeWire routing for the selection (the combined sink).
-        crate::audio::route_for_targets(speakers)
+        router
+            .route_for_targets(speakers)
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
 
         let sink = spotify_target_sink(speakers);
         // `spotify_target_sink` yields a *logical* target. Resolve it here, at the
         // argv, rather than in that pure function; a failure is reported instead
         // of letting librespot fall back to the default sink.
-        let resolved = crate::audio::resolve_target_sink(&sink)
+        let resolved = router
+            .resolve_target_sink(&sink)
             .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
