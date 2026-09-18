@@ -34,15 +34,11 @@ impl Graph for PactlGraph {
         // A failed `pactl` yields an empty listing, which `sink_input_liveness` reads
         // as "cannot tell" rather than as a graph where every branch is dead.
         let live = sink_input_liveness(&sink_input_listing().unwrap_or_default());
-        let dead = dead_branch_modules(&listing, sink_name, live.as_deref());
-        Ok(branch_modules(&listing, sink_name)
-            .into_iter()
-            .map(|(id, branch)| LoadedBranch {
-                id,
-                branch,
-                live: live.as_ref().map(|_| !dead.contains(&id)),
-            })
-            .collect())
+        Ok(loaded_branches_with_liveness(
+            &listing,
+            sink_name,
+            live.as_deref(),
+        ))
     }
 
     fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
@@ -70,6 +66,8 @@ impl Graph for PactlGraph {
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
         // Every module line contains the empty pattern: an empty name would
         // unload the whole of PipeWire's module list, not a combined sink.
+        // `module_line_matches` refuses it too; this is what makes the refusal
+        // an error the caller sees rather than a silent no-op.
         if sink_name.is_empty() {
             return Err(AudioError::PipeWire(
                 "cannot tear down a combined sink with no name".to_string(),
@@ -133,6 +131,26 @@ pub fn loaded_branches(
         .collect()
 }
 
+/// What [`Graph::branches`] hands the router, read out of the two listings: every
+/// loopback loaded for `sink_name` with its module id and a three-valued
+/// liveness — live, dead, or `None` for every branch when the sink-input listing
+/// could not be read. Pure — performs no I/O.
+fn loaded_branches_with_liveness(
+    listing: &str,
+    sink_name: &str,
+    live: Option<&[SinkInputStream]>,
+) -> Vec<LoadedBranch> {
+    let dead = dead_branch_modules(listing, sink_name, live);
+    branch_modules(listing, sink_name)
+        .into_iter()
+        .map(|(id, branch)| LoadedBranch {
+            id,
+            branch,
+            live: live.map(|_| !dead.contains(&id)),
+        })
+        .collect()
+}
+
 /// Every loopback branch loaded for `sink_name`, paired with the id of the module
 /// carrying it — the id `pactl unload-module` takes, and the one a sink-input
 /// reports in `Owner Module:`. Pure — performs no I/O.
@@ -152,10 +170,10 @@ fn branch_modules(listing: &str, sink_name: &str) -> Vec<(u32, CombineBranch)> {
             }
             let sink = args.iter().find_map(|a| a.strip_prefix("sink="))?;
             // `pactl` accepts a `sink=` carrying no value and prints it back
-            // verbatim. It names no node, and `reconcile_combined` builds its
-            // unload pattern from that name: `sink=` is a substring of *every*
-            // loopback line of the combined sink, so admitting such a module as a
-            // branch would unload all of them.
+            // verbatim. It names no node, and an empty name is a wildcard to
+            // every prefix or substring predicate downstream — it once built an
+            // unload pattern, `sink=`, that every loopback line of the combined
+            // sink contained. Rejected at the parser, so it never travels.
             if sink.is_empty() {
                 return None;
             }
@@ -178,10 +196,9 @@ fn branch_modules(listing: &str, sink_name: &str) -> Vec<(u32, CombineBranch)> {
 /// The module ids of the loopbacks loaded for `sink_name` that are loaded but
 /// dead: listed, yet feeding nothing. Empty when liveness could not be read.
 ///
-/// They are invisible to [`reconcile_branches`], which only sees the branches
-/// [`loaded_branches`] hands it — and a dead branch is deliberately absent from
-/// those. So the caller unloads them by id before loading the replacement: two
-/// loopbacks onto the same speaker would double the audio (#75).
+/// These are the branches [`loaded_branches_with_liveness`] reports as
+/// `live: Some(false)`, which the router unloads by id before loading the
+/// replacement: two loopbacks onto the same speaker would double the audio (#75).
 fn dead_branch_modules(
     listing: &str,
     sink_name: &str,
@@ -340,11 +357,12 @@ fn sink_input_listing() -> Result<String, AudioError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Unload every loaded module whose `pactl list short modules` line contains all
-/// of `patterns`. Best-effort — a missing module is not an error.
+/// Unload every loaded module whose `pactl list short modules` line
+/// [`module_line_matches`] `patterns`. Best-effort — a missing module is not an
+/// error.
 fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
     for line in module_listing()?.lines() {
-        if patterns.iter().all(|pattern| line.contains(pattern)) {
+        if module_line_matches(line, patterns) {
             if let Some(id) = line.split('\t').next() {
                 // Best-effort: ignore failures so one stale module cannot block teardown.
                 let _ = pactl(&["unload-module", id]).status();
@@ -352,6 +370,20 @@ fn unload_modules_matching(patterns: &[&str]) -> Result<(), AudioError> {
         }
     }
     Ok(())
+}
+
+/// Whether a module line carries every one of `patterns`, and there is at least
+/// one. Pure — performs no I/O.
+///
+/// An empty pattern is a substring of every line, so it matches none: what
+/// matches here is unloaded, and "everything" is never what a caller means.
+/// The guard sits in the predicate itself, where the wildcard lives, so no
+/// caller has to remember it.
+fn module_line_matches(line: &str, patterns: &[&str]) -> bool {
+    !patterns.is_empty()
+        && patterns
+            .iter()
+            .all(|pattern| !pattern.is_empty() && line.contains(pattern))
 }
 
 /// Unload one module by the id `pactl` printed for it. Best-effort, like
@@ -1237,5 +1269,81 @@ mod tests {
                 plan.to_load
             );
         }
+    }
+
+    // Criterion: what `PactlGraph::branches` hands the router is every loaded
+    // loopback with its id and a three-valued liveness. Module 27's stream feeds
+    // a real sink and module 28's sits on the invalid index, so the first is
+    // live and the second dead; with no sink-input listing both are unknown.
+    // Pinned on the pure composition, since the trait method itself spawns.
+    #[test]
+    fn test_loaded_branches_with_liveness_reports_each_branch_as_live_dead_or_unknown() {
+        let streams = parse_sink_inputs(PACTL_SINK_INPUTS);
+
+        let read = loaded_branches_with_liveness(PACTL_MODULES, "blue2th_combined", Some(&streams));
+
+        assert_eq!(
+            read,
+            vec![
+                LoadedBranch {
+                    id: 27,
+                    branch: CombineBranch {
+                        sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+                        latency_ms: 50,
+                    },
+                    live: Some(true),
+                },
+                LoadedBranch {
+                    id: 28,
+                    branch: CombineBranch {
+                        sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                        latency_ms: 300,
+                    },
+                    live: Some(false),
+                },
+            ],
+            "one entry per loopback of the combined sink, with its module id and liveness"
+        );
+
+        let unknown = loaded_branches_with_liveness(PACTL_MODULES, "blue2th_combined", None);
+
+        assert_eq!(
+            unknown.iter().map(|b| b.live).collect::<Vec<_>>(),
+            vec![None, None],
+            "with no sink-input listing no branch is ruled dead, and none is ruled live"
+        );
+    }
+
+    // Criterion: the teardown predicate never matches on an empty pattern —
+    // every line contains the empty string, and what matches is unloaded. The
+    // rule is pinned on the pure predicate because exercising `teardown("")`
+    // against a real `pactl` would, on a regression, unload the developer's
+    // entire module list.
+    #[test]
+    fn test_module_line_matches_never_matches_an_empty_pattern() {
+        let lines: Vec<&str> = PACTL_MODULES.lines().collect();
+
+        assert!(
+            lines.iter().all(|line| !module_line_matches(line, &[""])),
+            "an empty pattern matches no line"
+        );
+        assert!(
+            lines.iter().all(|line| !module_line_matches(line, &[])),
+            "no pattern at all matches no line"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !module_line_matches(line, &["blue2th_combined", ""])),
+            "an empty pattern among real ones still matches nothing"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| module_line_matches(line, &["blue2th_combined"]))
+                .count(),
+            7,
+            "a real pattern matches the lines that carry it: {lines:?}"
+        );
     }
 }

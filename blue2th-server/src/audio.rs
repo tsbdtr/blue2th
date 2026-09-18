@@ -454,8 +454,7 @@ pub fn branch_latency_ms(offset_ms: u32) -> u32 {
 
 /// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
 /// each branch carrying [`branch_latency_ms`] of its speaker's offset. Building
-/// this performs no I/O; the hardware seam (`route_to_combined` /
-/// `teardown_combined`) consumes it.
+/// this performs no I/O; [`AudioRouter`] applies it to its [`Graph`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CombineSinkSpec {
     /// Node name of the combined sink to create.
@@ -503,8 +502,9 @@ pub struct BranchLoadReport {
 /// previous speaker and fail on the current one (#75). The failures come back as
 /// a set so the caller can still warn and let the next tick retry.
 ///
-/// `resolve` and `load` are injected so the decision is testable away from
-/// `pactl`; production passes [`resolve_branch_sink`] and [`load_branch_loopback`].
+/// `resolve` and `load` are injected so the decision is testable on its own;
+/// [`AudioRouter`] passes closures over its [`Graph`], resolving each prefix
+/// against the graph's sinks and loading through [`Graph::load_branch`].
 pub fn load_planned_branches<R, L>(
     branches: &[CombineBranch],
     mut resolve: R,
@@ -552,17 +552,17 @@ pub fn should_repair_branches(selection: &[SpeakerTarget], anything_playing: boo
 }
 
 /// How often the repair pass looks at the graph. Short enough that a speaker
-/// coming back is fed again within seconds, and it costs two `pactl` calls only
-/// while a selection is actually playing.
+/// coming back is fed again within seconds, and it reads the graph only while a
+/// selection is actually playing.
 pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 
 /// What a selection change has to do to an already-loaded combined sink: the
 /// branches to load and the loaded ones to unload.
 ///
-/// `to_unload` carries the branches as they were read from the module listing —
-/// i.e. with the **resolved** node name — because that is what the unload seam
-/// matches its `sink=` pattern on, while `to_load` carries the plan's
-/// `bluez_output.*` prefixes, which the load seam resolves.
+/// `to_unload` carries the branches as the graph reported them — i.e. with the
+/// **resolved** node name — because that is what [`AudioRouter`] matches against
+/// the loaded branches to find the ids to unload, while `to_load` carries the
+/// plan's `bluez_output.*` prefixes, which the router resolves at load time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchReconciliation {
     /// Branches of the spec that are not loaded as-is and must be loaded.
@@ -616,8 +616,8 @@ pub fn reconcile_branches(
 /// The one-tick delay line that carries the confirming rebuild from the pass that
 /// armed it to the next one.
 ///
-/// Split out of [`reconcile_combined`] so the transition itself is pure and can be
-/// driven pass by pass in a test; the `pactl` seam around it cannot be.
+/// Split out of `AudioRouter::reconcile_combined` so the transition itself is
+/// pure and can be driven tick by tick in a test, without a graph around it.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ConfirmationRegister {
     due: bool,
@@ -873,16 +873,14 @@ impl AudioRouter {
             // the ids stay behind in `kept` for the unloads below.
             .map(|b| b.branch.clone())
             .collect();
-        let sinks = self
-            .graph
-            .sinks()
-            .map(|names| render_sink_listing(&names))
-            .unwrap_or_default();
-        if sinks.trim().is_empty() {
-            // Nothing read is "cannot tell", not "every speaker is gone". Acting
-            // on it would unload every branch.
-            return Ok(());
-        }
+        // Nothing read is "cannot tell", not "every speaker is gone": acting on
+        // it would unload every branch. So an unreadable list ends the pass, and
+        // so does one naming no sink at all — the same answer with the same
+        // meaning, in the shape a graph over text can only give.
+        let sinks = match self.graph.sinks() {
+            Ok(names) if !names.is_empty() => render_sink_listing(&names),
+            _ => return Ok(()),
+        };
         // A speaker that is switched off is absent, not broken: asking for it on every
         // tick is what rebuilds the graph under the ones that are playing.
         let reachable = CombineSinkSpec {
@@ -2439,6 +2437,28 @@ mod router_tests {
         assert_eq!(ids, vec![a, b]);
     }
 
+    // Non-nominal: the sink list reads back naming nothing — not even the
+    // combined sink the pass was entered for. Under `pactl` that is a
+    // subprocess that printed nothing, so it is treated exactly like an
+    // unreadable list: the pass ends without unloading anything. Driven through
+    // `reconcile_combined` directly, since the route entry point would already
+    // have turned an empty list into a build.
+    #[test]
+    fn test_reconcile_with_a_sink_list_naming_nothing_unloads_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        for sink in fake.sink_names() {
+            fake.remove_sink(&sink);
+        }
+        let mut router = router_on(&fake);
+
+        let result = router.reconcile_combined(&combine_sink_plan(&steady_selection()));
+
+        assert!(result.is_ok(), "reconcile failed: {result:?}");
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
     // Non-nominal: liveness cannot be read (`live == None`) — every branch is
     // kept, none is ruled dead.
     #[test]
@@ -2731,6 +2751,63 @@ mod router_tests {
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 2 failed: {result:?}");
         assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Criterion: only a sink that was absent from the previous pass is "a
+    // speaker that came back". A speaker deselected and reselected while its
+    // sink never left is reloaded, and that reload owes no confirming rebuild —
+    // the one-tick-later cut exists for a node PipeWire has just created, not
+    // for every load. Pinned because a router that forgets what it listed sees
+    // every sink as new on every pass, and every reload then costs a second cut.
+    #[test]
+    fn test_route_reselecting_a_speaker_whose_sink_never_left_owes_no_confirming_rebuild() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        // Pass 1: steady. Pass 2: B deselected, its branch goes.
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![set_default(COMBINED), unload(b), set_default(COMBINED)]
+        );
+
+        // Pass 3: B reselected. One missing branch rebuilds the selection, and
+        // B's sink was listed on every pass so far.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 3 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                unload(a),
+                load(SINK_A, 50),
+                load(SINK_B, 80),
+                set_default(COMBINED),
+            ]
+        );
+
+        // Pass 4: no sink appeared, so nothing is owed.
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass 4 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Non-nominal: an empty target names no node, so it is answered without the
+    // graph being read at all — not even the sink list. With `pactl` underneath
+    // a read is a spawn, and one that could only ever answer "nothing".
+    #[test]
+    fn test_empty_target_is_answered_without_reading_the_graph() {
+        let (fake, _, _) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        assert!(router.resolve_target_sink("").is_err());
+        assert!(!router.combined_sink_exists(""));
+
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
     }
 
     // Criterion: the confirmation register and the last-pass sink list are
