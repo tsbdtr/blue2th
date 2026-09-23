@@ -117,6 +117,14 @@ impl PipeWireGraph {
         Self::with_loop(Box::new(spawn_loop_thread))
     }
 
+    /// A graph with no loop thread at all: every command errs at once, as when
+    /// the thread cannot be started. It never reaches a daemon, which is what
+    /// the store-free routers the integration tests build need: a graph over
+    /// the session's daemon would tear down the operator's live combined sink.
+    pub fn detached() -> Self {
+        Self::with_loop(Box::new(|| Box::new(NoLoop)))
+    }
+
     /// A graph whose loop threads are started by `spawn_loop`.
     pub(crate) fn with_loop(spawn_loop: SpawnLoop) -> Self {
         Self {
@@ -496,10 +504,10 @@ impl<C: Connector> LoopState<C> {
                 // One context for the thread's lifetime: destroying one joins
                 // its `module-rt` thread, which can block on RTKit for 25 s.
                 let context = match self.context.take() {
-                    Some(context) => self.context.insert(context),
-                    None => self.context.insert(self.connector.context()?),
+                    Some(context) => context,
+                    None => self.connector.context()?,
                 };
-                self.connector.connect(context)?
+                self.connector.connect(self.context.insert(context))?
             },
         };
         Ok(self.connection.insert(connection))
@@ -910,10 +918,12 @@ impl PwConnection {
     fn unload(&self, mirror: &Mirror, id: u32) {
         let ins = branch_node_name(id, "in");
         let outs = branch_node_name(id, "out");
-        for node in mirror
+        let nodes: Vec<u32> = mirror
             .node_ids_named(&ins)
             .chain(mirror.node_ids_named(&outs))
-        {
+            .collect();
+        tracing::debug!("unloading loopback branch {id}: destroying nodes {nodes:?}");
+        for node in nodes {
             self.destroy_global(node);
         }
     }
@@ -1183,7 +1193,7 @@ impl LoopState<PwConnector> {
     ) -> Result<(), AudioError> {
         let args = loopback_module_args(sink_name, real_sink, latency_ms, self.next_module_id())?;
         let module = self.connection()?.load_loopback(&args)?;
-        self.add_module(
+        let id = self.add_module(
             sink_name,
             CombineBranch {
                 sink: real_sink.to_string(),
@@ -1191,6 +1201,7 @@ impl LoopState<PwConnector> {
             },
             module,
         );
+        tracing::debug!("loaded loopback branch {id}: {args}");
         self.sync_mirror()
     }
 
@@ -1214,6 +1225,7 @@ impl LoopState<PwConnector> {
         // A partial view destroys nothing: the sync must succeed first.
         self.sync_mirror()?;
         let doomed = foreign_combined_globals(&self.mirror, sink_name);
+        tracing::debug!("teardown of {sink_name}: destroying globals {doomed:?}");
         let connection = self.connection()?;
         for id in doomed {
             connection.destroy_global(id);
@@ -1531,6 +1543,19 @@ mod tests {
         assert!(loopback_module_args(COMBINED, SPEAKER, 50, 1).is_ok());
     }
 
+    // Criterion: a node name is written as one quoted SPA-JSON string whatever it
+    // carries — a quote in it cannot close the string early and leave the rest
+    // of the name to be read as another key.
+    #[test]
+    fn test_loopback_module_args_escapes_a_quote_in_a_node_name() {
+        let args = loopback_module_args(COMBINED, "odd\"sink", 50, 1).unwrap();
+
+        assert!(
+            args.contains(r#"target.object = "odd\"sink""#),
+            "the quote is escaped inside the string, got {args}"
+        );
+    }
+
     // ─── combined_sink_props ─────────────────────────────────────────────────
 
     // Criterion: the combined sink is an `adapter` over `support.null-audio-sink`,
@@ -1710,6 +1735,31 @@ mod tests {
         assert!(!branch_liveness(&mirror, "", SPEAKER));
     }
 
+    // Criterion (the empty value is a wildcard): an empty name matches no node,
+    // not even one whose `node.name` is itself empty — otherwise a nameless
+    // stream linked into the sink would vouch for a branch that is not there.
+    #[test]
+    fn test_branch_liveness_of_an_empty_name_ignores_a_nameless_node() {
+        let mut mirror = liveness_mirror(&[(200, 91, 57), (201, 90, 92)]);
+        mirror.nodes.insert(
+            91,
+            node(&[("node.name", ""), ("media.class", "Stream/Output/Audio")]),
+        );
+        mirror.nodes.insert(
+            92,
+            node(&[("node.name", ""), ("media.class", "Audio/Sink")]),
+        );
+
+        assert!(
+            !branch_liveness(&mirror, "", SPEAKER),
+            "a nameless stream linked into the sink is no branch"
+        );
+        assert!(
+            !branch_liveness(&mirror, "blue2th_loop.3.out", ""),
+            "a link into a nameless sink feeds no named speaker"
+        );
+    }
+
     // ─── foreign_combined_globals ────────────────────────────────────────────
 
     /// A graph left by a `pactl`-era server (#78): its null sink, its loopback
@@ -1883,6 +1933,37 @@ mod tests {
         assert!(!selected.is_empty(), "the combined sink itself is selected");
     }
 
+    // Criterion: a hardware node is spared even when it would otherwise match —
+    // named exactly like the sink, or sharing a pair's link group — since
+    // destroying it switches its card's profile to `off`.
+    #[test]
+    fn test_foreign_combined_globals_spares_a_hardware_node_that_would_match() {
+        let mut mirror = foreign_mirror();
+        mirror.nodes.insert(
+            90,
+            node(&[
+                ("node.name", COMBINED),
+                ("media.class", "Audio/Sink"),
+                ("device.api", "alsa"),
+            ]),
+        );
+        mirror.nodes.insert(
+            91,
+            node(&[
+                ("node.name", "alsa_output.usb-dac.analog-stereo"),
+                ("media.class", "Audio/Sink"),
+                ("device.api", "alsa"),
+                ("node.link-group", "loopback-6815-13"),
+            ]),
+        );
+
+        assert_eq!(
+            sorted(foreign_combined_globals(&mirror, COMBINED)),
+            vec![61, 70, 71],
+            "no hardware node joins the teardown"
+        );
+    }
+
     // Criterion (the empty value is a wildcard): an empty sink name selects
     // nothing, even against nodes whose name or target is empty.
     #[test]
@@ -1912,9 +1993,10 @@ mod tests {
     // ─── default_sink_metadata_value ─────────────────────────────────────────
 
     // Criterion: `set_default_sink` writes `{"name": "<sink>"}` on
-    // `default.configured.audio.sink`, the JSON `pactl set-default-sink` wrote.
+    // `default.configured.audio.sink`, the JSON the session manager reads the
+    // configured default sink from.
     #[test]
-    fn test_default_sink_metadata_value_is_the_json_pactl_writes() {
+    fn test_default_sink_metadata_value_is_a_json_object_naming_the_sink() {
         let value: Option<serde_json::Value> =
             serde_json::from_str(&default_sink_metadata_value(COMBINED)).ok();
 
@@ -1955,6 +2037,19 @@ mod tests {
     #[test]
     fn test_volume_fraction_from_route_without_channels_is_none() {
         assert_eq!(volume_fraction_from_route(&[]), None);
+    }
+
+    // Criterion: an over-amplified route reads above 1.0, unclamped — it is
+    // `reported_volume` that refuses a level the DTO cannot carry, and a clamp
+    // here would present 100% for a speaker that is not at 100%.
+    #[test]
+    fn test_volume_fraction_from_route_reports_an_over_amplified_route_above_one() {
+        let read = volume_fraction_from_route(&[1.53_f32.powi(3)]);
+
+        assert!(
+            read.is_some_and(|v| close(v, 1.53, 1e-4)),
+            "153% reads 1.53, got {read:?}"
+        );
     }
 
     // Criterion: `set_sink_volume` writes `level³` on every channel
@@ -2140,6 +2235,15 @@ mod tests {
         assert_eq!(GRAPH_REPLY_TIMEOUT, Duration::from_secs(2));
     }
 
+    // Criterion: the loop thread's own waits fit inside the handle's, so a slow
+    // daemon is reported with its own error rather than the handle's timeout.
+    // The longest commands (`teardown`, `unload_branch`, `set_sink_volume`) wait
+    // on at most four round trips.
+    #[test]
+    fn test_the_longest_command_s_round_trips_fit_in_the_reply_timeout() {
+        assert!(ROUNDTRIP_TIMEOUT * 4 < GRAPH_REPLY_TIMEOUT);
+    }
+
     // Criterion: a loop thread that took the command and died without answering
     // is an error at once — a dropped reply is not a slow one.
     #[test]
@@ -2247,6 +2351,29 @@ mod tests {
         let graph = PipeWireGraph::spawn();
         assert!(started.elapsed() < Duration::from_millis(500));
         drop(graph);
+    }
+
+    // Criterion: a detached graph reaches no loop and no daemon — every command
+    // errs at once, and a volume reads as unknown.
+    #[test]
+    fn test_detached_graph_errs_at_once_without_a_loop() {
+        let mut graph = PipeWireGraph::detached();
+        let started = Instant::now();
+
+        let sinks = graph.sinks();
+        let teardown = graph.teardown(COMBINED);
+
+        assert!(
+            matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
+            "got {sinks:?}"
+        );
+        assert!(matches!(teardown, Err(AudioError::PipeWire(_))));
+        assert_eq!(graph.sink_volume(SPEAKER), None);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "no timeout is waited out, waited {:?}",
+            started.elapsed()
+        );
     }
 
     // ─── The loop side: connection lifecycle over a fake connector ───────────

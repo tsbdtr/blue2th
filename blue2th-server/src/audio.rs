@@ -50,8 +50,9 @@ pub fn clamp_volume(level: f32) -> f32 {
 /// for a sink that could not be read. The selection's levels are reported only
 /// when every one of them is readable, lies in `0.0..=1.0`, and they agree at
 /// whole-percent resolution. The returned level is therefore always in
-/// `0.0..=1.0`, as `PlaybackState.volume` documents. Otherwise the last `commanded` level is reported: it is true as a command, and it never
-/// presents one speaker's level as if it were everyone's.
+/// `0.0..=1.0`, as `PlaybackState.volume` documents. Otherwise the last
+/// `commanded` level is reported: it is true as a command, and it never presents
+/// one speaker's level as if it were everyone's.
 pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
     let mut agreed: Option<u32> = None;
     for level in levels {
@@ -291,8 +292,9 @@ enum AudioCmd {
 }
 
 /// Real audio output: streams the decoded tone to the default PipeWire sink via
-/// rodio (cpal → ALSA → PipeWire) on a dedicated thread, and sets the sink volume
-/// through `wpctl`. The thread and device are created lazily on the first
+/// rodio (cpal → ALSA → PipeWire) on a dedicated thread. It sets no volume of its
+/// own: `POST /volume` goes through [`AudioRouter::set_sink_volume`], which writes
+/// each speaker's device `Route`. The thread and device are created lazily on the first
 /// `start`, so constructing this (e.g. when the router is built) never touches an
 /// audio device — important for CI / hosts without PipeWire.
 #[derive(Default)]
@@ -723,10 +725,12 @@ pub fn sink_named_by_prefix(sinks: &[String], prefix: &str) -> Option<String> {
     first_sink_named_by(sinks.iter().map(String::as_str), prefix)
 }
 
-/// [`sink_named_by_prefix`] over a tab-separated sink listing, the node name in
-/// the second column of each line: the shape the sink tables of the tests and
-/// the PipeWire tools print (#79).
-pub fn sink_matching_prefix(listing: &str, prefix: &str) -> Option<String> {
+/// [`sink_named_by_prefix`] over a tab-separated sink table, the node name in
+/// the second column of each line. Only the tests read that shape: it keeps the
+/// resolution tests written against the sink tables of (#78) running on the one
+/// rule production uses.
+#[cfg(test)]
+fn sink_matching_prefix(listing: &str, prefix: &str) -> Option<String> {
     first_sink_named_by(
         listing.lines().filter_map(|line| line.split('\t').nth(1)),
         prefix,
@@ -753,7 +757,7 @@ fn first_sink_named_by<'a>(names: impl Iterator<Item = &'a str>, prefix: &str) -
 
 /// Whether `node` is a node the `bluez_output.*`-style `prefix` names: the same
 /// name, or the prefix continued by the `.` PipeWire puts before the card index.
-/// The single copy of the rule [`sink_matching_prefix`] resolves with and
+/// The single copy of the rule [`sink_named_by_prefix`] resolves with and
 /// [`branch_is`] compares with, so one set of tests pins both.
 ///
 /// An **empty** prefix names nothing: it opens every name, and it also *equals* a
@@ -766,8 +770,8 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
                 .is_some_and(|rest| rest.starts_with('.')))
 }
 
-/// The routing logic, driven through a [`Graph`] rather than through the
-/// PipeWire tools directly (#79). It owns the two registers the reconciliation carries from one
+/// The routing logic, driven through a [`Graph`] rather than against PipeWire
+/// directly (#79). It owns the two registers the reconciliation carries from one
 /// pass to the next, so two routers never see each other's history.
 pub struct AudioRouter {
     /// The graph every routing decision is read from and applied to.
@@ -826,6 +830,12 @@ impl AudioRouter {
     /// loopback per speaker. Tears any leftover down first so repeated calls do not
     /// stack modules.
     fn build_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
+        tracing::info!(
+            "building {} from nothing: {} branch(es) [{}]",
+            spec.sink_name,
+            spec.branches.len(),
+            branches_for_log(&spec.branches)
+        );
         self.graph.teardown(&spec.sink_name)?;
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
@@ -854,6 +864,11 @@ impl AudioRouter {
         // replacement without ever asking for the stale one to go. Unloaded here,
         // before that load, so the speaker never has two loopbacks feeding it.
         for dead in listed.iter().filter(|b| b.live == Some(false)) {
+            tracing::info!(
+                "branch {} into {} ruled dead: unloading it",
+                dead.id,
+                dead.branch.sink
+            );
             // Best-effort: a branch that is already gone is not an error, and one
             // failure must not stop the rest of a repair.
             let _ = self.graph.unload_branch(dead.id);
@@ -870,8 +885,8 @@ impl AudioRouter {
             .collect();
         // Nothing read is "cannot tell", not "every speaker is gone": acting on
         // it would unload every branch. So an unreadable list ends the pass, and
-        // so does one naming no sink at all — the same answer with the same
-        // meaning, in the shape a graph over text can only give.
+        // so does one naming no sink at all: it does not even name the combined
+        // sink this pass was entered for, so it describes no graph worth acting on.
         let sinks = match self.graph.sinks() {
             Ok(names) if !names.is_empty() => names,
             _ => return Ok(()),
@@ -886,11 +901,26 @@ impl AudioRouter {
         let fresh = newly_listed_sinks(&self.sinks_last_pass, &sinks);
         self.sinks_last_pass = Some(sink_nodes(&sinks));
         let plan = reconcile_branches(&loaded, &reachable);
+        if !plan.to_load.is_empty() {
+            tracing::info!(
+                "rebuilding every branch of {}: loaded [{}], planned [{}]",
+                spec.sink_name,
+                branches_for_log(&loaded),
+                branches_for_log(&reachable.branches)
+            );
+        }
         for up in kept.iter().filter(|up| {
             plan.to_unload
                 .iter()
                 .any(|gone| gone.sink == up.branch.sink)
         }) {
+            if plan.to_load.is_empty() {
+                tracing::info!(
+                    "branch {} into {} is no longer planned: unloading it",
+                    up.id,
+                    up.branch.sink
+                );
+            }
             self.graph.unload_branch(up.id)?;
         }
         let report = self.load_planned_branches_live(&spec.sink_name, &plan.to_load);
@@ -905,10 +935,22 @@ impl AudioRouter {
         // and arm, and so the confirming rebuild below (which loads outside `plan`)
         // can never arm itself into a loop.
         let arms_the_next_pass = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
+        if arms_the_next_pass {
+            tracing::info!(
+                "wired a sink that came back ({}): confirming rebuild armed for the next pass",
+                fresh.join(", ")
+            );
+        }
         let confirm = self.confirmation.take_and_arm(arms_the_next_pass);
         if !confirm {
             return report.into_result();
         }
+        tracing::info!(
+            "confirming rebuild of {}: reloading {} branch(es) [{}]",
+            spec.sink_name,
+            reachable.branches.len(),
+            branches_for_log(&reachable.branches)
+        );
         // The previous pass wired a speaker that had just come back, and that load did
         // not start it; see `wires_a_new_sink`. Rebuilding every branch now — one tick
         // later, which is the measured gap — starts it.
@@ -960,6 +1002,12 @@ impl AudioRouter {
         // null sink and the other speaker's branch untouched.
         for up in self.graph.branches(sink_name)? {
             if up.branch.sink == real {
+                tracing::info!(
+                    "retuning {real}: branch {} at {} ms replaced by one at {} ms",
+                    up.id,
+                    up.branch.latency_ms,
+                    branch.latency_ms
+                );
                 self.graph.unload_branch(up.id)?;
             }
         }
@@ -1023,6 +1071,15 @@ impl AudioRouter {
     fn find_sink_with_prefix(&mut self, prefix: &str) -> Result<Option<String>, AudioError> {
         find_sink_with_prefix(self.graph.as_mut(), prefix)
     }
+}
+
+/// `branches` on one log line: each sink with its latency.
+fn branches_for_log(branches: &[CombineBranch]) -> String {
+    branches
+        .iter()
+        .map(|branch| format!("{} @ {} ms", branch.sink, branch.latency_ms))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Resolve a live sink node-name from its `bluez_output.*` prefix (which the
@@ -1213,8 +1270,8 @@ mod tests {
     }
 
     // Criterion: a level `PlaybackState.volume` cannot express is never counted
-    // as agreeing. `pactl` reports an over-amplified sink as e.g. "153%", which
-    // `parse_first_percent` reads as 1.53; reporting it would break the DTO's
+    // as agreeing. An over-amplified sink reads as e.g. 1.53 (a 153% volume);
+    // reporting it would break the DTO's
     // documented `0.0..=1.0` range, and clamping it to 100% would name a level
     // no speaker is at.
     #[test]
@@ -1402,7 +1459,7 @@ mod tests {
     }
 
     // Criterion: `route_for_targets` takes the combined path for every non-empty
-    // selection. The routing itself is a `pactl` seam CI cannot exercise, so the
+    // selection. The routing itself needs a PipeWire daemon CI does not have, so the
     // pure half is pinned instead: the sink the plan names is the sink the
     // Spotify backend is pointed at, for a lone speaker as much as for two.
     // If they ever disagree, playback goes somewhere the plan did not build.
@@ -1433,7 +1490,7 @@ mod tests {
     }
 
     // Criterion: `route_for_targets` still refuses an empty selection with
-    // `AudioError::NoSpeakerConnected` — the guard runs before any `pactl` call,
+    // `AudioError::NoSpeakerConnected` — the guard runs before the graph is asked,
     // which is what makes this testable without hardware.
     #[test]
     fn test_route_for_targets_empty_selection_is_refused() {
@@ -1444,24 +1501,24 @@ mod tests {
         ));
     }
 
-    /// A realistic `pactl list short sinks` block: tab-separated columns, the
-    /// node name second, one Bluetooth speaker whose live node carries the `.1`
-    /// card suffix, the PC's own output and the combined null sink.
-    const PACTL_SINKS: &str = concat!(
+    /// A realistic sink table (#78): tab-separated columns, the node name
+    /// second, one Bluetooth speaker whose live node carries the `.1` card
+    /// suffix, the PC's own output and the combined null sink.
+    const SINK_TABLE: &str = concat!(
         "39\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
         "57\tbluez_output.80_99_E7_63_50_29.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n",
         "61\tblue2th_combined\tPipeWire\tf32le 2ch 48000Hz\tIDLE\n",
     );
 
-    // Criterion: a pure function resolves a prefix against the text `pactl list
-    // short sinks` prints, mapping `bluez_output.<MAC>` to the line carrying the
+    // Criterion: a pure function resolves a prefix against a sink table (#78),
+    // mapping `bluez_output.<MAC>` to the line carrying the
     // card suffix (`bluez_output.<MAC>.1`). This is the heart of the defect: the
     // prefix itself names no live node, so `--device <prefix>` silently falls
     // back to the default sink.
     #[test]
     fn test_sink_matching_prefix_resolves_a_bluez_prefix_to_the_card_suffixed_node() {
         assert_eq!(
-            sink_matching_prefix(PACTL_SINKS, "bluez_output.80_99_E7_63_50_29"),
+            sink_matching_prefix(SINK_TABLE, "bluez_output.80_99_E7_63_50_29"),
             Some("bluez_output.80_99_E7_63_50_29.1".to_string())
         );
     }
@@ -1472,7 +1529,7 @@ mod tests {
     #[test]
     fn test_sink_matching_prefix_without_a_matching_line_is_none() {
         assert_eq!(
-            sink_matching_prefix(PACTL_SINKS, "bluez_output.AA_BB_CC_DD_EE_FF"),
+            sink_matching_prefix(SINK_TABLE, "bluez_output.AA_BB_CC_DD_EE_FF"),
             None
         );
     }
@@ -1515,7 +1572,7 @@ mod tests {
     #[test]
     fn test_sink_matching_prefix_leaves_an_exact_node_name_unchanged() {
         assert_eq!(
-            sink_matching_prefix(PACTL_SINKS, "blue2th_combined"),
+            sink_matching_prefix(SINK_TABLE, "blue2th_combined"),
             Some("blue2th_combined".to_string())
         );
     }
@@ -1524,11 +1581,11 @@ mod tests {
     // first line of the listing — the PC's own output. `spotify_target_sink(&[])`
     // returns exactly that empty string, and only the `speakers.is_empty()` guard
     // at the top of `SpotifyBackend::start` stands between it and pointing
-    // `--device` at the PC. Verified on a live `pactl`: before this guard,
+    // `--device` at the PC. Verified on a live graph (#78): before this guard,
     // `resolve_target_sink("")` answered `Ok("alsa_output.…HiFi__Speaker__sink")`.
     #[test]
     fn test_sink_matching_prefix_without_a_prefix_matches_nothing() {
-        assert_eq!(sink_matching_prefix(PACTL_SINKS, ""), None);
+        assert_eq!(sink_matching_prefix(SINK_TABLE, ""), None);
         // Also against a listing carrying a blank node-name column, which the
         // boundary rule would otherwise accept as *equal* to the empty prefix.
         assert_eq!(sink_matching_prefix("39\t\tPipeWire\tIDLE\n", ""), None);
@@ -1560,8 +1617,8 @@ mod tests {
     }
 
     // The tie-break is stated in the doc, so it is pinned here: with two
-    // `.`-suffixed candidates for one prefix, the first line wins — `pactl`'s own
-    // sink-index order — rather than whichever the iteration happens to reach.
+    // `.`-suffixed candidates for one prefix, the first line wins — the order
+    // the sinks were listed in — rather than whichever the iteration happens to reach.
     #[test]
     fn test_sink_matching_prefix_takes_the_first_suffixed_candidate() {
         let listing = concat!(
@@ -1574,8 +1631,7 @@ mod tests {
         );
     }
 
-    // The listing comes from a subprocess, so it must survive whatever `pactl`
-    // prints: a blank line, a line short of the node-name column, and a trailing
+    // A sink table must survive whatever a tool prints (#78): a blank line, a line short of the node-name column, and a trailing
     // newline all get skipped rather than panicking or answering an empty name.
     #[test]
     fn test_sink_matching_prefix_skips_lines_without_a_node_name_column() {
@@ -2217,7 +2273,7 @@ mod tests {
         ]
     }
 
-    // Criterion (moved back from `graph_pactl.rs`): `branch_latency_ms` is the
+    // Criterion (moved back from the graph module of (#78)): `branch_latency_ms` is the
     // single place the base is applied, so what the graph reports loaded and what
     // the plan asks for are the same quantity. Applying the base only at load
     // time would have every reconciliation compare a loaded 120 against a planned
@@ -2635,9 +2691,8 @@ mod router_tests {
     }
 
     // Non-nominal: the sink list reads back naming nothing — not even the
-    // combined sink the pass was entered for. Under `pactl` that is a
-    // subprocess that printed nothing, so it is treated exactly like an
-    // unreadable list: the pass ends without unloading anything. Driven through
+    // combined sink the pass was entered for. A graph that names nothing
+    // describes nothing, so it is treated exactly like an unreadable list: the pass ends without unloading anything. Driven through
     // `reconcile_combined` directly, since the route entry point would already
     // have turned an empty list into a build.
     #[test]
@@ -2994,8 +3049,8 @@ mod router_tests {
     }
 
     // Non-nominal: an empty target names no node, so it is answered without the
-    // graph being read at all — not even the sink list. With `pactl` underneath
-    // a read is a spawn, and one that could only ever answer "nothing".
+    // graph being read at all — not even the sink list. A read is a round trip
+    // to the graph thread, and one that could only ever answer "nothing".
     #[test]
     fn test_empty_target_is_answered_without_reading_the_graph() {
         let (fake, _, _) = steady_graph(Some(true));

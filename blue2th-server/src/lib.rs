@@ -656,20 +656,27 @@ pub fn app() -> Router {
 /// There is deliberately no variant that mints its own token: the caller could
 /// not know it, so every guarded route would answer 401 and the test would look
 /// broken for the wrong reason.
+///
+/// For the same reason it touches no audio graph either: its graph is
+/// [`graph_pw::PipeWireGraph::detached`], which errs on every call the way a host
+/// without PipeWire does. A graph over the session's daemon would let a test that
+/// reaches `AudioRouter::teardown` — deselecting the last speaker does — destroy
+/// the operator's live `blue2th_combined`.
 pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router {
     app_with_auth_and_targets(
         spotify_auth,
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
-        Box::new(graph_pw::PipeWireGraph::spawn()),
+        Box::new(graph_pw::PipeWireGraph::detached()),
     )
     .0
 }
 
 /// [`app_with_auth_store`], also handing back the [`AppState`] the router was
 /// built around, so a test can drive the shutdown path against the very same
-/// `SpotifyBackend` the routes hold (#122).
+/// `SpotifyBackend` the routes hold (#122). Detached from any audio graph, like
+/// [`app_with_auth_store`].
 pub fn app_with_auth_store_and_state(
     spotify_auth: SpotifyAuth,
     auth: AuthStore,
@@ -679,7 +686,7 @@ pub fn app_with_auth_store_and_state(
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
-        Box::new(graph_pw::PipeWireGraph::spawn()),
+        Box::new(graph_pw::PipeWireGraph::detached()),
     )
 }
 
