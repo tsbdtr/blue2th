@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use crate::audio::{clamp_volume, sink_nodes, AudioError, CombineBranch};
+use crate::audio::{clamp_volume, AudioError, CombineBranch};
 use crate::graph::{Graph, LoadedBranch};
 
 /// The audio graph as `pactl` sees it. Stateless: every call spawns the
@@ -26,7 +26,12 @@ impl Graph for PactlGraph {
     fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
         let listing = sink_listing()
             .ok_or_else(|| AudioError::PipeWire("pactl list sinks failed".to_string()))?;
-        Ok(sink_nodes(&listing))
+        Ok(listing
+            .lines()
+            .filter_map(|line| line.split('\t').nth(1))
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string())
+            .collect())
     }
 
     fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {

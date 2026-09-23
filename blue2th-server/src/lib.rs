@@ -42,6 +42,7 @@ mod bluetooth;
 pub mod config;
 pub mod graph;
 pub mod graph_pactl;
+pub mod graph_pw;
 pub mod identity;
 pub mod reconnect;
 pub mod spotify;
