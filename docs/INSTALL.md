@@ -8,12 +8,14 @@ phone to it.
 
 ## What the PC needs
 
-- **PipeWire with its PulseAudio compatibility layer.** The backend drives
-  PipeWire through `pactl`, so `pipewire-pulse` must be running in your session
-  and `pactl` must be installed. Fedora: `pipewire pipewire-pulseaudio
-  pulseaudio-utils`. Debian and Ubuntu: `pipewire pipewire-pulse
-  pulseaudio-utils`. Check with `pactl info`: the server name line must say
-  *PulseAudio (on PipeWire …)*.
+- **PipeWire, with its PulseAudio compatibility layer.** The backend drives
+  PipeWire natively, through `libpipewire-0.3.so`, and loads its loopback
+  branches into its own process. `librespot` still plays through the PulseAudio
+  layer, so `pipewire-pulse` must be running in your session too. Fedora:
+  `pipewire pipewire-libs pipewire-pulseaudio`. Debian and Ubuntu: `pipewire
+  libpipewire-0.3-0 pipewire-pulse`. To look at the graph the backend builds,
+  `pw-dump`, `pw-link -l` and `pw-top` (Fedora: `pipewire-utils`; Debian and
+  Ubuntu: `pipewire-bin`); `pw-dump > graph.json` is what a bug report needs.
 - **BlueZ**, with `bluetoothd` running, and a Bluetooth adapter. Check with
   `bluetoothctl show`.
 - **A desktop session.** PipeWire is a per-user service, so the backend runs as
@@ -33,7 +35,7 @@ pairing mode and tap it in the app; the backend pairs and connects it.
 Each [release](https://github.com/tsbdtr/blue2th/releases) ships
 `blue2th-server-<version>-x86_64-linux-gnu.tar.gz`: the binary and the two licence
 texts. Built on Ubuntu 24.04, it runs on any distribution with glibc 2.39 or
-newer and the shared libraries above (`libasound`, `libdbus`).
+newer and the shared libraries above (`libasound`, `libdbus`, `libpipewire-0.3`).
 
 ```bash
 tar xzf blue2th-server-<version>-x86_64-linux-gnu.tar.gz
@@ -44,7 +46,9 @@ install -m 755 blue2th-server-<version>-x86_64-linux-gnu/blue2th-server ~/.local
 
 To build it instead, install a stable Rust toolchain and the development
 packages the build links against (`pkg-config`, `libdbus-1-dev`,
-`libasound2-dev` on Debian; `dbus-devel`, `alsa-lib-devel` on Fedora), then:
+`libasound2-dev`, `libpipewire-0.3-dev`, `libclang-dev`, `clang` on Debian;
+`dbus-devel`, `alsa-lib-devel`, `pipewire-devel`, `clang-devel` on Fedora —
+clang because the PipeWire bindings are generated at build time), then:
 
 ```bash
 cargo build --release -p blue2th-server

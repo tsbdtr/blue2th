@@ -2,18 +2,52 @@
 //! [`PipeWireGraph`]: the [`Graph`] that drives PipeWire natively, from a
 //! `pw_main_loop` running on a thread of its own (#79).
 //!
-//! RED phase: every item below is a typed stub, returning a wrong-but-typed
-//! value so the tests at the bottom of this file compile and fail.
+//! The PipeWire objects are `Rc`-based and never leave that thread. The handle
+//! the router owns only holds a [`pipewire::channel`] sender into it: every
+//! [`Graph`] method is one [`Command`], answered through a reply channel the
+//! handle waits on for at most [`GRAPH_REPLY_TIMEOUT`].
+//!
+//! The decisions are pure functions over a [`Mirror`] of the registry, so the
+//! tests pin them without a daemon; the loop side only applies them.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::CString;
+use std::io::Cursor;
+use std::rc::Rc;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use libspa::param::ParamType;
+use libspa::pod::deserialize::PodDeserializer;
+use libspa::pod::serialize::PodSerializer;
+use libspa::pod::{Object, Pod, Property, PropertyFlags, Value, ValueArray};
+use pipewire as pw;
+use pw::context::ContextRc;
+use pw::core::CoreRc;
+use pw::device::{Device, DeviceListener};
+use pw::loop_::Timeout;
+use pw::main_loop::MainLoopRc;
+use pw::metadata::Metadata;
+use pw::node::{Node, NodeListener};
+use pw::properties::PropertiesBox;
+use pw::registry::{GlobalObject, RegistryRc};
+use pw::types::ObjectType;
 
 use crate::audio::{AudioError, CombineBranch};
 use crate::graph::{Graph, LoadedBranch};
 
 /// How long the handle waits for the loop thread to answer one command.
 pub(crate) const GRAPH_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the loop thread waits for one `core.sync` round trip. Several fit in
+/// [`GRAPH_REPLY_TIMEOUT`], so a command answers with the daemon's error rather
+/// than with the handle's timeout.
+const ROUNDTRIP_TIMEOUT: Duration = Duration::from_millis(400);
+
+/// The factory the combined sink's node is created from.
+const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
 
 /// Where the loop thread sends the answer to one command.
 pub(crate) type Reply<T> = mpsc::Sender<Result<T, AudioError>>;
@@ -77,9 +111,10 @@ pub struct PipeWireGraph {
 }
 
 impl PipeWireGraph {
-    /// A graph over the PipeWire daemon of the current session.
+    /// A graph over the PipeWire daemon of the current session. Starts nothing:
+    /// the loop thread is spawned, and connects, on the first command.
     pub fn spawn() -> Self {
-        Self::with_loop(Box::new(|| Box::new(DeadLoop) as Box<dyn LoopSender>))
+        Self::with_loop(Box::new(spawn_loop_thread))
     }
 
     /// A graph whose loop threads are started by `spawn_loop`.
@@ -89,57 +124,126 @@ impl PipeWireGraph {
             sender: None,
         }
     }
+
+    /// Hand `command` to the loop thread, starting one when there is none and
+    /// replacing one that has died.
+    fn send(&mut self, command: Command) -> Result<(), AudioError> {
+        let spawn_loop = &mut self.spawn_loop;
+        let sender = self.sender.get_or_insert_with(|| spawn_loop());
+        let Err(command) = sender.send(command) else {
+            return Ok(());
+        };
+        // The thread is gone: a new one answers this very command.
+        let fresh = spawn_loop();
+        let sent = fresh.send(command);
+        self.sender = Some(fresh);
+        sent.map_err(|_| AudioError::PipeWire("the PipeWire graph thread is not running".into()))
+    }
+
+    /// Send the command `make` builds around a fresh reply channel, and wait for
+    /// the answer.
+    fn ask<R>(&mut self, make: impl FnOnce(mpsc::Sender<R>) -> Command) -> Result<R, AudioError> {
+        let (reply, answer) = mpsc::channel();
+        self.send(make(reply))?;
+        answer
+            .recv_timeout(GRAPH_REPLY_TIMEOUT)
+            .map_err(|e| match e {
+                mpsc::RecvTimeoutError::Timeout => AudioError::PipeWire(format!(
+                    "PipeWire graph thread did not answer within {} s",
+                    GRAPH_REPLY_TIMEOUT.as_secs()
+                )),
+                mpsc::RecvTimeoutError::Disconnected => AudioError::PipeWire(
+                    "PipeWire graph thread dropped the command without answering".into(),
+                ),
+            })
+    }
 }
 
-/// RED stub: a loop that is never there.
-struct DeadLoop;
-
-impl LoopSender for DeadLoop {
-    fn send(&self, command: Command) -> Result<(), Command> {
-        Err(command)
+/// Refuse an empty name before it reaches the loop: an empty name is a wildcard
+/// to every match below it, never "no node".
+fn named(what: &str, name: &str) -> Result<(), AudioError> {
+    if name.is_empty() {
+        return Err(AudioError::PipeWire(format!("empty {what} name refused")));
     }
+    Ok(())
 }
 
 impl Graph for PipeWireGraph {
     fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
-        Ok(Vec::new())
+        self.ask(|reply| Command::Sinks { reply })?
     }
 
-    fn branches(&mut self, _sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
-        Ok(Vec::new())
+    fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
+        named("sink", sink_name)?;
+        self.ask(|reply| Command::Branches {
+            sink_name: sink_name.to_string(),
+            reply,
+        })?
     }
 
-    fn create_combined_sink(&mut self, _sink_name: &str) -> Result<(), AudioError> {
-        Ok(())
+    fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        self.ask(|reply| Command::CreateCombinedSink {
+            sink_name: sink_name.to_string(),
+            reply,
+        })?
     }
 
     fn load_branch(
         &mut self,
-        _sink_name: &str,
-        _real_sink: &str,
-        _latency_ms: u32,
+        sink_name: &str,
+        real_sink: &str,
+        latency_ms: u32,
     ) -> Result<(), AudioError> {
-        Ok(())
+        named("sink", sink_name)?;
+        named("target sink", real_sink)?;
+        self.ask(|reply| Command::LoadBranch {
+            sink_name: sink_name.to_string(),
+            real_sink: real_sink.to_string(),
+            latency_ms,
+            reply,
+        })?
     }
 
-    fn unload_branch(&mut self, _id: u32) -> Result<(), AudioError> {
-        Ok(())
+    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
+        self.ask(|reply| Command::UnloadBranch { id, reply })?
     }
 
-    fn teardown(&mut self, _sink_name: &str) -> Result<(), AudioError> {
-        Ok(())
+    fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        self.ask(|reply| Command::Teardown {
+            sink_name: sink_name.to_string(),
+            reply,
+        })?
     }
 
-    fn set_default_sink(&mut self, _sink: &str) -> Result<(), AudioError> {
-        Ok(())
+    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
+        named("sink", sink)?;
+        self.ask(|reply| Command::SetDefaultSink {
+            sink: sink.to_string(),
+            reply,
+        })?
     }
 
-    fn sink_volume(&mut self, _sink: &str) -> Option<f32> {
-        Some(0.0)
+    fn sink_volume(&mut self, sink: &str) -> Option<f32> {
+        if sink.is_empty() {
+            return None;
+        }
+        self.ask(|reply| Command::SinkVolume {
+            sink: sink.to_string(),
+            reply,
+        })
+        .ok()
+        .flatten()
     }
 
-    fn set_sink_volume(&mut self, _sink: &str, _level: f32) -> Result<(), AudioError> {
-        Ok(())
+    fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
+        named("sink", sink)?;
+        self.ask(|reply| Command::SetSinkVolume {
+            sink: sink.to_string(),
+            level,
+            reply,
+        })?
     }
 }
 
@@ -172,8 +276,24 @@ pub(crate) struct Mirror {
 
 impl Mirror {
     /// Whether the mirror knows no global at all.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.links.is_empty() && self.devices.is_empty()
+    }
+
+    /// The ids of the nodes whose `node.name` is exactly `name`; none for an
+    /// empty name.
+    fn node_ids_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = u32> + 'a {
+        self.nodes
+            .iter()
+            .filter(move |(_, node)| !name.is_empty() && node.prop("node.name") == Some(name))
+            .map(|(id, _)| *id)
+    }
+}
+
+impl NodeEntry {
+    fn prop(&self, key: &str) -> Option<&str> {
+        self.props.get(key).map(String::as_str)
     }
 }
 
@@ -184,76 +304,173 @@ pub(crate) struct RouteTarget {
     pub(crate) route_device: i32,
 }
 
+/// The name of branch `id`'s capture (`in`) or playback (`out`) stream node.
+fn branch_node_name(id: u32, end: &str) -> String {
+    format!("blue2th_loop.{id}.{end}")
+}
+
+/// `value` as a quoted SPA-JSON string.
+fn spa_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// The `libpipewire-module-loopback` argument string for one branch.
 pub(crate) fn loopback_module_args(
-    _sink_name: &str,
-    _real_sink: &str,
-    _latency_ms: u32,
-    _id: u32,
+    sink_name: &str,
+    real_sink: &str,
+    latency_ms: u32,
+    id: u32,
 ) -> Result<String, AudioError> {
-    Ok(String::new())
+    named("sink", sink_name)?;
+    named("target sink", real_sink)?;
+    let group = format!("blue2th_loop.{id}");
+    let delay = format!("{}.{:03}", latency_ms / 1000, latency_ms % 1000);
+    Ok(format!(
+        "{{ node.group = {group} target.delay.sec = {delay} \
+         capture.props = {{ node.name = {capture} target.object = {sink} \
+         stream.capture.sink = true node.dont-reconnect = true }} \
+         playback.props = {{ node.name = {playback} target.object = {real} \
+         node.dont-reconnect = true }} }}",
+        group = spa_string(&group),
+        capture = spa_string(&branch_node_name(id, "in")),
+        playback = spa_string(&branch_node_name(id, "out")),
+        sink = spa_string(sink_name),
+        real = spa_string(real_sink),
+    ))
 }
 
 /// The properties the combined sink's `adapter` node is created with.
-pub(crate) fn combined_sink_props(_sink_name: &str) -> Vec<(String, String)> {
-    Vec::new()
+pub(crate) fn combined_sink_props(sink_name: &str) -> Vec<(String, String)> {
+    [
+        ("factory.name", NULL_SINK_FACTORY),
+        ("node.name", sink_name),
+        ("node.description", sink_name),
+        ("media.class", "Audio/Sink"),
+        ("audio.position", "FL,FR"),
+        ("monitor.channel-volumes", "true"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
 }
 
 /// The node names of the mirror's `Audio/Sink` nodes.
-pub(crate) fn sink_names(_mirror: &Mirror) -> Vec<String> {
-    Vec::new()
+pub(crate) fn sink_names(mirror: &Mirror) -> Vec<String> {
+    mirror
+        .nodes
+        .values()
+        .filter(|node| node.prop("media.class") == Some("Audio/Sink"))
+        .filter_map(|node| node.prop("node.name"))
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Whether the branch whose playback node is `out_node` feeds `real_sink`.
-pub(crate) fn branch_liveness(_mirror: &Mirror, _out_node: &str, _real_sink: &str) -> bool {
-    false
+pub(crate) fn branch_liveness(mirror: &Mirror, out_node: &str, real_sink: &str) -> bool {
+    let outs: BTreeSet<u32> = mirror.node_ids_named(out_node).collect();
+    let sinks: BTreeSet<u32> = mirror.node_ids_named(real_sink).collect();
+    mirror
+        .links
+        .values()
+        .any(|link| outs.contains(&link.output_node) && sinks.contains(&link.input_node))
 }
 
 /// The globals a teardown of `sink_name` destroys whoever owns them.
-pub(crate) fn foreign_combined_globals(_mirror: &Mirror, _sink_name: &str) -> Vec<u32> {
-    Vec::new()
+pub(crate) fn foreign_combined_globals(mirror: &Mirror, sink_name: &str) -> Vec<u32> {
+    if sink_name.is_empty() {
+        return Vec::new();
+    }
+    // A hardware node is never ours: destroying one switches its card off.
+    let candidates = || {
+        mirror
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.prop("device.api").is_none())
+    };
+    let mut selected: BTreeSet<u32> = candidates()
+        .filter(|(_, node)| node.prop("node.name") == Some(sink_name))
+        .map(|(id, _)| *id)
+        .collect();
+    // The capture streams reading the sink, and the groups pairing each one with
+    // its playback stream.
+    let mut groups = BTreeSet::new();
+    for (id, node) in candidates() {
+        let captures = node.prop("media.class") == Some("Stream/Input/Audio")
+            || node.prop("stream.capture.sink") == Some("true");
+        if captures && node.prop("target.object") == Some(sink_name) {
+            selected.insert(*id);
+            if let Some(group) = node.prop("node.link-group").filter(|g| !g.is_empty()) {
+                groups.insert(group);
+            }
+        }
+    }
+    selected.extend(
+        candidates()
+            .filter(|(_, node)| {
+                node.prop("node.link-group")
+                    .is_some_and(|group| groups.contains(group))
+            })
+            .map(|(id, _)| *id),
+    );
+    selected.into_iter().collect()
 }
 
 /// The value written to `default.configured.audio.sink` to make `sink` default.
-pub(crate) fn default_sink_metadata_value(_sink: &str) -> String {
-    String::new()
+pub(crate) fn default_sink_metadata_value(sink: &str) -> String {
+    serde_json::json!({ "name": sink }).to_string()
 }
 
 /// The device and `Route` index carrying `sink`'s volume.
-pub(crate) fn route_target(_mirror: &Mirror, _sink: &str) -> Option<RouteTarget> {
-    None
+pub(crate) fn route_target(mirror: &Mirror, sink: &str) -> Option<RouteTarget> {
+    mirror.node_ids_named(sink).find_map(|id| {
+        let node = mirror.nodes.get(&id)?;
+        Some(RouteTarget {
+            device_id: node.prop("device.id")?.parse().ok()?,
+            route_device: node.prop("card.profile.device")?.parse().ok()?,
+        })
+    })
 }
 
 /// The volume fraction a device `Route`'s `channelVolumes` stands for.
-pub(crate) fn volume_fraction_from_route(_channel_volumes: &[f32]) -> Option<f32> {
-    None
+pub(crate) fn volume_fraction_from_route(channel_volumes: &[f32]) -> Option<f32> {
+    channel_volumes.first().map(|volume| volume.cbrt())
 }
 
 /// The `channelVolumes` a `Route` is written with to set the volume to `level`.
-pub(crate) fn route_channel_volumes(_level: f32, _channels: usize) -> Vec<f32> {
-    Vec::new()
+pub(crate) fn route_channel_volumes(level: f32, channels: usize) -> Vec<f32> {
+    vec![level.powi(3); channels]
 }
 
 /// Opens a connection to the daemon from the loop thread.
 pub(crate) trait Connector {
+    /// The client-side context every connection is opened from.
+    type Context;
     /// What the loop thread holds while connected.
     type Connection;
     /// One loopback module loaded into the server process.
     type Module;
     /// The proxy owning the combined null sink.
     type NullSink;
-    /// Connect to the daemon; an `Err` is "no daemon".
-    fn connect(&mut self) -> Result<Self::Connection, AudioError>;
+    /// Create the context. It needs no daemon.
+    fn context(&mut self) -> Result<Self::Context, AudioError>;
+    /// Connect to the daemon from `context`; an `Err` is "no daemon".
+    fn connect(&mut self, context: &Self::Context) -> Result<Self::Connection, AudioError>;
 }
 
 /// The loop thread's state: the connection, the mirror, and what the graph
 /// itself created.
 pub(crate) struct LoopState<C: Connector> {
     connector: C,
-    connection: Option<C::Connection>,
-    mirror: Mirror,
-    modules: BTreeMap<u32, (String, CombineBranch, C::Module)>,
+    // Declared before `connection`, so dropped before it: a proxy outliving the
+    // core that owns it would be freed twice.
     null_sinks: BTreeMap<String, C::NullSink>,
+    modules: BTreeMap<u32, (String, CombineBranch, C::Module)>,
+    connection: Option<C::Connection>,
+    // Declared after `connection`, so dropped after it: a connection is opened
+    // from this context and must not outlive it.
+    context: Option<C::Context>,
+    mirror: Mirror,
     next_module_id: u32,
 }
 
@@ -262,22 +479,36 @@ impl<C: Connector> LoopState<C> {
     pub(crate) fn new(connector: C) -> Self {
         Self {
             connector,
-            connection: None,
-            mirror: Mirror::default(),
-            modules: BTreeMap::new(),
             null_sinks: BTreeMap::new(),
+            modules: BTreeMap::new(),
+            connection: None,
+            context: None,
+            mirror: Mirror::default(),
             next_module_id: 0,
         }
     }
 
     /// The live connection, connecting first when there is none.
     pub(crate) fn connection(&mut self) -> Result<&mut C::Connection, AudioError> {
-        Err(AudioError::PipeWire("RED stub".to_string()))
+        let connection = match self.connection.take() {
+            Some(connection) => connection,
+            None => {
+                // One context for the thread's lifetime: destroying one joins
+                // its `module-rt` thread, which can block on RTKit for 25 s.
+                let context = match self.context.take() {
+                    Some(context) => self.context.insert(context),
+                    None => self.context.insert(self.connector.context()?),
+                };
+                self.connector.connect(context)?
+            },
+        };
+        Ok(self.connection.insert(connection))
     }
 
     /// Whether a connection is currently held.
+    #[cfg(test)]
     pub(crate) fn is_connected(&self) -> bool {
-        false
+        self.connection.is_some()
     }
 
     /// The registry mirror.
@@ -290,36 +521,777 @@ impl<C: Connector> LoopState<C> {
         &mut self.mirror
     }
 
+    /// The id [`Self::add_module`] hands the next module.
+    fn next_module_id(&self) -> u32 {
+        self.next_module_id
+    }
+
     /// Keep a loaded module and return the graph's own id for it.
     pub(crate) fn add_module(
         &mut self,
-        _sink_name: &str,
-        _branch: CombineBranch,
-        _module: C::Module,
+        sink_name: &str,
+        branch: CombineBranch,
+        module: C::Module,
     ) -> u32 {
-        0
+        let id = self.next_module_id;
+        self.next_module_id = self.next_module_id.wrapping_add(1);
+        self.modules
+            .insert(id, (sink_name.to_string(), branch, module));
+        id
     }
 
     /// The modules the graph loaded for `sink_name`, with their ids.
-    pub(crate) fn modules_for(&self, _sink_name: &str) -> Vec<(u32, CombineBranch)> {
-        Vec::new()
+    pub(crate) fn modules_for(&self, sink_name: &str) -> Vec<(u32, CombineBranch)> {
+        self.modules
+            .iter()
+            .filter(|(_, (sink, _, _))| sink == sink_name)
+            // Cloned: the answer leaves the loop thread, the module stays.
+            .map(|(id, (_, branch, _))| (*id, branch.clone()))
+            .collect()
     }
 
     /// Forget the module `id` and hand it back for destruction.
-    pub(crate) fn take_module(&mut self, _id: u32) -> Option<C::Module> {
-        None
+    pub(crate) fn take_module(&mut self, id: u32) -> Option<C::Module> {
+        self.modules.remove(&id).map(|(_, _, module)| module)
     }
 
     /// Keep the proxy owning the combined sink `sink_name`.
-    pub(crate) fn set_null_sink(&mut self, _sink_name: &str, _proxy: C::NullSink) {}
+    pub(crate) fn set_null_sink(&mut self, sink_name: &str, proxy: C::NullSink) {
+        self.null_sinks.insert(sink_name.to_string(), proxy);
+    }
+
+    /// Forget the proxy owning the combined sink `sink_name` and hand it back.
+    fn take_null_sink(&mut self, sink_name: &str) -> Option<C::NullSink> {
+        self.null_sinks.remove(sink_name)
+    }
 
     /// Whether the graph itself owns the combined sink `sink_name`.
-    pub(crate) fn owns_null_sink(&self, _sink_name: &str) -> bool {
-        false
+    pub(crate) fn owns_null_sink(&self, sink_name: &str) -> bool {
+        self.null_sinks.contains_key(sink_name)
     }
 
     /// The core `error`/disconnect callback: the connection is gone.
-    pub(crate) fn on_disconnect(&mut self) {}
+    pub(crate) fn on_disconnect(&mut self) {
+        // Proxies first, while their core still exists. The modules are only
+        // forgotten: a loopback unloads itself on its core's error. The
+        // context stays, so the next command reconnects from it.
+        self.null_sinks.clear();
+        self.modules.clear();
+        self.connection = None;
+        self.mirror = Mirror::default();
+    }
+}
+
+// ─── The production loop thread ─────────────────────────────────────────────
+
+/// A loop that is not there: every command comes back, so the handle knows.
+struct NoLoop;
+
+impl LoopSender for NoLoop {
+    fn send(&self, command: Command) -> Result<(), Command> {
+        Err(command)
+    }
+}
+
+/// The handle's end into a real loop thread.
+struct PwLoopSender {
+    sender: pw::channel::Sender<Command>,
+    thread: JoinHandle<()>,
+}
+
+impl LoopSender for PwLoopSender {
+    fn send(&self, command: Command) -> Result<(), Command> {
+        // The channel's queue outlives the thread, so a send to a dead thread
+        // would succeed and wait out the timeout: ask the thread instead.
+        if self.thread.is_finished() {
+            return Err(command);
+        }
+        self.sender.send(command)
+    }
+}
+
+/// Start a loop thread; [`NoLoop`] when the thread cannot even be started.
+fn spawn_loop_thread() -> Box<dyn LoopSender> {
+    let (sender, receiver) = pw::channel::channel::<Command>();
+    match std::thread::Builder::new()
+        .name("pipewire-graph".into())
+        .spawn(move || run_loop_thread(receiver))
+    {
+        Ok(thread) => Box::new(PwLoopSender { sender, thread }),
+        Err(e) => {
+            tracing::error!("cannot start the PipeWire graph thread: {e}");
+            Box::new(NoLoop)
+        },
+    }
+}
+
+/// The loop thread: receive commands, answer each against the daemon, and
+/// drop the connection's state when the daemon goes away.
+fn run_loop_thread(receiver: pw::channel::Receiver<Command>) {
+    pw::init();
+    let mainloop = match MainLoopRc::new(None) {
+        Ok(mainloop) => mainloop,
+        Err(e) => {
+            tracing::error!("cannot create the PipeWire main loop: {e}");
+            return;
+        },
+    };
+    // Commands are queued by the channel callback and handled outside of it, so
+    // a command can iterate the loop while it waits for the daemon.
+    let inbox: Rc<RefCell<VecDeque<Command>>> = Rc::default();
+    let _attached = receiver.attach(mainloop.loop_(), {
+        let inbox = Rc::clone(&inbox);
+        move |command| inbox.borrow_mut().push_back(command)
+    });
+    let mut state = LoopState::new(PwConnector {
+        mainloop: mainloop.clone(),
+    });
+    loop {
+        mainloop.loop_().iterate(Timeout::Infinite);
+        state.forget_a_lost_connection();
+        loop {
+            let next = inbox.borrow_mut().pop_front();
+            let Some(command) = next else {
+                break;
+            };
+            handle(&mut state, command);
+            state.forget_a_lost_connection();
+        }
+    }
+}
+
+fn pw_error(what: &'static str) -> impl Fn(pw::Error) -> AudioError {
+    move |e| AudioError::PipeWire(format!("{what}: {e}"))
+}
+
+/// Opens [`PwConnection`]s on the loop thread's main loop.
+struct PwConnector {
+    mainloop: MainLoopRc,
+}
+
+impl Connector for PwConnector {
+    type Context = ContextRc;
+    type Connection = PwConnection;
+    type Module = InProcessModule;
+    type NullSink = Node;
+
+    fn context(&mut self) -> Result<ContextRc, AudioError> {
+        ContextRc::new(&self.mainloop, None).map_err(pw_error("cannot create a PipeWire context"))
+    }
+
+    fn connect(&mut self, context: &ContextRc) -> Result<PwConnection, AudioError> {
+        PwConnection::open(&self.mainloop, context)
+    }
+}
+
+/// A loopback loaded into this process. It holds nothing: the module owns
+/// itself and goes away with its streams — see [`PwConnection::unload`].
+struct InProcessModule;
+
+/// What the registry and core callbacks report, shared with the loop side.
+#[derive(Default)]
+struct Shared {
+    mirror: Mirror,
+    globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
+    done: Option<i32>,
+    lost: bool,
+}
+
+/// A connection to the daemon and the registry mirror it keeps.
+struct PwConnection {
+    // Field order is drop order: every proxy and listener before the core that
+    // owns it, the core before the context.
+    bound_nodes: BTreeMap<u32, (Node, NodeListener)>,
+    _registry_listener: pw::registry::Listener,
+    _core_listener: pw::core::Listener,
+    registry: RegistryRc,
+    core: CoreRc,
+    context: ContextRc,
+    mainloop: MainLoopRc,
+    shared: Rc<RefCell<Shared>>,
+}
+
+/// One entry of a device's `Route` param.
+struct Route {
+    index: i32,
+    device: i32,
+    channel_volumes: Vec<f32>,
+}
+
+impl PwConnection {
+    fn open(mainloop: &MainLoopRc, context: &ContextRc) -> Result<Self, AudioError> {
+        let core = context
+            .connect_rc(None)
+            .map_err(pw_error("cannot connect to PipeWire"))?;
+        let registry = core
+            .get_registry_rc()
+            .map_err(pw_error("cannot read the PipeWire registry"))?;
+        let shared = Rc::new(RefCell::new(Shared::default()));
+        let core_listener = core
+            .add_listener_local()
+            .done({
+                let shared = Rc::clone(&shared);
+                move |id, seq| {
+                    if id == pw::core::PW_ID_CORE {
+                        shared.borrow_mut().done = Some(seq.seq());
+                    }
+                }
+            })
+            .error({
+                let shared = Rc::clone(&shared);
+                move |id, _seq, res, message| {
+                    if id == pw::core::PW_ID_CORE {
+                        tracing::warn!("PipeWire connection lost ({res}): {message}");
+                        shared.borrow_mut().lost = true;
+                    }
+                }
+            })
+            .register();
+        let registry_listener = registry
+            .add_listener_local()
+            .global({
+                let shared = Rc::clone(&shared);
+                move |global| shared.borrow_mut().add_global(global)
+            })
+            .global_remove({
+                let shared = Rc::clone(&shared);
+                move |id| shared.borrow_mut().remove_global(id)
+            })
+            .register();
+        Ok(Self {
+            bound_nodes: BTreeMap::new(),
+            _registry_listener: registry_listener,
+            _core_listener: core_listener,
+            registry,
+            core,
+            // Cloned: the loop state owns the context; the connection holds a
+            // second reference for the module FFI calls.
+            context: context.clone(),
+            mainloop: mainloop.clone(),
+            shared,
+        })
+    }
+
+    fn is_lost(&self) -> bool {
+        self.shared.borrow().lost
+    }
+
+    /// One `core.sync` round trip: every event the daemon emitted before it has
+    /// been delivered when this returns `Ok`.
+    fn roundtrip(&self) -> Result<(), AudioError> {
+        let pending = self
+            .core
+            .sync(0)
+            .map_err(pw_error("cannot sync with PipeWire"))?
+            .seq();
+        let deadline = Instant::now() + ROUNDTRIP_TIMEOUT;
+        loop {
+            {
+                let shared = self.shared.borrow();
+                if shared.lost {
+                    return Err(AudioError::PipeWire("PipeWire connection lost".into()));
+                }
+                if shared.done.is_some_and(|done| done >= pending) {
+                    return Ok(());
+                }
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(AudioError::PipeWire(
+                    "PipeWire did not answer a sync round trip".into(),
+                ));
+            }
+            self.mainloop.loop_().iterate(Timeout::Finite(left));
+        }
+    }
+
+    /// Bring the mirror up to date: a round trip for the globals, then one more
+    /// for the full properties of every node bound on the way. The registry
+    /// only announces a node's summary; the stream targets and link groups the
+    /// pure functions read are in the node's own info.
+    fn refresh(&mut self) -> Result<Mirror, AudioError> {
+        self.roundtrip()?;
+        let unbound: Vec<u32> = {
+            let shared = self.shared.borrow();
+            self.bound_nodes
+                .retain(|id, _| shared.mirror.nodes.contains_key(id));
+            shared
+                .mirror
+                .nodes
+                .keys()
+                .filter(|id| !self.bound_nodes.contains_key(id))
+                .copied()
+                .collect()
+        };
+        for id in &unbound {
+            let bound = {
+                let shared = self.shared.borrow();
+                match shared.globals.get(id) {
+                    Some(global) => self.registry.bind::<Node, _>(global),
+                    None => continue,
+                }
+            };
+            let Ok(node) = bound else {
+                continue;
+            };
+            let listener = node
+                .add_listener_local()
+                .info({
+                    let shared = Rc::clone(&self.shared);
+                    let id = *id;
+                    move |info| {
+                        let Some(props) = info.props() else {
+                            return;
+                        };
+                        let mut shared = shared.borrow_mut();
+                        if let Some(entry) = shared.mirror.nodes.get_mut(&id) {
+                            for (key, value) in props.iter() {
+                                entry.props.insert(key.to_string(), value.to_string());
+                            }
+                        }
+                    }
+                })
+                .register();
+            self.bound_nodes.insert(*id, (node, listener));
+        }
+        if !unbound.is_empty() {
+            self.roundtrip()?;
+        }
+        // Cloned: the loop side reads a snapshot while the callbacks keep
+        // writing the live one.
+        Ok(self.shared.borrow().mirror.clone())
+    }
+
+    /// Create the combined sink's `adapter` node, owned by this connection.
+    fn create_null_sink(&self, sink_name: &str) -> Result<Node, AudioError> {
+        let mut props = PropertiesBox::new();
+        for (key, value) in combined_sink_props(sink_name) {
+            props.insert(key, value);
+        }
+        self.core
+            .create_object::<Node>("adapter", &props)
+            .map_err(pw_error("cannot create the combined sink"))
+    }
+
+    /// Load one `libpipewire-module-loopback` into this process.
+    fn load_loopback(&self, args: &str) -> Result<InProcessModule, AudioError> {
+        let name = CString::new("libpipewire-module-loopback")
+            .map_err(|e| AudioError::PipeWire(e.to_string()))?;
+        let args = CString::new(args).map_err(|e| AudioError::PipeWire(e.to_string()))?;
+        // SAFETY: `self.context` is a live `pw_context` for the whole call, on
+        // the thread that created it; both strings are NUL-terminated and
+        // outlive the call, which copies them; a null `properties` is allowed.
+        // The module returned is owned by the context, which frees it when it
+        // is destroyed — this code never dereferences nor frees it.
+        let module = unsafe {
+            pw::sys::pw_context_load_module(
+                self.context.as_raw_ptr(),
+                name.as_ptr(),
+                args.as_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+        if module.is_null() {
+            return Err(AudioError::PipeWire(format!(
+                "cannot load the loopback module: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(InProcessModule)
+    }
+
+    /// Unload branch `id` by destroying its two stream nodes: the loopback
+    /// module destroys itself once its streams are gone.
+    ///
+    /// Not `pw_impl_module_destroy`: a loopback whose target vanished destroys
+    /// itself too, with no notice to this code, so its handle can dangle at any
+    /// time. Its nodes are looked up in the daemon's registry instead, where a
+    /// module that is gone has none left to destroy.
+    fn unload(&self, mirror: &Mirror, id: u32) {
+        let ins = branch_node_name(id, "in");
+        let outs = branch_node_name(id, "out");
+        for node in mirror
+            .node_ids_named(&ins)
+            .chain(mirror.node_ids_named(&outs))
+        {
+            self.destroy_global(node);
+        }
+    }
+
+    fn destroy_global(&self, id: u32) {
+        let _ = self.registry.destroy_global(id);
+    }
+
+    /// Point the `default` metadata's configured sink at `sink`.
+    fn set_default_sink(&self, sink: &str) -> Result<(), AudioError> {
+        let metadata = {
+            let shared = self.shared.borrow();
+            let global = shared
+                .globals
+                .values()
+                .find(|global| {
+                    global.type_ == ObjectType::Metadata
+                        && global
+                            .props
+                            .as_ref()
+                            .and_then(|props| props.get("metadata.name"))
+                            == Some("default")
+                })
+                .ok_or_else(|| AudioError::PipeWire("no default metadata object".into()))?;
+            self.registry
+                .bind::<Metadata, _>(global)
+                .map_err(pw_error("cannot bind the default metadata"))?
+        };
+        metadata.set_property(
+            0,
+            "default.configured.audio.sink",
+            Some("Spa:String:JSON"),
+            Some(&default_sink_metadata_value(sink)),
+        );
+        self.roundtrip()
+    }
+
+    /// Bind the device `device_id` and read its `Route` param.
+    fn routes(&self, device_id: u32) -> Result<(Device, Vec<Route>), AudioError> {
+        let device = {
+            let shared = self.shared.borrow();
+            let global = shared
+                .globals
+                .get(&device_id)
+                .filter(|global| global.type_ == ObjectType::Device)
+                .ok_or_else(|| AudioError::PipeWire(format!("no device {device_id}")))?;
+            self.registry
+                .bind::<Device, _>(global)
+                .map_err(pw_error("cannot bind the speaker's device"))?
+        };
+        let routes: Rc<RefCell<Vec<Route>>> = Rc::default();
+        let listener: DeviceListener = device
+            .add_listener_local()
+            .param({
+                let routes = Rc::clone(&routes);
+                move |_seq, _id, _index, _next, param| {
+                    if let Some(route) = param.and_then(parse_route) {
+                        routes.borrow_mut().push(route);
+                    }
+                }
+            })
+            .register();
+        device.enum_params(0, Some(ParamType::Route), 0, u32::MAX);
+        let synced = self.roundtrip();
+        drop(listener);
+        synced?;
+        let routes = routes.take();
+        Ok((device, routes))
+    }
+
+    /// The route of `target`, and the device carrying it.
+    fn route(&self, target: RouteTarget) -> Result<(Device, Route), AudioError> {
+        let (device, routes) = self.routes(target.device_id)?;
+        let route = routes
+            .into_iter()
+            .find(|route| route.device == target.route_device)
+            .ok_or_else(|| AudioError::PipeWire("the speaker's device has no route".into()))?;
+        Ok((device, route))
+    }
+}
+
+impl Shared {
+    fn add_global(&mut self, global: &GlobalObject<&libspa::utils::dict::DictRef>) {
+        let props: BTreeMap<String, String> = global
+            .props
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        match global.type_ {
+            ObjectType::Node => {
+                self.mirror.nodes.insert(global.id, NodeEntry { props });
+            },
+            ObjectType::Device => {
+                self.mirror.devices.insert(global.id, DeviceEntry { props });
+            },
+            ObjectType::Link => {
+                let end = |key: &str| props.get(key).and_then(|v| v.parse::<u32>().ok());
+                if let (Some(output_node), Some(input_node)) =
+                    (end("link.output.node"), end("link.input.node"))
+                {
+                    self.mirror.links.insert(
+                        global.id,
+                        LinkEntry {
+                            output_node,
+                            input_node,
+                        },
+                    );
+                }
+                return;
+            },
+            ObjectType::Metadata => {},
+            _ => return,
+        }
+        self.globals.insert(global.id, global.to_owned());
+    }
+
+    fn remove_global(&mut self, id: u32) {
+        self.mirror.nodes.remove(&id);
+        self.mirror.links.remove(&id);
+        self.mirror.devices.remove(&id);
+        self.globals.remove(&id);
+    }
+}
+
+/// Read one `Route` param: its index, its device, and its channel volumes.
+fn parse_route(pod: &Pod) -> Option<Route> {
+    let (_, value) = PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()?;
+    let Value::Object(object) = value else {
+        return None;
+    };
+    let (mut index, mut device, mut channel_volumes) = (None, None, Vec::new());
+    for property in object.properties {
+        match (property.key, property.value) {
+            (key, Value::Int(v)) if key == libspa::sys::SPA_PARAM_ROUTE_index => index = Some(v),
+            (key, Value::Int(v)) if key == libspa::sys::SPA_PARAM_ROUTE_device => device = Some(v),
+            (key, Value::Object(props)) if key == libspa::sys::SPA_PARAM_ROUTE_props => {
+                for prop in props.properties {
+                    if let (key, Value::ValueArray(ValueArray::Float(volumes))) =
+                        (prop.key, prop.value)
+                    {
+                        if key == libspa::sys::SPA_PROP_channelVolumes {
+                            channel_volumes = volumes;
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    Some(Route {
+        index: index?,
+        device: device?,
+        channel_volumes,
+    })
+}
+
+/// The `Route` param that sets `route`'s channels to `volumes` and keeps it.
+fn route_pod(route: &Route, volumes: Vec<f32>) -> Result<Vec<u8>, AudioError> {
+    let property = |key, value| Property {
+        key,
+        flags: PropertyFlags::empty(),
+        value,
+    };
+    let value = Value::Object(Object {
+        type_: libspa::sys::SPA_TYPE_OBJECT_ParamRoute,
+        id: libspa::sys::SPA_PARAM_Route,
+        properties: vec![
+            property(libspa::sys::SPA_PARAM_ROUTE_index, Value::Int(route.index)),
+            property(
+                libspa::sys::SPA_PARAM_ROUTE_device,
+                Value::Int(route.device),
+            ),
+            property(
+                libspa::sys::SPA_PARAM_ROUTE_props,
+                Value::Object(Object {
+                    type_: libspa::sys::SPA_TYPE_OBJECT_Props,
+                    id: libspa::sys::SPA_PARAM_Route,
+                    properties: vec![property(
+                        libspa::sys::SPA_PROP_channelVolumes,
+                        Value::ValueArray(ValueArray::Float(volumes)),
+                    )],
+                }),
+            ),
+            property(libspa::sys::SPA_PARAM_ROUTE_save, Value::Bool(true)),
+        ],
+    });
+    PodSerializer::serialize(Cursor::new(Vec::new()), &value)
+        .map(|(cursor, _)| cursor.into_inner())
+        .map_err(|e| AudioError::PipeWire(format!("cannot build the Route param: {e:?}")))
+}
+
+impl LoopState<PwConnector> {
+    /// Drop everything the connection held once the daemon has gone away.
+    fn forget_a_lost_connection(&mut self) {
+        if self.connection.as_ref().is_some_and(PwConnection::is_lost) {
+            self.on_disconnect();
+        }
+    }
+
+    /// Refresh the mirror from the daemon.
+    fn sync_mirror(&mut self) -> Result<(), AudioError> {
+        let mirror = self.connection()?.refresh()?;
+        *self.mirror_mut() = mirror;
+        Ok(())
+    }
+
+    /// Whether `name` is a null sink this graph does not own — a leftover a
+    /// build must replace, never reuse.
+    fn is_foreign_null_sink(&self, name: &str) -> bool {
+        !self.owns_null_sink(name)
+            && self
+                .mirror()
+                .node_ids_named(name)
+                .filter_map(|id| self.mirror().nodes.get(&id))
+                .any(|node| node.prop("factory.name") == Some(NULL_SINK_FACTORY))
+    }
+
+    fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
+        self.sync_mirror()?;
+        Ok(sink_names(&self.mirror)
+            .into_iter()
+            .filter(|name| !self.is_foreign_null_sink(name))
+            .collect())
+    }
+
+    fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
+        self.sync_mirror()?;
+        Ok(self
+            .modules_for(sink_name)
+            .into_iter()
+            .map(|(id, branch)| LoadedBranch {
+                id,
+                live: Some(branch_liveness(
+                    &self.mirror,
+                    &branch_node_name(id, "out"),
+                    &branch.sink,
+                )),
+                branch,
+            })
+            .collect())
+    }
+
+    fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        let node = self.connection()?.create_null_sink(sink_name)?;
+        self.set_null_sink(sink_name, node);
+        self.sync_mirror()?;
+        if !sink_names(&self.mirror)
+            .iter()
+            .any(|name| name == sink_name)
+        {
+            return Err(AudioError::PipeWire(format!(
+                "the combined sink {sink_name} did not appear"
+            )));
+        }
+        Ok(())
+    }
+
+    fn load_branch(
+        &mut self,
+        sink_name: &str,
+        real_sink: &str,
+        latency_ms: u32,
+    ) -> Result<(), AudioError> {
+        let args = loopback_module_args(sink_name, real_sink, latency_ms, self.next_module_id())?;
+        let module = self.connection()?.load_loopback(&args)?;
+        self.add_module(
+            sink_name,
+            CombineBranch {
+                sink: real_sink.to_string(),
+                latency_ms,
+            },
+            module,
+        );
+        self.sync_mirror()
+    }
+
+    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
+        self.sync_mirror()?;
+        if self.take_module(id).is_none() {
+            return Err(AudioError::PipeWire(format!("no loopback branch {id}")));
+        }
+        let mirror = std::mem::take(&mut self.mirror);
+        self.connection()?.unload(&mirror, id);
+        self.mirror = mirror;
+        self.sync_mirror()
+    }
+
+    fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        // Dropping the proxy destroys the node this connection created.
+        drop(self.take_null_sink(sink_name));
+        for (id, _) in self.modules_for(sink_name) {
+            self.take_module(id);
+        }
+        // A partial view destroys nothing: the sync must succeed first.
+        self.sync_mirror()?;
+        let doomed = foreign_combined_globals(&self.mirror, sink_name);
+        let connection = self.connection()?;
+        for id in doomed {
+            connection.destroy_global(id);
+        }
+        self.sync_mirror()
+    }
+
+    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
+        self.sync_mirror()?;
+        self.connection()?.set_default_sink(sink)
+    }
+
+    fn sink_volume(&mut self, sink: &str) -> Option<f32> {
+        self.sync_mirror().ok()?;
+        let target = route_target(&self.mirror, sink)?;
+        let (_, route) = self.connection().ok()?.route(target).ok()?;
+        volume_fraction_from_route(&route.channel_volumes)
+    }
+
+    fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
+        self.sync_mirror()?;
+        let target = route_target(&self.mirror, sink)
+            .ok_or_else(|| AudioError::PipeWire(format!("no volume route for {sink}")))?;
+        let connection = self.connection()?;
+        let (device, route) = connection.route(target)?;
+        if route.channel_volumes.is_empty() {
+            return Err(AudioError::PipeWire(format!(
+                "the route of {sink} carries no channel volume"
+            )));
+        }
+        let bytes = route_pod(
+            &route,
+            route_channel_volumes(level, route.channel_volumes.len()),
+        )?;
+        let pod = Pod::from_bytes(&bytes)
+            .ok_or_else(|| AudioError::PipeWire("malformed Route param".into()))?;
+        device.set_param(ParamType::Route, 0, pod);
+        connection.roundtrip()
+    }
+}
+
+/// Answer one command against the daemon.
+fn handle(state: &mut LoopState<PwConnector>, command: Command) {
+    // A reply nobody waits for any more (the handle timed out) is dropped.
+    match command {
+        Command::Sinks { reply } => {
+            let _ = reply.send(state.sinks());
+        },
+        Command::Branches { sink_name, reply } => {
+            let _ = reply.send(state.branches(&sink_name));
+        },
+        Command::CreateCombinedSink { sink_name, reply } => {
+            let _ = reply.send(state.create_combined_sink(&sink_name));
+        },
+        Command::LoadBranch {
+            sink_name,
+            real_sink,
+            latency_ms,
+            reply,
+        } => {
+            let _ = reply.send(state.load_branch(&sink_name, &real_sink, latency_ms));
+        },
+        Command::UnloadBranch { id, reply } => {
+            let _ = reply.send(state.unload_branch(id));
+        },
+        Command::Teardown { sink_name, reply } => {
+            let _ = reply.send(state.teardown(&sink_name));
+        },
+        Command::SetDefaultSink { sink, reply } => {
+            let _ = reply.send(state.set_default_sink(&sink));
+        },
+        Command::SinkVolume { sink, reply } => {
+            let _ = reply.send(state.sink_volume(&sink));
+        },
+        Command::SetSinkVolume { sink, level, reply } => {
+            let _ = reply.send(state.set_sink_volume(&sink, level));
+        },
+    }
 }
 
 #[cfg(test)]
@@ -1279,18 +2251,25 @@ mod tests {
 
     // ─── The loop side: connection lifecycle over a fake connector ───────────
 
-    /// A connector that counts its attempts and fails the first `failures`.
+    /// A connector that counts its attempts and fails the first `failures`,
+    /// and counts the contexts it creates.
     struct FakeConnector {
         attempts: Arc<AtomicUsize>,
+        contexts: Arc<AtomicUsize>,
         failures: usize,
     }
 
     impl Connector for FakeConnector {
+        type Context = usize;
         type Connection = usize;
         type Module = &'static str;
         type NullSink = &'static str;
 
-        fn connect(&mut self) -> Result<usize, AudioError> {
+        fn context(&mut self) -> Result<usize, AudioError> {
+            Ok(self.contexts.fetch_add(1, Ordering::SeqCst))
+        }
+
+        fn connect(&mut self, _context: &usize) -> Result<usize, AudioError> {
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
             if attempt < self.failures {
                 Err(AudioError::PipeWire("no daemon".to_string()))
@@ -1301,12 +2280,21 @@ mod tests {
     }
 
     fn fake_state(failures: usize) -> (LoopState<FakeConnector>, Arc<AtomicUsize>) {
+        let (state, attempts, _) = fake_state_counting_contexts(failures);
+        (state, attempts)
+    }
+
+    fn fake_state_counting_contexts(
+        failures: usize,
+    ) -> (LoopState<FakeConnector>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let attempts = Arc::new(AtomicUsize::new(0));
+        let contexts = Arc::new(AtomicUsize::new(0));
         let state = LoopState::new(FakeConnector {
             attempts: Arc::clone(&attempts),
+            contexts: Arc::clone(&contexts),
             failures,
         });
-        (state, attempts)
+        (state, attempts, contexts)
     }
 
     fn branch(sink: &str, latency_ms: u32) -> CombineBranch {
@@ -1426,5 +2414,40 @@ mod tests {
             fresh, id,
             "an id handed out before the loss is never reused"
         );
+    }
+
+    // Criterion (non-nominal): with no daemon, a failed attempt costs a socket
+    // connect, never a context. Destroying a context joins its `module-rt`
+    // thread, which can sit in a D-Bus call to RTKit for 25 s: one context per
+    // attempt kept the loop thread blocked that long for every command.
+    #[test]
+    fn test_loop_state_creates_one_context_across_failed_connections() {
+        let (mut state, attempts, contexts) = fake_state_counting_contexts(3);
+
+        for _ in 0..3 {
+            assert!(matches!(state.connection(), Err(AudioError::PipeWire(_))));
+        }
+        assert!(state.connection().is_ok(), "the daemon is back");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            contexts.load(Ordering::SeqCst),
+            1,
+            "every attempt reuses the one context"
+        );
+    }
+
+    // Criterion (non-nominal): a lost connection is reopened from the same
+    // context — the loss drops the connection, not the context.
+    #[test]
+    fn test_loop_state_keeps_its_context_across_a_lost_connection() {
+        let (mut state, attempts, contexts) = fake_state_counting_contexts(0);
+        assert!(state.connection().is_ok());
+
+        state.on_disconnect();
+        assert!(state.connection().is_ok());
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "reconnected");
+        assert_eq!(contexts.load(Ordering::SeqCst), 1);
     }
 }

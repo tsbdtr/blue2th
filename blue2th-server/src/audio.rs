@@ -49,10 +49,8 @@ pub fn clamp_volume(level: f32) -> f32 {
 /// `levels` carries one entry per selected speaker, in selection order, `None`
 /// for a sink that could not be read. The selection's levels are reported only
 /// when every one of them is readable, lies in `0.0..=1.0`, and they agree at
-/// whole-percent resolution — the resolution `parse_first_percent` actually
-/// reads. The returned level is therefore always in `0.0..=1.0`, as
-/// `PlaybackState.volume` documents. Otherwise
-/// the last `commanded` level is reported: it is true as a command, and it never
+/// whole-percent resolution. The returned level is therefore always in
+/// `0.0..=1.0`, as `PlaybackState.volume` documents. Otherwise the last `commanded` level is reported: it is true as a command, and it never
 /// presents one speaker's level as if it were everyone's.
 pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
     let mut agreed: Option<u32> = None;
@@ -60,10 +58,10 @@ pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
         // A sink that could not be read makes the selection undecidable: nothing
         // here is known to be true of every speaker. So does one whose level
         // `PlaybackState.volume` cannot express — `NaN`, an infinity, or a value
-        // outside `0.0..=1.0` (pactl reports an over-amplified sink as e.g.
-        // "153%"). Reporting a clamped 100% there would name a level no speaker
-        // is at, which is the defect this rule exists to remove. The range check
-        // also keeps the cast below meaningful: `as` saturates, so an unchecked
+        // outside `0.0..=1.0` (an over-amplified sink reads as e.g. 153%).
+        // Reporting a clamped 100% there would name a level no speaker is at,
+        // which is the defect this rule exists to remove. The range check also
+        // keeps the cast below meaningful: `as` saturates, so an unchecked
         // infinity would round-trip as 21474836, and two distinct huge levels
         // would both saturate to the same percentage and count as agreeing.
         let Some(level) = level.filter(|l| (0.0..=1.0).contains(l)) else {
@@ -646,7 +644,7 @@ pub(crate) fn sink_nodes(sinks: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The sinks `sink_listing` carries that `previous` did not — the speakers that
+/// The sinks `sinks` names that `previous` did not — the speakers that
 /// have come back since the last pass. On the very first pass nothing is new:
 /// every sink listed then was there before the server was, which is why a start
 /// costs no rebuild.
@@ -677,13 +675,12 @@ pub fn newly_listed_sinks(previous: &Option<Vec<String>>, sinks: &[String]) -> V
 /// stays mute, so it is neither a settling delay nor the ordinal of the load: it
 /// is the gap between two of them (#75).
 pub fn wires_a_new_sink(to_load: &[CombineBranch], fresh: &[String], sinks: &[String]) -> bool {
-    let sink_listing = &render_sink_listing(sinks);
     to_load.iter().any(|branch| {
-        sink_matching_prefix(sink_listing, &branch.sink).is_some_and(|node| fresh.contains(&node))
+        sink_named_by_prefix(sinks, &branch.sink).is_some_and(|node| fresh.contains(&node))
     })
 }
 
-/// The planned branches whose speaker sink is actually present in `sink_listing`.
+/// The planned branches whose speaker sink is actually present in `sinks`.
 ///
 /// A speaker that is switched off has no `bluez_output.*` node, so its branch
 /// cannot be loaded however often it is tried. Left in the plan it would keep the
@@ -691,10 +688,9 @@ pub fn wires_a_new_sink(to_load: &[CombineBranch], fresh: &[String], sinks: &[St
 /// rebuilds the whole selection, the speakers still playing would be torn down
 /// and restarted on every repair tick (#75).
 pub fn reachable_branches(branches: &[CombineBranch], sinks: &[String]) -> Vec<CombineBranch> {
-    let sink_listing = &render_sink_listing(sinks);
     branches
         .iter()
-        .filter(|branch| sink_matching_prefix(sink_listing, &branch.sink).is_some())
+        .filter(|branch| sink_named_by_prefix(sinks, &branch.sink).is_some())
         .cloned()
         .collect()
 }
@@ -705,34 +701,46 @@ fn branch_is(up: &CombineBranch, planned: &CombineBranch) -> bool {
     up.latency_ms == planned.latency_ms && prefix_names_node(&planned.sink, &up.sink)
 }
 
-/// Pick the live PipeWire sink node-name matching `prefix` out of the text
-/// `pactl list short sinks` prints: tab-separated columns, the node name in the
-/// second one. A `bluez_output.<MAC>` prefix resolves to the line carrying the
-/// card suffix (`bluez_output.<MAC>.1`); an already exact node name resolves to
-/// itself. Pure — performs no I/O.
+/// Pick the sink node-name matching `prefix` out of `sinks`. A
+/// `bluez_output.<MAC>` prefix resolves to the name carrying the card suffix
+/// (`bluez_output.<MAC>.1`); an already exact node name resolves to itself.
+/// Pure — performs no I/O.
 ///
 /// A candidate must either *equal* `prefix` or continue it with a `.`, the
 /// separator PipeWire puts before the card index. That boundary is what keeps a
 /// sink merely sharing the opening characters (`blue2th_combined_old` for
 /// `blue2th_combined`) from being answered instead of the target, and an exact
-/// name wins over any longer namesake wherever the two sit in the listing.
+/// name wins over any longer namesake wherever the two sit in the list.
 ///
-/// An **empty** prefix matches nothing, explicitly: it starts every name, so the
-/// plain `starts_with` this replaces answered the first sink in the listing —
-/// the PC's own output, in index order — which is exactly the silent wrong-sink
-/// fallback this resolution exists to prevent. `spotify_target_sink(&[])` is
-/// empty, so the value is reachable; only the `speakers.is_empty()` guard in
-/// `SpotifyBackend::start` kept it away. The boundary rule alone would not do:
-/// a line whose node-name column is blank equals the empty prefix.
+/// An **empty** prefix matches nothing, explicitly: it starts every name, so a
+/// plain `starts_with` answered the first sink listed — the PC's own output —
+/// which is exactly the silent wrong-sink fallback this resolution exists to
+/// prevent. `spotify_target_sink(&[])` is empty, so the value is reachable. The
+/// boundary rule alone would not do: a blank name equals the empty prefix.
 ///
-/// Among several `.`-suffixed candidates the first line wins, i.e. `pactl`'s own
-/// sink-index order.
+/// Among several `.`-suffixed candidates the first one listed wins.
+pub fn sink_named_by_prefix(sinks: &[String], prefix: &str) -> Option<String> {
+    first_sink_named_by(sinks.iter().map(String::as_str), prefix)
+}
+
+/// [`sink_named_by_prefix`] over a tab-separated sink listing, the node name in
+/// the second column of each line: the shape the sink tables of the tests and
+/// the PipeWire tools print (#79).
 pub fn sink_matching_prefix(listing: &str, prefix: &str) -> Option<String> {
+    first_sink_named_by(
+        listing.lines().filter_map(|line| line.split('\t').nth(1)),
+        prefix,
+    )
+}
+
+/// The single resolution rule both [`sink_named_by_prefix`] and
+/// [`sink_matching_prefix`] apply, whatever the names were read from.
+fn first_sink_named_by<'a>(names: impl Iterator<Item = &'a str>, prefix: &str) -> Option<String> {
     if prefix.is_empty() {
         return None;
     }
     let mut suffixed: Option<&str> = None;
-    for name in listing.lines().filter_map(|line| line.split('\t').nth(1)) {
+    for name in names {
         if name == prefix {
             return Some(name.to_string());
         }
@@ -758,23 +766,8 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
                 .is_some_and(|rest| rest.starts_with('.')))
 }
 
-/// Render sink node names back into the listing shape the planning layer reads:
-/// one line per sink, tab-separated, the node name in the second column.
-///
-/// It exists because [`reachable_branches`], [`newly_listed_sinks`],
-/// [`wires_a_new_sink`] and [`sink_matching_prefix`] keep their text signatures
-/// while the [`Graph`] hands names over typed; keeping the conversion in one
-/// place is what lets those functions stay as they are.
-fn render_sink_listing(sinks: &[String]) -> String {
-    sinks
-        .iter()
-        .enumerate()
-        .map(|(index, name)| format!("{index}\t{name}\n"))
-        .collect()
-}
-
-/// The routing logic, driven through a [`Graph`] rather than through `pactl`
-/// directly (#79). It owns the two registers the reconciliation carries from one
+/// The routing logic, driven through a [`Graph`] rather than through the
+/// PipeWire tools directly (#79). It owns the two registers the reconciliation carries from one
 /// pass to the next, so two routers never see each other's history.
 pub struct AudioRouter {
     /// The graph every routing decision is read from and applied to.
@@ -1047,7 +1040,7 @@ fn find_sink_with_prefix(
         return Ok(None);
     }
     let sinks = graph.sinks()?;
-    Ok(sink_matching_prefix(&render_sink_listing(&sinks), prefix))
+    Ok(sink_named_by_prefix(&sinks, prefix))
 }
 
 /// Resolve a branch's `bluez_output.*` prefix to the live node name, erroring
