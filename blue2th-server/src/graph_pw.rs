@@ -582,6 +582,31 @@ impl<C: Connector> LoopState<C> {
         self.null_sinks.contains_key(sink_name)
     }
 
+    /// Whether `name` is a null sink this graph does not own — a leftover a
+    /// build must replace, never reuse: the router reuses a listed combined
+    /// sink, and a leftover's own loopbacks would keep feeding the speakers
+    /// next to the ones this graph loads (#78).
+    ///
+    /// `factory.name` is not in the summary the registry announces with a
+    /// node, only in the node's own info: this relies on `refresh` binding
+    /// every node before the mirror is read.
+    fn is_foreign_null_sink(&self, name: &str) -> bool {
+        !self.owns_null_sink(name)
+            && self
+                .mirror()
+                .node_ids_named(name)
+                .filter_map(|id| self.mirror().nodes.get(&id))
+                .any(|node| node.prop("factory.name") == Some(NULL_SINK_FACTORY))
+    }
+
+    /// The mirror's sinks, less the null sinks this graph does not own.
+    fn listed_sinks(&self) -> Vec<String> {
+        sink_names(&self.mirror)
+            .into_iter()
+            .filter(|name| !self.is_foreign_null_sink(name))
+            .collect()
+    }
+
     /// The core `error`/disconnect callback: the connection is gone.
     pub(crate) fn on_disconnect(&mut self) {
         // Proxies first, while their core still exists. The modules are only
@@ -1143,23 +1168,9 @@ impl LoopState<PwConnector> {
         Ok(())
     }
 
-    /// Whether `name` is a null sink this graph does not own — a leftover a
-    /// build must replace, never reuse.
-    fn is_foreign_null_sink(&self, name: &str) -> bool {
-        !self.owns_null_sink(name)
-            && self
-                .mirror()
-                .node_ids_named(name)
-                .filter_map(|id| self.mirror().nodes.get(&id))
-                .any(|node| node.prop("factory.name") == Some(NULL_SINK_FACTORY))
-    }
-
     fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
         self.sync_mirror()?;
-        Ok(sink_names(&self.mirror)
-            .into_iter()
-            .filter(|name| !self.is_foreign_null_sink(name))
-            .collect())
+        Ok(self.listed_sinks())
     }
 
     fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
@@ -2933,5 +2944,108 @@ mod tests {
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2, "reconnected");
         assert_eq!(contexts.load(Ordering::SeqCst), 1);
+    }
+
+    // ─── The loop side: which sinks are listed ───────────────────────────────
+
+    /// A combined sink as its node reads once bound: an `adapter` over the
+    /// null-audio-sink factory.
+    fn null_sink(name: &str) -> NodeEntry {
+        node(&[
+            ("node.name", name),
+            ("media.class", "Audio/Sink"),
+            ("factory.name", "support.null-audio-sink"),
+        ])
+    }
+
+    /// A combined sink left by the `pactl`-era server (#78), as a live daemon
+    /// reports one: pipewire-pulse's null sink, carrying its module id.
+    fn pactl_null_sink(name: &str) -> NodeEntry {
+        node(&[
+            ("node.name", name),
+            ("media.class", "Audio/Sink"),
+            ("factory.name", "support.null-audio-sink"),
+            ("pulse.module.id", "536870916"),
+        ])
+    }
+
+    fn speaker_sink() -> NodeEntry {
+        node(&[
+            ("node.name", SPEAKER),
+            ("media.class", "Audio/Sink"),
+            ("device.api", "bluez5"),
+        ])
+    }
+
+    // Criterion: the combined sink this graph created is listed, so the
+    // router reuses it rather than rebuilding under a playing stream.
+    #[test]
+    fn test_listed_sinks_keeps_the_combined_sink_the_graph_owns() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.set_null_sink(COMBINED, "proxy");
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state.mirror_mut().nodes.insert(61, null_sink(COMBINED));
+
+        assert_eq!(
+            state.listed_sinks(),
+            vec![SPEAKER.to_string(), COMBINED.to_string()]
+        );
+    }
+
+    // Criterion: a null sink the graph does not own — a `pactl`-era leftover —
+    // is hidden, so the router builds and its teardown clears the leftover;
+    // the speakers next to it stay listed.
+    #[test]
+    fn test_listed_sinks_hides_a_leftover_null_sink() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state
+            .mirror_mut()
+            .nodes
+            .insert(61, pactl_null_sink(COMBINED));
+
+        assert_eq!(state.listed_sinks(), vec![SPEAKER.to_string()]);
+    }
+
+    // Criterion: a sink the graph does not own but that no null-sink factory
+    // made — a real device — is listed, even when it carries the combined
+    // sink's name.
+    #[test]
+    fn test_listed_sinks_keeps_a_sink_no_null_sink_factory_made() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state.mirror_mut().nodes.insert(
+            61,
+            node(&[
+                ("node.name", COMBINED),
+                ("media.class", "Audio/Sink"),
+                ("device.api", "alsa"),
+            ]),
+        );
+
+        assert_eq!(
+            state.listed_sinks(),
+            vec![SPEAKER.to_string(), COMBINED.to_string()]
+        );
+    }
+
+    // Criterion: a lost connection forgets the graph's ownership with its
+    // proxies, so a combined sink seen after reconnecting is a leftover, never
+    // the graph's own.
+    #[test]
+    fn test_listed_sinks_after_a_lost_connection_owns_no_combined_sink() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.set_null_sink(COMBINED, "proxy");
+
+        state.on_disconnect();
+        assert!(state.connection().is_ok());
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state.mirror_mut().nodes.insert(61, null_sink(COMBINED));
+
+        assert_eq!(state.listed_sinks(), vec![SPEAKER.to_string()]);
     }
 }
