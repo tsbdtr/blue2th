@@ -76,7 +76,7 @@ pub fn build_librespot_args(device_name: &str, sink_name: &str, cache_dir: &str)
         "off".to_string(),
         // Start at full scale. librespot applies its own gain to the PCM *inside
         // its process*, before PulseAudio sees it, so the attenuation is invisible
-        // in `pactl list sink-inputs` — the stream reads 0.00 dB while the samples
+        // in the stream volume `pw-dump` shows — it reads 0.00 dB while the samples
         // are already quieter. Its default is 50% on a logarithmic curve, i.e.
         // roughly -30 dB, which is why the backend sounded markedly softer than the
         // same speaker paired straight to a phone.

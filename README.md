@@ -92,11 +92,10 @@ work.
 ## Status
 
 **This is a working prototype**, built for one household: one PC, one phone,
-two speakers, and validated on that hardware only. The audio path still drives
-PipeWire through `pactl`, chosen for the prototype; the move to PipeWire's
-native API is tracked in the v0.2.0 milestone. The interface is the prototype's
-too, with a redesign under way. It does what it says; expect rough edges around
-it.
+two speakers, and validated on that hardware only. The audio path drives
+PipeWire through its native API (`libpipewire-0.3`) since #79. The interface
+is still the prototype's, with a redesign under way. It does what it says;
+expect rough edges around it.
 
 Version 0.1.0. Everything the design describes is shipped and validated on
 hardware: discovery, connection, playback to one speaker, fan-out to two,

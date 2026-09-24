@@ -137,8 +137,11 @@ side to update; the comparison never trusts what a payload says about itself.
 The backend scans, pairs, trusts and connects speakers through `bluer`; a
 connected A2DP speaker appears in PipeWire as a sink. Playing to two of them is
 a **combined sink**: a shared null sink that the source plays into, and one
-`module-loopback` branch per selected speaker from that null sink to the
-speaker's sink. Every non-empty selection goes through it, one speaker
+`libpipewire-module-loopback` branch per selected speaker from that null sink to
+the speaker's sink. The server builds it natively, from a `pw_main_loop` thread
+of its own (`graph_pw.rs`): the null sink is an `adapter` node its connection
+owns, and each branch is loaded into the server process. The operator inspects
+it with `pw-dump`, `pw-link -l` and `pw-top`. Every non-empty selection goes through it, one speaker
 included; a separate single-speaker path once existed and was dropped because
 two paths meant two sets of defects.
 
@@ -280,7 +283,8 @@ is compared; both rules, and the defects that taught them, are in `CLAUDE.md`.
 - **`librespot` is unofficial**, requires a Premium account, and can break when
   Spotify changes its protocol. The Spotify application must list the account
   on its Development-mode allowlist, or playback fails with no visible error.
-- **The PipeWire graph is driven through `pactl`**, a prototype choice; the
-  native API is tracked in the v0.2.0 milestone.
+- **The audio path runs in the server process.** The loopback branches are
+  loaded into `blue2th-server` itself (#79), so a crashed server cuts the sound
+  at once, where the `pactl`-era modules outlived it (#78).
 - **Background listening on Android** rests on presence reports and a grace
   period rather than a foreground service.

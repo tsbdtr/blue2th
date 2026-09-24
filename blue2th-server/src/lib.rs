@@ -41,7 +41,7 @@ pub mod auth;
 mod bluetooth;
 pub mod config;
 pub mod graph;
-pub mod graph_pactl;
+pub mod graph_pw;
 pub mod identity;
 pub mod reconnect;
 pub mod spotify;
@@ -345,7 +345,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
         auth_store,
-        Box::new(graph_pactl::PactlGraph::new()),
+        Box::new(graph_pw::PipeWireGraph::spawn()),
     );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -643,7 +643,7 @@ pub fn app() -> Router {
         // The real, persisted API token: **no test may call `app()`**, since
         // minting or rotating this would unpair the operator's own phone.
         AuthStore::with_store(auth::auth_store_path()),
-        Box::new(graph_pactl::PactlGraph::new()),
+        Box::new(graph_pw::PipeWireGraph::spawn()),
     )
     .0
 }
@@ -656,20 +656,27 @@ pub fn app() -> Router {
 /// There is deliberately no variant that mints its own token: the caller could
 /// not know it, so every guarded route would answer 401 and the test would look
 /// broken for the wrong reason.
+///
+/// For the same reason it touches no audio graph either: its graph is
+/// [`graph_pw::PipeWireGraph::detached`], which errs on every call the way a host
+/// without PipeWire does. A graph over the session's daemon would let a test that
+/// reaches `AudioRouter::teardown` — deselecting the last speaker does — destroy
+/// the operator's live `blue2th_combined`.
 pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router {
     app_with_auth_and_targets(
         spotify_auth,
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
-        Box::new(graph_pactl::PactlGraph::new()),
+        Box::new(graph_pw::PipeWireGraph::detached()),
     )
     .0
 }
 
 /// [`app_with_auth_store`], also handing back the [`AppState`] the router was
 /// built around, so a test can drive the shutdown path against the very same
-/// `SpotifyBackend` the routes hold (#122).
+/// `SpotifyBackend` the routes hold (#122). Detached from any audio graph, like
+/// [`app_with_auth_store`].
 pub fn app_with_auth_store_and_state(
     spotify_auth: SpotifyAuth,
     auth: AuthStore,
@@ -679,7 +686,7 @@ pub fn app_with_auth_store_and_state(
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
-        Box::new(graph_pactl::PactlGraph::new()),
+        Box::new(graph_pw::PipeWireGraph::detached()),
     )
 }
 
@@ -1014,8 +1021,8 @@ async fn branch_repair_pass(state: &AppState) {
         let mut spotify = state.spotify.lock().await;
         spotify.poll_liveness().status == SpotifyStatus::Running
     };
-    // The single guard, and it runs before any `pactl`: an idle backend — no
-    // selection, or nothing playing — spawns nothing at all.
+    // The single guard, and it runs before the graph is touched: an idle backend — no
+    // selection, or nothing playing — asks PipeWire nothing at all.
     if !audio::should_repair_branches(&speakers, anything_playing) {
         return;
     }

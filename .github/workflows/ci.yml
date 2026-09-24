@@ -33,7 +33,9 @@ jobs:
       # libraries are needed, and the failure lands at link time with a message
       # that says very little:
       #
-      #   - the server links D-Bus (bluer) and ALSA (rodio -> cpal);
+      #   - the server links D-Bus (bluer), ALSA (rodio -> cpal) and
+      #     libpipewire-0.3 (pipewire-rs), whose bindgen step needs clang and
+      #     its resource headers (#110);
       #   - the mobile crate pulls dioxus-desktop -> wry on a host build, which
       #     drags in the whole GTK/WebKit stack even though the app targets
       #     Android. libxdo comes from muda (menus), libssl from tungstenite.
@@ -52,7 +54,10 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            libpipewire-0.3-dev \
+            libclang-dev \
+            clang
 
       - uses: dtolnay/rust-toolchain@stable
         with:

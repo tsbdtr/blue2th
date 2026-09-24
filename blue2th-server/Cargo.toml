@@ -26,7 +26,7 @@ async-stream = "0.3"
 # replace it in phase 5. `cpal` needs the ALSA dev headers at build time
 # (`alsa-lib-devel`). The real output lives on a dedicated thread because cpal
 # streams are `!Send`; tests use a no-op output so they run without an audio
-# device. Volume targets the PipeWire sink (via `wpctl`), not rodio's gain.
+# device. Volume targets the speaker's PipeWire device `Route`, not rodio's gain.
 rodio = { version = "0.22", default-features = false, features = ["wav", "playback"] }
 # Spotify OAuth (PKCE) + Web API transport (phase 5.2). `reqwest` uses rustls (no
 # OpenSSL, matching the mobile crate's TLS choice); `sha2`/`base64` derive the PKCE
@@ -46,6 +46,14 @@ url = "2"
 mdns-sd = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
+# #79: the audio graph is driven natively, from a `pw_main_loop` thread
+# (`graph_pw.rs`). Both are MIT and link `libpipewire-0.3` (runtime) and need
+# its dev headers plus clang at build time: bindgen generates the -sys crates.
+# `v0_3_44` because that is the release where `target.object` replaced
+# `node.target` as the key pinning a stream to its node, and every loopback
+# branch pins both of its ends with it.
+pipewire = { version = "0.10", features = ["v0_3_44"] }
+libspa = "0.10"
 # #122: `prctl(PR_SET_PDEATHSIG)` on the `librespot` child. Already in the lock
 # through `bluer`, so this adds no package.
 nix = { version = "0.29", features = ["process"] }
