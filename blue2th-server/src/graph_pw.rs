@@ -41,10 +41,11 @@ use crate::graph::{Graph, LoadedBranch};
 /// How long the handle waits for the loop thread to answer one command.
 pub(crate) const GRAPH_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long the loop thread waits for one `core.sync` round trip. Several fit in
-/// [`GRAPH_REPLY_TIMEOUT`], so a command answers with the daemon's error rather
-/// than with the handle's timeout.
-const ROUNDTRIP_TIMEOUT: Duration = Duration::from_millis(400);
+/// How long the loop thread gives the round trips of one command, all of them
+/// together. It is shorter than [`GRAPH_REPLY_TIMEOUT`] whatever the number of
+/// round trips, so a command answers with the daemon's error rather than with
+/// the handle's timeout.
+const COMMAND_TIMEOUT: Duration = Duration::from_millis(1600);
 
 /// The factory the combined sink's node is created from.
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
@@ -480,6 +481,8 @@ pub(crate) struct LoopState<C: Connector> {
     context: Option<C::Context>,
     mirror: Mirror,
     next_module_id: u32,
+    /// When the command being handled runs out of time for its round trips.
+    deadline: Instant,
 }
 
 impl<C: Connector> LoopState<C> {
@@ -493,6 +496,7 @@ impl<C: Connector> LoopState<C> {
             context: None,
             mirror: Mirror::default(),
             next_module_id: 0,
+            deadline: Instant::now(),
         }
     }
 
@@ -785,14 +789,14 @@ impl PwConnection {
     }
 
     /// One `core.sync` round trip: every event the daemon emitted before it has
-    /// been delivered when this returns `Ok`.
-    fn roundtrip(&self) -> Result<(), AudioError> {
+    /// been delivered when this returns `Ok`. It errs once `deadline` — the
+    /// command's, not its own — has passed.
+    fn roundtrip(&self, deadline: Instant) -> Result<(), AudioError> {
         let pending = self
             .core
             .sync(0)
             .map_err(pw_error("cannot sync with PipeWire"))?
             .seq();
-        let deadline = Instant::now() + ROUNDTRIP_TIMEOUT;
         loop {
             {
                 let shared = self.shared.borrow();
@@ -817,8 +821,8 @@ impl PwConnection {
     /// for the full properties of every node bound on the way. The registry
     /// only announces a node's summary; the stream targets and link groups the
     /// pure functions read are in the node's own info.
-    fn refresh(&mut self) -> Result<Mirror, AudioError> {
-        self.roundtrip()?;
+    fn refresh(&mut self, deadline: Instant) -> Result<Mirror, AudioError> {
+        self.roundtrip(deadline)?;
         let unbound: Vec<u32> = {
             let shared = self.shared.borrow();
             self.bound_nodes
@@ -863,7 +867,7 @@ impl PwConnection {
             self.bound_nodes.insert(*id, (node, listener));
         }
         if !unbound.is_empty() {
-            self.roundtrip()?;
+            self.roundtrip(deadline)?;
         }
         // Cloned: the loop side reads a snapshot while the callbacks keep
         // writing the live one.
@@ -933,7 +937,7 @@ impl PwConnection {
     }
 
     /// Point the `default` metadata's configured sink at `sink`.
-    fn set_default_sink(&self, sink: &str) -> Result<(), AudioError> {
+    fn set_default_sink(&self, sink: &str, deadline: Instant) -> Result<(), AudioError> {
         let metadata = {
             let shared = self.shared.borrow();
             let global = shared
@@ -958,11 +962,15 @@ impl PwConnection {
             Some("Spa:String:JSON"),
             Some(&default_sink_metadata_value(sink)),
         );
-        self.roundtrip()
+        self.roundtrip(deadline)
     }
 
     /// Bind the device `device_id` and read its `Route` param.
-    fn routes(&self, device_id: u32) -> Result<(Device, Vec<Route>), AudioError> {
+    fn routes(
+        &self,
+        device_id: u32,
+        deadline: Instant,
+    ) -> Result<(Device, Vec<Route>), AudioError> {
         let device = {
             let shared = self.shared.borrow();
             let global = shared
@@ -987,7 +995,7 @@ impl PwConnection {
             })
             .register();
         device.enum_params(0, Some(ParamType::Route), 0, u32::MAX);
-        let synced = self.roundtrip();
+        let synced = self.roundtrip(deadline);
         drop(listener);
         synced?;
         let routes = routes.take();
@@ -995,8 +1003,8 @@ impl PwConnection {
     }
 
     /// The route of `target`, and the device carrying it.
-    fn route(&self, target: RouteTarget) -> Result<(Device, Route), AudioError> {
-        let (device, routes) = self.routes(target.device_id)?;
+    fn route(&self, target: RouteTarget, deadline: Instant) -> Result<(Device, Route), AudioError> {
+        let (device, routes) = self.routes(target.device_id, deadline)?;
         let route = routes
             .into_iter()
             .find(|route| route.device == target.route_device)
@@ -1129,7 +1137,8 @@ impl LoopState<PwConnector> {
 
     /// Refresh the mirror from the daemon.
     fn sync_mirror(&mut self) -> Result<(), AudioError> {
-        let mirror = self.connection()?.refresh()?;
+        let deadline = self.deadline;
+        let mirror = self.connection()?.refresh(deadline)?;
         *self.mirror_mut() = mirror;
         Ok(())
     }
@@ -1235,13 +1244,15 @@ impl LoopState<PwConnector> {
 
     fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
         self.sync_mirror()?;
-        self.connection()?.set_default_sink(sink)
+        let deadline = self.deadline;
+        self.connection()?.set_default_sink(sink, deadline)
     }
 
     fn sink_volume(&mut self, sink: &str) -> Option<f32> {
         self.sync_mirror().ok()?;
         let target = route_target(&self.mirror, sink)?;
-        let (_, route) = self.connection().ok()?.route(target).ok()?;
+        let deadline = self.deadline;
+        let (_, route) = self.connection().ok()?.route(target, deadline).ok()?;
         volume_fraction_from_route(&route.channel_volumes)
     }
 
@@ -1249,8 +1260,9 @@ impl LoopState<PwConnector> {
         self.sync_mirror()?;
         let target = route_target(&self.mirror, sink)
             .ok_or_else(|| AudioError::PipeWire(format!("no volume route for {sink}")))?;
+        let deadline = self.deadline;
         let connection = self.connection()?;
-        let (device, route) = connection.route(target)?;
+        let (device, route) = connection.route(target, deadline)?;
         if route.channel_volumes.is_empty() {
             return Err(AudioError::PipeWire(format!(
                 "the route of {sink} carries no channel volume"
@@ -1263,12 +1275,13 @@ impl LoopState<PwConnector> {
         let pod = Pod::from_bytes(&bytes)
             .ok_or_else(|| AudioError::PipeWire("malformed Route param".into()))?;
         device.set_param(ParamType::Route, 0, pod);
-        connection.roundtrip()
+        connection.roundtrip(deadline)
     }
 }
 
 /// Answer one command against the daemon.
 fn handle(state: &mut LoopState<PwConnector>, command: Command) {
+    state.deadline = Instant::now() + COMMAND_TIMEOUT;
     // A reply nobody waits for any more (the handle timed out) is dropped.
     match command {
         Command::Sinks { reply } => {
@@ -2237,11 +2250,11 @@ mod tests {
 
     // Criterion: the loop thread's own waits fit inside the handle's, so a slow
     // daemon is reported with its own error rather than the handle's timeout.
-    // The longest commands (`teardown`, `unload_branch`, `set_sink_volume`) wait
-    // on at most four round trips.
+    // The budget covers every round trip of a command together, so this holds
+    // however many round trips a command makes.
     #[test]
-    fn test_the_longest_command_s_round_trips_fit_in_the_reply_timeout() {
-        assert!(ROUNDTRIP_TIMEOUT * 4 < GRAPH_REPLY_TIMEOUT);
+    fn test_a_command_s_round_trips_fit_in_the_reply_timeout() {
+        assert!(COMMAND_TIMEOUT < GRAPH_REPLY_TIMEOUT);
     }
 
     // Criterion: a loop thread that took the command and died without answering
