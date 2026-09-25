@@ -73,6 +73,20 @@ PENDING
 <!-- Hardware (BlueZ/PipeWire/audio device) is NOT test-runnable: cover pure logic, leave the hardware boundary to manual testing. -->
 - PENDING
 
+### Guards
+<!-- For every criterion of the form "never", "only", "exactly" or "an empty -->
+<!-- value matches nothing": the near-miss input that everything else would -->
+<!-- accept and only that guard rejects. Without one, a test of the guard stays -->
+<!-- green with the guard deleted. Write "none" when no criterion is a guard. -->
+- PENDING
+
+### Captured fixtures
+<!-- Real data the tests should be built from — a spike's capture, a `pw-dump`, -->
+<!-- a `pactl` or `bluetoothctl` line — with where it comes from. Write "none" -->
+<!-- when nothing was measured. Invented fixtures agree with the code's -->
+<!-- assumptions by construction; captured ones test them. -->
+- PENDING
+
 ## Manual verification
 <!-- What no test here can check, and how to check it by hand. -->
 <!-- LEAVE EMPTY if everything is covered by tests. Non-empty means `/tdd all` -->

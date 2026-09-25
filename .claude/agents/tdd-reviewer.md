@@ -64,7 +64,44 @@ Read the **Affected Layers** section of your prompt — review only those layers
       prefix matching every sink, an empty parsed field matching every module
       line, and an integration test that passed while the function returned
       nothing at all.
-9. Do NOT introduce new abstractions or refactors that aren't motivated by a concrete issue.
+   j. **Every guard in the Acceptance Criteria gets a mutation, recorded.** For
+      each criterion of the form *never*, *only*, *exactly* or *the empty value
+      matches nothing*, delete or loosen the guard that implements it, run the
+      tests, restore the code. Each one is a row of the **Mutations Checked**
+      table in the report: the rule, the mutation, the test that failed. A row
+      whose test column is empty is an unpinned rule — add the test before
+      moving on. h and i said as much before this table existed, and a branch
+      still shipped six tests that did not pin what they claimed (#135): a
+      check nobody can audit is a check nobody runs.
+   k. **Decision functions the implementation added.** The red phase can only
+      test what the spec names; a parser, a filter or a predicate that GREEN
+      wrote to get there has no test by default. List the functions the
+      implementation commit added that decide something — return a `bool` or an
+      `Option`, filter, parse, build a wire value — and check that a test
+      reaches each one. When one is out of reach only because of where it sits
+      (inside a hardware-bound impl while reading nothing but plain state, as
+      `is_foreign_null_sink` did), move it where a fake reaches it and test it.
+   l. **Delete the tautologies.** A test is a tautology when no change to the
+      code under test can make it fail:
+      - it compares a value with itself, or two values the code computed from
+        the same source, without naming what either is worth;
+      - its meaning rests on a fact stated only in its comment — "the longest
+        command makes at most four round trips", then an assertion on
+        `ROUNDTRIP_TIMEOUT * 4`: the constants hold while the count drifts;
+      - it asserts what the type system already guarantees;
+      - its fixture cannot reach the branch it is named after, and another test
+        already pins that branch.
+
+      First try to make it fail: name the value, add the near-miss, assert the
+      state rather than a proxy. **Delete it only when it checks nothing the
+      code decides**, or duplicates a test that does. Record each deletion under
+      **Tests Removed** in the report — the mutation that left it green, and the
+      test that pins the rule instead. When no test does, write one: a deletion
+      must never leave a rule less pinned than it was. A comparison between
+      constants is *not* a tautology when that relation is the whole guarantee
+      by construction: one deadline shared by every round trip of a command,
+      shorter than the handle's reply timeout, needs nothing else to hold.
+9. Do NOT introduce new abstractions or refactors that aren't motivated by a concrete issue — k, which moves a function only so a test can reach it, is one.
 
 ### Quality gates (run from the worktree root)
 **Always** — record baseline and re-run at the end:
@@ -101,6 +138,16 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 <!-- List any tests added during this phase, or "none" -->
 - `test_<name>`: <what it covers>
 
+## Mutations Checked
+<!-- One row per guard in the Acceptance Criteria (focus area j). No empty test column. -->
+| Rule | Mutation | Test that failed |
+|---|---|---|
+| an empty sink name matches no node | removed `!name.is_empty()` in `node_ids_named` | `test_branch_liveness_of_an_empty_name_ignores_a_nameless_node` |
+
+## Tests Removed
+<!-- Tautologies deleted (focus area l), or "none". The orchestrator copies this into the pull request. -->
+- `test_<name>`: <mutation that left it green> — rule now pinned by `test_<name>`
+
 ## Final Status
 - `cargo test --workspace`: <✅ N passed | ❌ failed>
 - `cargo clippy --workspace`: <✅ clean | ❌ N warnings>
@@ -115,7 +162,8 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
     `refactor:` — which are the change and the proof the tests came first.
 
 ## What you must NOT do
-- Do not remove or weaken existing tests.
+- Do not weaken existing tests. Remove one only when it is a tautology (focus
+  area l), and list it under **Tests Removed**.
 - Do not change the feature's behavior beyond what the tests define.
 - Do not add features not described in the feature spec.
 - Do not add platform or hardware dependencies to `blue2th-proto`.

@@ -21,6 +21,16 @@ PENDING
 <!-- List any tests added during this phase, or "none" -->
 - PENDING
 
+## Mutations Checked
+<!-- One row per guard in the Acceptance Criteria: rule | mutation | test that failed -->
+| Rule | Mutation | Test that failed |
+|---|---|---|
+| PENDING | PENDING | PENDING |
+
+## Tests Removed
+<!-- Tautologies deleted, or "none": the mutation that left each green, and the test that pins its rule instead -->
+- PENDING
+
 ## Final Status
 - `cargo test --workspace`: PENDING
 - `cargo clippy --workspace`: PENDING

@@ -333,6 +333,9 @@ Branch: `<BRANCH>`
 
 ## Acceptance Criteria
 <Acceptance Criteria section from tdd/feature.md>
+
+## Guards
+<Guards section from tdd/feature.md — the rules its Mutations Checked table covers>
 ```
 
 ### 8. Sequencing for `all`
@@ -399,7 +402,9 @@ c. Create it. The **title must follow Conventional Commits**, or the
    Then add, in the body, anything a reviewer would miss on a green CI run — a new
    dependency, a change to a shared DTO, a file touched outside the stated scope, a
    test deleted rather than fixed. `CLAUDE.md` requires it, and only this
-   orchestrator has the diff in view.
+   orchestrator has the diff in view. The reviewer lists the tests it deleted
+   under **Tests Removed** in `tdd/REVIEW.md`: copy that section into the body,
+   since the report itself only arrives as a comment.
 
 d. Post the review report as a **comment**, not a commit:
    ```bash
