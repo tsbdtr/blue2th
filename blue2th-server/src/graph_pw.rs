@@ -41,10 +41,11 @@ use crate::graph::{Graph, LoadedBranch};
 /// How long the handle waits for the loop thread to answer one command.
 pub(crate) const GRAPH_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long the loop thread waits for one `core.sync` round trip. Several fit in
-/// [`GRAPH_REPLY_TIMEOUT`], so a command answers with the daemon's error rather
-/// than with the handle's timeout.
-const ROUNDTRIP_TIMEOUT: Duration = Duration::from_millis(400);
+/// How long the loop thread gives the round trips of one command, all of them
+/// together. It is shorter than [`GRAPH_REPLY_TIMEOUT`] whatever the number of
+/// round trips, so a command answers with the daemon's error rather than with
+/// the handle's timeout.
+const COMMAND_TIMEOUT: Duration = Duration::from_millis(1600);
 
 /// The factory the combined sink's node is created from.
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
@@ -480,6 +481,8 @@ pub(crate) struct LoopState<C: Connector> {
     context: Option<C::Context>,
     mirror: Mirror,
     next_module_id: u32,
+    /// When the command being handled runs out of time for its round trips.
+    deadline: Instant,
 }
 
 impl<C: Connector> LoopState<C> {
@@ -493,6 +496,7 @@ impl<C: Connector> LoopState<C> {
             context: None,
             mirror: Mirror::default(),
             next_module_id: 0,
+            deadline: Instant::now(),
         }
     }
 
@@ -576,6 +580,31 @@ impl<C: Connector> LoopState<C> {
     /// Whether the graph itself owns the combined sink `sink_name`.
     pub(crate) fn owns_null_sink(&self, sink_name: &str) -> bool {
         self.null_sinks.contains_key(sink_name)
+    }
+
+    /// Whether `name` is a null sink this graph does not own — a leftover a
+    /// build must replace, never reuse: the router reuses a listed combined
+    /// sink, and a leftover's own loopbacks would keep feeding the speakers
+    /// next to the ones this graph loads (#78).
+    ///
+    /// `factory.name` is not in the summary the registry announces with a
+    /// node, only in the node's own info: this relies on `refresh` binding
+    /// every node before the mirror is read.
+    fn is_foreign_null_sink(&self, name: &str) -> bool {
+        !self.owns_null_sink(name)
+            && self
+                .mirror()
+                .node_ids_named(name)
+                .filter_map(|id| self.mirror().nodes.get(&id))
+                .any(|node| node.prop("factory.name") == Some(NULL_SINK_FACTORY))
+    }
+
+    /// The mirror's sinks, less the null sinks this graph does not own.
+    fn listed_sinks(&self) -> Vec<String> {
+        sink_names(&self.mirror)
+            .into_iter()
+            .filter(|name| !self.is_foreign_null_sink(name))
+            .collect()
     }
 
     /// The core `error`/disconnect callback: the connection is gone.
@@ -785,14 +814,14 @@ impl PwConnection {
     }
 
     /// One `core.sync` round trip: every event the daemon emitted before it has
-    /// been delivered when this returns `Ok`.
-    fn roundtrip(&self) -> Result<(), AudioError> {
+    /// been delivered when this returns `Ok`. It errs once `deadline` — the
+    /// command's, not its own — has passed.
+    fn roundtrip(&self, deadline: Instant) -> Result<(), AudioError> {
         let pending = self
             .core
             .sync(0)
             .map_err(pw_error("cannot sync with PipeWire"))?
             .seq();
-        let deadline = Instant::now() + ROUNDTRIP_TIMEOUT;
         loop {
             {
                 let shared = self.shared.borrow();
@@ -817,8 +846,8 @@ impl PwConnection {
     /// for the full properties of every node bound on the way. The registry
     /// only announces a node's summary; the stream targets and link groups the
     /// pure functions read are in the node's own info.
-    fn refresh(&mut self) -> Result<Mirror, AudioError> {
-        self.roundtrip()?;
+    fn refresh(&mut self, deadline: Instant) -> Result<Mirror, AudioError> {
+        self.roundtrip(deadline)?;
         let unbound: Vec<u32> = {
             let shared = self.shared.borrow();
             self.bound_nodes
@@ -863,7 +892,7 @@ impl PwConnection {
             self.bound_nodes.insert(*id, (node, listener));
         }
         if !unbound.is_empty() {
-            self.roundtrip()?;
+            self.roundtrip(deadline)?;
         }
         // Cloned: the loop side reads a snapshot while the callbacks keep
         // writing the live one.
@@ -933,7 +962,7 @@ impl PwConnection {
     }
 
     /// Point the `default` metadata's configured sink at `sink`.
-    fn set_default_sink(&self, sink: &str) -> Result<(), AudioError> {
+    fn set_default_sink(&self, sink: &str, deadline: Instant) -> Result<(), AudioError> {
         let metadata = {
             let shared = self.shared.borrow();
             let global = shared
@@ -958,11 +987,15 @@ impl PwConnection {
             Some("Spa:String:JSON"),
             Some(&default_sink_metadata_value(sink)),
         );
-        self.roundtrip()
+        self.roundtrip(deadline)
     }
 
     /// Bind the device `device_id` and read its `Route` param.
-    fn routes(&self, device_id: u32) -> Result<(Device, Vec<Route>), AudioError> {
+    fn routes(
+        &self,
+        device_id: u32,
+        deadline: Instant,
+    ) -> Result<(Device, Vec<Route>), AudioError> {
         let device = {
             let shared = self.shared.borrow();
             let global = shared
@@ -987,7 +1020,7 @@ impl PwConnection {
             })
             .register();
         device.enum_params(0, Some(ParamType::Route), 0, u32::MAX);
-        let synced = self.roundtrip();
+        let synced = self.roundtrip(deadline);
         drop(listener);
         synced?;
         let routes = routes.take();
@@ -995,8 +1028,8 @@ impl PwConnection {
     }
 
     /// The route of `target`, and the device carrying it.
-    fn route(&self, target: RouteTarget) -> Result<(Device, Route), AudioError> {
-        let (device, routes) = self.routes(target.device_id)?;
+    fn route(&self, target: RouteTarget, deadline: Instant) -> Result<(Device, Route), AudioError> {
+        let (device, routes) = self.routes(target.device_id, deadline)?;
         let route = routes
             .into_iter()
             .find(|route| route.device == target.route_device)
@@ -1129,28 +1162,15 @@ impl LoopState<PwConnector> {
 
     /// Refresh the mirror from the daemon.
     fn sync_mirror(&mut self) -> Result<(), AudioError> {
-        let mirror = self.connection()?.refresh()?;
+        let deadline = self.deadline;
+        let mirror = self.connection()?.refresh(deadline)?;
         *self.mirror_mut() = mirror;
         Ok(())
     }
 
-    /// Whether `name` is a null sink this graph does not own — a leftover a
-    /// build must replace, never reuse.
-    fn is_foreign_null_sink(&self, name: &str) -> bool {
-        !self.owns_null_sink(name)
-            && self
-                .mirror()
-                .node_ids_named(name)
-                .filter_map(|id| self.mirror().nodes.get(&id))
-                .any(|node| node.prop("factory.name") == Some(NULL_SINK_FACTORY))
-    }
-
     fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
         self.sync_mirror()?;
-        Ok(sink_names(&self.mirror)
-            .into_iter()
-            .filter(|name| !self.is_foreign_null_sink(name))
-            .collect())
+        Ok(self.listed_sinks())
     }
 
     fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
@@ -1235,13 +1255,15 @@ impl LoopState<PwConnector> {
 
     fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
         self.sync_mirror()?;
-        self.connection()?.set_default_sink(sink)
+        let deadline = self.deadline;
+        self.connection()?.set_default_sink(sink, deadline)
     }
 
     fn sink_volume(&mut self, sink: &str) -> Option<f32> {
         self.sync_mirror().ok()?;
         let target = route_target(&self.mirror, sink)?;
-        let (_, route) = self.connection().ok()?.route(target).ok()?;
+        let deadline = self.deadline;
+        let (_, route) = self.connection().ok()?.route(target, deadline).ok()?;
         volume_fraction_from_route(&route.channel_volumes)
     }
 
@@ -1249,8 +1271,9 @@ impl LoopState<PwConnector> {
         self.sync_mirror()?;
         let target = route_target(&self.mirror, sink)
             .ok_or_else(|| AudioError::PipeWire(format!("no volume route for {sink}")))?;
+        let deadline = self.deadline;
         let connection = self.connection()?;
-        let (device, route) = connection.route(target)?;
+        let (device, route) = connection.route(target, deadline)?;
         if route.channel_volumes.is_empty() {
             return Err(AudioError::PipeWire(format!(
                 "the route of {sink} carries no channel volume"
@@ -1263,12 +1286,13 @@ impl LoopState<PwConnector> {
         let pod = Pod::from_bytes(&bytes)
             .ok_or_else(|| AudioError::PipeWire("malformed Route param".into()))?;
         device.set_param(ParamType::Route, 0, pod);
-        connection.roundtrip()
+        connection.roundtrip(deadline)
     }
 }
 
 /// Answer one command against the daemon.
 fn handle(state: &mut LoopState<PwConnector>, command: Command) {
+    state.deadline = Instant::now() + COMMAND_TIMEOUT;
     // A reply nobody waits for any more (the handle timed out) is dropped.
     match command {
         Command::Sinks { reply } => {
@@ -1559,7 +1583,10 @@ mod tests {
     // ─── combined_sink_props ─────────────────────────────────────────────────
 
     // Criterion: the combined sink is an `adapter` over `support.null-audio-sink`,
-    // `media.class = Audio/Sink`, `audio.position = FL,FR`, named `sink_name`.
+    // `media.class = Audio/Sink`, `audio.position = FL,FR`, named `sink_name`,
+    // with `monitor.channel-volumes = true`: the monitor the branches capture
+    // applies the sink's volume, so a volume set on the combined sink reaches
+    // every speaker.
     #[test]
     fn test_combined_sink_props_describe_a_stereo_null_audio_sink() {
         let props: BTreeMap<String, String> = combined_sink_props(COMBINED).into_iter().collect();
@@ -1576,6 +1603,10 @@ mod tests {
         assert_eq!(
             props.get("audio.position").map(String::as_str),
             Some("FL,FR")
+        );
+        assert_eq!(
+            props.get("monitor.channel-volumes").map(String::as_str),
+            Some("true")
         );
     }
 
@@ -1722,17 +1753,6 @@ mod tests {
         let mirror = liveness_mirror(&[(200, 90, 57)]);
 
         assert!(!branch_liveness(&mirror, "blue2th_loop.4.out", SPEAKER));
-    }
-
-    // Criterion: liveness needs a named sink — an empty sink name names no node,
-    // so it cannot vouch for a branch.
-    #[test]
-    fn test_branch_liveness_with_an_empty_name_is_dead() {
-        let mirror = liveness_mirror(&[(200, 90, 57)]);
-
-        assert!(branch_liveness(&mirror, "blue2th_loop.3.out", SPEAKER));
-        assert!(!branch_liveness(&mirror, "blue2th_loop.3.out", ""));
-        assert!(!branch_liveness(&mirror, "", SPEAKER));
     }
 
     // Criterion (the empty value is a wildcard): an empty name matches no node,
@@ -1917,25 +1937,10 @@ mod tests {
         );
     }
 
-    // Criterion: an ALSA node is never selected — destroying one switches its
-    // card's profile to `off` (the 2026-09-19 session) — nor is a loopback
-    // feeding into the combined sink from an ALSA source.
-    #[test]
-    fn test_foreign_combined_globals_never_names_an_alsa_node() {
-        let selected = foreign_combined_globals(&foreign_mirror(), COMBINED);
-
-        for alsa in [39, 40, 76, 77] {
-            assert!(
-                !selected.contains(&alsa),
-                "global {alsa} is not ours, got {selected:?}"
-            );
-        }
-        assert!(!selected.is_empty(), "the combined sink itself is selected");
-    }
-
     // Criterion: a hardware node is spared even when it would otherwise match —
     // named exactly like the sink, or sharing a pair's link group — since
-    // destroying it switches its card's profile to `off`.
+    // destroying it switches its card's profile to `off` (the 2026-09-19
+    // session).
     #[test]
     fn test_foreign_combined_globals_spares_a_hardware_node_that_would_match() {
         let mut mirror = foreign_mirror();
@@ -1987,6 +1992,80 @@ mod tests {
             sorted(foreign_combined_globals(&mirror, COMBINED)),
             vec![61, 70, 71],
             "and the nameless nodes do not join a real teardown either"
+        );
+    }
+
+    // Criterion (the empty value is a wildcard): a capture stream of the sink
+    // carrying an empty `node.link-group` is taken alone — its empty group
+    // pairs it with no other node, not with every node whose group is empty.
+    #[test]
+    fn test_foreign_combined_globals_of_an_empty_link_group_pairs_nothing() {
+        let mut mirror = foreign_mirror();
+        mirror.nodes.insert(
+            82,
+            node(&[
+                ("node.name", "input.loopback-6815-18"),
+                ("media.class", "Stream/Input/Audio"),
+                ("target.object", COMBINED),
+                ("stream.capture.sink", "true"),
+                ("node.link-group", ""),
+            ]),
+        );
+        mirror.nodes.insert(
+            83,
+            node(&[
+                ("node.name", "firefox"),
+                ("media.class", "Stream/Output/Audio"),
+                ("target.object", SPEAKER),
+                ("node.link-group", ""),
+            ]),
+        );
+
+        assert_eq!(
+            sorted(foreign_combined_globals(&mirror, COMBINED)),
+            vec![61, 70, 71, 82],
+            "the capture stream is ours, the other groupless stream is not"
+        );
+    }
+
+    // Criterion: a capture stream of the sink is recognised by either marker —
+    // `media.class = Stream/Input/Audio` or `stream.capture.sink = true` — and
+    // takes its pair along in both cases.
+    #[test]
+    fn test_foreign_combined_globals_recognises_a_capture_by_either_marker() {
+        let mut mirror = foreign_mirror();
+        for (capture, playback, group, marker) in [
+            (
+                84,
+                85,
+                "loopback-6815-19",
+                ("media.class", "Stream/Input/Audio"),
+            ),
+            (86, 87, "loopback-6815-20", ("stream.capture.sink", "true")),
+        ] {
+            mirror.nodes.insert(
+                capture,
+                node(&[
+                    ("node.name", "input.loopback"),
+                    marker,
+                    ("target.object", COMBINED),
+                    ("node.link-group", group),
+                ]),
+            );
+            mirror.nodes.insert(
+                playback,
+                node(&[
+                    ("node.name", "output.loopback"),
+                    ("media.class", "Stream/Output/Audio"),
+                    ("target.object", SPEAKER),
+                    ("node.link-group", group),
+                ]),
+            );
+        }
+
+        assert_eq!(
+            sorted(foreign_combined_globals(&mirror, COMBINED)),
+            vec![61, 70, 71, 84, 85, 86, 87]
         );
     }
 
@@ -2081,7 +2160,8 @@ mod tests {
 
     // Criterion: `sink_volume` resolves the sink node's `device.id` and its
     // `card.profile.device`; a sink without a `device.id` (the null sink itself)
-    // has no Route, and an empty name resolves nothing.
+    // has no Route, and an empty name resolves nothing — not even a nameless
+    // node that carries a Route.
     #[test]
     fn test_route_target_resolves_the_device_and_route_of_a_speaker_sink() {
         let mirror = mirror_of(
@@ -2098,6 +2178,15 @@ mod tests {
                 (
                     61,
                     node(&[("node.name", COMBINED), ("media.class", "Audio/Sink")]),
+                ),
+                (
+                    62,
+                    node(&[
+                        ("node.name", ""),
+                        ("media.class", "Audio/Sink"),
+                        ("device.id", "78"),
+                        ("card.profile.device", "2"),
+                    ]),
                 ),
             ],
             &[],
@@ -2118,6 +2207,207 @@ mod tests {
         assert_eq!(route_target(&mirror, ""), None);
     }
 
+    // ─── The Route param: real pods from a live daemon ───────────────────────
+
+    /// `Route` pods captured from real devices; the file header says how.
+    const ROUTE_FIXTURE: &str = include_str!("../tests/fixtures/pipewire_route_params.txt");
+
+    /// The bytes of the fixture pod labelled `label`.
+    fn fixture_pod(label: &str) -> Vec<u8> {
+        let hex = ROUTE_FIXTURE
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .find_map(|line| line.strip_prefix(label)?.strip_prefix(' '));
+        assert!(hex.is_some(), "no fixture pod labelled {label}");
+        let hex = hex.unwrap();
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn parse(bytes: &[u8]) -> Option<Route> {
+        parse_route(Pod::from_bytes(bytes).unwrap())
+    }
+
+    fn fixture_route(label: &str) -> Route {
+        let route = parse(&fixture_pod(label));
+        assert!(route.is_some(), "{label} parses to no route");
+        route.unwrap()
+    }
+
+    /// A `Route` object carrying only `properties`, as serialized bytes.
+    fn route_bytes(properties: Vec<Property>) -> Vec<u8> {
+        let value = Value::Object(Object {
+            type_: libspa::sys::SPA_TYPE_OBJECT_ParamRoute,
+            id: libspa::sys::SPA_PARAM_Route,
+            properties,
+        });
+        PodSerializer::serialize(Cursor::new(Vec::new()), &value)
+            .unwrap()
+            .0
+            .into_inner()
+    }
+
+    fn int_property(key: u32, value: i32) -> Property {
+        Property {
+            key,
+            flags: PropertyFlags::empty(),
+            value: Value::Int(value),
+        }
+    }
+
+    // Criterion: a real Bluetooth speaker's route reads its index, its device
+    // and its channel volumes, which stand for the level `wpctl` showed (0.13).
+    #[test]
+    fn test_parse_route_reads_a_real_bluetooth_speaker_route() {
+        let route = fixture_route("jbl_xtreme_3.speaker-output");
+
+        assert_eq!((route.index, route.device), (1, 1));
+        assert_eq!(route.channel_volumes, vec![0.002197, 0.002197]);
+        let level = volume_fraction_from_route(&route.channel_volumes);
+        assert!(level.is_some_and(|v| close(v, 0.13, 1e-3)), "got {level:?}");
+    }
+
+    // Criterion: a headset exposes an input and an output route; each reads
+    // under its own device, which is what `route` matches the sink's
+    // `card.profile.device` against.
+    #[test]
+    fn test_parse_route_reads_each_route_of_a_headset_under_its_own_device() {
+        let input = fixture_route("sony_wh_1000xm5.headset-input");
+        let output = fixture_route("sony_wh_1000xm5.headset-output");
+
+        assert_eq!((input.index, input.device), (0, 0));
+        assert_eq!(input.channel_volumes, vec![1.0]);
+        assert_eq!((output.index, output.device), (1, 1));
+        let level = volume_fraction_from_route(&output.channel_volumes);
+        assert!(level.is_some_and(|v| close(v, 0.37, 1e-3)), "got {level:?}");
+    }
+
+    // Criterion: an ALSA route carries `softVolumes` next to `channelVolumes`;
+    // the volume is read from `channelVolumes` (0.34 in `wpctl`), never from
+    // the soft ones (0.959). The card's input route reads under its own index
+    // and device.
+    #[test]
+    fn test_parse_route_reads_the_channel_volumes_of_an_alsa_route_not_the_soft_ones() {
+        let speaker = fixture_route("ryzen_hd_audio.out-speaker");
+        let mic = fixture_route("ryzen_hd_audio.in-mic1");
+
+        assert_eq!((speaker.index, speaker.device), (0, 0));
+        assert_eq!(speaker.channel_volumes, vec![0.03930273, 0.03930273]);
+        let level = volume_fraction_from_route(&speaker.channel_volumes);
+        assert!(level.is_some_and(|v| close(v, 0.34, 1e-3)), "got {level:?}");
+        assert_eq!((mic.index, mic.device), (2, 2));
+    }
+
+    // Criterion: the pod `set_sink_volume` writes reads back as the route it
+    // was built from, with the new volumes on every channel.
+    #[test]
+    fn test_route_pod_round_trips_through_parse_route() {
+        let real = fixture_route("jbl_xtreme_3.speaker-output");
+        let volumes = route_channel_volumes(0.5, real.channel_volumes.len());
+
+        let written = parse(&route_pod(&real, volumes.clone()).unwrap()).unwrap();
+
+        assert_eq!((written.index, written.device), (real.index, real.device));
+        assert_eq!(written.channel_volumes, volumes);
+    }
+
+    // Criterion: the pod `set_sink_volume` writes has the shape of the one the
+    // daemon sends — the same object type and id outside, the same props
+    // object inside — and asks the daemon to keep the volume (`save = true`).
+    #[test]
+    fn test_route_pod_has_the_shape_of_a_real_route_and_is_saved() {
+        let decode = |bytes: &[u8]| match PodDeserializer::deserialize_any_from(bytes) {
+            Ok((_, Value::Object(object))) => Some(object),
+            _ => None,
+        };
+        let props_of = |object: &Object| {
+            object.properties.iter().find_map(|p| match &p.value {
+                Value::Object(props) if p.key == libspa::sys::SPA_PARAM_ROUTE_props => {
+                    Some((props.type_, props.id))
+                },
+                _ => None,
+            })
+        };
+        let real = decode(&fixture_pod("jbl_xtreme_3.speaker-output")).unwrap();
+        let route = fixture_route("jbl_xtreme_3.speaker-output");
+        let written = decode(&route_pod(&route, vec![0.1, 0.1]).unwrap()).unwrap();
+
+        assert_eq!((written.type_, written.id), (real.type_, real.id));
+        assert!(props_of(&real).is_some(), "the real route carries props");
+        assert_eq!(props_of(&written), props_of(&real));
+        let save = written
+            .properties
+            .iter()
+            .find(|p| p.key == libspa::sys::SPA_PARAM_ROUTE_save)
+            .map(|p| &p.value);
+        assert_eq!(save, Some(&Value::Bool(true)));
+    }
+
+    // Criterion: the index and the device are two fields, read and written each
+    // under its own key. Every captured route has them equal, so only a route
+    // where they differ can tell them apart.
+    #[test]
+    fn test_route_index_and_device_are_not_confused() {
+        let parsed = parse(&route_bytes(vec![
+            int_property(libspa::sys::SPA_PARAM_ROUTE_index, 3),
+            int_property(libspa::sys::SPA_PARAM_ROUTE_device, 7),
+        ]))
+        .unwrap();
+        assert_eq!((parsed.index, parsed.device), (3, 7), "read");
+
+        let written =
+            PodDeserializer::deserialize_any_from(&route_pod(&parsed, vec![0.5]).unwrap())
+                .ok()
+                .and_then(|(_, value)| match value {
+                    Value::Object(object) => Some(object),
+                    _ => None,
+                })
+                .unwrap();
+        let int_at = |key| {
+            written.properties.iter().find_map(|p| match p.value {
+                Value::Int(v) if p.key == key => Some(v),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            (
+                int_at(libspa::sys::SPA_PARAM_ROUTE_index),
+                int_at(libspa::sys::SPA_PARAM_ROUTE_device)
+            ),
+            (Some(3), Some(7)),
+            "written"
+        );
+    }
+
+    // Criterion: a route missing its index or its device is no route — `route`
+    // could not address it, nor `route_pod` write it back.
+    #[test]
+    fn test_parse_route_without_index_or_device_is_none() {
+        let index = int_property(libspa::sys::SPA_PARAM_ROUTE_index, 1);
+        let device = int_property(libspa::sys::SPA_PARAM_ROUTE_device, 1);
+
+        assert!(parse(&route_bytes(vec![index.clone(), device.clone()])).is_some());
+        assert!(parse(&route_bytes(vec![device])).is_none(), "no index");
+        assert!(parse(&route_bytes(vec![index])).is_none(), "no device");
+    }
+
+    // Criterion: a route without a props object reads with no channel volume
+    // — which `set_sink_volume` refuses and `sink_volume` reads as unknown —
+    // rather than failing to parse.
+    #[test]
+    fn test_parse_route_without_props_has_no_channel_volume() {
+        let route = parse(&route_bytes(vec![
+            int_property(libspa::sys::SPA_PARAM_ROUTE_index, 1),
+            int_property(libspa::sys::SPA_PARAM_ROUTE_device, 1),
+        ]))
+        .unwrap();
+
+        assert!(route.channel_volumes.is_empty());
+        assert_eq!(volume_fraction_from_route(&route.channel_volumes), None);
+    }
+
     // ─── The handle: command layer over a fake loop thread ───────────────────
 
     impl LoopSender for mpsc::Sender<Command> {
@@ -2127,10 +2417,11 @@ mod tests {
     }
 
     /// A loop thread that answers every command as a healthy graph holding
-    /// `sinks` would, recording the name of each command it received.
+    /// `sinks` would, recording each command it received: its name, then its
+    /// arguments in declaration order.
     fn answering_loop(
         sinks: Vec<String>,
-        received: Arc<Mutex<Vec<&'static str>>>,
+        received: Arc<Mutex<Vec<String>>>,
     ) -> Box<dyn LoopSender> {
         let (tx, rx) = mpsc::channel::<Command>();
         std::thread::spawn(move || {
@@ -2138,39 +2429,45 @@ mod tests {
                 let mut log = received.lock().unwrap();
                 match command {
                     Command::Sinks { reply } => {
-                        log.push("sinks");
+                        log.push("sinks".to_string());
+                        // Cloned: every `sinks` command is answered with the list.
                         let _ = reply.send(Ok(sinks.clone()));
                     },
-                    Command::Branches { reply, .. } => {
-                        log.push("branches");
+                    Command::Branches { sink_name, reply } => {
+                        log.push(format!("branches {sink_name}"));
                         let _ = reply.send(Ok(Vec::new()));
                     },
-                    Command::CreateCombinedSink { reply, .. } => {
-                        log.push("create_combined_sink");
+                    Command::CreateCombinedSink { sink_name, reply } => {
+                        log.push(format!("create_combined_sink {sink_name}"));
                         let _ = reply.send(Ok(()));
                     },
-                    Command::LoadBranch { reply, .. } => {
-                        log.push("load_branch");
+                    Command::LoadBranch {
+                        sink_name,
+                        real_sink,
+                        latency_ms,
+                        reply,
+                    } => {
+                        log.push(format!("load_branch {sink_name} {real_sink} {latency_ms}"));
                         let _ = reply.send(Ok(()));
                     },
-                    Command::UnloadBranch { reply, .. } => {
-                        log.push("unload_branch");
+                    Command::UnloadBranch { id, reply } => {
+                        log.push(format!("unload_branch {id}"));
                         let _ = reply.send(Ok(()));
                     },
-                    Command::Teardown { reply, .. } => {
-                        log.push("teardown");
+                    Command::Teardown { sink_name, reply } => {
+                        log.push(format!("teardown {sink_name}"));
                         let _ = reply.send(Ok(()));
                     },
-                    Command::SetDefaultSink { reply, .. } => {
-                        log.push("set_default_sink");
+                    Command::SetDefaultSink { sink, reply } => {
+                        log.push(format!("set_default_sink {sink}"));
                         let _ = reply.send(Ok(()));
                     },
-                    Command::SinkVolume { reply, .. } => {
-                        log.push("sink_volume");
+                    Command::SinkVolume { sink, reply } => {
+                        log.push(format!("sink_volume {sink}"));
                         let _ = reply.send(Some(0.5));
                     },
-                    Command::SetSinkVolume { reply, .. } => {
-                        log.push("set_sink_volume");
+                    Command::SetSinkVolume { sink, level, reply } => {
+                        log.push(format!("set_sink_volume {sink} {level}"));
                         let _ = reply.send(Ok(()));
                     },
                 }
@@ -2191,7 +2488,47 @@ mod tests {
 
         assert_eq!(graph.sinks().ok(), Some(vec![SPEAKER.to_string()]));
         assert_eq!(graph.sink_volume(SPEAKER), Some(0.5));
-        assert_eq!(*received.lock().unwrap(), vec!["sinks", "sink_volume"]);
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec!["sinks".to_string(), format!("sink_volume {SPEAKER}")]
+        );
+    }
+
+    // Criterion: each method sends its own command, carrying its arguments in
+    // their own fields — `load_branch` takes two sink names side by side, and a
+    // swap would capture the speaker and play into the combined sink.
+    #[test]
+    fn test_every_method_sends_its_own_command_with_its_arguments() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&received);
+        let mut graph = PipeWireGraph::with_loop(Box::new(move || {
+            answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
+        }));
+
+        assert!(graph.sinks().is_ok());
+        assert!(graph.branches(COMBINED).is_ok());
+        assert!(graph.create_combined_sink(COMBINED).is_ok());
+        assert!(graph.load_branch(COMBINED, SPEAKER, 170).is_ok());
+        assert!(graph.unload_branch(7).is_ok());
+        assert!(graph.teardown(COMBINED).is_ok());
+        assert!(graph.set_default_sink(SPEAKER).is_ok());
+        assert_eq!(graph.sink_volume(SPEAKER), Some(0.5));
+        assert!(graph.set_sink_volume(SPEAKER, 0.25).is_ok());
+
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![
+                "sinks".to_string(),
+                format!("branches {COMBINED}"),
+                format!("create_combined_sink {COMBINED}"),
+                format!("load_branch {COMBINED} {SPEAKER} 170"),
+                "unload_branch 7".to_string(),
+                format!("teardown {COMBINED}"),
+                format!("set_default_sink {SPEAKER}"),
+                format!("sink_volume {SPEAKER}"),
+                format!("set_sink_volume {SPEAKER} 0.25"),
+            ]
+        );
     }
 
     // Criterion: a loop thread that does not answer within 2 s is an
@@ -2229,19 +2566,13 @@ mod tests {
         );
     }
 
-    // Criterion: the timeout is two seconds.
-    #[test]
-    fn test_graph_reply_timeout_is_two_seconds() {
-        assert_eq!(GRAPH_REPLY_TIMEOUT, Duration::from_secs(2));
-    }
-
     // Criterion: the loop thread's own waits fit inside the handle's, so a slow
     // daemon is reported with its own error rather than the handle's timeout.
-    // The longest commands (`teardown`, `unload_branch`, `set_sink_volume`) wait
-    // on at most four round trips.
+    // The budget covers every round trip of a command together, so this holds
+    // however many round trips a command makes.
     #[test]
-    fn test_the_longest_command_s_round_trips_fit_in_the_reply_timeout() {
-        assert!(ROUNDTRIP_TIMEOUT * 4 < GRAPH_REPLY_TIMEOUT);
+    fn test_a_command_s_round_trips_fit_in_the_reply_timeout() {
+        assert!(COMMAND_TIMEOUT < GRAPH_REPLY_TIMEOUT);
     }
 
     // Criterion: a loop thread that took the command and died without answering
@@ -2271,10 +2602,11 @@ mod tests {
         );
     }
 
-    // Criterion: a thread that has died (its receiver dropped) is respawned by
-    // the next call, and that call is answered by the new thread.
+    // Criterion: a thread that has died (its receiver dropped) is replaced by the
+    // call that finds it dead, and that very call is answered by the new thread;
+    // the next call reuses the new thread.
     #[test]
-    fn test_a_dead_loop_thread_is_respawned_by_the_next_command() {
+    fn test_a_dead_loop_thread_is_replaced_by_one_answering_the_same_command() {
         let spawned = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&spawned);
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -2290,18 +2622,25 @@ mod tests {
             }
         }));
 
-        // The call that finds the thread dead may err ("cannot tell").
-        let _first = graph.sinks();
-        let second = graph.sinks();
-
-        assert_eq!(second.ok(), Some(vec![SPEAKER.to_string()]));
-        assert!(
-            spawned.load(Ordering::SeqCst) >= 2,
-            "a second thread was started"
+        let first = graph.sinks();
+        assert_eq!(first.ok(), Some(vec![SPEAKER.to_string()]));
+        assert_eq!(
+            spawned.load(Ordering::SeqCst),
+            2,
+            "the dead thread and its replacement"
         );
+
+        let second = graph.sinks();
+        assert_eq!(second.ok(), Some(vec![SPEAKER.to_string()]));
+        assert_eq!(
+            spawned.load(Ordering::SeqCst),
+            2,
+            "a live thread is not replaced"
+        );
+        assert_eq!(*received.lock().unwrap(), vec!["sinks", "sinks"]);
     }
 
-    // Criterion (non-nominal): an empty sink name, target or prefix is refused
+    // Criterion (non-nominal): an empty sink name or target sink is refused
     // before anything reaches the loop.
     #[test]
     fn test_an_empty_name_is_refused_before_reaching_the_loop() {
@@ -2342,15 +2681,13 @@ mod tests {
         );
     }
 
-    // Criterion: `PipeWireGraph::spawn()` never fails and never blocks — it does
-    // not connect until the first command, so constructing it in a test touches
-    // no daemon.
+    // Criterion: `PipeWireGraph::spawn()` starts no loop thread until the first
+    // command, so constructing it in a test touches no daemon.
     #[test]
-    fn test_spawn_returns_at_once_without_a_command() {
-        let started = Instant::now();
+    fn test_spawn_starts_no_loop_thread_before_the_first_command() {
         let graph = PipeWireGraph::spawn();
-        assert!(started.elapsed() < Duration::from_millis(500));
-        drop(graph);
+
+        assert!(graph.sender.is_none(), "no loop thread was started");
     }
 
     // Criterion: a detached graph reaches no loop and no daemon — every command
@@ -2464,8 +2801,9 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
-    // Criterion: the module ids are the graph's own counter, per combined sink,
-    // and `take_module` hands one back exactly once.
+    // Criterion: the module ids come from the graph's own counter, shared by
+    // every combined sink; `modules_for` lists one sink's modules only, and
+    // `take_module` hands one back exactly once.
     #[test]
     fn test_loop_state_keeps_the_modules_it_loaded_under_its_own_ids() {
         let (mut state, _) = fake_state(0);
@@ -2480,7 +2818,8 @@ mod tests {
         let other = state.add_module("other_combined", branch(SPEAKER, 70), "m3");
 
         assert_ne!(first, second);
-        assert_ne!(second, other);
+        assert_ne!(first, other, "the counter is shared across sinks");
+        assert_ne!(second, other, "the counter is shared across sinks");
         assert_eq!(
             state.modules_for(COMBINED),
             vec![
@@ -2498,6 +2837,35 @@ mod tests {
         assert_eq!(
             state.modules_for(COMBINED),
             vec![(second, branch("bluez_output.11_22_33_44_55_66.1", 300))]
+        );
+    }
+
+    // Criterion: `next_module_id` announces the id `add_module` then hands out,
+    // across sinks and across a lost connection. `load_branch` names the
+    // loopback's nodes `blue2th_loop.<id>` before the module is added: a
+    // mismatch would leave liveness and unload looking for another branch.
+    #[test]
+    fn test_loop_state_next_module_id_is_the_id_add_module_hands_out() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+
+        let announced = state.next_module_id();
+        assert_eq!(
+            state.add_module(COMBINED, branch(SPEAKER, 50), "m1"),
+            announced
+        );
+        let announced = state.next_module_id();
+        assert_eq!(
+            state.add_module("other_combined", branch(SPEAKER, 70), "m2"),
+            announced
+        );
+
+        state.on_disconnect();
+        let announced = state.next_module_id();
+        assert_eq!(
+            state.add_module(COMBINED, branch(SPEAKER, 50), "m3"),
+            announced,
+            "and after a lost connection"
         );
     }
 
@@ -2576,5 +2944,108 @@ mod tests {
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2, "reconnected");
         assert_eq!(contexts.load(Ordering::SeqCst), 1);
+    }
+
+    // ─── The loop side: which sinks are listed ───────────────────────────────
+
+    /// A combined sink as its node reads once bound: an `adapter` over the
+    /// null-audio-sink factory.
+    fn null_sink(name: &str) -> NodeEntry {
+        node(&[
+            ("node.name", name),
+            ("media.class", "Audio/Sink"),
+            ("factory.name", "support.null-audio-sink"),
+        ])
+    }
+
+    /// A combined sink left by the `pactl`-era server (#78), as a live daemon
+    /// reports one: pipewire-pulse's null sink, carrying its module id.
+    fn pactl_null_sink(name: &str) -> NodeEntry {
+        node(&[
+            ("node.name", name),
+            ("media.class", "Audio/Sink"),
+            ("factory.name", "support.null-audio-sink"),
+            ("pulse.module.id", "536870916"),
+        ])
+    }
+
+    fn speaker_sink() -> NodeEntry {
+        node(&[
+            ("node.name", SPEAKER),
+            ("media.class", "Audio/Sink"),
+            ("device.api", "bluez5"),
+        ])
+    }
+
+    // Criterion: the combined sink this graph created is listed, so the
+    // router reuses it rather than rebuilding under a playing stream.
+    #[test]
+    fn test_listed_sinks_keeps_the_combined_sink_the_graph_owns() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.set_null_sink(COMBINED, "proxy");
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state.mirror_mut().nodes.insert(61, null_sink(COMBINED));
+
+        assert_eq!(
+            state.listed_sinks(),
+            vec![SPEAKER.to_string(), COMBINED.to_string()]
+        );
+    }
+
+    // Criterion: a null sink the graph does not own — a `pactl`-era leftover —
+    // is hidden, so the router builds and its teardown clears the leftover;
+    // the speakers next to it stay listed.
+    #[test]
+    fn test_listed_sinks_hides_a_leftover_null_sink() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state
+            .mirror_mut()
+            .nodes
+            .insert(61, pactl_null_sink(COMBINED));
+
+        assert_eq!(state.listed_sinks(), vec![SPEAKER.to_string()]);
+    }
+
+    // Criterion: a sink the graph does not own but that no null-sink factory
+    // made — a real device — is listed, even when it carries the combined
+    // sink's name.
+    #[test]
+    fn test_listed_sinks_keeps_a_sink_no_null_sink_factory_made() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state.mirror_mut().nodes.insert(
+            61,
+            node(&[
+                ("node.name", COMBINED),
+                ("media.class", "Audio/Sink"),
+                ("device.api", "alsa"),
+            ]),
+        );
+
+        assert_eq!(
+            state.listed_sinks(),
+            vec![SPEAKER.to_string(), COMBINED.to_string()]
+        );
+    }
+
+    // Criterion: a lost connection forgets the graph's ownership with its
+    // proxies, so a combined sink seen after reconnecting is a leftover, never
+    // the graph's own.
+    #[test]
+    fn test_listed_sinks_after_a_lost_connection_owns_no_combined_sink() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        state.set_null_sink(COMBINED, "proxy");
+
+        state.on_disconnect();
+        assert!(state.connection().is_ok());
+        state.mirror_mut().nodes.insert(57, speaker_sink());
+        state.mirror_mut().nodes.insert(61, null_sink(COMBINED));
+
+        assert_eq!(state.listed_sinks(), vec![SPEAKER.to_string()]);
     }
 }
