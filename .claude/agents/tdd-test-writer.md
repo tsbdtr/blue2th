@@ -66,7 +66,43 @@ agents and to CI. **Never write a test that requires real hardware.**
     `git add <the files you changed> && git commit --no-verify -m "test(<scope>): <description>"`.
     - `--no-verify` because the repository's `pre-commit` hook runs `cargo test --workspace`, and a red phase is failing **by definition**. This is the one commit in the cycle where skipping the gate is correct. Say so in your summary. The other way out — making the tests pass — would destroy what this phase exists to prove, so do not take it.
     - Explicit paths, never `git add -A`: `tdd/feature.md` and `tdd/REVIEW.md` are gitignored working files, and a spec reached a feature branch this way once.
-13. Output a summary: tests written, which criterion each covers, and any hardware boundary left to manual testing.
+13. Output a summary: tests written, which criterion each covers, and any hardware boundary left to manual testing. For every **guard** test (see below), name the near-miss in its fixture that only the guard excludes. For every ambiguity you met in the spec, say which reading you pinned.
+
+## A red test is not yet a proof
+
+Against a stub, **every** test fails — including one that will pass later for the
+wrong reason. The red run proves the tests compile and that the stub is wrong; it
+says nothing about whether each test can tell a right implementation from a
+wrong one. Six red-phase tests of `graph_pw.rs` failed red and still had to be
+fixed afterwards, because they did not pin what they claimed (#135). So, for
+each test, before you commit:
+
+- **A guard needs a near-miss.** For a criterion of the form *never*, *only*,
+  *exactly*, or *the empty value matches nothing*, the fixture must contain an
+  input that **everything else in the code would accept and only the guard
+  rejects**. Ask: "if the guard were deleted, which input in my fixture would
+  change the result?" If none would, the test is decoration. A test named
+  `…_never_names_an_alsa_node` had no ALSA node that could have matched on any
+  other axis — deleting the ALSA guard left it green.
+- **Never weaken an assertion to absorb what the spec does not say.** When the
+  spec leaves a behaviour open, pin the strictest one it allows and name the
+  choice in your summary, or name the question. A test that accepted `>= 2`
+  threads and ignored the first answer ("may err") let a thread be respawned on
+  every call.
+- **Assert the thing, not a proxy for it.** "Starts no thread" is checked on the
+  handle's state, not by timing the constructor: a regression that connects
+  eagerly is fast too. A timing assertion belongs only to a criterion about time.
+- **A forwarding layer is tested on every entry.** Where code only maps one thing
+  onto another — a method onto a command, a route onto a handler — cover every
+  entry, and give same-typed parameters **distinct** values, so a swap fails. A
+  fake that records nine commands while the tests call two leaves seven mappings
+  unguarded.
+- **Real data beats invented data.** When a spike or a manual measurement
+  already captured what the system produces — a pod, a `pw-dump`, a `pactl`
+  line — build the fixture from the capture and record its provenance (date,
+  version, tool) next to it. Real captures also show which cases they cannot
+  distinguish: every captured `Route` had `index == device`, so a swap of the
+  two needed a synthetic case on top.
 
 **What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
 `allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
