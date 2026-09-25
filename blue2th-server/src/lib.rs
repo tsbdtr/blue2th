@@ -1769,8 +1769,8 @@ async fn set_target_offset(
 }
 
 /// Make a just-changed offset audible without replaying: the offset only exists
-/// as `module-loopback` latency, so it has to be pushed into the live PipeWire
-/// graph. Best-effort — a failure here must not turn a slider drag into an error,
+/// as the delay of the speaker's branch, so it has to be pushed into the live
+/// PipeWire graph, where it is set on the delay node in place. Best-effort — a failure here must not turn a slider drag into an error,
 /// and the new value is applied anyway on the next `/play` or Spotify start.
 async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarget]) {
     let Some(target) = speakers.iter().find(|s| s.address == addr) else {
@@ -1788,7 +1788,7 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     if router.combined_sink_exists(&plan.sink_name) {
         let branch = audio::CombineBranch {
             sink: audio::bluez_sink_prefix(&target.address),
-            latency_ms: audio::branch_latency_ms(target.offset_ms),
+            latency_ms: target.offset_ms,
         };
         if let Err(e) = router.retune_branch(&plan.sink_name, &branch) {
             tracing::warn!("could not retune the speaker offset live: {e}");
@@ -1823,7 +1823,7 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
         // Nothing left to play to. Silence both sources, then tear the combined
-        // sink down so no loopback keeps feeding a speaker nobody selected.
+        // sink down so no branch keeps feeding a speaker nobody selected.
         //
         // Spotify is *stopped*, not paused through the Web API: a remote pause
         // returns when Spotify's servers answer, not when `librespot`'s audio

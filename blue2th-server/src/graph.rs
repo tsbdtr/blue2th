@@ -8,7 +8,7 @@
 
 use crate::audio::{AudioError, CombineBranch};
 
-/// One loopback branch as the graph reports it loaded for a combined sink.
+/// One delay branch as the graph reports it loaded for a combined sink.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedBranch {
     /// The handle [`Graph::unload_branch`] takes.
@@ -27,11 +27,11 @@ pub trait Graph: Send {
     /// The node names of the sinks currently present. An `Err` is "cannot
     /// tell", which a caller must not read as "no sink exists".
     fn sinks(&mut self) -> Result<Vec<String>, AudioError>;
-    /// The loopback branches loaded for the combined sink `sink_name`.
+    /// The delay branches loaded for the combined sink `sink_name`.
     fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError>;
     /// Create the shared null sink the player streams into.
     fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError>;
-    /// Load one delayed loopback from `sink_name`'s monitor into `real_sink`.
+    /// Load one delay branch from `sink_name`'s monitor into `real_sink`.
     fn load_branch(
         &mut self,
         sink_name: &str,
@@ -459,9 +459,15 @@ pub mod fake {
         }
 
         fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
-            // Red-phase stub: recorded, but neither checked nor applied.
             let mut state = self.state();
             state.log.push(GraphCall::SetBranchDelay { id, delay_ms });
+            state.check(GraphOp::SetBranchDelay, &id.to_string())?;
+            let branch = state
+                .branches
+                .iter_mut()
+                .find(|b| b.loaded.id == id)
+                .ok_or_else(|| AudioError::PipeWire(format!("fake graph: no branch {id}")))?;
+            branch.loaded.branch.latency_ms = delay_ms;
             Ok(())
         }
 
