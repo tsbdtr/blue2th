@@ -21,7 +21,7 @@ use std::{
         Arc,
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
@@ -430,31 +430,21 @@ fn run_audio_thread(rx: Receiver<AudioCmd>, ended: Arc<AtomicBool>) {
 }
 
 /// One branch of a PipeWire combined sink: the speaker's `bluez_output.*` sink
-/// node name and the per-speaker latency (ms) to apply to that branch.
+/// node name and the per-speaker delay (ms) to apply to that branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CombineBranch {
     /// The speaker's `bluez_output.*` sink node-name prefix (from
     /// [`bluez_sink_prefix`]); the hardware seam resolves it to the live node
     /// (which carries a trailing card suffix, e.g. `.1`).
     pub sink: String,
-    /// The `latency_msec` the branch's `module-loopback` is loaded with, in
-    /// milliseconds: [`branch_latency_ms`] of the speaker's offset, so it is the
-    /// base buffer plus that offset and never the bare offset.
+    /// The delay the branch's delay node applies, in milliseconds: the
+    /// speaker's offset, as it is (#81).
     pub latency_ms: u32,
 }
 
-/// The base buffer a branch's loopback is given, in milliseconds, on top of the
-/// speaker's own offset (#75).
-pub const BASE_BRANCH_LATENCY_MS: u32 = 50;
-
-/// The loopback latency a branch carries for a speaker at `offset_ms`.
-pub fn branch_latency_ms(offset_ms: u32) -> u32 {
-    BASE_BRANCH_LATENCY_MS.saturating_add(offset_ms)
-}
-
 /// Pure plan for a PipeWire combined sink spanning the selected speakers' sinks,
-/// each branch carrying [`branch_latency_ms`] of its speaker's offset. Building
-/// this performs no I/O; [`AudioRouter`] applies it to its [`Graph`].
+/// each branch delayed by its speaker's offset. Building this performs no I/O;
+/// [`AudioRouter`] applies it to its [`Graph`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CombineSinkSpec {
     /// Node name of the combined sink to create.
@@ -464,14 +454,14 @@ pub struct CombineSinkSpec {
 }
 
 /// Build the (pure, testable) combined-sink plan for the given targets: each
-/// target maps to its `bluez_output.*` sink name and to [`branch_latency_ms`] of
-/// its offset. Used by every non-empty selection; performs no I/O.
+/// target maps to its `bluez_output.*` sink name and to its offset as the
+/// branch delay. Used by every non-empty selection; performs no I/O.
 pub fn combine_sink_plan(targets: &[SpeakerTarget]) -> CombineSinkSpec {
     let branches = targets
         .iter()
         .map(|t| CombineBranch {
             sink: bluez_sink_prefix(&t.address),
-            latency_ms: branch_latency_ms(t.offset_ms),
+            latency_ms: t.offset_ms,
         })
         .collect();
     CombineSinkSpec {
@@ -556,151 +546,128 @@ pub fn should_repair_branches(selection: &[SpeakerTarget], anything_playing: boo
 /// selection is actually playing.
 pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 
-/// What a selection change has to do to an already-loaded combined sink: the
-/// branches to load and the loaded ones to unload.
+/// How long after a branch is loaded it is reloaded once, to confirm it.
 ///
-/// `to_unload` carries the branches as the graph reported them — i.e. with the
-/// **resolved** node name — because that is what [`AudioRouter`] matches against
-/// the loaded branches to find the ids to unload, while `to_load` carries the
-/// plan's `bluez_output.*` prefixes, which the router resolves at load time.
+/// A branch loaded towards a Bluetooth sink can come up complete — linked,
+/// running, no error anywhere — and silent, so completely that a stream written
+/// straight into that sink is silent too. A second load **five to seven seconds
+/// later** starts it; one a few milliseconds later did not, and broke a start
+/// that worked (measured 2026-09-06, #75). Deselecting and reselecting the
+/// silent speaker, the operator's workaround, is the same gap by hand. Seen at
+/// startup and after a daemon restart on the #81 build, so every load is
+/// confirmed, not only a speaker that came back.
+pub const CONFIRM_GAP: Duration = BRANCH_REPAIR_TICK;
+
+/// What a selection change has to do to an already-loaded combined sink: the
+/// branches to load, the loaded ones to retune in place, and the loaded ones to
+/// unload.
+///
+/// `to_unload` and `to_retune` carry the branches as the graph reported them —
+/// i.e. with the **resolved** node name — because that is what [`AudioRouter`]
+/// matches against the loaded branches to find their ids; `to_retune` carries
+/// the **planned** delay. `to_load` carries the plan's `bluez_output.*`
+/// prefixes, which the router resolves at load time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BranchReconciliation {
-    /// Branches of the spec that are not loaded as-is and must be loaded.
+pub struct BranchPlan {
+    /// Planned speakers with no loaded branch, which must be loaded.
     pub to_load: Vec<CombineBranch>,
+    /// Loaded branches of planned speakers at another delay, to be retuned.
+    pub to_retune: Vec<CombineBranch>,
     /// Loaded branches the spec no longer calls for, which must be unloaded.
     pub to_unload: Vec<CombineBranch>,
 }
 
-/// Compare the loopbacks currently loaded for a combined sink against the plan
-/// and decide what to change, leaving matching branches — and the null sink —
-/// alone. Pure; the caller performs the loads and unloads.
-pub fn reconcile_branches(
-    loaded: &[CombineBranch],
-    spec: &CombineSinkSpec,
-) -> BranchReconciliation {
-    let missing: Vec<CombineBranch> = spec
-        .branches
+/// Compare the delay branches currently loaded for a combined sink against the
+/// plan and decide what to change, leaving matching branches — and the null
+/// sink — alone. Pure; the caller performs the loads, retunes and unloads.
+///
+/// Each speaker is decided on its own (#81): a missing branch is loaded alone
+/// and a branch at another delay is retuned in place, so the speakers already
+/// playing are never torn down for the sake of another one.
+pub fn reconcile_branches(loaded: &[CombineBranch], spec: &CombineSinkSpec) -> BranchPlan {
+    let mut plan = BranchPlan::default();
+    for planned in &spec.branches {
+        let up = loaded
+            .iter()
+            .find(|up| prefix_names_node(&planned.sink, &up.sink));
+        match up {
+            // Cloned because the plan outlives the borrowed spec.
+            None => plan.to_load.push(planned.clone()),
+            Some(up) if up.latency_ms != planned.latency_ms => {
+                plan.to_retune.push(CombineBranch {
+                    // Cloned: the retune names the resolved node the graph reported.
+                    sink: up.sink.clone(),
+                    latency_ms: planned.latency_ms,
+                });
+            },
+            Some(_) => {},
+        }
+    }
+    plan.to_unload = loaded
         .iter()
-        .filter(|planned| !loaded.iter().any(|up| branch_is(up, planned)))
+        .filter(|up| {
+            !spec
+                .branches
+                .iter()
+                .any(|planned| prefix_names_node(&planned.sink, &up.sink))
+        })
+        // Cloned because the plan outlives the borrowed listing.
         .cloned()
         .collect();
-
-    if missing.is_empty() {
-        // Nothing has to start, so nothing has to restart: a selection that only
-        // lost a speaker leaves the others streaming, untouched.
-        return BranchReconciliation {
-            to_load: missing,
-            to_unload: loaded
-                .iter()
-                .filter(|up| !spec.branches.iter().any(|planned| branch_is(up, planned)))
-                .cloned()
-                .collect(),
-        };
-    }
-
-    // A loopback loaded into a graph that is already running attaches its stream
-    // to the right sink and leaves the Bluetooth node silent for good: measured
-    // on two speakers, where the one that came back stayed mute with a branch
-    // that was present, live and correctly attached, while a stream written
-    // straight into its sink was silent too — and both played again the moment
-    // every branch was rebuilt in one pass (#75). Speakers start together or not
-    // at all, so one missing branch costs a rebuild of the whole selection. That
-    // is a brief cut on the speakers already playing, and the alternative is one
-    // of them silent until the operator intervenes.
-    BranchReconciliation {
-        to_load: spec.branches.clone(),
-        to_unload: loaded.to_vec(),
-    }
+    plan
 }
 
-/// The one-tick delay line that carries the confirming rebuild from the pass that
-/// armed it to the next one.
+/// The delay line that carries each confirming reload from the pass that loaded
+/// a branch to the first pass at least [`CONFIRM_GAP`] later, keyed by the
+/// branch's `bluez_output.*` prefix.
 ///
-/// Split out of `AudioRouter::reconcile_combined` so the transition itself is
-/// pure and can be driven tick by tick in a test, without a graph around it.
+/// Split out of `AudioRouter` so the transition is pure and can be driven with
+/// explicit instants in a test, without a graph around it.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ConfirmationRegister {
-    due: bool,
+    due: Vec<(String, Instant)>,
 }
 
 impl ConfirmationRegister {
-    /// Answer whether *this* pass owes the confirming rebuild, and arm the next
-    /// one when `arms`.
-    ///
-    /// The read happens before the write, and that ordering is the whole
-    /// mechanism: rebuilding in the same pass that wired the returning speaker was
-    /// measured not to repair it — and to break a start that worked — while
-    /// rebuilding one tick later repairs it (#75).
-    fn take_and_arm(&mut self, arms: bool) -> bool {
-        std::mem::replace(&mut self.due, arms)
+    /// Arm a confirming reload of each of `sinks`, loaded at `now`. Arming a
+    /// sink again restarts its wait; an empty name arms nothing.
+    fn arm(&mut self, sinks: &[String], now: Instant) {
+        for sink in sinks.iter().filter(|sink| !sink.is_empty()) {
+            self.due.retain(|(armed, _)| armed != sink);
+            // Cloned: the register keeps the name past this pass.
+            self.due.push((sink.clone(), now));
+        }
     }
-}
 
-/// The sink node names worth remembering: every name but an empty one.
-pub(crate) fn sink_nodes(sinks: &[String]) -> Vec<String> {
-    sinks
-        .iter()
-        .filter(|name| !name.is_empty())
-        // Cloned: the register outlives the reading it is taken from.
-        .cloned()
-        .collect()
-}
+    /// The sinks armed at least [`CONFIRM_GAP`] before `now`, in the order they
+    /// were armed. Each is handed out once: a confirming reload does not arm
+    /// itself, so it never repeats.
+    fn take_due(&mut self, now: Instant) -> Vec<String> {
+        let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.due)
+            .into_iter()
+            .partition(|(_, armed_at)| now.saturating_duration_since(*armed_at) >= CONFIRM_GAP);
+        self.due = waiting;
+        due.into_iter().map(|(sink, _)| sink).collect()
+    }
 
-/// The sinks `sinks` names that `previous` did not — the speakers that
-/// have come back since the last pass. On the very first pass nothing is new:
-/// every sink listed then was there before the server was, which is why a start
-/// costs no rebuild.
-pub fn newly_listed_sinks(previous: &Option<Vec<String>>, sinks: &[String]) -> Vec<String> {
-    let Some(previous) = previous else {
-        return Vec::new();
-    };
-    sink_nodes(sinks)
-        .into_iter()
-        .filter(|node| !previous.iter().any(|seen| seen == node))
-        .collect()
-}
-
-/// Whether this pass wires a speaker whose sink has just appeared, and so owes the
-/// **next** pass a rebuild.
-///
-/// A `module-loopback` loaded towards a `bluez_output.*` node that has just been
-/// created does not start it: the stream attaches to the right sink, the module is
-/// live, no error is reported anywhere — and the speaker stays silent for good, so
-/// completely that a stream written straight into that sink is silent too.
-/// Rebuilding every branch **one tick later** starts it.
-///
-/// The delay is the point, and it was measured on 2026-09-06 with two speakers.
-/// Rebuilding a few milliseconds after the first load does not repair the speaker
-/// and *breaks a start that worked*; rebuilding five to seven seconds later
-/// repairs it, which is what the operator's habitual deselect/reselect had been
-/// doing by hand all along. A single load thirty seconds after the node appeared
-/// stays mute, so it is neither a settling delay nor the ordinal of the load: it
-/// is the gap between two of them (#75).
-pub fn wires_a_new_sink(to_load: &[CombineBranch], fresh: &[String], sinks: &[String]) -> bool {
-    to_load.iter().any(|branch| {
-        sink_named_by_prefix(sinks, &branch.sink).is_some_and(|node| fresh.contains(&node))
-    })
+    /// Forget every armed reload: a graph built from nothing owes none of them.
+    fn clear(&mut self) {
+        self.due.clear();
+    }
 }
 
 /// The planned branches whose speaker sink is actually present in `sinks`.
 ///
 /// A speaker that is switched off has no `bluez_output.*` node, so its branch
 /// cannot be loaded however often it is tried. Left in the plan it would keep the
-/// reconciliation permanently one branch short, and since a missing branch
-/// rebuilds the whole selection, the speakers still playing would be torn down
-/// and restarted on every repair tick (#75).
+/// reconciliation permanently one branch short, and attempt a load that cannot
+/// succeed on every repair tick (#75).
 pub fn reachable_branches(branches: &[CombineBranch], sinks: &[String]) -> Vec<CombineBranch> {
     branches
         .iter()
         .filter(|branch| sink_named_by_prefix(sinks, &branch.sink).is_some())
         .cloned()
         .collect()
-}
-
-/// Whether the loaded loopback `up` is exactly what the planned branch asks for:
-/// same latency, and a sink the plan's `bluez_output.*` prefix names.
-fn branch_is(up: &CombineBranch, planned: &CombineBranch) -> bool {
-    up.latency_ms == planned.latency_ms && prefix_names_node(&planned.sink, &up.sink)
 }
 
 /// Pick the sink node-name matching `prefix` out of `sinks`. A
@@ -758,7 +725,7 @@ fn first_sink_named_by<'a>(names: impl Iterator<Item = &'a str>, prefix: &str) -
 /// Whether `node` is a node the `bluez_output.*`-style `prefix` names: the same
 /// name, or the prefix continued by the `.` PipeWire puts before the card index.
 /// The single copy of the rule [`sink_named_by_prefix`] resolves with and
-/// [`branch_is`] compares with, so one set of tests pins both.
+/// [`reconcile_branches`] compares with, so one set of tests pins both.
 ///
 /// An **empty** prefix names nothing: it opens every name, and it also *equals* a
 /// blank one — the two ways a missing target used to claim an arbitrary node.
@@ -771,28 +738,49 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
 }
 
 /// The routing logic, driven through a [`Graph`] rather than against PipeWire
-/// directly (#79). It owns the two registers the reconciliation carries from one
-/// pass to the next, so two routers never see each other's history.
+/// directly (#79). It owns the confirmation register the reconciliation carries
+/// from one pass to the next, so two routers never see each other's history.
 pub struct AudioRouter {
     /// The graph every routing decision is read from and applied to.
     graph: Box<dyn Graph>,
-    /// The sink node names listed at the previous reconciliation; `None` until
-    /// the first pass. See [`newly_listed_sinks`].
-    sinks_last_pass: Option<Vec<String>>,
-    /// Whether the previous pass owes this one a rebuild. See
-    /// [`wires_a_new_sink`].
+    /// The branches owed a confirming reload, and since when. See
+    /// [`CONFIRM_GAP`].
     confirmation: ConfirmationRegister,
+    /// What "now" is for the confirmation; a test drives it by hand.
+    clock: Box<dyn Fn() -> Instant + Send>,
 }
 
 impl AudioRouter {
-    /// A router over `graph`, with no history: its first pass treats every
-    /// listed sink as already known.
+    /// A router over `graph`, with nothing armed.
     pub fn new(graph: Box<dyn Graph>) -> Self {
+        Self::with_clock(graph, Box::new(Instant::now))
+    }
+
+    /// A router over `graph` whose confirmation reads the time from `clock`.
+    pub(crate) fn with_clock(
+        graph: Box<dyn Graph>,
+        clock: Box<dyn Fn() -> Instant + Send>,
+    ) -> Self {
         Self {
             graph,
-            sinks_last_pass: None,
             confirmation: ConfirmationRegister::default(),
+            clock,
         }
+    }
+
+    /// Arm the confirming reload of every branch a pass has just loaded.
+    fn arm_confirmation(&mut self, sink_name: &str, loaded: &[String]) {
+        if loaded.is_empty() {
+            return;
+        }
+        tracing::info!(
+            "confirming reload of {}'s [{}] armed, due in {} s",
+            sink_name,
+            loaded.join(", "),
+            CONFIRM_GAP.as_secs()
+        );
+        let now = (self.clock)();
+        self.confirmation.arm(loaded, now);
     }
 
     /// Apply the PipeWire routing a selection calls for: every non-empty selection
@@ -810,10 +798,10 @@ impl AudioRouter {
     /// Route playback to a combined sink spanning the plan's speakers, so the
     /// player (which opens the default sink) reaches each of them, delayed by its
     /// own offset for tunable sync. Built as a shared null sink the player feeds,
-    /// plus one delayed loopback per speaker into its real `bluez_output.*` sink.
+    /// plus one delay branch per speaker into its real `bluez_output.*` sink.
     ///
     /// Idempotent — when the combined sink is already up it reconciles the
-    /// loopbacks in place instead of rebuilding, so a selection change does not
+    /// branches in place instead of rebuilding, so a selection change does not
     /// unload the null sink the player is streaming into; otherwise it builds the
     /// whole graph from scratch.
     fn route_to_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
@@ -826,8 +814,8 @@ impl AudioRouter {
         self.build_combined(spec)
     }
 
-    /// Build the combined sink from nothing: the shared null sink, then one delayed
-    /// loopback per speaker. Tears any leftover down first so repeated calls do not
+    /// Build the combined sink from nothing: the shared null sink, then one delay
+    /// branch per speaker. Tears any leftover down first so repeated calls do not
     /// stack modules.
     fn build_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
         tracing::info!(
@@ -839,10 +827,12 @@ impl AudioRouter {
         self.graph.teardown(&spec.sink_name)?;
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
-        // One delayed loopback per speaker: combined.monitor -> real sink, carrying
-        // the branch latency the plan computed (base buffer plus the speaker's offset,
-        // the per-branch sync tuning).
+        // One delay branch per speaker: combined.monitor -> real sink, delayed by
+        // the speaker's offset, the per-branch sync tuning.
         let report = self.load_planned_branches_live(&spec.sink_name, &spec.branches);
+        // Nothing armed before this build concerns the branches it just loaded.
+        self.confirmation.clear();
+        self.arm_confirmation(&spec.sink_name, &report.loaded);
         // Make the player target the combined sink. Done even when a branch failed, so
         // the speakers that did load are fed while the next tick retries the others.
         self.graph.set_default_sink(&spec.sink_name)?;
@@ -854,15 +844,15 @@ impl AudioRouter {
     /// selection change, since re-pointing the default sink does not move a stream
     /// that is already open.
     ///
-    /// What happens to the branches is [`reconcile_branches`]'s decision, and it is
-    /// not "only what differs": a graph that matches the plan is left entirely alone,
-    /// while a single missing or dead branch rebuilds every branch of the selection —
-    /// see that function for the measurement behind it.
+    /// Each speaker is handled alone (#81): dead branches go, unwanted ones go, a
+    /// branch at another delay is retuned in place, and a missing one is loaded —
+    /// in that order. Every branch loaded is reloaded once more on the first pass
+    /// at least [`CONFIRM_GAP`] later.
     fn reconcile_combined(&mut self, spec: &CombineSinkSpec) -> Result<(), AudioError> {
         let listed = self.graph.branches(&spec.sink_name)?;
         // A dead branch reads as absent below, so the reconciliation would load its
         // replacement without ever asking for the stale one to go. Unloaded here,
-        // before that load, so the speaker never has two loopbacks feeding it.
+        // before that load, so the speaker never has two branches feeding it.
         for dead in listed.iter().filter(|b| b.live == Some(false)) {
             tracing::info!(
                 "branch {} into {} ruled dead: unloading it",
@@ -874,13 +864,13 @@ impl AudioRouter {
             let _ = self.graph.unload_branch(dead.id);
         }
         // Unknown liveness keeps the branch: a transient read failure would
-        // otherwise read as "everything is dead" and rebuild the whole graph
-        // under the audio it protects.
+        // otherwise read as "everything is dead" and reload every branch under
+        // the audio it protects.
         let kept: Vec<&LoadedBranch> = listed.iter().filter(|b| b.live != Some(false)).collect();
         let loaded: Vec<CombineBranch> = kept
             .iter()
             // Cloned because `reconcile_branches` compares plain branches, and
-            // the ids stay behind in `kept` for the unloads below.
+            // the ids stay behind in `kept` for the calls below.
             .map(|b| b.branch.clone())
             .collect();
         // Nothing read is "cannot tell", not "every speaker is gone": acting on
@@ -891,84 +881,115 @@ impl AudioRouter {
             Ok(names) if !names.is_empty() => names,
             _ => return Ok(()),
         };
-        // A speaker that is switched off is absent, not broken: asking for it on every
-        // tick is what rebuilds the graph under the ones that are playing.
+        // A speaker that is switched off is absent, not broken: asking for it on
+        // every tick would attempt a load that cannot succeed.
         let reachable = CombineSinkSpec {
             // Cloned because the reachable plan is a spec of its own.
             sink_name: spec.sink_name.clone(),
             branches: reachable_branches(&spec.branches, &sinks),
         };
-        let fresh = newly_listed_sinks(&self.sinks_last_pass, &sinks);
-        self.sinks_last_pass = Some(sink_nodes(&sinks));
         let plan = reconcile_branches(&loaded, &reachable);
-        if !plan.to_load.is_empty() {
-            tracing::info!(
-                "rebuilding every branch of {}: loaded [{}], planned [{}]",
-                spec.sink_name,
-                branches_for_log(&loaded),
-                branches_for_log(&reachable.branches)
-            );
-        }
+
         for up in kept.iter().filter(|up| {
             plan.to_unload
                 .iter()
                 .any(|gone| gone.sink == up.branch.sink)
         }) {
-            if plan.to_load.is_empty() {
-                tracing::info!(
-                    "branch {} into {} is no longer planned: unloading it",
-                    up.id,
-                    up.branch.sink
-                );
-            }
+            tracing::info!(
+                "branch {} into {} is no longer planned: unloading it",
+                up.id,
+                up.branch.sink
+            );
             self.graph.unload_branch(up.id)?;
         }
+
+        let mut failures = Vec::new();
+        for retune in &plan.to_retune {
+            for up in kept.iter().filter(|up| up.branch.sink == retune.sink) {
+                tracing::info!(
+                    "retuning branch {} into {} in place: {} ms -> {} ms",
+                    up.id,
+                    up.branch.sink,
+                    up.branch.latency_ms,
+                    retune.latency_ms
+                );
+                // One rejected delay must not stop the other speakers' repair; it
+                // is reported, and the next pass retunes it again.
+                if let Err(err) = self.graph.set_branch_delay(up.id, retune.latency_ms) {
+                    failures.push(err.to_string());
+                }
+            }
+        }
+
+        if !plan.to_load.is_empty() {
+            tracing::info!(
+                "loading {} branch(es) of {} alone: [{}]",
+                plan.to_load.len(),
+                spec.sink_name,
+                branches_for_log(&plan.to_load)
+            );
+        }
         let report = self.load_planned_branches_live(&spec.sink_name, &plan.to_load);
+        failures.extend(report.failures);
         // The sink already exists, so it is usually already the default; this repairs
         // the case where the default moved away meanwhile — another application, or a
         // device that came back. Re-pointing the default at the sink a stream is
         // already on leaves that stream where it is.
         self.graph.set_default_sink(&spec.sink_name)?;
 
-        // Arm the next pass if this one wired a speaker that came back, and learn
-        // whether the previous one armed us — one exchange, so a pass can both confirm
-        // and arm, and so the confirming rebuild below (which loads outside `plan`)
-        // can never arm itself into a loop.
-        let arms_the_next_pass = wires_a_new_sink(&plan.to_load, &fresh, &sinks);
-        if arms_the_next_pass {
-            tracing::info!(
-                "wired a sink that came back ({}): confirming rebuild armed for the next pass",
-                fresh.join(", ")
-            );
-        }
-        let confirm = self.confirmation.take_and_arm(arms_the_next_pass);
-        if !confirm {
-            return report.into_result();
+        // Learn which branches are owed their confirmation before arming this
+        // pass's loads, so a branch is never confirmed in the pass that loaded it;
+        // a speaker loaded again in this very pass waits for its new gap instead.
+        let now = (self.clock)();
+        let owed: Vec<String> = self
+            .confirmation
+            .take_due(now)
+            .into_iter()
+            .filter(|prefix| !report.loaded.contains(prefix))
+            .collect();
+        self.arm_confirmation(&spec.sink_name, &report.loaded);
+        let confirming: Vec<CombineBranch> = reachable
+            .branches
+            .iter()
+            .filter(|planned| owed.contains(&planned.sink))
+            // Cloned because the reload outlives the borrowed plan.
+            .cloned()
+            .collect();
+        if confirming.is_empty() {
+            return BranchLoadReport {
+                loaded: report.loaded,
+                failures,
+            }
+            .into_result();
         }
         tracing::info!(
-            "confirming rebuild of {}: reloading {} branch(es) [{}]",
+            "confirming reload of {}: [{}]",
             spec.sink_name,
-            reachable.branches.len(),
-            branches_for_log(&reachable.branches)
+            branches_for_log(&confirming)
         );
-        // The previous pass wired a speaker that had just come back, and that load did
-        // not start it; see `wires_a_new_sink`. Rebuilding every branch now — one tick
-        // later, which is the measured gap — starts it.
-        //
-        // `report` is dropped rather than merged into the answer: `plan.to_load` is
-        // either empty or the whole of `reachable.branches`, so this rebuild
-        // re-attempts every branch the pass attempted and `second` reports the same
-        // failures against a fresher reading of the graph.
+        // Reloading the branch now, at least `CONFIRM_GAP` after its load, is the
+        // measured remedy (#75); no other branch is touched, and the reload is not
+        // armed again.
         for branch in self.graph.branches(&spec.sink_name)? {
-            self.graph.unload_branch(branch.id)?;
+            if confirming
+                .iter()
+                .any(|planned| prefix_names_node(&planned.sink, &branch.branch.sink))
+            {
+                self.graph.unload_branch(branch.id)?;
+            }
         }
-        let second = self.load_planned_branches_live(&spec.sink_name, &reachable.branches);
+        let second = self.load_planned_branches_live(&spec.sink_name, &confirming);
+        failures.extend(second.failures);
         self.graph.set_default_sink(&spec.sink_name)?;
-        second.into_result()
+        BranchLoadReport {
+            loaded: second.loaded,
+            failures,
+        }
+        .into_result()
     }
 
     /// Attempt every branch against the graph, resolving each prefix to its node
-    /// and loading a delayed loopback from `sink_name`'s monitor.
+    /// and loading a delay branch from `sink_name`'s monitor.
     fn load_planned_branches_live(
         &mut self,
         sink_name: &str,
@@ -988,30 +1009,33 @@ impl AudioRouter {
         )
     }
 
-    /// Re-apply one branch's latency **without** tearing the combined sink down:
-    /// unload just that speaker's loopback and reload it with the new offset. The
-    /// shared null sink stays up, so whatever feeds it — the tone player or
-    /// `librespot` — keeps streaming while the speaker is retuned.
+    /// Change one speaker's delay **in place**: the new value is set on that
+    /// speaker's delay node, and nothing is unloaded or loaded (#81). The shared
+    /// null sink and the other speakers' branches receive no call, so whatever
+    /// feeds the sink — the tone player or `librespot` — keeps streaming.
+    ///
+    /// A speaker whose sink is listed but carries no branch is not an error:
+    /// its offset is stored by the caller, and the branch loads with it on the
+    /// next reconciliation. A speaker whose sink is absent is an `Err`, as it
+    /// was when a retune reloaded the branch.
     pub fn retune_branch(
         &mut self,
         sink_name: &str,
         branch: &CombineBranch,
     ) -> Result<(), AudioError> {
         let real = resolve_branch_sink(self.graph.as_mut(), branch)?;
-        // Only the branches feeding this speaker's node are unloaded, leaving the
-        // null sink and the other speaker's branch untouched.
         for up in self.graph.branches(sink_name)? {
             if up.branch.sink == real {
                 tracing::info!(
-                    "retuning {real}: branch {} at {} ms replaced by one at {} ms",
+                    "retuning branch {} into {real} in place: {} ms -> {} ms",
                     up.id,
                     up.branch.latency_ms,
                     branch.latency_ms
                 );
-                self.graph.unload_branch(up.id)?;
+                self.graph.set_branch_delay(up.id, branch.latency_ms)?;
             }
         }
-        self.graph.load_branch(sink_name, &real, branch.latency_ms)
+        Ok(())
     }
 
     /// Tear down a combined sink built by [`Self::route_for_targets`]: the null
@@ -1332,7 +1356,8 @@ mod tests {
     }
 
     // Criterion: with two targets, the combined-sink plan lists both speakers'
-    // `bluez_output.*` sink names and each speaker's offset as branch latency.
+    // `bluez_output.*` sink names and each speaker's offset as its branch's
+    // delay — offset 250 is a delay of 250 ms, with no base on top.
     #[test]
     fn test_combine_sink_plan_lists_both_sinks_and_offsets() {
         let targets = vec![
@@ -1355,7 +1380,7 @@ mod tests {
             "first branch must target the first speaker's bluez sink, got {}",
             first.sink
         );
-        assert_eq!(first.latency_ms, branch_latency_ms(0));
+        assert_eq!(first.latency_ms, 0);
 
         let second = &spec.branches[1];
         assert!(
@@ -1363,13 +1388,13 @@ mod tests {
             "second branch must target the second speaker's bluez sink, got {}",
             second.sink
         );
-        assert_eq!(second.latency_ms, branch_latency_ms(250));
+        assert_eq!(second.latency_ms, 250);
     }
 
     // Criterion: `combine_sink_plan` builds exactly one branch for a lone
     // speaker, naming that speaker's sink prefix and its offset as the branch
-    // latency — including at offset 0, a configuration this code never produced
-    // while a lone plain speaker took the direct route.
+    // delay — including at offset 0, which is one branch at a delay of zero,
+    // not "no branch".
     #[test]
     fn test_combine_sink_plan_lone_speaker_at_zero_offset_yields_one_branch() {
         let spec = combine_sink_plan(&[SpeakerTarget {
@@ -1380,15 +1405,12 @@ mod tests {
         assert_eq!(spec.branches.len(), 1);
         let only = &spec.branches[0];
         assert_eq!(only.sink, bluez_sink_prefix("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(
-            only.latency_ms, BASE_BRANCH_LATENCY_MS,
-            "offset 0 means no delay relative to the others, not no buffer"
-        );
+        assert_eq!(only.latency_ms, 0, "offset 0 is a delay of zero");
     }
 
     // Criterion: `combine_sink_plan` keeps a lone speaker's offset as the branch
-    // latency — the offset only exists as loopback latency, so a lone speaker
-    // going through the combined sink is the only way it is heard.
+    // delay — the offset only exists as the delay of its branch, so a lone
+    // speaker going through the combined sink is the only way it is heard.
     #[test]
     fn test_combine_sink_plan_lone_speaker_carries_its_offset_as_latency() {
         let spec = combine_sink_plan(&[SpeakerTarget {
@@ -1399,63 +1421,55 @@ mod tests {
         assert_eq!(spec.branches.len(), 1);
         let only = &spec.branches[0];
         assert_eq!(only.sink, bluez_sink_prefix("11:22:33:44:55:66"));
-        assert_eq!(only.latency_ms, branch_latency_ms(320));
+        assert_eq!(only.latency_ms, 320);
     }
 
-    // Criterion: a pure function maps an offset to a branch latency, and offset 0
-    // yields the base rather than 0. `latency_msec` is the buffer a
-    // `module-loopback` keeps to absorb scheduling jitter and clock drift; asking
-    // for zero leaves the follower branch starved and silent while the graph's
-    // driver plays on (#75).
+    // Criterion: the 50 ms base is gone — a branch's delay is exactly the
+    // speaker's offset, so offset 0 plans a delay of 0 ms, and the largest
+    // accepted offset plans exactly that many milliseconds.
     #[test]
-    fn test_branch_latency_ms_at_offset_zero_is_the_base_and_never_zero() {
-        assert_eq!(BASE_BRANCH_LATENCY_MS, 50);
-        assert_eq!(branch_latency_ms(0), 50);
-        assert_ne!(
-            branch_latency_ms(0),
-            0,
-            "no branch is ever loaded with latency_msec=0"
-        );
-    }
+    fn test_combine_sink_plan_offset_zero_is_delay_zero() {
+        let delays = |offset_ms| {
+            combine_sink_plan(&[SpeakerTarget {
+                address: "AA:BB:CC:DD:EE:FF".to_string(),
+                offset_ms,
+            }])
+            .branches
+            .iter()
+            .map(|b| b.latency_ms)
+            .collect::<Vec<_>>()
+        };
 
-    // Criterion: a non-zero offset yields the base plus itself — 70 becomes 120,
-    // the offset that made the silent speaker play on hardware.
-    #[test]
-    fn test_branch_latency_ms_adds_the_base_to_a_nonzero_offset() {
-        assert_eq!(branch_latency_ms(70), 120);
-        assert_eq!(branch_latency_ms(250), BASE_BRANCH_LATENCY_MS + 250);
+        assert_eq!(delays(0), vec![0]);
+        assert_eq!(delays(MAX_OFFSET_MS), vec![MAX_OFFSET_MS]);
     }
 
     // Criterion: the offsets stay purely relative — two offsets differing by `n`
-    // yield latencies differing by exactly `n`. The relation is the claim, not the
-    // two constants: it is what says the base shifts every branch equally and so
-    // changes no perceived delay between speakers.
+    // plan delays differing by exactly `n`. It is what keeps a calibration
+    // made with the 50 ms base valid once the base is gone: every speaker
+    // plays 50 ms earlier, and the gap between two of them is unchanged.
     #[test]
-    fn test_branch_latency_ms_preserves_the_gap_between_two_offsets() {
+    fn test_combine_sink_plan_keeps_the_gap_between_two_offsets() {
         for (lower, higher) in [(0_u32, 70_u32), (40, 250), (250, MAX_OFFSET_MS)] {
+            let spec = combine_sink_plan(&[
+                SpeakerTarget {
+                    address: "AA:BB:CC:DD:EE:FF".to_string(),
+                    offset_ms: lower,
+                },
+                SpeakerTarget {
+                    address: "11:22:33:44:55:66".to_string(),
+                    offset_ms: higher,
+                },
+            ]);
+            let delays: Vec<u32> = spec.branches.iter().map(|b| b.latency_ms).collect();
+
+            assert_eq!(delays.len(), 2);
             assert_eq!(
-                branch_latency_ms(higher) - branch_latency_ms(lower),
+                delays[1] - delays[0],
                 higher - lower,
-                "the gap between offsets {lower} and {higher} must survive the base"
+                "the gap between offsets {lower} and {higher}"
             );
         }
-    }
-
-    // Criterion: the largest offset the selection accepts (`SpeakerTargets` clamps
-    // to `0..=MAX_OFFSET_MS`) still yields a sane latency, and nothing overflows —
-    // the input reaches this function from the wire, so an addition that wraps or
-    // panics would be a subprocess argument built from garbage.
-    #[test]
-    fn test_branch_latency_ms_at_the_largest_accepted_offset_stays_sane() {
-        assert_eq!(
-            branch_latency_ms(MAX_OFFSET_MS),
-            BASE_BRANCH_LATENCY_MS + MAX_OFFSET_MS
-        );
-        assert_eq!(branch_latency_ms(MAX_OFFSET_MS), 800);
-        assert!(
-            branch_latency_ms(u32::MAX) >= branch_latency_ms(MAX_OFFSET_MS),
-            "an offset past the clamp saturates rather than wrapping or panicking"
-        );
     }
 
     // Criterion: `route_for_targets` takes the combined path for every non-empty
@@ -1664,28 +1678,29 @@ mod tests {
         ])
     }
 
-    // Criterion: a speaker added to the selection rebuilds *every* branch, the
-    // one already streaming included. Loading the newcomer alone leaves its
-    // Bluetooth node silent — the defect this pins.
+    // Criterion: a speaker added to the selection loads its own branch and
+    // nothing else — the branch already streaming is neither unloaded nor
+    // retuned. The #75 rule tore it down to restart it with the newcomer.
     #[test]
-    fn test_reconcile_branches_added_speaker_reloads_every_branch() {
+    fn test_reconcile_branches_added_speaker_loads_only_that_branch() {
         let spec = two_speaker_spec();
         let already_streaming = CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
+            latency_ms: 0,
         };
-        let loaded = vec![already_streaming.clone()];
 
-        let plan = reconcile_branches(&loaded, &spec);
+        let plan = reconcile_branches(&[already_streaming], &spec);
 
         assert_eq!(
-            plan.to_load, spec.branches,
-            "every planned branch is loaded, not only the newly selected one"
-        );
-        assert_eq!(
-            plan.to_unload,
-            vec![already_streaming],
-            "the branch already streaming is torn down so it restarts alongside the newcomer"
+            plan,
+            BranchPlan {
+                to_load: vec![CombineBranch {
+                    sink: bluez_sink_prefix("11:22:33:44:55:66"),
+                    latency_ms: 250,
+                }],
+                to_retune: Vec::new(),
+                to_unload: Vec::new(),
+            }
         );
     }
 
@@ -1711,64 +1726,6 @@ mod tests {
         .to_vec()
     }
 
-    // Criterion: the first pass has no previous listing, and what it finds predates
-    // the server. Calling it new would cost every start a rebuild it does not need.
-    #[test]
-    fn test_newly_listed_sinks_of_a_first_pass_is_empty() {
-        assert!(
-            newly_listed_sinks(&None, &sinks_present()).is_empty(),
-            "nothing is new when there is nothing to compare against"
-        );
-    }
-
-    // Criterion: a speaker that comes back is listed now and was not before.
-    #[test]
-    fn test_newly_listed_sinks_names_a_speaker_that_came_back() {
-        assert_eq!(
-            newly_listed_sinks(
-                &Some(sink_nodes(&sinks_without_speaker())),
-                &sinks_present()
-            ),
-            vec!["bluez_output.80_99_E7_63_50_29.1".to_string()],
-            "only the node absent from the previous pass is new"
-        );
-    }
-
-    // Criterion: an unchanged listing carries nothing new, so a steady graph is
-    // never rebuilt — that is what keeps the churn away between ticks.
-    #[test]
-    fn test_newly_listed_sinks_of_an_unchanged_listing_is_empty() {
-        assert!(
-            newly_listed_sinks(&Some(sink_nodes(&sinks_present())), &sinks_present()).is_empty(),
-            "nothing appeared, so nothing is new"
-        );
-    }
-
-    // Criterion: the rebuild is owed exactly when the plan wires a node that has
-    // just appeared — matched through the prefix, since the plan holds
-    // `bluez_output.<MAC>` while the listing carries the resolved `….1`.
-    #[test]
-    fn test_wires_a_new_sink_matches_the_plan_prefix_against_the_fresh_node() {
-        let spec = combine_sink_plan(&[SpeakerTarget {
-            address: "80:99:E7:63:50:29".to_string(),
-            offset_ms: 0,
-        }]);
-        let fresh = vec!["bluez_output.80_99_E7_63_50_29.1".to_string()];
-
-        assert!(
-            wires_a_new_sink(&spec.branches, &fresh, &sinks_present()),
-            "the planned prefix names the node that just appeared"
-        );
-        assert!(
-            !wires_a_new_sink(&spec.branches, &[], &sinks_present()),
-            "no sink appeared, so no rebuild is owed"
-        );
-        assert!(
-            !wires_a_new_sink(&[], &fresh, &sinks_present()),
-            "a plan that loads nothing wires nothing, however fresh the node"
-        );
-    }
-
     // Criterion: a speaker whose sink is absent — switched off — is not part of
     // what the reconciliation compares against. It is what keeps a rebuild from
     // being asked for on every tick, since a missing branch rebuilds all.
@@ -1782,7 +1739,7 @@ mod tests {
             reachable,
             vec![CombineBranch {
                 sink: bluez_sink_prefix("80:99:E7:63:50:29"),
-                latency_ms: branch_latency_ms(0),
+                latency_ms: 0,
             }],
             "only the speaker with a live node survives, got {reachable:?}"
         );
@@ -1811,14 +1768,14 @@ mod tests {
         };
         let loaded = vec![CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
+            latency_ms: 0,
         }];
 
         let plan = reconcile_branches(&loaded, &present);
 
         assert_eq!(
             plan,
-            BranchReconciliation::default(),
+            BranchPlan::default(),
             "the speaker that is playing keeps its branch while the other is off"
         );
     }
@@ -1839,14 +1796,14 @@ mod tests {
         );
         let loaded = vec![CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
+            latency_ms: 0,
         }];
 
         let plan = reconcile_branches(&loaded, &spec);
 
         assert_eq!(
             plan,
-            BranchReconciliation::default(),
+            BranchPlan::default(),
             "the prefix names the loaded node, so this branch is already up"
         );
     }
@@ -1854,28 +1811,33 @@ mod tests {
     // The prefix names the loaded node only up to the `.` PipeWire puts before the
     // card index: a node that merely *opens* with the prefix is a different node,
     // the rule `sink_matching_prefix` already resolves by. A plain `starts_with`
-    // here would call that foreign loopback the branch and leave it in place.
+    // here would call that foreign branch this speaker's and leave it in place.
     #[test]
     fn test_reconcile_branches_prefix_matches_the_node_only_at_a_dot_boundary() {
         let spec = combine_sink_plan(&[SpeakerTarget {
             address: "80:99:E7:63:50:29".to_string(),
             offset_ms: 0,
         }]);
-        let loaded = vec![CombineBranch {
-            sink: format!("{}_2.1", spec.branches[0].sink),
-            latency_ms: branch_latency_ms(0),
-        }];
+        // At the planned delay, a prefix match would call it "already up"; at
+        // another delay, it would retune a foreign branch in place.
+        for latency_ms in [0, 30] {
+            let loaded = vec![CombineBranch {
+                sink: format!("{}_2.1", spec.branches[0].sink),
+                latency_ms,
+            }];
 
-        let plan = reconcile_branches(&loaded, &spec);
+            let plan = reconcile_branches(&loaded, &spec);
 
-        assert_eq!(
-            plan.to_load, spec.branches,
-            "the speaker's own loopback is still missing and must be loaded"
-        );
-        assert_eq!(
-            plan.to_unload, loaded,
-            "the node continuing the prefix without a `.` is not this branch"
-        );
+            assert_eq!(
+                plan,
+                BranchPlan {
+                    to_load: spec.branches.clone(),
+                    to_retune: Vec::new(),
+                    to_unload: loaded,
+                },
+                "the node continuing the prefix without a `.` is not this branch"
+            );
+        }
     }
 
     // A branch that names no node matches nothing, not even another nameless one:
@@ -1885,59 +1847,64 @@ mod tests {
     // comparison rather than in its callers.
     #[test]
     fn test_reconcile_branches_a_branch_naming_no_node_matches_nothing() {
-        let nameless = CombineBranch {
-            sink: String::new(),
-            latency_ms: 0,
-        };
-        let spec = CombineSinkSpec {
-            sink_name: "blue2th_combined".to_string(),
-            branches: vec![nameless.clone()],
-        };
+        for (loaded_ms, planned_ms) in [(0, 0), (30, 0)] {
+            let loaded = CombineBranch {
+                sink: String::new(),
+                latency_ms: loaded_ms,
+            };
+            let planned = CombineBranch {
+                sink: String::new(),
+                latency_ms: planned_ms,
+            };
+            let spec = CombineSinkSpec {
+                sink_name: "blue2th_combined".to_string(),
+                branches: vec![planned.clone()],
+            };
 
-        let plan = reconcile_branches(std::slice::from_ref(&nameless), &spec);
+            let plan = reconcile_branches(std::slice::from_ref(&loaded), &spec);
 
-        assert_eq!(
-            plan,
-            BranchReconciliation {
-                to_load: vec![nameless.clone()],
-                to_unload: vec![nameless],
-            },
-            "two empty names are not the same node"
-        );
+            assert_eq!(
+                plan,
+                BranchPlan {
+                    to_load: vec![planned],
+                    to_retune: Vec::new(),
+                    to_unload: vec![loaded],
+                },
+                "two empty names are not the same node"
+            );
+        }
     }
 
     // Criterion (same one, the other side): the prefix comparison must not match
     // a different speaker's node, or a selection change would leave the wrong
-    // loopback in place and never load the right one.
+    // branch in place and never load the right one.
     #[test]
     fn test_reconcile_branches_prefix_does_not_match_another_speakers_node() {
         let spec = combine_sink_plan(&[SpeakerTarget {
             address: "80:99:E7:63:50:29".to_string(),
             offset_ms: 0,
         }]);
-        let loaded = vec![CombineBranch {
-            sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-            latency_ms: 0,
-        }];
-
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert_eq!(
-            plan.to_load,
-            vec![CombineBranch {
-                sink: "bluez_output.80_99_E7_63_50_29".to_string(),
-                latency_ms: branch_latency_ms(0),
-            }],
-            "the selected speaker has no loopback yet, so it is loaded"
-        );
-        assert_eq!(
-            plan.to_unload,
-            vec![CombineBranch {
+        for latency_ms in [0, 30] {
+            let other = CombineBranch {
                 sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: 0,
-            }],
-            "the other speaker's loopback is not the selected one and goes"
-        );
+                latency_ms,
+            };
+
+            let plan = reconcile_branches(std::slice::from_ref(&other), &spec);
+
+            assert_eq!(
+                plan,
+                BranchPlan {
+                    to_load: vec![CombineBranch {
+                        sink: "bluez_output.80_99_E7_63_50_29".to_string(),
+                        latency_ms: 0,
+                    }],
+                    to_retune: Vec::new(),
+                    to_unload: vec![other],
+                },
+                "the other speaker's branch is neither this one nor retuned into it"
+            );
+        }
     }
 
     // Criterion: a pure decision says whether the repair pass runs at all — a
@@ -2147,82 +2114,112 @@ mod tests {
         );
     }
 
-    // Criterion: a sink line naming no node contributes no name. An empty name is
-    // the wildcard shape this project keeps paying for: carried into the register
-    // it would be compared against, and later reported as, a node that does not
-    // exist.
+    fn names(sinks: &[&str]) -> Vec<String> {
+        sinks.iter().map(|s| s.to_string()).collect()
+    }
+
+    // Criterion: a branch is confirmed once, at the first pass at least
+    // `CONFIRM_GAP` after its load — never in the pass that loaded it. The near
+    // miss: one millisecond short of the gap, as when the app sends a
+    // selection then a play a moment later (#75: a reload a few milliseconds
+    // after the load broke a start that worked).
     #[test]
-    fn test_sink_nodes_skips_a_line_naming_no_node() {
-        let listing = vec![
-            String::new(),
-            "bluez_output.80_99_E7_63_50_29.1".to_string(),
-        ];
+    fn test_confirmation_register_owes_a_branch_only_once_the_gap_has_passed() {
+        let mut register = ConfirmationRegister::default();
+        let loaded = Instant::now();
+        register.arm(&names(&["bluez_output.B"]), loaded);
+
+        assert!(
+            register.take_due(loaded).is_empty(),
+            "not in the loading pass"
+        );
+        assert!(
+            register
+                .take_due(loaded + CONFIRM_GAP - Duration::from_millis(1))
+                .is_empty(),
+            "not a moment short of the gap"
+        );
+        assert_eq!(
+            register.take_due(loaded + CONFIRM_GAP),
+            names(&["bluez_output.B"])
+        );
+        assert!(
+            register.take_due(loaded + CONFIRM_GAP * 3).is_empty(),
+            "and only once: the confirming reload does not arm itself"
+        );
+    }
+
+    // Criterion: every branch a pass loads is armed, and two branches loaded
+    // together are both owed — neither one's reload is lost to the other's.
+    #[test]
+    fn test_confirmation_register_owes_every_branch_loaded_together() {
+        let mut register = ConfirmationRegister::default();
+        let loaded = Instant::now();
+        register.arm(&names(&["bluez_output.A", "bluez_output.B"]), loaded);
 
         assert_eq!(
-            sink_nodes(&listing),
-            vec!["bluez_output.80_99_E7_63_50_29.1".to_string()],
-            "the nameless line names no node"
-        );
-        assert!(
-            newly_listed_sinks(&Some(Vec::new()), &listing)
-                .iter()
-                .all(|node| !node.is_empty()),
-            "and so no empty name is ever reported as a speaker that came back"
+            register.take_due(loaded + CONFIRM_GAP),
+            names(&["bluez_output.A", "bluez_output.B"])
         );
     }
 
-    // Criterion: the confirming rebuild lands on the pass *after* the one that
-    // wired the returning speaker. Rebuilding in the same pass was measured not to
-    // repair it and to break a start that worked; the one-tick gap is the fix.
+    // Criterion: each branch waits for its own gap. A branch loaded later is
+    // still waiting when an earlier one is owed; and loading a branch again
+    // restarts its wait rather than keeping the older arming.
     #[test]
-    fn test_confirmation_register_defers_the_rebuild_to_the_next_pass() {
+    fn test_confirmation_register_times_each_branch_from_its_own_load() {
         let mut register = ConfirmationRegister::default();
+        let first = Instant::now();
+        let later = first + Duration::from_secs(3);
+        register.arm(&names(&["bluez_output.A", "bluez_output.B"]), first);
+        register.arm(&names(&["bluez_output.B"]), later);
 
-        assert!(
-            !register.take_and_arm(true),
-            "the pass that wires the returning speaker must not rebuild in the same tick"
+        assert_eq!(
+            register.take_due(first + CONFIRM_GAP),
+            names(&["bluez_output.A"]),
+            "B was loaded again three seconds later: it waits"
         );
-        assert!(
-            register.take_and_arm(false),
-            "the next pass is the one that owes the rebuild"
-        );
-        assert!(
-            !register.take_and_arm(false),
-            "and only that one: the rebuild is not repeated on the tick after"
+        assert_eq!(
+            register.take_due(later + CONFIRM_GAP),
+            names(&["bluez_output.B"])
         );
     }
 
-    // Criterion: the confirming rebuild loads outside the plan, so it cannot arm
-    // itself — a steady graph, where no sink ever appears, never owes a rebuild
-    // however long it runs.
+    // Criterion: a register nothing was armed in never owes a reload however
+    // long it runs, and an empty name arms nothing — it would name every sink
+    // to a prefix match.
     #[test]
-    fn test_confirmation_register_on_a_steady_graph_never_owes_a_rebuild() {
+    fn test_confirmation_register_owes_nothing_it_was_not_armed_with() {
         let mut register = ConfirmationRegister::default();
+        let start = Instant::now();
+        register.arm(&names(&[""]), start);
 
         for tick in 0..10 {
             assert!(
-                !register.take_and_arm(false),
-                "no sink appeared, so tick {tick} owes nothing"
+                register.take_due(start + CONFIRM_GAP * tick).is_empty(),
+                "tick {tick} owes nothing"
             );
         }
     }
 
-    // Criterion: a speaker returning while a rebuild is already owed does not lose
-    // its own rebuild — the register carries one tick of debt and re-arms.
+    // Criterion: the gap is at least the lower bound measured in #75 — five
+    // seconds between the load and the reload repaired the speaker.
     #[test]
-    fn test_confirmation_register_rearms_when_a_second_speaker_returns() {
-        let mut register = ConfirmationRegister::default();
+    fn test_confirm_gap_is_at_least_the_measured_five_seconds() {
+        assert!(CONFIRM_GAP >= Duration::from_secs(5));
+    }
 
-        assert!(!register.take_and_arm(true), "first speaker back: armed");
-        assert!(
-            register.take_and_arm(true),
-            "this pass both confirms the first and wires a second"
-        );
-        assert!(
-            register.take_and_arm(false),
-            "the second speaker still gets its own confirming rebuild"
-        );
-        assert!(!register.take_and_arm(false), "then the graph settles");
+    // Criterion: clearing the register — a graph built from nothing — forgets
+    // every reload armed before.
+    #[test]
+    fn test_confirmation_register_clear_forgets_every_armed_reload() {
+        let mut register = ConfirmationRegister::default();
+        let loaded = Instant::now();
+        register.arm(&names(&["bluez_output.A"]), loaded);
+
+        register.clear();
+
+        assert!(register.take_due(loaded + CONFIRM_GAP).is_empty());
     }
 
     // Criterion: with every selected speaker switched off, nothing is reachable —
@@ -2237,7 +2234,7 @@ mod tests {
         };
         let loaded = vec![CombineBranch {
             sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
+            latency_ms: 0,
         }];
 
         assert!(
@@ -2247,14 +2244,15 @@ mod tests {
 
         let plan = reconcile_branches(&loaded, &none_present);
 
-        assert!(
-            plan.to_load.is_empty(),
-            "no branch can be loaded onto a node that is not there, got {:?}",
-            plan.to_load
-        );
         assert_eq!(
-            plan.to_unload, loaded,
-            "the loopback left over from the speaker that is now off is dropped"
+            plan,
+            BranchPlan {
+                to_load: Vec::new(),
+                to_retune: Vec::new(),
+                to_unload: loaded,
+            },
+            "nothing is loaded onto a node that is not there; the branch left \
+             over from the speaker that is now off is dropped"
         );
     }
 
@@ -2264,20 +2262,19 @@ mod tests {
         vec![
             CombineBranch {
                 sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-                latency_ms: branch_latency_ms(0),
+                latency_ms: 0,
             },
             CombineBranch {
                 sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: branch_latency_ms(250),
+                latency_ms: 250,
             },
         ]
     }
 
-    // Criterion (moved back from the graph module of (#78)): `branch_latency_ms` is the
-    // single place the base is applied, so what the graph reports loaded and what
-    // the plan asks for are the same quantity. Applying the base only at load
-    // time would have every reconciliation compare a loaded 120 against a planned
-    // 70, see a mismatch and reload every branch on every tick.
+    // Criterion (moved back from the graph module of (#78)): what the graph
+    // reports loaded and what the plan asks for are the same quantity — the
+    // offset, with no base. Adding anything at load time would have every
+    // reconciliation see a mismatch and retune every branch on every tick.
     #[test]
     fn test_branch_latency_round_trips_from_the_plan_through_the_loaded_branches() {
         let spec = combine_sink_plan(&[
@@ -2303,12 +2300,12 @@ mod tests {
 
         assert_eq!(
             loaded.iter().map(|b| b.latency_ms).collect::<Vec<_>>(),
-            vec![50, 120],
-            "the plan already carries the base, so the loaded branches do too"
+            vec![0, 70],
+            "the plan carries the offsets as they are, and so do the loaded branches"
         );
         assert_eq!(
             reconcile_branches(&loaded, &spec),
-            BranchReconciliation::default(),
+            BranchPlan::default(),
             "a graph loaded from the plan reconciles against it as a no-op"
         );
     }
@@ -2322,11 +2319,11 @@ mod tests {
 
         let plan = reconcile_branches(&two_speakers_loaded(), &spec);
 
-        assert_eq!(plan, BranchReconciliation::default());
+        assert_eq!(plan, BranchPlan::default());
     }
 
     // Criterion (moved back): a speaker dropped from the selection yields exactly
-    // one unload, naming the resolved node its loopback feeds, and never the null
+    // one unload, naming the resolved node its branch feeds, and never the null
     // sink.
     #[test]
     fn test_reconcile_branches_dropped_speaker_unloads_only_that_branch() {
@@ -2337,18 +2334,17 @@ mod tests {
 
         let plan = reconcile_branches(&two_speakers_loaded(), &spec);
 
-        assert!(
-            plan.to_load.is_empty(),
-            "the remaining speaker's loopback is already loaded, got {:?}",
-            plan.to_load
-        );
         assert_eq!(
-            plan.to_unload,
-            vec![CombineBranch {
-                sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
-                latency_ms: branch_latency_ms(250),
-            }],
-            "only the deselected speaker's loopback is unloaded"
+            plan,
+            BranchPlan {
+                to_load: Vec::new(),
+                to_retune: Vec::new(),
+                to_unload: vec![CombineBranch {
+                    sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                    latency_ms: 250,
+                }],
+            },
+            "only the deselected speaker's branch is unloaded"
         );
         assert!(
             !plan
@@ -2360,11 +2356,12 @@ mod tests {
         );
     }
 
-    // Criterion (moved back): a speaker present in both but with a different
-    // latency is reloaded — the new branch is loaded and the stale loopback must
-    // not survive.
+    // Criterion (guard, retune, never reload): a loaded branch for the same
+    // speaker at another delay is retuned in place — it goes to `to_retune`,
+    // carrying the resolved node and the planned delay, never to `to_unload`
+    // plus `to_load`. The other speaker is untouched.
     #[test]
-    fn test_reconcile_branches_latency_change_replaces_the_stale_loopback() {
+    fn test_reconcile_branches_offset_change_retunes_in_place() {
         let spec = combine_sink_plan(&[
             SpeakerTarget {
                 address: "80:99:E7:63:50:29".to_string(),
@@ -2375,70 +2372,101 @@ mod tests {
                 offset_ms: 400,
             },
         ]);
-        let loaded = two_speakers_loaded();
+
+        let plan = reconcile_branches(&two_speakers_loaded(), &spec);
+
+        assert_eq!(
+            plan,
+            BranchPlan {
+                to_load: Vec::new(),
+                to_retune: vec![CombineBranch {
+                    sink: "bluez_output.11_22_33_44_55_66.1".to_string(),
+                    latency_ms: 400,
+                }],
+                to_unload: Vec::new(),
+            }
+        );
+    }
+
+    // Criterion (guard, missing branch loads alone): with speaker A loaded and
+    // live and speaker B's branch missing — dropped by the router once ruled
+    // dead — the plan loads B alone. The #75 rule would have unloaded A too.
+    #[test]
+    fn test_reconcile_branches_missing_branch_loads_it_alone() {
+        let spec = two_speaker_spec();
+        let a = CombineBranch {
+            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
+            latency_ms: 0,
+        };
+
+        let plan = reconcile_branches(&[a], &spec);
+
+        assert_eq!(
+            plan,
+            BranchPlan {
+                to_load: vec![CombineBranch {
+                    sink: "bluez_output.11_22_33_44_55_66".to_string(),
+                    latency_ms: 250,
+                }],
+                to_retune: Vec::new(),
+                to_unload: Vec::new(),
+            }
+        );
+    }
+
+    // Criterion: the three sets are disjoint — every speaker lands in exactly
+    // one of them, or in none when its branch already matches: one to load,
+    // one to retune, one to unload and one left alone, in the same pass.
+    #[test]
+    fn test_reconcile_branches_sorts_each_speaker_into_exactly_one_set() {
+        let spec = combine_sink_plan(&[
+            SpeakerTarget {
+                address: "AA:BB:CC:DD:EE:01".to_string(),
+                offset_ms: 100,
+            },
+            SpeakerTarget {
+                address: "AA:BB:CC:DD:EE:02".to_string(),
+                offset_ms: 30,
+            },
+            SpeakerTarget {
+                address: "AA:BB:CC:DD:EE:03".to_string(),
+                offset_ms: 60,
+            },
+        ]);
+        let loaded = vec![
+            CombineBranch {
+                sink: "bluez_output.AA_BB_CC_DD_EE_01.1".to_string(),
+                latency_ms: 0,
+            },
+            CombineBranch {
+                sink: "bluez_output.AA_BB_CC_DD_EE_03.1".to_string(),
+                latency_ms: 60,
+            },
+            CombineBranch {
+                sink: "bluez_output.AA_BB_CC_DD_EE_04.1".to_string(),
+                latency_ms: 30,
+            },
+        ];
 
         let plan = reconcile_branches(&loaded, &spec);
 
         assert_eq!(
-            plan.to_load, spec.branches,
-            "the retuned speaker carries its new latency, and every branch is reloaded with it"
+            plan,
+            BranchPlan {
+                to_load: vec![CombineBranch {
+                    sink: "bluez_output.AA_BB_CC_DD_EE_02".to_string(),
+                    latency_ms: 30,
+                }],
+                to_retune: vec![CombineBranch {
+                    sink: "bluez_output.AA_BB_CC_DD_EE_01.1".to_string(),
+                    latency_ms: 100,
+                }],
+                to_unload: vec![CombineBranch {
+                    sink: "bluez_output.AA_BB_CC_DD_EE_04.1".to_string(),
+                    latency_ms: 30,
+                }],
+            }
         );
-        assert_eq!(
-            plan.to_unload, loaded,
-            "every loaded loopback is unloaded, the stale one included"
-        );
-        assert!(
-            plan.to_load
-                .iter()
-                .any(|b| b.latency_ms == branch_latency_ms(400)),
-            "the new offset reaches the plan, got {:?}",
-            plan.to_load
-        );
-    }
-
-    // Criterion (moved back): once a dead branch is dropped from what the router
-    // compares — `AudioRouter` keeps only the branches not ruled `Some(false)` —
-    // the reconciliation asks for that speaker to be loaded again, with the rest
-    // of the selection.
-    #[test]
-    fn test_reconcile_branches_asks_to_reload_a_branch_ruled_dead() {
-        let spec = two_speaker_spec();
-        // The second speaker's branch was ruled dead, so only the first remains.
-        let loaded = vec![CombineBranch {
-            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
-        }];
-
-        let plan = reconcile_branches(&loaded, &spec);
-
-        assert_eq!(
-            plan.to_load, spec.branches,
-            "the dead speaker's branch is rebuilt, and the live ones with it"
-        );
-        assert_eq!(
-            plan.to_unload, loaded,
-            "the branch that survived is torn down too, so both start in one pass"
-        );
-    }
-
-    // Criterion (moved back): a reconciliation either leaves every branch alone
-    // or asks for the whole plan — there is no third answer that loads a subset.
-    #[test]
-    fn test_reconcile_branches_loads_all_of_the_plan_or_none_of_it() {
-        let spec = two_speaker_spec();
-        let one_loaded = vec![CombineBranch {
-            sink: "bluez_output.80_99_E7_63_50_29.1".to_string(),
-            latency_ms: branch_latency_ms(0),
-        }];
-
-        for loaded in [Vec::new(), one_loaded, two_speakers_loaded()] {
-            let plan = reconcile_branches(&loaded, &spec);
-            assert!(
-                plan.to_load.is_empty() || plan.to_load == spec.branches,
-                "a partial load would leave a speaker to start on its own, got {:?}",
-                plan.to_load
-            );
-        }
     }
 }
 
@@ -2449,6 +2477,7 @@ mod tests {
 mod router_tests {
     use super::*;
     use crate::graph::fake::{FakeGraph, GraphCall, GraphOp};
+    use std::sync::Mutex;
 
     const COMBINED: &str = "blue2th_combined";
     const MAC_A: &str = "AA:BB:CC:DD:EE:01";
@@ -2467,7 +2496,25 @@ mod router_tests {
     /// the same state: the router owns one, the test keeps the other to read the
     /// recorded calls.
     fn router_on(fake: &FakeGraph) -> AudioRouter {
-        AudioRouter::new(Box::new(fake.clone()))
+        router_with_clock(fake).0
+    }
+
+    /// A router over `fake` whose clock stands still until the test moves it
+    /// with [`advance`]: no confirming reload falls due by itself.
+    fn router_with_clock(fake: &FakeGraph) -> (AudioRouter, Arc<Mutex<Instant>>) {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let clock = Arc::clone(&now);
+        let router = AudioRouter::with_clock(
+            Box::new(fake.clone()),
+            Box::new(move || *clock.lock().unwrap()),
+        );
+        (router, now)
+    }
+
+    /// Move a test router's clock forward by `by`.
+    fn advance(clock: &Arc<Mutex<Instant>>, by: Duration) {
+        let mut now = clock.lock().unwrap();
+        *now += by;
     }
 
     fn create(sink_name: &str) -> GraphCall {
@@ -2500,6 +2547,30 @@ mod router_tests {
         }
     }
 
+    fn set_delay(id: u32, delay_ms: u32) -> GraphCall {
+        GraphCall::SetBranchDelay { id, delay_ms }
+    }
+
+    /// The branches loaded for the combined sink, as `(id, sink, delay)`.
+    fn loaded_delays(fake: &FakeGraph) -> Vec<(u32, String, u32)> {
+        fake.loaded(COMBINED)
+            .into_iter()
+            .map(|l| (l.id, l.branch.sink, l.branch.latency_ms))
+            .collect()
+    }
+
+    /// The id of the branch loaded into `sink`, asserting there is exactly one.
+    fn branch_into(fake: &FakeGraph, sink: &str) -> u32 {
+        let ids: Vec<u32> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .filter(|l| l.branch.sink == sink)
+            .map(|l| l.id)
+            .collect();
+        assert_eq!(ids.len(), 1, "one branch into {sink}: {ids:?}");
+        ids.first().copied().unwrap_or_default()
+    }
+
     /// Whether `call` removes or adds something — everything mutating except
     /// re-pointing the default sink.
     fn changes_the_graph(call: &GraphCall) -> bool {
@@ -2507,13 +2578,13 @@ mod router_tests {
     }
 
     /// A graph where both speakers are connected and the combined sink carries a
-    /// live branch for each, at the latency of offsets 0 and 30. Returns the fake
+    /// live branch for each, at the delays of offsets 0 and 30. Returns the fake
     /// and the two branch ids.
     fn steady_graph(live: Option<bool>) -> (FakeGraph, u32, u32) {
         let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
         fake.add_sink(COMBINED);
-        let a = fake.seed_branch(COMBINED, SINK_A, 50, live);
-        let b = fake.seed_branch(COMBINED, SINK_B, 80, live);
+        let a = fake.seed_branch(COMBINED, SINK_A, 0, live);
+        let b = fake.seed_branch(COMBINED, SINK_B, 30, live);
         (fake, a, b)
     }
 
@@ -2522,7 +2593,7 @@ mod router_tests {
     }
 
     // Criterion: on an empty graph, `route_for_targets` creates the sink, loads
-    // one branch per reachable speaker at `branch_latency_ms(offset)`, then sets
+    // one branch per reachable speaker at a delay of its offset, then sets
     // the default sink. The leading teardown is today's guard against stacking
     // modules on a leftover.
     #[test]
@@ -2538,8 +2609,8 @@ mod router_tests {
             vec![
                 teardown(COMBINED),
                 create(COMBINED),
-                load(SINK_A, 50),
-                load(SINK_B, 300),
+                load(SINK_A, 0),
+                load(SINK_B, 250),
                 set_default(COMBINED),
             ]
         );
@@ -2600,49 +2671,31 @@ mod router_tests {
         assert_eq!(ids, vec![a, b]);
     }
 
-    // Criterion: a dead branch (`live == Some(false)`) is unloaded by id before
-    // its replacement is loaded.
+    // Criterion: a dead branch (`live == Some(false)`) — a link that could not
+    // be created counts as one — is unloaded by id before its replacement is
+    // loaded, and it is reloaded alone: the live branch keeps its id.
     #[test]
     fn test_route_unloads_a_dead_branch_before_loading_its_replacement() {
         let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
-        let a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
-        let dead = fake.seed_branch(COMBINED, SINK_B, 80, Some(false));
+        let a = fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        let dead = fake.seed_branch(COMBINED, SINK_B, 30, Some(false));
         let mut router = router_on(&fake);
 
         let result = router.route_for_targets(&steady_selection());
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        let calls = fake.calls();
-        let unloaded_at = calls.iter().position(|c| *c == unload(dead));
-        let reloaded_at = calls.iter().position(|c| *c == load(SINK_B, 80));
-        assert!(
-            unloaded_at.is_some(),
-            "dead branch never unloaded: {calls:?}"
-        );
-        assert!(reloaded_at.is_some(), "replacement never loaded: {calls:?}");
-        assert!(
-            unloaded_at < reloaded_at,
-            "loaded before unloading: {calls:?}"
-        );
-        // A missing branch rebuilds the whole selection (#75), so the live one
-        // goes too; the dead one goes first.
         assert_eq!(
-            calls,
-            vec![
-                unload(dead),
-                unload(a),
-                load(SINK_A, 50),
-                load(SINK_B, 80),
-                set_default(COMBINED),
-            ]
+            fake.calls(),
+            vec![unload(dead), load(SINK_B, 30), set_default(COMBINED)]
         );
-        // Exactly one branch per speaker is left: never two loopbacks onto one.
+        // Exactly one branch per speaker is left: never two onto one.
         let sinks: Vec<String> = fake
             .loaded(COMBINED)
             .into_iter()
             .map(|l| l.branch.sink)
             .collect();
         assert_eq!(sinks, vec![SINK_A, SINK_B]);
+        assert_eq!(branch_into(&fake, SINK_A), a);
     }
 
     // Non-nominal: the graph cannot be read (`Graph::sinks` errs on every read).
@@ -2692,7 +2745,8 @@ mod router_tests {
 
     // Non-nominal: the sink list reads back naming nothing — not even the
     // combined sink the pass was entered for. A graph that names nothing
-    // describes nothing, so it is treated exactly like an unreadable list: the pass ends without unloading anything. Driven through
+    // describes nothing, so it is treated exactly like an unreadable list: the
+    // pass ends without unloading anything. Driven through
     // `reconcile_combined` directly, since the route entry point would already
     // have turned an empty list into a build.
     #[test]
@@ -2732,7 +2786,7 @@ mod router_tests {
     #[test]
     fn test_route_with_an_absent_speaker_leaves_the_other_branch_alone() {
         let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
-        let a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
+        let a = fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
         let mut router = router_on(&fake);
 
         for pass in 0..2 {
@@ -2778,8 +2832,8 @@ mod router_tests {
             vec![
                 teardown(COMBINED),
                 create(COMBINED),
-                load(SINK_A, 50),
-                load(SINK_B, 80),
+                load(SINK_A, 0),
+                load(SINK_B, 30),
                 set_default(COMBINED),
             ]
         );
@@ -2920,132 +2974,383 @@ mod router_tests {
         assert!(!router_on(&unreadable).combined_sink_exists(COMBINED));
     }
 
-    // Non-nominal: a speaker that came back. The pass that wires it arms the
-    // confirmation register; the next pass rebuilds every branch once, and does
-    // not re-arm itself.
+    // Non-nominal: a speaker that came back is loaded alone, and armed alone.
+    // The first pass at least `CONFIRM_GAP` later reloads that one branch — one
+    // unload, one load — and nothing else; the other speaker keeps its node
+    // ids throughout, and the confirming reload does not arm itself.
     #[test]
-    fn test_route_after_a_speaker_came_back_rebuilds_once_on_the_next_pass() {
+    fn test_route_speaker_back_loads_it_alone_then_reloads_it_alone_after_the_gap() {
         let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
-        let first_a = fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
-        let mut router = router_on(&fake);
+        let a = fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        let (mut router, clock) = router_with_clock(&fake);
 
-        // Pass 1: speaker B is off. Nothing to do, and the sink list is learnt.
+        // Pass 1: speaker B is off. Nothing to do.
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 1 failed: {result:?}");
         assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
 
-        // Pass 2: B is back. One missing branch rebuilds the selection.
+        // Pass 2: B is back, and its branch is loaded alone.
         fake.add_sink(SINK_B);
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 2 failed: {result:?}");
-        assert_eq!(
-            fake.calls(),
-            vec![
-                unload(first_a),
-                load(SINK_A, 50),
-                load(SINK_B, 80),
-                set_default(COMBINED),
-            ]
-        );
-        let wired: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
-        assert_eq!(wired.len(), 2);
+        assert_eq!(fake.calls(), vec![load(SINK_B, 30), set_default(COMBINED)]);
+        let b = branch_into(&fake, SINK_B);
+        assert_eq!(branch_into(&fake, SINK_A), a);
 
-        // Pass 3: the graph matches the plan, and is rebuilt all the same — the
-        // confirming rebuild, one tick after the load that wired B.
+        // Pass 3, a gap later: the confirming reload, of B's branch only.
+        advance(&clock, CONFIRM_GAP);
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 3 failed: {result:?}");
         let calls = fake.calls();
-        let rebuild: Vec<GraphCall> = calls
+        let changes: Vec<GraphCall> = calls
             .iter()
             .filter(|c| changes_the_graph(c))
             // Cloned to compare against literals below.
             .cloned()
             .collect();
-        assert_eq!(
-            rebuild,
-            vec![
-                unload(wired[0]),
-                unload(wired[1]),
-                load(SINK_A, 50),
-                load(SINK_B, 80),
-            ]
-        );
+        assert_eq!(changes, vec![unload(b), load(SINK_B, 30)]);
         assert_eq!(calls.last(), Some(&set_default(COMBINED)));
-        let confirmed: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
-        assert_eq!(confirmed.len(), 2);
+        assert_eq!(branch_into(&fake, SINK_A), a, "A was never touched");
+        let confirmed = branch_into(&fake, SINK_B);
+        assert_ne!(confirmed, b, "B's branch was reloaded");
 
-        // Pass 4: the confirming rebuild did not arm another one.
+        // Pass 4, another gap later: the confirming reload did not arm another.
+        advance(&clock, CONFIRM_GAP);
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 4 failed: {result:?}");
         assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
-        let kept: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
-        assert_eq!(kept, confirmed);
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, confirmed]);
     }
 
-    // Criterion: nothing listed on a router's first pass is new — wiring a
-    // speaker then costs no confirming rebuild.
+    // Criterion (guard, the gap): the app selects, then plays, a moment
+    // apart — two passes within the gap. The second must reload nothing: a
+    // reload a few milliseconds after the load broke a start that worked (#75).
+    // Only a pass at least `CONFIRM_GAP` after the load reloads, then both
+    // branches loaded together are reloaded, each alone.
     #[test]
-    fn test_route_first_pass_wiring_does_not_arm_a_rebuild() {
+    fn test_route_select_then_play_within_the_gap_reloads_nothing() {
         let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
-        let mut router = router_on(&fake);
+        let (mut router, clock) = router_with_clock(&fake);
 
         let result = router.route_for_targets(&steady_selection());
-        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert!(result.is_ok(), "select failed: {result:?}");
         assert_eq!(
             fake.calls(),
-            vec![load(SINK_A, 50), load(SINK_B, 80), set_default(COMBINED)]
+            vec![load(SINK_A, 0), load(SINK_B, 30), set_default(COMBINED)]
         );
+        let a = branch_into(&fake, SINK_A);
+        let b = branch_into(&fake, SINK_B);
+
+        // Play, one second later.
+        advance(&clock, Duration::from_secs(1));
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "play failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![set_default(COMBINED)],
+            "nothing reloaded"
+        );
+
+        // The repair tick after the gap reloads both, each alone.
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "tick failed: {result:?}");
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(
+            changes.len(),
+            4,
+            "one unload and one load each: {changes:?}"
+        );
+        for (id, sink, delay) in [(a, SINK_A, 0), (b, SINK_B, 30)] {
+            let unloaded = changes.iter().position(|c| *c == unload(id));
+            let reloaded = changes.iter().position(|c| *c == load(sink, delay));
+            assert!(
+                matches!((unloaded, reloaded), (Some(u), Some(l)) if u < l),
+                "{sink} unloaded then reloaded: {changes:?}"
+            );
+        }
+    }
+
+    // Non-nominal: two speakers come back in the same pass — both are loaded
+    // and both armed; the next pass reloads both, each unloaded before its own
+    // reload, and nothing else: the third speaker, playing all along, is never
+    // touched.
+    #[test]
+    fn test_route_two_speakers_back_together_reload_both_and_nothing_else() {
+        let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let fake = FakeGraph::with_sinks(&[sink_c, COMBINED]);
+        let c = fake.seed_branch(COMBINED, sink_c, 60, Some(true));
+        let selection = vec![
+            target(MAC_A, 0),
+            target(MAC_B, 30),
+            target("AA:BB:CC:DD:EE:03", 60),
+        ];
+        let (mut router, clock) = router_with_clock(&fake);
+
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+
+        fake.add_sink(SINK_A);
+        fake.add_sink(SINK_B);
+        fake.clear_calls();
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "pass 2 failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![load(SINK_A, 0), load(SINK_B, 30), set_default(COMBINED)]
+        );
+        let a = branch_into(&fake, SINK_A);
+        let b = branch_into(&fake, SINK_B);
+
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "pass 3 failed: {result:?}");
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(
+            changes.len(),
+            4,
+            "one unload and one load each: {changes:?}"
+        );
+        for (id, sink, delay_ms) in [(a, SINK_A, 0), (b, SINK_B, 30)] {
+            let unloaded_at = changes.iter().position(|c| *c == unload(id));
+            let loaded_at = changes.iter().position(|c| *c == load(sink, delay_ms));
+            assert!(
+                unloaded_at.is_some() && loaded_at.is_some() && unloaded_at < loaded_at,
+                "{sink} is unloaded, then reloaded: {changes:?}"
+            );
+        }
+        assert_eq!(branch_into(&fake, sink_c), c, "C was never touched");
+
+        fake.clear_calls();
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "pass 4 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Nominal: a speaker added mid-playback is loaded alone; the branch
+    // already playing keeps its id, and the pass after it, still inside the
+    // gap, touches nothing.
+    #[test]
+    fn test_route_added_speaker_leaves_the_playing_branch_untouched() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let a = fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "pass 1 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
 
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 2 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
-    }
+        assert_eq!(fake.calls(), vec![load(SINK_B, 30), set_default(COMBINED)]);
+        assert_eq!(branch_into(&fake, SINK_A), a);
 
-    // Criterion: only a sink that was absent from the previous pass is "a
-    // speaker that came back". A speaker deselected and reselected while its
-    // sink never left is reloaded, and that reload owes no confirming rebuild —
-    // the one-tick-later cut exists for a node PipeWire has just created, not
-    // for every load. Pinned because a router that forgets what it listed sees
-    // every sink as new on every pass, and every reload then costs a second cut.
-    #[test]
-    fn test_route_reselecting_a_speaker_whose_sink_never_left_owes_no_confirming_rebuild() {
-        let (fake, a, b) = steady_graph(Some(true));
-        let mut router = router_on(&fake);
-
-        // Pass 1: steady. Pass 2: B deselected, its branch goes.
-        let result = router.route_for_targets(&steady_selection());
-        assert!(result.is_ok(), "pass 1 failed: {result:?}");
-        let result = router.route_for_targets(&[target(MAC_A, 0)]);
-        assert!(result.is_ok(), "pass 2 failed: {result:?}");
-        assert_eq!(
-            fake.calls(),
-            vec![set_default(COMBINED), unload(b), set_default(COMBINED)]
-        );
-
-        // Pass 3: B reselected. One missing branch rebuilds the selection, and
-        // B's sink was listed on every pass so far.
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 3 failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+    }
+
+    // Nominal: moving one speaker's offset retunes its branch in place — one
+    // `set_branch_delay` on that branch, at exactly the offset, and nothing
+    // else. No branch is created or destroyed; the other is not touched.
+    #[test]
+    fn test_route_offset_change_calls_set_branch_delay_and_nothing_else() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0), target(MAC_B, 120)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_delay(b, 120), set_default(COMBINED)]);
+        assert_eq!(
+            loaded_delays(&fake),
+            vec![(a, SINK_A.to_string(), 0), (b, SINK_B.to_string(), 120)]
+        );
+    }
+
+    // Criterion: `reconcile_combined` unloads dead branches, unloads
+    // `to_unload`, retunes `to_retune` and loads `to_load`, in that order —
+    // all four in one pass: C's branch is dead, D is deselected, A's offset
+    // moved and B has no branch yet.
+    #[test]
+    fn test_route_unloads_dead_then_unwanted_then_retunes_then_loads() {
+        let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let sink_d = "bluez_output.AA_BB_CC_DD_EE_04.1";
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, sink_c, sink_d, COMBINED]);
+        let a = fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        let dead_c = fake.seed_branch(COMBINED, sink_c, 60, Some(false));
+        let d = fake.seed_branch(COMBINED, sink_d, 30, Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[
+            target(MAC_A, 100),
+            target(MAC_B, 30),
+            target("AA:BB:CC:DD:EE:03", 60),
+        ]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
         assert_eq!(
             fake.calls(),
             vec![
-                unload(a),
-                load(SINK_A, 50),
-                load(SINK_B, 80),
+                unload(dead_c),
+                unload(d),
+                set_delay(a, 100),
+                load(SINK_B, 30),
+                load(sink_c, 60),
                 set_default(COMBINED),
             ]
         );
+    }
 
-        // Pass 4: no sink appeared, so nothing is owed.
+    // Criterion: a build from nothing arms every branch it loaded — the silent
+    // start seen on the #81 build is the case the confirmation exists for — and
+    // the first pass a gap later reloads each of them once.
+    #[test]
+    fn test_route_build_from_nothing_confirms_every_branch_it_loaded() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let (mut router, clock) = router_with_clock(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert!(
+            fake.calls().contains(&create(COMBINED)),
+            "{:?}",
+            fake.calls()
+        );
+        let a = branch_into(&fake, SINK_A);
+        let b = branch_into(&fake, SINK_B);
+
+        advance(&clock, CONFIRM_GAP);
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
-        assert!(result.is_ok(), "pass 4 failed: {result:?}");
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(changes.len(), 4, "both reloaded, each alone: {changes:?}");
+        assert!(changes.contains(&unload(a)) && changes.contains(&unload(b)));
+
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(
+            result.is_ok(),
+            "pass after the confirmation failed: {result:?}"
+        );
+        assert_eq!(
+            fake.calls(),
+            vec![set_default(COMBINED)],
+            "confirmed once only"
+        );
+    }
+
+    // Criterion: a speaker deselected and reselected while its sink never left
+    // is loaded again, and that load is confirmed too — deselect/reselect is
+    // the operator's workaround for the silent start, so its load must not be
+    // the one left unconfirmed. The other speaker is never touched.
+    #[test]
+    fn test_route_reselected_speaker_is_confirmed_alone_after_the_gap() {
+        let (fake, a, b) = steady_graph(Some(true));
+        let (mut router, clock) = router_with_clock(&fake);
+
+        // Pass 1: B deselected, its branch goes. Pass 2: B reselected.
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "deselect failed: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(b), set_default(COMBINED)]);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "reselect failed: {result:?}");
+        assert_eq!(fake.calls(), vec![load(SINK_B, 30), set_default(COMBINED)]);
+        let reselected = branch_into(&fake, SINK_B);
+
+        // A gap later: B's branch alone is reloaded.
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(changes, vec![unload(reselected), load(SINK_B, 30)]);
+        assert_eq!(branch_into(&fake, SINK_A), a);
+    }
+
+    // Criterion (guard, only after the gap): a branch loaded again in the very
+    // pass its confirmation falls due — ruled dead, then replaced — is not
+    // reloaded milliseconds after that load, which broke a start that worked
+    // (#75). It waits for a gap of its own; the other branch owed in that
+    // pass is confirmed alone.
+    #[test]
+    fn test_route_branch_replaced_when_its_confirmation_falls_due_waits_its_own_gap() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "loading pass failed: {result:?}");
+        let a = branch_into(&fake, SINK_A);
+        let b = branch_into(&fake, SINK_B);
+
+        // A gap later both are owed, but B's branch has just died.
+        fake.set_branch_liveness(b, Some(false));
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(
+            changes,
+            vec![unload(b), load(SINK_B, 30), unload(a), load(SINK_A, 0)],
+            "B replaced once, A confirmed alone"
+        );
+        let replaced = branch_into(&fake, SINK_B);
+
+        // Its own gap later, the replacement is confirmed, and A is not again.
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(
+            result.is_ok(),
+            "pass after the replacement failed: {result:?}"
+        );
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(changes, vec![unload(replaced), load(SINK_B, 30)]);
+    }
+
+    // Criterion (guard, a build clears everything armed before it): a reload
+    // armed before a build is forgotten by it, even for a branch the build did
+    // not reload. The case: the combined sink vanished (a daemon restart), the
+    // build's load of B reported an error, and B's branch came up anyway — as a
+    // `PipeWireGraph` load can, when the module is kept and a later round trip
+    // fails. The next pass, a gap after the first arming but not after the
+    // build, owes nothing.
+    #[test]
+    fn test_route_build_forgets_the_reloads_armed_before_it() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first build failed: {result:?}");
+
+        // One second later: the combined sink is gone, and B's load errs.
+        fake.remove_sink(COMBINED);
+        fake.fail_for(GraphOp::LoadBranch, SINK_B);
+        advance(&clock, Duration::from_secs(1));
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_err(), "B's load was made to fail: {result:?}");
+        fake.clear_failures();
+        let b = fake.seed_branch(COMBINED, SINK_B, 30, Some(true));
+
+        // A gap after the first build, inside the gap after the second one.
+        advance(&clock, CONFIRM_GAP - Duration::from_secs(1));
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass after the rebuild failed: {result:?}");
         assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(branch_into(&fake, SINK_B), b);
     }
 
     // Non-nominal: an empty target names no node, so it is answered without the
@@ -3062,31 +3367,33 @@ mod router_tests {
         assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
     }
 
-    // Criterion: the confirmation register and the last-pass sink list are
-    // fields of `AudioRouter` — a router that armed a rebuild, and that has seen
-    // other sinks, changes nothing for a second router in the same process.
+    // Criterion: the confirmation register is a field of `AudioRouter` — a
+    // router that armed a reload changes nothing for a second router in the
+    // same process. The second router's passes run a gap after the first
+    // router armed, so a shared register would hand them its reload: they
+    // would consume it, and the first router would then owe nothing.
     #[test]
     fn test_two_routers_do_not_share_the_confirmation_register() {
         // The first router goes through a speaker coming back, which arms it.
         let first_fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
-        first_fake.seed_branch(COMBINED, SINK_A, 50, Some(true));
-        let mut first = router_on(&first_fake);
+        first_fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        let (mut first, first_clock) = router_with_clock(&first_fake);
         let result = first.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "first router, pass 1: {result:?}");
         first_fake.add_sink(SINK_B);
         let result = first.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "first router, pass 2: {result:?}");
         assert!(
-            first_fake.calls().contains(&load(SINK_B, 80)),
+            first_fake.calls().contains(&load(SINK_B, 30)),
             "the first router never wired the returning speaker"
         );
 
-        // The second router owes nothing: its steady graph stays untouched, and
-        // sinks the first router never listed are not "new" to it.
+        // The second router owes nothing: its steady graph stays untouched.
         let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
         let second_fake = FakeGraph::with_sinks(&[sink_c, COMBINED]);
-        let c = second_fake.seed_branch(COMBINED, sink_c, 50, Some(true));
-        let mut second = router_on(&second_fake);
+        let c = second_fake.seed_branch(COMBINED, sink_c, 0, Some(true));
+        let (mut second, second_clock) = router_with_clock(&second_fake);
+        advance(&second_clock, CONFIRM_GAP);
         for pass in 0..2 {
             let result = second.route_for_targets(&[target("AA:BB:CC:DD:EE:03", 0)]);
             assert!(result.is_ok(), "second router, pass {pass}: {result:?}");
@@ -3098,19 +3405,21 @@ mod router_tests {
         let ids: Vec<u32> = second_fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![c]);
 
-        // And the first router still owes its own rebuild.
+        // And the first router still owes its own reload, a gap later.
+        advance(&first_clock, CONFIRM_GAP);
         first_fake.clear_calls();
         let result = first.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "first router, pass 3: {result:?}");
         assert!(
             first_fake.calls().iter().any(changes_the_graph),
-            "the first router lost its armed rebuild: {:?}",
+            "the first router lost its armed reload: {:?}",
             first_fake.calls()
         );
     }
 
-    // Criterion: `retune_branch` unloads only that speaker's branch and reloads
-    // it; the combined sink and the other branch receive no call.
+    // Criterion: `retune_branch` sets the new delay on that speaker's branch,
+    // in place — same id — and the combined sink and the other branch receive
+    // no call.
     #[test]
     fn test_retune_branch_touches_only_that_speakers_branch() {
         let (fake, a, b) = steady_graph(Some(true));
@@ -3125,13 +3434,91 @@ mod router_tests {
         );
 
         assert!(result.is_ok(), "retune failed: {result:?}");
-        assert_eq!(fake.calls(), vec![unload(a), load(SINK_A, 120)]);
-        let loaded = fake.loaded(COMBINED);
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].id, b);
-        assert_eq!(loaded[0].branch.latency_ms, 80);
-        assert_eq!(loaded[1].branch.sink, SINK_A);
-        assert_eq!(loaded[1].branch.latency_ms, 120);
+        assert_eq!(fake.calls(), vec![set_delay(a, 120)]);
+        assert_eq!(
+            loaded_delays(&fake),
+            vec![(a, SINK_A.to_string(), 120), (b, SINK_B.to_string(), 30)]
+        );
+    }
+
+    // Criterion (guard, retune, never reload): `retune_branch` never calls
+    // `unload_branch` or `load_branch` — not even when the delay node rejects
+    // the parameter. The near miss is a fallback to the #79 reload on error:
+    // the retune comes back `Err`, and the branch is left as it was.
+    #[test]
+    fn test_retune_branch_never_unloads() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail(GraphOp::SetBranchDelay);
+        let mut router = router_on(&fake);
+
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(AudioError::PipeWire(_))),
+            "a rejected delay is reported, got {result:?}"
+        );
+        assert_eq!(fake.calls(), vec![set_delay(a, 120)]);
+        assert_eq!(
+            loaded_delays(&fake),
+            vec![(a, SINK_A.to_string(), 0), (b, SINK_B.to_string(), 30)]
+        );
+    }
+
+    // Criterion: when the speaker has no branch, `retune_branch` does nothing
+    // and returns `Ok` — the new offset is stored, and the branch loads with it
+    // when the reconciliation next loads that speaker.
+    #[test]
+    fn test_retune_branch_without_a_branch_for_the_speaker_changes_nothing() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let b = fake.seed_branch(COMBINED, SINK_B, 30, Some(true));
+        let mut router = router_on(&fake);
+
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+
+        assert!(result.is_ok(), "retune failed: {result:?}");
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        assert_eq!(loaded_delays(&fake), vec![(b, SINK_B.to_string(), 30)]);
+    }
+
+    // Non-nominal: the delay node rejected a retune, so the branch still runs
+    // at its old delay. The next reconcile finds it at the wrong delay and
+    // retunes it — still in place, never by unloading it.
+    #[test]
+    fn test_route_after_a_rejected_retune_retunes_in_place_on_the_next_pass() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail(GraphOp::SetBranchDelay);
+        let mut router = router_on(&fake);
+        let rejected = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+        assert!(rejected.is_err(), "the retune was rejected: {rejected:?}");
+
+        fake.clear_failures();
+        fake.clear_calls();
+        let result = router.route_for_targets(&[target(MAC_A, 120), target(MAC_B, 30)]);
+
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_delay(a, 120), set_default(COMBINED)]);
+        assert_eq!(
+            loaded_delays(&fake),
+            vec![(a, SINK_A.to_string(), 120), (b, SINK_B.to_string(), 30)]
+        );
     }
 
     // Non-nominal: retuning a speaker whose sink has vanished errs rather than

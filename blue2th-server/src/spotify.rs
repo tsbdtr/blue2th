@@ -491,7 +491,7 @@ mod tests {
     }
 
     // Criterion: a single target carrying an offset goes through the combined
-    // sink, the only routing where the offset exists (as loopback latency).
+    // sink, the only routing where the offset exists (as a branch delay).
     // Routed straight to its bluez sink, the offset would be silently ignored.
     #[test]
     fn test_spotify_target_sink_single_target_with_offset_is_combined() {

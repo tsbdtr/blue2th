@@ -27,6 +27,7 @@ use pipewire as pw;
 use pw::context::ContextRc;
 use pw::core::CoreRc;
 use pw::device::{Device, DeviceListener};
+use pw::link::Link;
 use pw::loop_::Timeout;
 use pw::main_loop::MainLoopRc;
 use pw::metadata::Metadata;
@@ -74,6 +75,11 @@ pub(crate) enum Command {
     },
     UnloadBranch {
         id: u32,
+        reply: Reply<()>,
+    },
+    SetBranchDelay {
+        id: u32,
+        delay_ms: u32,
         reply: Reply<()>,
     },
     Teardown {
@@ -218,6 +224,14 @@ impl Graph for PipeWireGraph {
         self.ask(|reply| Command::UnloadBranch { id, reply })?
     }
 
+    fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
+        self.ask(|reply| Command::SetBranchDelay {
+            id,
+            delay_ms,
+            reply,
+        })?
+    }
+
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
         named("sink", sink_name)?;
         self.ask(|reply| Command::Teardown {
@@ -269,6 +283,13 @@ pub(crate) struct LinkEntry {
     pub(crate) input_node: u32,
 }
 
+/// One port of the registry mirror: the properties of its global, among them
+/// `node.id`, `port.direction` and `audio.channel`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PortEntry {
+    pub(crate) props: BTreeMap<String, String>,
+}
+
 /// One device of the registry mirror: the properties of its global.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DeviceEntry {
@@ -280,6 +301,7 @@ pub(crate) struct DeviceEntry {
 pub(crate) struct Mirror {
     pub(crate) nodes: BTreeMap<u32, NodeEntry>,
     pub(crate) links: BTreeMap<u32, LinkEntry>,
+    pub(crate) ports: BTreeMap<u32, PortEntry>,
     pub(crate) devices: BTreeMap<u32, DeviceEntry>,
 }
 
@@ -287,7 +309,10 @@ impl Mirror {
     /// Whether the mirror knows no global at all.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.nodes.is_empty() && self.links.is_empty() && self.devices.is_empty()
+        self.nodes.is_empty()
+            && self.links.is_empty()
+            && self.ports.is_empty()
+            && self.devices.is_empty()
     }
 
     /// The ids of the nodes whose `node.name` is exactly `name`; none for an
@@ -306,6 +331,17 @@ impl NodeEntry {
     }
 }
 
+impl PortEntry {
+    fn prop(&self, key: &str) -> Option<&str> {
+        self.props.get(key).map(String::as_str)
+    }
+
+    /// The node the port belongs to.
+    fn node(&self) -> Option<u32> {
+        self.prop("node.id")?.parse().ok()
+    }
+}
+
 /// Where a sink's volume lives: the device global and the `Route` device index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RouteTarget {
@@ -315,7 +351,35 @@ pub(crate) struct RouteTarget {
 
 /// The name of branch `id`'s capture (`in`) or playback (`out`) stream node.
 fn branch_node_name(id: u32, end: &str) -> String {
-    format!("blue2th_loop.{id}.{end}")
+    format!("{}.{end}", branch_group(id))
+}
+
+/// The `node.group` both stream nodes of branch `id` carry.
+fn branch_group(id: u32) -> String {
+    format!("blue2th_delay.{id}")
+}
+
+/// The ids of the nodes of branch `id`, both sides, as the mirror lists them.
+fn branch_node_ids(mirror: &Mirror, id: u32) -> Vec<u32> {
+    let ins = branch_node_name(id, "in");
+    let outs = branch_node_name(id, "out");
+    mirror
+        .node_ids_named(&ins)
+        .chain(mirror.node_ids_named(&outs))
+        .collect()
+}
+
+/// The globals a teardown of `sink_name` destroys: both nodes of each of the
+/// graph's own `branches`, and whatever [`foreign_combined_globals`] takes.
+/// A branch's capture side targets nothing, so the foreign rule cannot find
+/// it: its nodes are named by id instead.
+pub(crate) fn teardown_globals(mirror: &Mirror, sink_name: &str, branches: &[u32]) -> Vec<u32> {
+    let mut doomed: BTreeSet<u32> = branches
+        .iter()
+        .flat_map(|id| branch_node_ids(mirror, *id))
+        .collect();
+    doomed.extend(foreign_combined_globals(mirror, sink_name));
+    doomed.into_iter().collect()
 }
 
 /// `value` as a quoted SPA-JSON string.
@@ -323,29 +387,114 @@ fn spa_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The `libpipewire-module-loopback` argument string for one branch.
-pub(crate) fn loopback_module_args(
-    sink_name: &str,
+/// The largest delay a branch's `delay` node can be tuned to, in seconds: its
+/// `max-delay`, fixed when the branch is loaded.
+pub(crate) const MAX_DELAY_SECONDS: f32 = 1.0;
+
+/// The name of the `delay` node inside a branch's filter graph, and of its
+/// control: [`delay_props_pod`] addresses the control as `<node>:<control>`.
+const DELAY_NODE: &str = "delay";
+const DELAY_CONTROL: &str = "Delay (s)";
+
+/// How many channels a branch carries: the combined sink's `FL,FR`, linked
+/// port to port.
+const BRANCH_CHANNELS: usize = 2;
+
+/// How long a branch may wait for the ports its monitor links need before it
+/// counts as dead. A combined sink created a moment ago announces its monitor
+/// ports only once the session manager has configured it, which takes seconds
+/// on a server that has just started.
+pub(crate) const PENDING_LINKS_GRACE: Duration = Duration::from_secs(10);
+
+/// The `libpipewire-module-filter-chain` argument string for one delay branch
+/// into `real_sink`, delayed by `delay_ms` (#81).
+///
+/// The capture side is left for the server to link (`node.autoconnect =
+/// false`), and the playback side is pinned to the speaker without reconnect,
+/// so a speaker that goes away never moves its branch onto another sink (#67).
+pub(crate) fn delay_chain_module_args(
     real_sink: &str,
-    latency_ms: u32,
+    delay_ms: u32,
     id: u32,
 ) -> Result<String, AudioError> {
-    named("sink", sink_name)?;
     named("target sink", real_sink)?;
-    let group = format!("blue2th_loop.{id}");
-    let delay = format!("{}.{:03}", latency_ms / 1000, latency_ms % 1000);
+    let group = spa_string(&branch_group(id));
+    let delay = format!("{}.{:03}", delay_ms / 1000, delay_ms % 1000);
     Ok(format!(
-        "{{ node.group = {group} target.delay.sec = {delay} \
-         capture.props = {{ node.name = {capture} target.object = {sink} \
-         stream.capture.sink = true node.dont-reconnect = true }} \
-         playback.props = {{ node.name = {playback} target.object = {real} \
-         node.dont-reconnect = true }} }}",
-        group = spa_string(&group),
+        "{{ audio.channels = {BRANCH_CHANNELS} audio.position = [ FL FR ] \
+         filter.graph = {{ nodes = [ {{ type = builtin name = {node} label = delay \
+         config = {{ \"max-delay\" = {MAX_DELAY_SECONDS:.1} }} \
+         control = {{ {control} = {delay} }} }} ] }} \
+         capture.props = {{ node.name = {capture} node.group = {group} \
+         node.autoconnect = false }} \
+         playback.props = {{ node.name = {playback} node.group = {group} \
+         target.object = {real} node.dont-reconnect = true }} }}",
+        node = spa_string(DELAY_NODE),
+        control = spa_string(DELAY_CONTROL),
         capture = spa_string(&branch_node_name(id, "in")),
         playback = spa_string(&branch_node_name(id, "out")),
-        sink = spa_string(sink_name),
         real = spa_string(real_sink),
     ))
+}
+
+/// The `Props` param that sets a branch's `delay` node to `seconds`: the
+/// `params` struct `[ "delay:Delay (s)", seconds ]` a filter-chain reads its
+/// controls from. A delay outside `0..=MAX_DELAY_SECONDS` is refused.
+pub(crate) fn delay_props_pod(seconds: f32) -> Result<Vec<u8>, AudioError> {
+    if !(0.0..=MAX_DELAY_SECONDS).contains(&seconds) {
+        return Err(AudioError::PipeWire(format!(
+            "a delay of {seconds} s is outside the branch's range"
+        )));
+    }
+    let value = Value::Object(Object {
+        type_: libspa::sys::SPA_TYPE_OBJECT_Props,
+        id: libspa::sys::SPA_PARAM_Props,
+        properties: vec![Property {
+            key: libspa::sys::SPA_PROP_params,
+            flags: PropertyFlags::empty(),
+            value: Value::Struct(vec![
+                Value::String(format!("{DELAY_NODE}:{DELAY_CONTROL}")),
+                Value::Float(seconds),
+            ]),
+        }],
+    });
+    PodSerializer::serialize(Cursor::new(Vec::new()), &value)
+        .map(|(cursor, _)| cursor.into_inner())
+        .map_err(|e| AudioError::PipeWire(format!("cannot build the Props param: {e:?}")))
+}
+
+/// The `(output port, input port)` pairs linking `out_node`'s outputs to
+/// `in_node`'s inputs, channel to channel: matched by `audio.channel`, never by
+/// position, and a port with no channel pairs with nothing.
+pub(crate) fn channel_port_pairs(
+    mirror: &Mirror,
+    out_node: &str,
+    in_node: &str,
+) -> Vec<(u32, u32)> {
+    let outs: BTreeSet<u32> = mirror.node_ids_named(out_node).collect();
+    let ins: BTreeSet<u32> = mirror.node_ids_named(in_node).collect();
+    let channel_ports = |nodes: &BTreeSet<u32>, direction: &str| -> Vec<(u32, String)> {
+        mirror
+            .ports
+            .iter()
+            .filter(|(_, port)| port.node().is_some_and(|node| nodes.contains(&node)))
+            .filter(|(_, port)| port.prop("port.direction") == Some(direction))
+            .filter_map(|(id, port)| {
+                let channel = port.prop("audio.channel").filter(|c| !c.is_empty())?;
+                Some((*id, channel.to_string()))
+            })
+            .collect()
+    };
+    let inputs = channel_ports(&ins, "in");
+    channel_ports(&outs, "out")
+        .into_iter()
+        .filter_map(|(output, channel)| {
+            inputs
+                .iter()
+                .find(|(_, other)| *other == channel)
+                .map(|(input, _)| (output, *input))
+        })
+        .collect()
 }
 
 /// The properties the combined sink's `adapter` node is created with.
@@ -375,14 +524,64 @@ pub(crate) fn sink_names(mirror: &Mirror) -> Vec<String> {
         .collect()
 }
 
-/// Whether the branch whose playback node is `out_node` feeds `real_sink`.
-pub(crate) fn branch_liveness(mirror: &Mirror, out_node: &str, real_sink: &str) -> bool {
-    let outs: BTreeSet<u32> = mirror.node_ids_named(out_node).collect();
-    let sinks: BTreeSet<u32> = mirror.node_ids_named(real_sink).collect();
-    mirror
-        .links
-        .values()
-        .any(|link| outs.contains(&link.output_node) && sinks.contains(&link.input_node))
+/// Whether branch `id` is fed by `sink_name` and feeds `real_sink`: at least
+/// one link on each side, between nodes named exactly so.
+pub(crate) fn branch_liveness(mirror: &Mirror, id: u32, sink_name: &str, real_sink: &str) -> bool {
+    let ids = |name: &str| -> BTreeSet<u32> { mirror.node_ids_named(name).collect() };
+    let linked = |from: &BTreeSet<u32>, to: &BTreeSet<u32>| {
+        mirror
+            .links
+            .values()
+            .any(|link| from.contains(&link.output_node) && to.contains(&link.input_node))
+    };
+    linked(&ids(sink_name), &ids(&branch_node_name(id, "in")))
+        && linked(&ids(&branch_node_name(id, "out")), &ids(real_sink))
+}
+
+/// What `load_branch` answers once branch `id`'s module is loaded and kept:
+/// `Ok`, whatever the sync and the wiring after it did. Reported as failed,
+/// such a branch was never armed for its confirming reload (#75) while it
+/// stayed listed, so it was never loaded again either — a silent start on it
+/// had no remedy. A follow-up that failed leaves the branch waiting for its
+/// ports or dead, which the router already handles.
+pub(crate) fn kept_branch_load(
+    id: u32,
+    follow_up: Result<(), AudioError>,
+) -> Result<(), AudioError> {
+    if let Err(e) = follow_up {
+        tracing::warn!("delay branch {id} is loaded, but settling it failed: {e}");
+    }
+    Ok(())
+}
+
+/// What branch `id` reports as its liveness. `pending_for` is how long its
+/// monitor links have been waiting for their ports, `None` once they are
+/// made: a branch still waiting is "cannot tell", not dead, until the grace
+/// runs out or its playback side is gone.
+pub(crate) fn branch_live(
+    mirror: &Mirror,
+    id: u32,
+    sink_name: &str,
+    real_sink: &str,
+    pending_for: Option<Duration>,
+) -> Option<bool> {
+    let Some(waited) = pending_for else {
+        return Some(branch_liveness(mirror, id, sink_name, real_sink));
+    };
+    let out_gone = mirror
+        .node_ids_named(&branch_node_name(id, "out"))
+        .next()
+        .is_none();
+    if waited >= PENDING_LINKS_GRACE || out_gone {
+        return Some(false);
+    }
+    None
+}
+
+/// Whether branch `id`'s capture side can be linked from `sink_name` now:
+/// both channel pairs are in the mirror.
+pub(crate) fn ready_to_wire(mirror: &Mirror, sink_name: &str, id: u32) -> bool {
+    channel_port_pairs(mirror, sink_name, &branch_node_name(id, "in")).len() >= BRANCH_CHANNELS
 }
 
 /// The globals a teardown of `sink_name` destroys whoever owns them.
@@ -457,7 +656,7 @@ pub(crate) trait Connector {
     type Context;
     /// What the loop thread holds while connected.
     type Connection;
-    /// One loopback module loaded into the server process.
+    /// One delay branch module loaded into the server process.
     type Module;
     /// The proxy owning the combined null sink.
     type NullSink;
@@ -483,6 +682,8 @@ pub(crate) struct LoopState<C: Connector> {
     next_module_id: u32,
     /// When the command being handled runs out of time for its round trips.
     deadline: Instant,
+    /// The branches whose monitor links wait for their ports, and since when.
+    pending_links: BTreeMap<u32, Instant>,
 }
 
 impl<C: Connector> LoopState<C> {
@@ -497,6 +698,7 @@ impl<C: Connector> LoopState<C> {
             mirror: Mirror::default(),
             next_module_id: 0,
             deadline: Instant::now(),
+            pending_links: BTreeMap::new(),
         }
     }
 
@@ -562,8 +764,52 @@ impl<C: Connector> LoopState<C> {
             .collect()
     }
 
+    /// Record that module `id` now runs at `delay_ms`, so the branches report
+    /// the delay last applied. An id the graph does not hold is an `Err`.
+    pub(crate) fn record_module_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
+        let (_, branch, _) = self
+            .modules
+            .get_mut(&id)
+            .ok_or_else(|| AudioError::PipeWire(format!("no delay branch {id}")))?;
+        branch.latency_ms = delay_ms;
+        Ok(())
+    }
+
+    /// Record that branch `id`'s monitor links wait for their ports since `since`.
+    pub(crate) fn mark_links_pending(&mut self, id: u32, since: Instant) {
+        self.pending_links.insert(id, since);
+    }
+
+    /// Record that branch `id`'s monitor links are made.
+    pub(crate) fn mark_links_made(&mut self, id: u32) {
+        self.pending_links.remove(&id);
+    }
+
+    /// How long branch `id`'s monitor links have waited at `now`; `None` when
+    /// they are not waiting.
+    pub(crate) fn links_pending_for(&self, id: u32, now: Instant) -> Option<Duration> {
+        self.pending_links
+            .get(&id)
+            .map(|since| now.saturating_duration_since(*since))
+    }
+
+    /// The branches whose monitor links wait, with the combined sink each one
+    /// is fed from.
+    pub(crate) fn pending_link_branches(&self) -> Vec<(u32, String)> {
+        self.pending_links
+            .keys()
+            .filter_map(|id| {
+                self.modules
+                    .get(id)
+                    // Cloned: the sink name leaves the state with its id.
+                    .map(|(sink, _, _)| (*id, sink.clone()))
+            })
+            .collect()
+    }
+
     /// Forget the module `id` and hand it back for destruction.
     pub(crate) fn take_module(&mut self, id: u32) -> Option<C::Module> {
+        self.pending_links.remove(&id);
         self.modules.remove(&id).map(|(_, _, module)| module)
     }
 
@@ -610,10 +856,11 @@ impl<C: Connector> LoopState<C> {
     /// The core `error`/disconnect callback: the connection is gone.
     pub(crate) fn on_disconnect(&mut self) {
         // Proxies first, while their core still exists. The modules are only
-        // forgotten: a loopback unloads itself on its core's error. The
+        // forgotten: a filter-chain unloads itself on its core's error. The
         // context stays, so the next command reconnects from it.
         self.null_sinks.clear();
         self.modules.clear();
+        self.pending_links.clear();
         self.connection = None;
         self.mirror = Mirror::default();
     }
@@ -686,6 +933,7 @@ fn run_loop_thread(receiver: pw::channel::Receiver<Command>) {
     loop {
         mainloop.loop_().iterate(Timeout::Infinite);
         state.forget_a_lost_connection();
+        state.wire_waiting_branches();
         loop {
             let next = inbox.borrow_mut().pop_front();
             let Some(command) = next else {
@@ -721,9 +969,16 @@ impl Connector for PwConnector {
     }
 }
 
-/// A loopback loaded into this process. It holds nothing: the module owns
-/// itself and goes away with its streams — see [`PwConnection::unload`].
-struct InProcessModule;
+/// A delay branch loaded into this process. The module owns itself and goes
+/// away with its streams — see [`PwConnection::unload`]; what is kept here is
+/// what the server created around it: the links feeding its capture side,
+/// which die with their proxies, and a proxy of that capture node, which the
+/// delay is set on.
+#[derive(Default)]
+struct InProcessModule {
+    links: Vec<Link>,
+    in_node: Option<Node>,
+}
 
 /// What the registry and core callbacks report, shared with the loop side.
 #[derive(Default)]
@@ -807,6 +1062,12 @@ impl PwConnection {
             mainloop: mainloop.clone(),
             shared,
         })
+    }
+
+    /// The mirror as the registry callbacks have left it, without a round trip.
+    fn mirror_now(&self) -> Mirror {
+        // Cloned: the loop side reads it while the callbacks keep writing theirs.
+        self.shared.borrow().mirror.clone()
     }
 
     fn is_lost(&self) -> bool {
@@ -910,9 +1171,9 @@ impl PwConnection {
             .map_err(pw_error("cannot create the combined sink"))
     }
 
-    /// Load one `libpipewire-module-loopback` into this process.
-    fn load_loopback(&self, args: &str) -> Result<InProcessModule, AudioError> {
-        let name = CString::new("libpipewire-module-loopback")
+    /// Load one `libpipewire-module-filter-chain` into this process.
+    fn load_filter_chain(&self, args: &str) -> Result<(), AudioError> {
+        let name = CString::new("libpipewire-module-filter-chain")
             .map_err(|e| AudioError::PipeWire(e.to_string()))?;
         let args = CString::new(args).map_err(|e| AudioError::PipeWire(e.to_string()))?;
         // SAFETY: `self.context` is a live `pw_context` for the whole call, on
@@ -930,31 +1191,44 @@ impl PwConnection {
         };
         if module.is_null() {
             return Err(AudioError::PipeWire(format!(
-                "cannot load the loopback module: {}",
+                "cannot load the delay module: {}",
                 std::io::Error::last_os_error()
             )));
         }
-        Ok(InProcessModule)
+        Ok(())
     }
 
-    /// Unload branch `id` by destroying its two stream nodes: the loopback
-    /// module destroys itself once its streams are gone.
-    ///
-    /// Not `pw_impl_module_destroy`: a loopback whose target vanished destroys
-    /// itself too, with no notice to this code, so its handle can dangle at any
-    /// time. Its nodes are looked up in the daemon's registry instead, where a
-    /// module that is gone has none left to destroy.
-    fn unload(&self, mirror: &Mirror, id: u32) {
-        let ins = branch_node_name(id, "in");
-        let outs = branch_node_name(id, "out");
-        let nodes: Vec<u32> = mirror
-            .node_ids_named(&ins)
-            .chain(mirror.node_ids_named(&outs))
-            .collect();
-        tracing::debug!("unloading loopback branch {id}: destroying nodes {nodes:?}");
-        for node in nodes {
-            self.destroy_global(node);
-        }
+    /// Link output port `out_port` of node `out_node` to input port `in_port`
+    /// of node `in_node`. No `object.linger`: the link is owned by this
+    /// connection and dies with its proxy, or with the connection.
+    fn create_link(
+        &self,
+        out_node: u32,
+        out_port: u32,
+        in_node: u32,
+        in_port: u32,
+    ) -> Result<Link, AudioError> {
+        let mut props = PropertiesBox::new();
+        props.insert("link.output.node", out_node.to_string());
+        props.insert("link.output.port", out_port.to_string());
+        props.insert("link.input.node", in_node.to_string());
+        props.insert("link.input.port", in_port.to_string());
+        self.core
+            .create_object::<Link>("link-factory", &props)
+            .map_err(pw_error("cannot link the delay branch"))
+    }
+
+    /// Bind the node global `id`, for a proxy of its own.
+    fn bind_node(&self, id: u32) -> Result<Node, AudioError> {
+        let shared = self.shared.borrow();
+        let global = shared
+            .globals
+            .get(&id)
+            .filter(|global| global.type_ == ObjectType::Node)
+            .ok_or_else(|| AudioError::PipeWire(format!("no node {id}")))?;
+        self.registry
+            .bind::<Node, _>(global)
+            .map_err(pw_error("cannot bind the delay node"))
     }
 
     fn destroy_global(&self, id: u32) {
@@ -1056,6 +1330,10 @@ impl Shared {
             ObjectType::Device => {
                 self.mirror.devices.insert(global.id, DeviceEntry { props });
             },
+            ObjectType::Port => {
+                self.mirror.ports.insert(global.id, PortEntry { props });
+                return;
+            },
             ObjectType::Link => {
                 let end = |key: &str| props.get(key).and_then(|v| v.parse::<u32>().ok());
                 if let (Some(output_node), Some(input_node)) =
@@ -1080,6 +1358,7 @@ impl Shared {
     fn remove_global(&mut self, id: u32) {
         self.mirror.nodes.remove(&id);
         self.mirror.links.remove(&id);
+        self.mirror.ports.remove(&id);
         self.mirror.devices.remove(&id);
         self.globals.remove(&id);
     }
@@ -1180,11 +1459,13 @@ impl LoopState<PwConnector> {
             .into_iter()
             .map(|(id, branch)| LoadedBranch {
                 id,
-                live: Some(branch_liveness(
+                live: branch_live(
                     &self.mirror,
-                    &branch_node_name(id, "out"),
+                    id,
+                    sink_name,
                     &branch.sink,
-                )),
+                    self.links_pending_for(id, Instant::now()),
+                ),
                 branch,
             })
             .collect())
@@ -1211,40 +1492,167 @@ impl LoopState<PwConnector> {
         real_sink: &str,
         latency_ms: u32,
     ) -> Result<(), AudioError> {
-        let args = loopback_module_args(sink_name, real_sink, latency_ms, self.next_module_id())?;
-        let module = self.connection()?.load_loopback(&args)?;
+        let args = delay_chain_module_args(real_sink, latency_ms, self.next_module_id())?;
+        self.connection()?.load_filter_chain(&args)?;
+        // Kept before it is linked: a branch whose ports are not there yet
+        // waits for them, loaded, and is linked as soon as they appear.
         let id = self.add_module(
             sink_name,
             CombineBranch {
                 sink: real_sink.to_string(),
                 latency_ms,
             },
-            module,
+            InProcessModule::default(),
         );
-        tracing::debug!("loaded loopback branch {id}: {args}");
+        tracing::debug!("loaded delay branch {id}: {args}");
+        self.mark_links_pending(id, Instant::now());
+        let follow_up = self.settle_new_branch(sink_name, id);
+        kept_branch_load(id, follow_up)
+    }
+
+    /// Link a branch loaded a moment ago if its ports are already announced;
+    /// otherwise leave it waiting for them.
+    fn settle_new_branch(&mut self, sink_name: &str, id: u32) -> Result<(), AudioError> {
+        self.sync_mirror()?;
+        if ready_to_wire(&self.mirror, sink_name, id) {
+            return self.wire_branch(sink_name, id);
+        }
+        // A combined sink created a moment ago has no monitor ports until the
+        // session manager has configured it: the branch waits for them, and
+        // `wire_waiting_branches` links it when they are announced.
+        tracing::debug!("delay branch {id} waits for the ports of {sink_name}");
+        Ok(())
+    }
+
+    /// Link `sink_name`'s monitor into branch `id`'s capture side, channel to
+    /// channel, and keep the links and a proxy of that capture node with the
+    /// module. Called once [`ready_to_wire`] holds on `self.mirror`.
+    ///
+    /// One attempt per branch: the wait ends before the first link, so a
+    /// branch whose links cannot be made is judged by the links it has — dead
+    /// — and reloaded by the router, rather than retried, and warned about, on
+    /// every turn of the loop until the grace runs out.
+    fn wire_branch(&mut self, sink_name: &str, id: u32) -> Result<(), AudioError> {
+        self.mark_links_made(id);
+        let in_name = branch_node_name(id, "in");
+        let pairs = channel_port_pairs(&self.mirror, sink_name, &in_name);
+        for (out_port, in_port) in pairs {
+            let node_of = |port: u32| self.mirror.ports.get(&port).and_then(PortEntry::node);
+            let (Some(out_node), Some(in_node)) = (node_of(out_port), node_of(in_port)) else {
+                continue;
+            };
+            let link = self
+                .connection()?
+                .create_link(out_node, out_port, in_node, in_port)?;
+            if let Some((_, _, module)) = self.modules.get_mut(&id) {
+                module.links.push(link);
+            }
+        }
+        let in_node_id = self
+            .mirror
+            .node_ids_named(&in_name)
+            .next()
+            .ok_or_else(|| AudioError::PipeWire(format!("no node {in_name}")))?;
+        let in_node = self.connection()?.bind_node(in_node_id)?;
+        if let Some((_, _, module)) = self.modules.get_mut(&id) {
+            module.in_node = Some(in_node);
+        }
+        let deadline = self.deadline;
+        self.connection()?.roundtrip(deadline)
+    }
+
+    /// Link every branch whose ports have been announced since it was loaded.
+    /// Runs after each turn of the loop, so a branch is linked on the registry
+    /// event that completes it rather than on the next command.
+    fn wire_waiting_branches(&mut self) {
+        let waiting = self.pending_link_branches();
+        if waiting.is_empty() {
+            return;
+        }
+        let Some(mirror) = self.connection.as_ref().map(PwConnection::mirror_now) else {
+            return;
+        };
+        self.mirror = mirror;
+        for (id, sink_name) in waiting {
+            if !ready_to_wire(&self.mirror, &sink_name, id) {
+                continue;
+            }
+            self.deadline = Instant::now() + COMMAND_TIMEOUT;
+            match self.wire_branch(&sink_name, id) {
+                Ok(()) => {
+                    tracing::info!("linked delay branch {id} once {sink_name}'s ports appeared")
+                },
+                Err(e) => tracing::warn!("could not link delay branch {id} into {sink_name}: {e}"),
+            }
+        }
+    }
+
+    /// Unload branch `id` by destroying its two stream nodes: the filter-chain
+    /// module destroys itself once its streams are gone.
+    ///
+    /// Not `pw_impl_module_destroy`: a module whose target vanished destroys
+    /// itself too, with no notice to this code, so its handle can dangle at any
+    /// time. Its nodes are looked up in the daemon's registry instead, where a
+    /// module that is gone has none left to destroy.
+    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
+        self.sync_mirror()?;
+        // Dropping the module drops its link proxies first, which destroys the
+        // links; its nodes go next.
+        if self.take_module(id).is_none() {
+            return Err(AudioError::PipeWire(format!("no delay branch {id}")));
+        }
+        let nodes = branch_node_ids(&self.mirror, id);
+        tracing::debug!("unloading delay branch {id}: destroying nodes {nodes:?}");
+        let connection = self.connection()?;
+        for node in nodes {
+            connection.destroy_global(node);
+        }
         self.sync_mirror()
     }
 
-    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
-        self.sync_mirror()?;
-        if self.take_module(id).is_none() {
-            return Err(AudioError::PipeWire(format!("no loopback branch {id}")));
-        }
-        let mirror = std::mem::take(&mut self.mirror);
-        self.connection()?.unload(&mirror, id);
-        self.mirror = mirror;
-        self.sync_mirror()
+    /// Set branch `id`'s delay on its capture node, in place: a `Props` param,
+    /// nothing unloaded (#81). The delay is recorded once a round trip sent
+    /// after the param has completed, so the branch reports what was last sent.
+    ///
+    /// That round trip proves the daemon has read the param, not that the node
+    /// accepted it: a refusal comes back as a core `error` naming the node's
+    /// proxy, which the core listener does not follow — it watches
+    /// `PW_ID_CORE` only.
+    fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
+        let bytes = delay_props_pod(delay_ms as f32 / 1000.0)?;
+        let pod = Pod::from_bytes(&bytes)
+            .ok_or_else(|| AudioError::PipeWire("malformed Props param".into()))?;
+        // A lost connection has cleared the modules, so a proxy found here
+        // belongs to the live core.
+        let (_, _, module) = self
+            .modules
+            .get(&id)
+            .ok_or_else(|| AudioError::PipeWire(format!("no delay branch {id}")))?;
+        let node = module
+            .in_node
+            .as_ref()
+            .ok_or_else(|| AudioError::PipeWire(format!("delay branch {id} has no delay node")))?;
+        node.set_param(ParamType::Props, 0, pod);
+        let deadline = self.deadline;
+        self.connection()?.roundtrip(deadline)?;
+        self.record_module_delay(id, delay_ms)
     }
 
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
         // Dropping the proxy destroys the node this connection created.
         drop(self.take_null_sink(sink_name));
-        for (id, _) in self.modules_for(sink_name) {
+        // A partial view destroys nothing: the sync must succeed first, and
+        // the modules are only forgotten once it has.
+        self.sync_mirror()?;
+        let branches: Vec<u32> = self
+            .modules_for(sink_name)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let doomed = teardown_globals(&self.mirror, sink_name, &branches);
+        for id in branches {
             self.take_module(id);
         }
-        // A partial view destroys nothing: the sync must succeed first.
-        self.sync_mirror()?;
-        let doomed = foreign_combined_globals(&self.mirror, sink_name);
         tracing::debug!("teardown of {sink_name}: destroying globals {doomed:?}");
         let connection = self.connection()?;
         for id in doomed {
@@ -1315,6 +1723,13 @@ fn handle(state: &mut LoopState<PwConnector>, command: Command) {
         Command::UnloadBranch { id, reply } => {
             let _ = reply.send(state.unload_branch(id));
         },
+        Command::SetBranchDelay {
+            id,
+            delay_ms,
+            reply,
+        } => {
+            let _ = reply.send(state.set_branch_delay(id, delay_ms));
+        },
         Command::Teardown { sink_name, reply } => {
             let _ = reply.send(state.teardown(&sink_name));
         },
@@ -1333,6 +1748,7 @@ fn handle(state: &mut LoopState<PwConnector>, command: Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::targets::MAX_OFFSET_MS;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -1347,17 +1763,25 @@ mod tests {
     enum Spa {
         Word(String),
         Object(BTreeMap<String, Spa>),
+        Array(Vec<Spa>),
     }
 
-    /// Split SPA-JSON into braces and words. `=`, `:`, `,` and whitespace all
-    /// separate; a quoted word loses its quotes.
-    fn spa_tokens(text: &str) -> Vec<String> {
+    /// Split SPA-JSON into brackets and words. `=`, `:`, `,` and whitespace all
+    /// separate; a quoted word loses its quotes, and a backslash inside one
+    /// takes the next character literally. `None` for a quote left open.
+    fn spa_tokens(text: &str) -> Option<Vec<String>> {
         let mut tokens = Vec::new();
         let mut current = String::new();
         let mut quoted = false;
+        let mut escaped = false;
         for c in text.chars() {
             if quoted {
-                if c == '"' {
+                if escaped {
+                    current.push(c);
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
                     quoted = false;
                     tokens.push(std::mem::take(&mut current));
                 } else {
@@ -1367,7 +1791,7 @@ mod tests {
             }
             match c {
                 '"' => quoted = true,
-                '{' | '}' => {
+                '{' | '}' | '[' | ']' => {
                     if !current.is_empty() {
                         tokens.push(std::mem::take(&mut current));
                     }
@@ -1381,44 +1805,77 @@ mod tests {
                 c => current.push(c),
             }
         }
+        if quoted {
+            return None;
+        }
         if !current.is_empty() {
             tokens.push(current);
         }
-        tokens
+        Some(tokens)
     }
 
-    /// Read the key/value pairs of one object, stopping at its closing brace.
-    fn spa_object(tokens: &mut std::vec::IntoIter<String>) -> BTreeMap<String, Spa> {
+    /// One value starting at `first`: a word, an object or an array.
+    fn spa_value(first: String, tokens: &mut std::vec::IntoIter<String>) -> Option<Spa> {
+        match first.as_str() {
+            "{" => spa_object(tokens, true).map(Spa::Object),
+            "[" => spa_array(tokens).map(Spa::Array),
+            "}" | "]" => None,
+            _ => Some(Spa::Word(first)),
+        }
+    }
+
+    /// The key/value pairs of one object, up to its closing brace when
+    /// `closed`, else up to the end. `None` for anything malformed: a missing
+    /// or stray bracket, a key without a value, or a key given twice.
+    fn spa_object(
+        tokens: &mut std::vec::IntoIter<String>,
+        closed: bool,
+    ) -> Option<BTreeMap<String, Spa>> {
         let mut object = BTreeMap::new();
-        while let Some(key) = tokens.next() {
+        loop {
+            let Some(key) = tokens.next() else {
+                return (!closed).then_some(object);
+            };
             if key == "}" {
-                break;
+                return closed.then_some(object);
             }
-            match tokens.next() {
-                Some(v) if v == "{" => {
-                    object.insert(key, Spa::Object(spa_object(tokens)));
-                },
-                Some(v) => {
-                    object.insert(key, Spa::Word(v));
-                },
-                None => break,
+            if matches!(key.as_str(), "{" | "[" | "]") {
+                return None;
+            }
+            let value = spa_value(tokens.next()?, tokens)?;
+            if object.insert(key, value).is_some() {
+                return None;
             }
         }
-        object
     }
 
-    /// Parse module arguments: one object, its outer braces optional.
-    fn parse_args(text: &str) -> BTreeMap<String, Spa> {
-        let mut tokens = spa_tokens(text);
-        if tokens.first().map(String::as_str) == Some("{") {
-            tokens.remove(0);
+    /// The items of one array, up to its closing bracket.
+    fn spa_array(tokens: &mut std::vec::IntoIter<String>) -> Option<Vec<Spa>> {
+        let mut items = Vec::new();
+        loop {
+            let token = tokens.next()?;
+            if token == "]" {
+                return Some(items);
+            }
+            items.push(spa_value(token, tokens)?);
         }
-        spa_object(&mut tokens.into_iter())
     }
 
-    fn word(object: &BTreeMap<String, Spa>, key: &str) -> Option<String> {
+    /// Parse module arguments: exactly one object, its outer braces optional.
+    /// `None` unless the whole text is that one well-formed object.
+    fn parse_args(text: &str) -> Option<BTreeMap<String, Spa>> {
+        let mut tokens = spa_tokens(text)?.into_iter();
+        let braced = tokens.as_slice().first().map(String::as_str) == Some("{");
+        if braced {
+            tokens.next();
+        }
+        let object = spa_object(&mut tokens, braced)?;
+        tokens.next().is_none().then_some(object)
+    }
+
+    fn word<'a>(object: &'a BTreeMap<String, Spa>, key: &str) -> Option<&'a str> {
         match object.get(key) {
-            Some(Spa::Word(w)) => Some(w.clone()),
+            Some(Spa::Word(w)) => Some(w.as_str()),
             _ => None,
         }
     }
@@ -1428,12 +1885,6 @@ mod tests {
             Some(Spa::Object(o)) => o.clone(),
             _ => BTreeMap::new(),
         }
-    }
-
-    /// A property one stream carries: from its own props, else from the module
-    /// level, which the loopback module copies into both streams.
-    fn stream_prop(args: &BTreeMap<String, Spa>, stream: &str, key: &str) -> Option<String> {
-        word(&section(args, stream), key).or_else(|| word(args, key))
     }
 
     // ─── Mirror fixtures ─────────────────────────────────────────────────────
@@ -1462,6 +1913,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            ports: BTreeMap::new(),
             devices: BTreeMap::new(),
         }
     }
@@ -1471,113 +1923,296 @@ mod tests {
         ids
     }
 
-    // ─── loopback_module_args ────────────────────────────────────────────────
+    // ─── delay_chain_module_args ─────────────────────────────────────────────
 
-    // Criterion: `target.delay.sec` is `latency_ms / 1000` with three decimals,
-    // as `pipewire-pulse` derived it from `latency_msec`.
-    #[test]
-    fn test_loopback_module_args_carries_the_delay_in_seconds() {
-        for (latency_ms, expected) in [(50, "0.050"), (170, "0.170"), (1250, "1.250"), (0, "0.000")]
-        {
-            let args = parse_args(&loopback_module_args(COMBINED, SPEAKER, latency_ms, 3).unwrap());
-            assert_eq!(
-                word(&args, "target.delay.sec").as_deref(),
-                Some(expected),
-                "latency {latency_ms} ms"
-            );
-        }
-    }
-
-    // Criterion: both `target.object`s and both `node.dont-reconnect = true` are
-    // present, so neither end is ever moved onto another node.
-    #[test]
-    fn test_loopback_module_args_pins_both_ends_with_dont_reconnect() {
-        let args = parse_args(&loopback_module_args(COMBINED, SPEAKER, 50, 3).unwrap());
-
-        assert_eq!(
-            word(&section(&args, "capture.props"), "target.object").as_deref(),
-            Some(COMBINED)
-        );
-        assert_eq!(
-            word(&section(&args, "playback.props"), "target.object").as_deref(),
-            Some(SPEAKER)
-        );
-        for stream in ["capture.props", "playback.props"] {
-            assert_eq!(
-                word(&section(&args, stream), "node.dont-reconnect").as_deref(),
-                Some("true"),
-                "{stream} must not reconnect"
-            );
-        }
-    }
-
-    // Criterion: `stream.capture.sink = true` on the capture side only — that is
-    // what makes the capture stream read the combined sink's monitor.
-    #[test]
-    fn test_loopback_module_args_captures_the_sink_on_the_capture_side_only() {
-        let args = parse_args(&loopback_module_args(COMBINED, SPEAKER, 50, 3).unwrap());
-
-        assert_eq!(
-            word(&section(&args, "capture.props"), "stream.capture.sink").as_deref(),
-            Some("true")
-        );
-        assert_eq!(
-            word(&section(&args, "playback.props"), "stream.capture.sink"),
-            None,
-            "the playback stream writes into a sink, it captures nothing"
-        );
-        assert_eq!(word(&args, "stream.capture.sink"), None);
-    }
-
-    // Criterion: both streams are named `blue2th_loop.<n>.in` / `.out` and grouped
-    // by `node.group = blue2th_loop.<n>`: the `.out` name is what liveness reads.
-    #[test]
-    fn test_loopback_module_args_names_and_groups_both_streams_by_id() {
-        let args = parse_args(&loopback_module_args(COMBINED, SPEAKER, 50, 7).unwrap());
-
-        assert_eq!(
-            word(&section(&args, "capture.props"), "node.name").as_deref(),
-            Some("blue2th_loop.7.in")
-        );
-        assert_eq!(
-            word(&section(&args, "playback.props"), "node.name").as_deref(),
-            Some("blue2th_loop.7.out")
-        );
-        for stream in ["capture.props", "playback.props"] {
-            assert_eq!(
-                stream_prop(&args, stream, "node.group").as_deref(),
-                Some("blue2th_loop.7"),
-                "{stream} belongs to the branch's group"
-            );
-        }
-    }
-
-    // Criterion (non-nominal): an empty end is refused before anything reaches
-    // the loop — an empty `target.object` lets the session manager pick any node.
-    #[test]
-    fn test_loopback_module_args_refuses_an_empty_end() {
-        assert!(matches!(
-            loopback_module_args("", SPEAKER, 50, 1),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(matches!(
-            loopback_module_args(COMBINED, "", 50, 1),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(loopback_module_args(COMBINED, SPEAKER, 50, 1).is_ok());
-    }
-
-    // Criterion: a node name is written as one quoted SPA-JSON string whatever it
-    // carries — a quote in it cannot close the string early and leave the rest
-    // of the name to be read as another key.
-    #[test]
-    fn test_loopback_module_args_escapes_a_quote_in_a_node_name() {
-        let args = loopback_module_args(COMBINED, "odd\"sink", 50, 1).unwrap();
-
+    /// The parsed arguments of branch `id` into `real_sink` at `delay_ms`,
+    /// asserting on the way that they are accepted and are one well-formed
+    /// SPA-JSON object.
+    fn chain_args(real_sink: &str, delay_ms: u32, id: u32) -> BTreeMap<String, Spa> {
+        let text = delay_chain_module_args(real_sink, delay_ms, id);
+        assert!(text.is_ok(), "refused: {text:?}");
+        let text = text.unwrap();
+        let parsed = parse_args(&text);
         assert!(
-            args.contains(r#"target.object = "odd\"sink""#),
-            "the quote is escaped inside the string, got {args}"
+            parsed.is_some(),
+            "not one well-formed SPA-JSON object: {text:?}"
         );
+        parsed.unwrap()
+    }
+
+    /// The node objects of the arguments' `filter.graph`.
+    fn graph_nodes(args: &BTreeMap<String, Spa>) -> Vec<BTreeMap<String, Spa>> {
+        match section(args, "filter.graph").get("nodes") {
+            Some(Spa::Array(items)) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Spa::Object(object) => Some(object.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The one node of the filter graph, asserting that it is the only one.
+    fn delay_node(args: &BTreeMap<String, Spa>) -> BTreeMap<String, Spa> {
+        let nodes = graph_nodes(args);
+        assert_eq!(nodes.len(), 1, "one node in the filter graph: {args:?}");
+        nodes.into_iter().next().unwrap_or_default()
+    }
+
+    // Criterion: the filter graph is one builtin `delay` whose `"Delay (s)"`
+    // control is `delay_ms / 1000` written with three decimals — 0 included,
+    // which is a delay of zero and not "no branch", up to `MAX_OFFSET_MS`. The
+    // near miss: 5 ms is `0.005`, which an unpadded millisecond part writes
+    // as `0.5`, a hundred times too long.
+    #[test]
+    fn test_delay_chain_module_args_carries_the_offset_in_seconds() {
+        for (delay_ms, expected) in [(0, "0.000"), (5, "0.005"), (120, "0.120"), (750, "0.750")] {
+            let delay = delay_node(&chain_args(SPEAKER, delay_ms, 3));
+
+            assert_eq!(word(&delay, "type"), Some("builtin"), "{delay_ms} ms");
+            assert_eq!(word(&delay, "label"), Some("delay"), "{delay_ms} ms");
+            assert_eq!(
+                word(&section(&delay, "control"), "Delay (s)"),
+                Some(expected),
+                "{delay_ms} ms"
+            );
+        }
+    }
+
+    // Criterion: the capture side is never linked by the session manager —
+    // `node.autoconnect = false` in `capture.props` — so only the server's two
+    // monitor links feed it. On the capture side only: at module level it
+    // would reach the playback side too, which then never reaches its speaker.
+    #[test]
+    fn test_delay_chain_module_args_leaves_the_capture_side_unconnected() {
+        let args = chain_args(SPEAKER, 120, 3);
+
+        assert_eq!(
+            word(&section(&args, "capture.props"), "node.autoconnect"),
+            Some("false")
+        );
+        assert_eq!(
+            word(&section(&args, "playback.props"), "node.autoconnect"),
+            None,
+            "the playback side is linked to its target by the session manager"
+        );
+        assert_eq!(
+            word(&args, "node.autoconnect"),
+            None,
+            "a module-level value would reach both sides"
+        );
+    }
+
+    // Criterion: the playback side targets the resolved speaker node and never
+    // reconnects — so a speaker that goes away never moves its branch onto
+    // the PC's own speakers (#67). Both keys on the playback side only: the
+    // capture side targets nothing, the server links it.
+    #[test]
+    fn test_delay_chain_module_args_pins_the_playback_side_to_the_speaker_without_reconnect() {
+        let args = chain_args(SPEAKER, 120, 3);
+        let playback = section(&args, "playback.props");
+        let capture = section(&args, "capture.props");
+
+        assert_eq!(word(&playback, "target.object"), Some(SPEAKER));
+        assert_eq!(word(&playback, "node.dont-reconnect"), Some("true"));
+        for key in ["target.object", "node.dont-reconnect"] {
+            assert_eq!(word(&capture, key), None, "{key} on the capture side");
+            assert_eq!(word(&args, key), None, "{key} at module level");
+        }
+    }
+
+    // Criterion: both sides are named `blue2th_delay.<id>.in` / `.out` and each
+    // carries `node.group = blue2th_delay.<id>` in its own props. The names are
+    // what liveness, the port links and `set_param` look the branch up by.
+    #[test]
+    fn test_delay_chain_module_args_names_and_groups_both_sides_by_id() {
+        for id in [7, 12] {
+            let args = chain_args(SPEAKER, 120, id);
+            let capture = section(&args, "capture.props");
+            let playback = section(&args, "playback.props");
+            let in_name = format!("blue2th_delay.{id}.in");
+            let out_name = format!("blue2th_delay.{id}.out");
+            let group = format!("blue2th_delay.{id}");
+
+            assert_eq!(word(&capture, "node.name"), Some(in_name.as_str()));
+            assert_eq!(word(&playback, "node.name"), Some(out_name.as_str()));
+            assert_eq!(word(&capture, "node.group"), Some(group.as_str()));
+            assert_eq!(word(&playback, "node.group"), Some(group.as_str()));
+        }
+    }
+
+    // Criterion: the graph runs on `audio.channels = 2` over
+    // `audio.position = [ FL FR ]`, the channels the monitor links are paired
+    // by.
+    #[test]
+    fn test_delay_chain_module_args_runs_on_two_channels_fl_fr() {
+        let args = chain_args(SPEAKER, 120, 3);
+
+        assert_eq!(word(&args, "audio.channels"), Some("2"));
+        assert_eq!(
+            args.get("audio.position"),
+            Some(&Spa::Array(vec![
+                Spa::Word("FL".to_string()),
+                Spa::Word("FR".to_string()),
+            ]))
+        );
+    }
+
+    // Criterion: the `delay` node is loaded with `"max-delay" = 1.0`
+    // (`MAX_DELAY_SECONDS`) whatever the delay, and every accepted delay lies
+    // within it — a `max-delay` derived from the delay itself could never be
+    // retuned upwards.
+    #[test]
+    fn test_delay_chain_module_args_bounds_the_delay_at_max_delay() {
+        for delay_ms in [0, 120, MAX_OFFSET_MS] {
+            let delay = delay_node(&chain_args(SPEAKER, delay_ms, 3));
+            let max =
+                word(&section(&delay, "config"), "max-delay").and_then(|w| w.parse::<f32>().ok());
+            let seconds =
+                word(&section(&delay, "control"), "Delay (s)").and_then(|w| w.parse::<f32>().ok());
+
+            assert_eq!(max, Some(MAX_DELAY_SECONDS), "{delay_ms} ms");
+            assert!(
+                seconds.is_some_and(|s| s <= MAX_DELAY_SECONDS),
+                "{delay_ms} ms reads as {seconds:?} s"
+            );
+        }
+    }
+
+    // Criterion: the node and control the arguments declare are the ones the
+    // `Props` pod addresses: the pod's `"delay:Delay (s)"` is
+    // `<node name>:<control>`, so a node named anything else is never retuned.
+    #[test]
+    fn test_delay_chain_module_args_names_the_control_the_props_pod_sets() {
+        let delay = delay_node(&chain_args(SPEAKER, 120, 3));
+        let pod = delay_props_pod(0.25).unwrap_or_default();
+        let param = match PodDeserializer::deserialize_any_from(&pod) {
+            Ok((_, Value::Object(object))) => {
+                object.properties.into_iter().find_map(|p| match p.value {
+                    Value::Struct(fields) => fields.into_iter().find_map(|f| match f {
+                        Value::String(name) => Some(name),
+                        _ => None,
+                    }),
+                    _ => None,
+                })
+            },
+            _ => None,
+        };
+        assert!(param.is_some(), "the pod names no param");
+        let param = param.unwrap_or_default();
+        let (node_name, control) = param.split_once(':').unwrap_or_default();
+
+        assert_eq!(word(&delay, "name"), Some(node_name));
+        assert!(
+            section(&delay, "control").contains_key(control),
+            "the node declares no control {control:?}: {delay:?}"
+        );
+    }
+
+    // Criterion (non-nominal): an empty speaker is refused before anything
+    // reaches the loop — an empty `target.object` lets the session manager
+    // pick any node.
+    #[test]
+    fn test_delay_chain_module_args_refuses_an_empty_speaker() {
+        assert!(matches!(
+            delay_chain_module_args("", 120, 1),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert!(delay_chain_module_args(SPEAKER, 120, 1).is_ok());
+    }
+
+    // Criterion: a node name is written as one quoted SPA-JSON string whatever
+    // it carries — a quote in it cannot close the string early and leave the
+    // rest of the name to be read as another key.
+    #[test]
+    fn test_delay_chain_module_args_escapes_a_quote_in_a_node_name() {
+        let args = chain_args("odd\"sink", 120, 1);
+
+        assert_eq!(
+            word(&section(&args, "playback.props"), "target.object"),
+            Some("odd\"sink")
+        );
+    }
+
+    // Criterion: `MAX_DELAY_SECONDS` covers the largest offset the selection
+    // accepts, so no accepted offset is ever beyond what a branch can delay.
+    #[test]
+    fn test_max_delay_covers_the_largest_accepted_offset() {
+        assert!(MAX_DELAY_SECONDS >= MAX_OFFSET_MS as f32 / 1000.0);
+    }
+
+    // ─── delay_props_pod ─────────────────────────────────────────────────────
+
+    // Criterion: the pod `set_branch_delay` writes decodes back to a `Props`
+    // object carrying `params = [ "delay:Delay (s)", <seconds> ]` as a struct
+    // of a String and a Float — the shape `pw-cli set-param … Props` wrote in
+    // spike #110 (2026-09-10), which read back in `pw-dump` as
+    // `['delay:Delay (s)', 0.25]`.
+    #[test]
+    fn test_delay_props_pod_decodes_back_to_the_delay_param() {
+        for seconds in [0.0_f32, 0.12, 0.25, 0.75] {
+            let bytes = delay_props_pod(seconds);
+            assert!(bytes.is_ok(), "{seconds} s: {bytes:?}");
+            let bytes = bytes.unwrap_or_default();
+            assert!(Pod::from_bytes(&bytes).is_some(), "{seconds} s: no pod");
+            let object = match PodDeserializer::deserialize_any_from(&bytes) {
+                Ok((_, Value::Object(object))) => Some(object),
+                _ => None,
+            };
+            assert!(object.is_some(), "{seconds} s: not an object");
+            let object = object.unwrap();
+
+            assert_eq!(
+                (object.type_, object.id),
+                (
+                    libspa::sys::SPA_TYPE_OBJECT_Props,
+                    libspa::sys::SPA_PARAM_Props
+                ),
+                "{seconds} s"
+            );
+            let properties: Vec<(u32, Value)> = object
+                .properties
+                .into_iter()
+                .map(|p| (p.key, p.value))
+                .collect();
+            assert_eq!(
+                properties,
+                vec![(
+                    libspa::sys::SPA_PROP_params,
+                    Value::Struct(vec![
+                        Value::String("delay:Delay (s)".to_string()),
+                        Value::Float(seconds),
+                    ])
+                )],
+                "{seconds} s"
+            );
+        }
+    }
+
+    // Criterion (non-nominal): a delay the branch's `delay` node cannot hold is
+    // refused before a param is built — below zero, beyond
+    // `MAX_DELAY_SECONDS`, an infinity, and NaN, which a check written as
+    // `s < 0.0 || s > MAX` lets through. The near misses: both ends of the
+    // range are accepted.
+    #[test]
+    fn test_delay_props_pod_refuses_a_delay_the_branch_cannot_hold() {
+        for seconds in [
+            -0.001_f32,
+            MAX_DELAY_SECONDS + 0.001,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            assert!(
+                matches!(delay_props_pod(seconds), Err(AudioError::PipeWire(_))),
+                "{seconds} s was accepted"
+            );
+        }
+        for seconds in [0.0_f32, MAX_DELAY_SECONDS] {
+            assert!(delay_props_pod(seconds).is_ok(), "{seconds} s was refused");
+        }
     }
 
     // ─── combined_sink_props ─────────────────────────────────────────────────
@@ -1643,7 +2278,7 @@ mod tests {
                 (
                     70,
                     node(&[
-                        ("node.name", "blue2th_loop.1.out"),
+                        ("node.name", "blue2th_delay.1.out"),
                         ("media.class", "Stream/Output/Audio"),
                     ]),
                 ),
@@ -1692,8 +2327,16 @@ mod tests {
 
     // ─── branch_liveness ─────────────────────────────────────────────────────
 
-    /// The branch's `.out` node, the resolved sink, a second sink, and whatever
-    /// links the test asks for.
+    const OTHER_SPEAKER: &str = "bluez_output.11_22_33_44_55_66.1";
+
+    /// The monitor links feeding branch 1 (FL, FR), and the links carrying its
+    /// output into the speaker (FL, FR), as node-level `(id, from, to)`.
+    const MONITOR_INTO_1: [(u32, u32, u32); 2] = [(200, 61, 90), (201, 61, 90)];
+    const BRANCH_1_INTO_SPEAKER: [(u32, u32, u32); 2] = [(202, 91, 57), (203, 91, 57)];
+
+    /// The combined sink and a namesake opening with its name, two speakers,
+    /// and both sides of branches 1 and 10 — whose names and group open with
+    /// branch 1's group, `blue2th_delay.1`. Links as the test asks.
     fn liveness_mirror(links: &[(u32, u32, u32)]) -> Mirror {
         mirror_of(
             &[
@@ -1703,16 +2346,49 @@ mod tests {
                 ),
                 (
                     58,
+                    node(&[("node.name", OTHER_SPEAKER), ("media.class", "Audio/Sink")]),
+                ),
+                (
+                    61,
+                    node(&[("node.name", COMBINED), ("media.class", "Audio/Sink")]),
+                ),
+                (
+                    62,
                     node(&[
-                        ("node.name", "bluez_output.11_22_33_44_55_66.1"),
+                        ("node.name", "blue2th_combined_old"),
                         ("media.class", "Audio/Sink"),
                     ]),
                 ),
                 (
                     90,
                     node(&[
-                        ("node.name", "blue2th_loop.3.out"),
+                        ("node.name", "blue2th_delay.1.in"),
+                        ("media.class", "Stream/Input/Audio"),
+                        ("node.group", "blue2th_delay.1"),
+                    ]),
+                ),
+                (
+                    91,
+                    node(&[
+                        ("node.name", "blue2th_delay.1.out"),
                         ("media.class", "Stream/Output/Audio"),
+                        ("node.group", "blue2th_delay.1"),
+                    ]),
+                ),
+                (
+                    92,
+                    node(&[
+                        ("node.name", "blue2th_delay.10.in"),
+                        ("media.class", "Stream/Input/Audio"),
+                        ("node.group", "blue2th_delay.10"),
+                    ]),
+                ),
+                (
+                    93,
+                    node(&[
+                        ("node.name", "blue2th_delay.10.out"),
+                        ("media.class", "Stream/Output/Audio"),
+                        ("node.group", "blue2th_delay.10"),
                     ]),
                 ),
             ],
@@ -1720,64 +2396,337 @@ mod tests {
         )
     }
 
-    // Criterion: `Some(true)` when the branch's `.out` node has ≥ 1 link into the
-    // resolved sink, `Some(false)` when unlinked or linked elsewhere — the #75
-    // phantom, whose stream sat on no sink at all.
+    // Criterion: a branch is live only when **both** hold — the combined sink
+    // feeds its `.in` node and its `.out` node feeds the speaker. One link on
+    // each side is enough; either side alone is dead.
     #[test]
-    fn test_branch_liveness_is_live_only_with_a_link_into_the_resolved_sink() {
-        let linked = liveness_mirror(&[(200, 90, 57), (201, 90, 57)]);
+    fn test_branch_liveness_is_live_only_with_both_links() {
+        let both = [MONITOR_INTO_1, BRANCH_1_INTO_SPEAKER].concat();
         assert!(
-            branch_liveness(&linked, "blue2th_loop.3.out", SPEAKER),
-            "two links (FL, FR) into the resolved sink: live"
+            branch_liveness(&liveness_mirror(&both), 1, COMBINED, SPEAKER),
+            "fed by the monitor and feeding the speaker: live"
         );
 
-        let one_link = liveness_mirror(&[(200, 90, 57)]);
-        assert!(branch_liveness(&one_link, "blue2th_loop.3.out", SPEAKER));
+        let one_each = [(200, 61, 90), (202, 91, 57)];
+        assert!(branch_liveness(
+            &liveness_mirror(&one_each),
+            1,
+            COMBINED,
+            SPEAKER
+        ));
 
-        let unlinked = liveness_mirror(&[]);
         assert!(
-            !branch_liveness(&unlinked, "blue2th_loop.3.out", SPEAKER),
-            "no link at all: dead"
+            !branch_liveness(
+                &liveness_mirror(&BRANCH_1_INTO_SPEAKER),
+                1,
+                COMBINED,
+                SPEAKER
+            ),
+            "feeding the speaker but fed by nothing: dead"
+        );
+        assert!(
+            !branch_liveness(&liveness_mirror(&MONITOR_INTO_1), 1, COMBINED, SPEAKER),
+            "fed but feeding no speaker: dead"
+        );
+        assert!(!branch_liveness(
+            &liveness_mirror(&[]),
+            1,
+            COMBINED,
+            SPEAKER
+        ));
+    }
+
+    // Criterion (guard, both sides): a branch linked to its speaker but not fed
+    // by the node named exactly `sink_name` is dead. The near misses: its `.in`
+    // is fed by `blue2th_combined_old`, which opens with the combined sink's
+    // name, and the combined sink feeds `blue2th_delay.10.in`, which opens with
+    // `blue2th_delay.1.in`'s stem.
+    #[test]
+    fn test_branch_liveness_without_the_monitor_link_is_dead() {
+        let links = [
+            BRANCH_1_INTO_SPEAKER.to_vec(),
+            vec![(204, 62, 90), (205, 61, 92)],
+        ]
+        .concat();
+
+        assert!(!branch_liveness(
+            &liveness_mirror(&links),
+            1,
+            COMBINED,
+            SPEAKER
+        ));
+    }
+
+    // Criterion (guard, both sides): a branch fed by the monitor but not linked
+    // into the node named exactly `real_sink` is dead. The near misses: its
+    // `.out` feeds the other speaker, and `blue2th_delay.10.out` — whose name
+    // and group open with `blue2th_delay.1` — feeds this one.
+    #[test]
+    fn test_branch_liveness_without_the_speaker_link_is_dead() {
+        let links = [MONITOR_INTO_1.to_vec(), vec![(206, 91, 58), (207, 93, 57)]].concat();
+
+        assert!(!branch_liveness(
+            &liveness_mirror(&links),
+            1,
+            COMBINED,
+            SPEAKER
+        ));
+    }
+
+    // Criterion: a branch whose nodes are missing from the mirror is dead —
+    // an id with no node at all, and a branch whose `.in` node is gone while a
+    // stale link still names its id.
+    #[test]
+    fn test_branch_liveness_of_a_missing_node_is_dead() {
+        let both = [MONITOR_INTO_1, BRANCH_1_INTO_SPEAKER].concat();
+        let mirror = liveness_mirror(&both);
+        assert!(
+            !branch_liveness(&mirror, 4, COMBINED, SPEAKER),
+            "no branch 4"
         );
 
-        let elsewhere = liveness_mirror(&[(200, 90, 58)]);
+        let mut without_in = mirror;
+        without_in.nodes.remove(&90);
         assert!(
-            !branch_liveness(&elsewhere, "blue2th_loop.3.out", SPEAKER),
-            "linked into another sink: dead for this one"
+            !branch_liveness(&without_in, 1, COMBINED, SPEAKER),
+            "branch 1 has lost its capture side"
         );
     }
 
-    // Criterion: a branch whose `.out` node is missing from the mirror is dead.
+    // Criterion (guard, exact names): branch 1's liveness is not satisfied by
+    // links on `blue2th_delay.10.in` / `.10.out`, which a `starts_with` match
+    // would take — while those very links do make branch 10 live.
     #[test]
-    fn test_branch_liveness_of_a_missing_out_node_is_dead() {
-        let mirror = liveness_mirror(&[(200, 90, 57)]);
+    fn test_branch_liveness_does_not_take_branch_10_for_branch_1() {
+        let links = [(210, 61, 92), (211, 93, 57)];
+        let mirror = liveness_mirror(&links);
 
-        assert!(!branch_liveness(&mirror, "blue2th_loop.4.out", SPEAKER));
+        assert!(
+            branch_liveness(&mirror, 10, COMBINED, SPEAKER),
+            "branch 10 is live"
+        );
+        assert!(
+            !branch_liveness(&mirror, 1, COMBINED, SPEAKER),
+            "branch 1 has no link of its own"
+        );
     }
 
-    // Criterion (the empty value is a wildcard): an empty name matches no node,
-    // not even one whose `node.name` is itself empty — otherwise a nameless
-    // stream linked into the sink would vouch for a branch that is not there.
+    // Criterion (guard, the empty value is a wildcard): an empty name matches
+    // no node, not even one whose `node.name` is itself empty. A nameless node
+    // feeding the `.in` side does not make `branch_liveness(…, "", …)` live,
+    // and a link into a nameless sink feeds no named speaker.
     #[test]
     fn test_branch_liveness_of_an_empty_name_ignores_a_nameless_node() {
-        let mut mirror = liveness_mirror(&[(200, 91, 57), (201, 90, 92)]);
+        let links = [
+            MONITOR_INTO_1.to_vec(),
+            BRANCH_1_INTO_SPEAKER.to_vec(),
+            vec![(220, 95, 90), (221, 91, 96)],
+        ]
+        .concat();
+        let mut mirror = liveness_mirror(&links);
         mirror.nodes.insert(
-            91,
-            node(&[("node.name", ""), ("media.class", "Stream/Output/Audio")]),
+            95,
+            node(&[("node.name", ""), ("media.class", "Audio/Sink")]),
         );
         mirror.nodes.insert(
-            92,
+            96,
             node(&[("node.name", ""), ("media.class", "Audio/Sink")]),
+        );
+        assert!(
+            branch_liveness(&mirror, 1, COMBINED, SPEAKER),
+            "the same branch is live under its real names"
         );
 
         assert!(
-            !branch_liveness(&mirror, "", SPEAKER),
-            "a nameless stream linked into the sink is no branch"
+            !branch_liveness(&mirror, 1, "", SPEAKER),
+            "a nameless node feeding the branch is no combined sink"
         );
         assert!(
-            !branch_liveness(&mirror, "blue2th_loop.3.out", ""),
+            !branch_liveness(&mirror, 1, COMBINED, ""),
             "a link into a nameless sink feeds no named speaker"
         );
+    }
+
+    // ─── teardown_globals ────────────────────────────────────────────────────
+
+    // Criterion (teardown): a teardown destroys both nodes of each of
+    // the graph's own branches, found by their exact names, next to the
+    // combined sink the foreign rule takes. The near misses: branch 10, whose
+    // names open with `blue2th_delay.1`, and `blue2th_combined_old`, which
+    // opens with the combined sink's name, are spared; and without the listed
+    // ids the branches are not found at all — their capture side targets
+    // nothing, so the foreign rule alone never reaches them.
+    #[test]
+    fn test_teardown_globals_takes_the_listed_branches_and_the_combined_sink() {
+        let mirror = liveness_mirror(&[]);
+
+        assert_eq!(teardown_globals(&mirror, COMBINED, &[1]), vec![61, 90, 91]);
+        assert_eq!(
+            teardown_globals(&mirror, COMBINED, &[]),
+            vec![61],
+            "the foreign rule alone never finds a delay branch"
+        );
+        assert_eq!(
+            teardown_globals(&mirror, "", &[1]),
+            vec![90, 91],
+            "an empty sink name takes no combined sink"
+        );
+    }
+
+    // ─── channel_port_pairs ──────────────────────────────────────────────────
+
+    /// A port as the registry announces it; the keys are the ones the #110
+    /// spike's `pw-probe list` reads (`node.id`, `port.direction`,
+    /// `port.name`, `audio.channel`). `None` leaves the channel out.
+    fn port(node: u32, direction: &str, name: &str, channel: Option<&str>) -> PortEntry {
+        let node = node.to_string();
+        let mut props = vec![
+            ("node.id", node.as_str()),
+            ("port.direction", direction),
+            ("port.name", name),
+        ];
+        if let Some(channel) = channel {
+            props.push(("audio.channel", channel));
+        }
+        PortEntry {
+            props: props
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    /// The combined sink with its playback inputs and its monitor outputs —
+    /// listed FR before FL — and the capture sides of branch 30 and branch 3,
+    /// branch 30's inputs listed first. Synthetic, built on the port keys of
+    /// the spike's registry reader.
+    fn ports_mirror() -> Mirror {
+        let mut mirror = mirror_of(
+            &[
+                (
+                    61,
+                    node(&[("node.name", COMBINED), ("media.class", "Audio/Sink")]),
+                ),
+                (
+                    90,
+                    node(&[
+                        ("node.name", "blue2th_delay.3.in"),
+                        ("media.class", "Stream/Input/Audio"),
+                    ]),
+                ),
+                (
+                    92,
+                    node(&[
+                        ("node.name", "blue2th_delay.30.in"),
+                        ("media.class", "Stream/Input/Audio"),
+                    ]),
+                ),
+            ],
+            &[],
+        );
+        mirror.ports = [
+            (110, port(61, "in", "playback_FL", Some("FL"))),
+            (111, port(61, "in", "playback_FR", Some("FR"))),
+            (112, port(61, "out", "monitor_FR", Some("FR"))),
+            (113, port(61, "out", "monitor_FL", Some("FL"))),
+            (120, port(92, "in", "input_FL", Some("FL"))),
+            (121, port(92, "in", "input_FR", Some("FR"))),
+            (130, port(90, "in", "input_FL", Some("FL"))),
+            (131, port(90, "in", "input_FR", Some("FR"))),
+        ]
+        .into_iter()
+        .collect();
+        mirror
+    }
+
+    fn pair_set(pairs: Vec<(u32, u32)>) -> BTreeSet<(u32, u32)> {
+        let count = pairs.len();
+        let set: BTreeSet<(u32, u32)> = pairs.into_iter().collect();
+        assert_eq!(set.len(), count, "a pair listed twice");
+        set
+    }
+
+    /// Branch 3's monitor links: `monitor_FL → input_FL`, `monitor_FR → input_FR`.
+    fn branch_3_pairs() -> BTreeSet<(u32, u32)> {
+        [(113, 130), (112, 131)].into_iter().collect()
+    }
+
+    // Criterion (guard, port pairing by channel): FL pairs with FL and FR with
+    // FR, taking the out node's outputs and the in node's inputs. The near
+    // misses: the monitor lists FR before FL while the input lists FL first, so
+    // a pairing by list index crosses the channels; and the combined sink's
+    // own inputs carry the same channels, so a pairing ignoring the direction
+    // links them too.
+    #[test]
+    fn test_channel_port_pairs_pairs_fl_with_fl_and_fr_with_fr() {
+        let pairs = channel_port_pairs(&ports_mirror(), COMBINED, "blue2th_delay.3.in");
+
+        assert_eq!(pair_set(pairs), branch_3_pairs());
+    }
+
+    // Criterion: only the ports of the two named nodes are paired. The near
+    // miss: `blue2th_delay.30.in` opens with `blue2th_delay.3`, and its inputs
+    // are listed before branch 3's with the same direction and channels.
+    #[test]
+    fn test_channel_port_pairs_ignores_a_port_of_another_node() {
+        let pairs = channel_port_pairs(&ports_mirror(), COMBINED, "blue2th_delay.3.in");
+        let pairs = pair_set(pairs);
+
+        assert!(
+            !pairs.iter().any(|(_, input)| [120, 121].contains(input)),
+            "linked into branch 30: {pairs:?}"
+        );
+        assert_eq!(pairs, branch_3_pairs());
+    }
+
+    // Criterion: a node missing from the mirror pairs nothing, on either end,
+    // and an empty name is a missing node — even beside a nameless node whose
+    // ports would otherwise pair.
+    #[test]
+    fn test_channel_port_pairs_of_a_missing_node_is_empty() {
+        let mut mirror = ports_mirror();
+        mirror.nodes.insert(
+            99,
+            node(&[("node.name", ""), ("media.class", "Stream/Input/Audio")]),
+        );
+        mirror
+            .ports
+            .insert(140, port(99, "in", "input_FL", Some("FL")));
+        mirror
+            .ports
+            .insert(141, port(99, "in", "input_FR", Some("FR")));
+        assert_eq!(
+            pair_set(channel_port_pairs(&mirror, COMBINED, "blue2th_delay.3.in")),
+            branch_3_pairs(),
+            "the fixture pairs under the real names"
+        );
+
+        assert!(channel_port_pairs(&mirror, COMBINED, "blue2th_delay.4.in").is_empty());
+        assert!(channel_port_pairs(&mirror, "blue2th_absent", "blue2th_delay.3.in").is_empty());
+        assert!(
+            channel_port_pairs(&mirror, COMBINED, "").is_empty(),
+            "an empty name pairs nothing, not the nameless node"
+        );
+    }
+
+    // Criterion (the empty value is a wildcard): two ports without a channel
+    // are not the same channel — neither two absent `audio.channel`s nor two
+    // empty ones pair.
+    #[test]
+    fn test_channel_port_pairs_never_pairs_two_ports_without_a_channel() {
+        let mut mirror = ports_mirror();
+        mirror.ports.insert(114, port(61, "out", "control", None));
+        mirror
+            .ports
+            .insert(115, port(61, "out", "monitor_AUX", Some("")));
+        mirror.ports.insert(132, port(90, "in", "control", None));
+        mirror
+            .ports
+            .insert(133, port(90, "in", "input_AUX", Some("")));
+
+        let pairs = channel_port_pairs(&mirror, COMBINED, "blue2th_delay.3.in");
+
+        assert_eq!(pair_set(pairs), branch_3_pairs());
     }
 
     // ─── foreign_combined_globals ────────────────────────────────────────────
@@ -2454,6 +3403,14 @@ mod tests {
                         log.push(format!("unload_branch {id}"));
                         let _ = reply.send(Ok(()));
                     },
+                    Command::SetBranchDelay {
+                        id,
+                        delay_ms,
+                        reply,
+                    } => {
+                        log.push(format!("set_branch_delay {id} {delay_ms}"));
+                        let _ = reply.send(Ok(()));
+                    },
                     Command::Teardown { sink_name, reply } => {
                         log.push(format!("teardown {sink_name}"));
                         let _ = reply.send(Ok(()));
@@ -2496,7 +3453,9 @@ mod tests {
 
     // Criterion: each method sends its own command, carrying its arguments in
     // their own fields — `load_branch` takes two sink names side by side, and a
-    // swap would capture the speaker and play into the combined sink.
+    // swap would capture the speaker and play into the combined sink;
+    // `set_branch_delay` takes two numbers side by side, given distinct values
+    // here so a swap shows.
     #[test]
     fn test_every_method_sends_its_own_command_with_its_arguments() {
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -2510,6 +3469,7 @@ mod tests {
         assert!(graph.create_combined_sink(COMBINED).is_ok());
         assert!(graph.load_branch(COMBINED, SPEAKER, 170).is_ok());
         assert!(graph.unload_branch(7).is_ok());
+        assert!(graph.set_branch_delay(9, 250).is_ok());
         assert!(graph.teardown(COMBINED).is_ok());
         assert!(graph.set_default_sink(SPEAKER).is_ok());
         assert_eq!(graph.sink_volume(SPEAKER), Some(0.5));
@@ -2523,6 +3483,7 @@ mod tests {
                 format!("create_combined_sink {COMBINED}"),
                 format!("load_branch {COMBINED} {SPEAKER} 170"),
                 "unload_branch 7".to_string(),
+                "set_branch_delay 9 250".to_string(),
                 format!("teardown {COMBINED}"),
                 format!("set_default_sink {SPEAKER}"),
                 format!("sink_volume {SPEAKER}"),
@@ -2699,12 +3660,17 @@ mod tests {
 
         let sinks = graph.sinks();
         let teardown = graph.teardown(COMBINED);
+        let retune = graph.set_branch_delay(1, 120);
 
         assert!(
             matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
             "got {sinks:?}"
         );
         assert!(matches!(teardown, Err(AudioError::PipeWire(_))));
+        assert!(
+            matches!(retune, Err(AudioError::PipeWire(_))),
+            "a retune goes through the loop like every command, got {retune:?}"
+        );
         assert_eq!(graph.sink_volume(SPEAKER), None);
         assert!(
             started.elapsed() < Duration::from_secs(1),
@@ -2842,8 +3808,9 @@ mod tests {
 
     // Criterion: `next_module_id` announces the id `add_module` then hands out,
     // across sinks and across a lost connection. `load_branch` names the
-    // loopback's nodes `blue2th_loop.<id>` before the module is added: a
-    // mismatch would leave liveness and unload looking for another branch.
+    // branch's nodes `blue2th_delay.<id>.in` / `.out` before the module is
+    // added: a mismatch would leave liveness, the links and unload looking for
+    // another branch.
     #[test]
     fn test_loop_state_next_module_id_is_the_id_add_module_hands_out() {
         let (mut state, _) = fake_state(0);
@@ -2867,6 +3834,46 @@ mod tests {
             announced,
             "and after a lost connection"
         );
+    }
+
+    // Criterion: a branch reports the delay the graph last applied to it — at
+    // load, then after each `set_branch_delay` — not a value re-read from the
+    // node. Only that module changes, under the same id.
+    #[test]
+    fn test_loop_state_reports_the_delay_last_applied_to_a_module() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        let a = state.add_module(COMBINED, branch(SPEAKER, 0), "m1");
+        let b = state.add_module(
+            COMBINED,
+            branch("bluez_output.11_22_33_44_55_66.1", 250),
+            "m2",
+        );
+
+        assert!(state.record_module_delay(a, 120).is_ok());
+
+        assert_eq!(
+            state.modules_for(COMBINED),
+            vec![
+                (a, branch(SPEAKER, 120)),
+                (b, branch("bluez_output.11_22_33_44_55_66.1", 250)),
+            ]
+        );
+    }
+
+    // Criterion (non-nominal): `set_branch_delay` on an id the graph does not
+    // hold is an `Err`, and changes no module.
+    #[test]
+    fn test_loop_state_delay_of_an_unknown_module_errs() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        let a = state.add_module(COMBINED, branch(SPEAKER, 0), "m1");
+
+        assert!(matches!(
+            state.record_module_delay(a + 1, 120),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert_eq!(state.modules_for(COMBINED), vec![(a, branch(SPEAKER, 0))]);
     }
 
     // Criterion: a lost connection resets the loop thread's state — mirror,
@@ -3047,5 +4054,182 @@ mod tests {
         state.mirror_mut().nodes.insert(61, null_sink(COMBINED));
 
         assert_eq!(state.listed_sinks(), vec![SPEAKER.to_string()]);
+    }
+
+    // ─── Branches waiting for their ports ───────────────────────────────────
+
+    // Criterion: a branch whose monitor links are made reports its liveness.
+    #[test]
+    fn test_branch_live_of_a_wired_branch_is_its_liveness() {
+        let both = [MONITOR_INTO_1, BRANCH_1_INTO_SPEAKER].concat();
+        assert_eq!(
+            branch_live(&liveness_mirror(&both), 1, COMBINED, SPEAKER, None),
+            Some(true)
+        );
+        assert_eq!(
+            branch_live(
+                &liveness_mirror(&BRANCH_1_INTO_SPEAKER),
+                1,
+                COMBINED,
+                SPEAKER,
+                None
+            ),
+            Some(false),
+            "made, then lost its monitor links: dead"
+        );
+    }
+
+    // Criterion (guard): a branch still waiting for the ports of a combined
+    // sink created a moment ago is "cannot tell", never dead — reading it dead
+    // unloads and reloads it on every tick until the ports appear. The near
+    // miss: the same mirror, the same missing monitor links, but no wait
+    // recorded, reads dead.
+    #[test]
+    fn test_branch_live_of_a_branch_waiting_for_its_ports_is_unknown() {
+        let mirror = liveness_mirror(&BRANCH_1_INTO_SPEAKER);
+
+        assert_eq!(
+            branch_live(&mirror, 1, COMBINED, SPEAKER, Some(Duration::from_secs(1))),
+            None
+        );
+        assert_eq!(
+            branch_live(&mirror, 1, COMBINED, SPEAKER, None),
+            Some(false)
+        );
+    }
+
+    // Criterion (guard): the wait is bounded — a branch whose ports never
+    // appear is dead once the grace has run out, so it is reloaded rather than
+    // kept silent for good. The near miss: one millisecond short of the grace.
+    #[test]
+    fn test_branch_live_of_a_branch_waiting_past_the_grace_is_dead() {
+        let mirror = liveness_mirror(&BRANCH_1_INTO_SPEAKER);
+        let just_short = PENDING_LINKS_GRACE - Duration::from_millis(1);
+
+        assert_eq!(
+            branch_live(&mirror, 1, COMBINED, SPEAKER, Some(PENDING_LINKS_GRACE)),
+            Some(false)
+        );
+        assert_eq!(
+            branch_live(&mirror, 1, COMBINED, SPEAKER, Some(just_short)),
+            None
+        );
+    }
+
+    // Criterion: a waiting branch whose playback side is gone (its speaker
+    // vanished, the module destroyed itself) is dead at once, not after the
+    // grace. The near miss: branch 10's `.out` node is still there.
+    #[test]
+    fn test_branch_live_of_a_waiting_branch_without_its_out_node_is_dead() {
+        let mut mirror = liveness_mirror(&[]);
+        mirror.nodes.remove(&91);
+        let waiting = Some(Duration::from_secs(1));
+
+        assert_eq!(
+            branch_live(&mirror, 1, COMBINED, SPEAKER, waiting),
+            Some(false)
+        );
+        assert_eq!(
+            branch_live(&liveness_mirror(&[]), 1, COMBINED, SPEAKER, waiting),
+            None,
+            "its `.out` node is still there: still waiting"
+        );
+    }
+
+    // Criterion: a waiting branch can be linked once both channel pairs are
+    // in the mirror. The near misses: one input port missing, and branch 30's
+    // ports present while branch 3's are not.
+    #[test]
+    fn test_ready_to_wire_needs_both_channel_pairs_of_that_branch() {
+        assert!(ready_to_wire(&ports_mirror(), COMBINED, 3));
+
+        let mut one_missing = ports_mirror();
+        one_missing.ports.remove(&131);
+        assert!(!ready_to_wire(&one_missing, COMBINED, 3));
+
+        let mut only_branch_30 = ports_mirror();
+        only_branch_30.ports.remove(&130);
+        only_branch_30.ports.remove(&131);
+        assert!(!ready_to_wire(&only_branch_30, COMBINED, 3));
+        assert!(ready_to_wire(&only_branch_30, COMBINED, 30));
+    }
+
+    // Criterion: the combined sink's own monitor ports are required too — a
+    // sink created a moment ago has none yet.
+    #[test]
+    fn test_ready_to_wire_waits_for_the_combined_sinks_monitor_ports() {
+        let mut no_monitor = ports_mirror();
+        no_monitor.ports.remove(&112);
+        no_monitor.ports.remove(&113);
+
+        assert!(!ready_to_wire(&no_monitor, COMBINED, 3));
+        assert!(
+            !ready_to_wire(&ports_mirror(), "", 3),
+            "an empty sink name is no sink"
+        );
+    }
+
+    // Criterion: the loop remembers since when each branch has waited, and
+    // which combined sink it waits on.
+    #[test]
+    fn test_loop_state_reports_how_long_a_branchs_links_have_waited() {
+        let (mut state, _) = fake_state(0);
+        let id = state.add_module(COMBINED, branch(SPEAKER, 0), "m1");
+        let other = state.add_module(COMBINED, branch("bluez_output.11.1", 0), "m2");
+        let since = Instant::now();
+
+        state.mark_links_pending(id, since);
+
+        assert_eq!(
+            state.links_pending_for(id, since + Duration::from_secs(3)),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(state.links_pending_for(other, since), None);
+        assert_eq!(
+            state.pending_link_branches(),
+            vec![(id, COMBINED.to_string())]
+        );
+    }
+
+    // Criterion: the wait ends when the links are made, when the module is
+    // taken back, and when the connection is lost.
+    #[test]
+    fn test_loop_state_forgets_a_wait_once_linked_unloaded_or_disconnected() {
+        let (mut state, _) = fake_state(0);
+        assert!(state.connection().is_ok());
+        let since = Instant::now();
+        let linked = state.add_module(COMBINED, branch(SPEAKER, 0), "m1");
+        let unloaded = state.add_module(COMBINED, branch(SPEAKER, 0), "m2");
+        let dropped = state.add_module(COMBINED, branch(SPEAKER, 0), "m3");
+        for id in [linked, unloaded, dropped] {
+            state.mark_links_pending(id, since);
+        }
+
+        state.mark_links_made(linked);
+        assert_eq!(state.links_pending_for(linked, since), None);
+
+        assert_eq!(state.take_module(unloaded), Some("m2"));
+        assert_eq!(state.links_pending_for(unloaded, since), None);
+        assert_eq!(
+            state.pending_link_branches(),
+            vec![(dropped, COMBINED.to_string())]
+        );
+
+        state.on_disconnect();
+        assert!(state.pending_link_branches().is_empty());
+    }
+
+    // Criterion (guard): once a branch's module is loaded and kept, its load
+    // is `Ok` whatever the sync or the wiring after it did — a load reported
+    // as failed is never armed for its confirming reload, while the branch it
+    // left behind stays listed and is never loaded again. The near miss: the
+    // same call with a follow-up that succeeded.
+    #[test]
+    fn test_kept_branch_load_is_ok_whatever_followed() {
+        assert!(kept_branch_load(3, Ok(())).is_ok());
+        assert!(
+            kept_branch_load(3, Err(AudioError::PipeWire("sync timed out".to_string()))).is_ok(),
+            "a kept branch whose follow-up failed still reports its load"
+        );
     }
 }

@@ -17,7 +17,7 @@ pub const MAX_TARGETS: usize = 2;
 
 /// Inclusive upper bound for a per-speaker latency offset, in milliseconds.
 ///
-/// Offsets are additive-only (a loopback branch can be delayed, not advanced),
+/// Offsets are additive-only (a branch can add delay, never take it away),
 /// so the lower bound is `0`. Mirrors `clamp_volume`'s clamp-don't-reject policy.
 pub const MAX_OFFSET_MS: u32 = 750;
 

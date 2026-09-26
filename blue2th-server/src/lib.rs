@@ -1769,9 +1769,11 @@ async fn set_target_offset(
 }
 
 /// Make a just-changed offset audible without replaying: the offset only exists
-/// as `module-loopback` latency, so it has to be pushed into the live PipeWire
-/// graph. Best-effort — a failure here must not turn a slider drag into an error,
-/// and the new value is applied anyway on the next `/play` or Spotify start.
+/// as the delay of the speaker's branch, so it has to be pushed into the live
+/// PipeWire graph, where it is set on the delay node in place. Best-effort — a
+/// failure here must not turn a slider drag into an error, and the next
+/// reconciliation (the repair tick, `/play`, a Spotify start) retunes the branch
+/// anyway.
 async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarget]) {
     let Some(target) = speakers.iter().find(|s| s.address == addr) else {
         return;
@@ -1788,7 +1790,7 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     if router.combined_sink_exists(&plan.sink_name) {
         let branch = audio::CombineBranch {
             sink: audio::bluez_sink_prefix(&target.address),
-            latency_ms: audio::branch_latency_ms(target.offset_ms),
+            latency_ms: target.offset_ms,
         };
         if let Err(e) = router.retune_branch(&plan.sink_name, &branch) {
             tracing::warn!("could not retune the speaker offset live: {e}");
@@ -1823,7 +1825,7 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
         // Nothing left to play to. Silence both sources, then tear the combined
-        // sink down so no loopback keeps feeding a speaker nobody selected.
+        // sink down so no branch keeps feeding a speaker nobody selected.
         //
         // Spotify is *stopped*, not paused through the Web API: a remote pause
         // returns when Spotify's servers answer, not when `librespot`'s audio
@@ -2963,12 +2965,63 @@ mod tests {
                 GraphCall::LoadBranch {
                     sink_name: "blue2th_combined".to_string(),
                     real_sink: sink.to_string(),
-                    latency_ms: 50
+                    latency_ms: 0
                 },
                 GraphCall::SetDefaultSink {
                     sink: "blue2th_combined".to_string()
                 },
             ]
         );
+    }
+
+    // Criterion (#81): `POST /devices/{addr}/offset` on a playing speaker
+    // retunes its branch in place through `apply_offset_live` — one
+    // `set_branch_delay` on that speaker's branch, at exactly the offset with
+    // no base on top, and no unload or load. The other speaker is untouched.
+    #[tokio::test]
+    async fn test_offset_change_retunes_the_speaker_branch_in_place() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let mac_a = "AA:BB:CC:DD:EE:01";
+        let mac_b = "AA:BB:CC:DD:EE:02";
+        let sink_a = "bluez_output.AA_BB_CC_DD_EE_01.1";
+        let sink_b = "bluez_output.AA_BB_CC_DD_EE_02.1";
+        let fake = FakeGraph::with_sinks(&[sink_a, sink_b, "blue2th_combined"]);
+        let a = fake.seed_branch("blue2th_combined", sink_a, 0, Some(true));
+        let b = fake.seed_branch("blue2th_combined", sink_b, 0, Some(true));
+        let state = test_state_on(AudioEngine::new(), &fake);
+        state
+            .targets
+            .lock()
+            .await
+            .select(mac_a, &[mac_a.to_string(), mac_b.to_string()])
+            .expect("a connected speaker can be selected");
+        state
+            .targets
+            .lock()
+            .await
+            .select(mac_b, &[mac_a.to_string(), mac_b.to_string()])
+            .expect("a connected speaker can be selected");
+
+        let _ = set_target_offset(
+            State(state),
+            Path(mac_b.to_string()),
+            Json(OffsetRequest { offset_ms: 120 }),
+        )
+        .await;
+
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetBranchDelay {
+                id: b,
+                delay_ms: 120
+            }]
+        );
+        let delays: Vec<(u32, u32)> = fake
+            .loaded("blue2th_combined")
+            .iter()
+            .map(|l| (l.id, l.branch.latency_ms))
+            .collect();
+        assert_eq!(delays, vec![(a, 0), (b, 120)]);
     }
 }

@@ -8,7 +8,7 @@
 
 use crate::audio::{AudioError, CombineBranch};
 
-/// One loopback branch as the graph reports it loaded for a combined sink.
+/// One delay branch as the graph reports it loaded for a combined sink.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedBranch {
     /// The handle [`Graph::unload_branch`] takes.
@@ -27,11 +27,11 @@ pub trait Graph: Send {
     /// The node names of the sinks currently present. An `Err` is "cannot
     /// tell", which a caller must not read as "no sink exists".
     fn sinks(&mut self) -> Result<Vec<String>, AudioError>;
-    /// The loopback branches loaded for the combined sink `sink_name`.
+    /// The delay branches loaded for the combined sink `sink_name`.
     fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError>;
     /// Create the shared null sink the player streams into.
     fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError>;
-    /// Load one delayed loopback from `sink_name`'s monitor into `real_sink`.
+    /// Load one delay branch from `sink_name`'s monitor into `real_sink`.
     fn load_branch(
         &mut self,
         sink_name: &str,
@@ -40,6 +40,9 @@ pub trait Graph: Send {
     ) -> Result<(), AudioError>;
     /// Unload one branch by the id [`Graph::branches`] reported for it.
     fn unload_branch(&mut self, id: u32) -> Result<(), AudioError>;
+    /// Change the delay of the loaded branch `id` in place, without unloading
+    /// it. An id no branch carries is an `Err`.
+    fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError>;
     /// Remove the combined sink `sink_name` and every branch belonging to it.
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError>;
     /// Make `sink` the default sink.
@@ -82,6 +85,10 @@ pub mod fake {
         UnloadBranch {
             id: u32,
         },
+        SetBranchDelay {
+            id: u32,
+            delay_ms: u32,
+        },
         Teardown {
             sink_name: String,
         },
@@ -112,6 +119,7 @@ pub mod fake {
         CreateCombinedSink,
         LoadBranch,
         UnloadBranch,
+        SetBranchDelay,
         Teardown,
         SetDefaultSink,
         SinkVolume,
@@ -240,6 +248,15 @@ pub mod fake {
             self.state().new_branch_liveness = live;
         }
 
+        /// Make the loaded branch `id` report `live` from now on, as a branch
+        /// that loses its links does.
+        pub fn set_branch_liveness(&self, id: u32, live: Option<bool>) {
+            let mut state = self.state();
+            for branch in state.branches.iter_mut().filter(|b| b.loaded.id == id) {
+                branch.loaded.live = live;
+            }
+        }
+
         /// Give `sink` a volume to read back.
         pub fn set_volume(&self, sink: &str, level: f32) {
             let mut state = self.state();
@@ -264,6 +281,11 @@ pub mod fake {
                 node: Some(node.to_string()),
                 skip: 0,
             });
+        }
+
+        /// Drop every failure rule: the graph answers normally from now on.
+        pub fn clear_failures(&self) {
+            self.state().rules.clear();
         }
 
         /// Let `successes` calls to `op` through, then fail every later one.
@@ -442,6 +464,19 @@ pub mod fake {
             state.check(GraphOp::UnloadBranch, &id.to_string())?;
             // A branch that is already gone is not an error.
             state.branches.retain(|b| b.loaded.id != id);
+            Ok(())
+        }
+
+        fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
+            let mut state = self.state();
+            state.log.push(GraphCall::SetBranchDelay { id, delay_ms });
+            state.check(GraphOp::SetBranchDelay, &id.to_string())?;
+            let branch = state
+                .branches
+                .iter_mut()
+                .find(|b| b.loaded.id == id)
+                .ok_or_else(|| AudioError::PipeWire(format!("fake graph: no branch {id}")))?;
+            branch.loaded.branch.latency_ms = delay_ms;
             Ok(())
         }
 
@@ -641,6 +676,77 @@ mod tests {
         assert_eq!(fake.sinks().unwrap(), vec![SPEAKER]);
         assert!(matches!(fake.sinks(), Err(AudioError::PipeWire(_))));
         assert!(matches!(fake.sinks(), Err(AudioError::PipeWire(_))));
+    }
+
+    // Criterion: `FakeGraph` records `set_branch_delay` and updates the stored
+    // latency of that branch only, in place: same id, the other branch
+    // untouched. `LoadedBranch.branch.latency_ms` is the delay last applied.
+    #[test]
+    fn test_fake_graph_set_branch_delay_retunes_that_branch_in_place() {
+        let other = "bluez_output.AA_BB_CC_DD_EE_02.1";
+        let mut fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER, other]);
+        let a = fake.seed_branch(COMBINED, SPEAKER, 0, Some(true));
+        let b = fake.seed_branch(COMBINED, other, 30, Some(true));
+
+        assert!(fake.set_branch_delay(a, 120).is_ok());
+
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetBranchDelay {
+                id: a,
+                delay_ms: 120
+            }]
+        );
+        let loaded = fake.loaded(COMBINED);
+        let delays: Vec<(u32, &str, u32)> = loaded
+            .iter()
+            .map(|l| (l.id, l.branch.sink.as_str(), l.branch.latency_ms))
+            .collect();
+        assert_eq!(delays, vec![(a, SPEAKER, 120), (b, other, 30)]);
+    }
+
+    // Criterion (non-nominal): `set_branch_delay` on an id no branch carries is
+    // an `Err`, recorded like any other attempt, and changes nothing.
+    #[test]
+    fn test_fake_graph_set_branch_delay_on_an_unknown_id_errs() {
+        let mut fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let a = fake.seed_branch(COMBINED, SPEAKER, 0, Some(true));
+
+        assert!(matches!(
+            fake.set_branch_delay(a + 100, 120),
+            Err(AudioError::PipeWire(_))
+        ));
+
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetBranchDelay {
+                id: a + 100,
+                delay_ms: 120
+            }]
+        );
+        let loaded = fake.loaded(COMBINED);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].branch.latency_ms, 0);
+    }
+
+    // Criterion (non-nominal): a delay the node rejected is not the delay the
+    // branch runs at, so a failed `set_branch_delay` leaves the stored latency
+    // as it was — that is what lets the next reconcile see the mismatch.
+    #[test]
+    fn test_fake_graph_a_failed_set_branch_delay_leaves_the_latency() {
+        let mut fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let a = fake.seed_branch(COMBINED, SPEAKER, 0, Some(true));
+        fake.fail(GraphOp::SetBranchDelay);
+
+        assert!(matches!(
+            fake.set_branch_delay(a, 120),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert_eq!(fake.loaded(COMBINED)[0].branch.latency_ms, 0);
+
+        fake.clear_failures();
+        assert!(fake.set_branch_delay(a, 120).is_ok());
+        assert_eq!(fake.loaded(COMBINED)[0].branch.latency_ms, 120);
     }
 
     // Criterion: liveness is reported as `Some(true)`, `Some(false)` or `None`.

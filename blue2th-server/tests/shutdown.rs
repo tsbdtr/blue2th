@@ -40,9 +40,6 @@ const TOKEN: &str = "test-api-token";
 /// into its probe role.
 const PROBE_ENV: &str = "BLUE2TH_SHUTDOWN_PROBE";
 
-/// Where the fake `pactl` a probe may find on `PATH` records its invocations.
-const PACTL_LOG_ENV: &str = "BLUE2TH_PACTL_LOG";
-
 /// Printed by a probe once it got past the behaviour under test — the proof the
 /// path ran, so an empty observation is never mistaken for a passing one.
 const MARKER: &str = "blue2th-shutdown-probe: done";
@@ -210,67 +207,5 @@ async fn test_stop_sources_for_shutdown_reports_the_name_the_router_configured()
     assert_eq!(
         reconciled.device_name, "Lpt",
         "the shutdown path reads a different backend than the routes write"
-    );
-}
-
-/// The one `pactl` line the probe writes itself, *after* the shutdown path:
-/// it proves the fake on `PATH` is the one being resolved and that it logs, so
-/// an empty log can only mean a broken fixture — never a passing test.
-const PACTL_SENTINEL: &str = "--blue2th-fixture-check";
-
-// Criterion (#122): the PipeWire graph is *not* torn down on shutdown — the
-// combined sink and its loopbacks are what keep the speakers routed across a
-// restart, and a dead `librespot` feeds them nothing. Observed through a fake
-// `pactl` placed first on the probe's `PATH`, which logs every invocation: the
-// shutdown path must produce none (`teardown_combined` would list, then unload),
-// so the log holds exactly the sentinel the probe appends afterwards.
-#[tokio::test]
-async fn test_stop_sources_for_shutdown_leaves_the_pipewire_graph_alone() {
-    if in_probe_role() {
-        let (_router, state) = build_app_and_state();
-        let _ = blue2th_server::stop_sources_for_shutdown(&state).await;
-        let sentinel = std::process::Command::new("pactl")
-            .arg(PACTL_SENTINEL)
-            .status()
-            .expect("run the fake pactl from PATH");
-        assert!(sentinel.success(), "the fake pactl failed: {sentinel:?}");
-        println!("{MARKER}");
-        return;
-    }
-
-    let dir = std::env::temp_dir().join(format!("blue2th-shutdown-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create the fake pactl directory");
-    let fake_pactl = dir.join("pactl");
-    std::fs::write(
-        &fake_pactl,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BLUE2TH_PACTL_LOG\"\n",
-    )
-    .expect("write the fake pactl");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake_pactl, std::fs::Permissions::from_mode(0o755))
-            .expect("make the fake pactl executable");
-    }
-    let log = dir.join("pactl.log");
-    let path = format!(
-        "{}:{}",
-        dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-
-    let output = run_probe(
-        "test_stop_sources_for_shutdown_leaves_the_pipewire_graph_alone",
-        &[("PATH", path), (PACTL_LOG_ENV, log.display().to_string())],
-    )
-    .await
-    .expect("run the probe");
-    let calls = std::fs::read_to_string(&log).unwrap_or_default();
-    let _ = std::fs::remove_dir_all(&dir);
-
-    assert_probe_completed(&output);
-    assert_eq!(
-        calls.trim(),
-        PACTL_SENTINEL,
-        "expected only the probe's sentinel in the pactl log; anything before it is the shutdown path touching the PipeWire graph"
     );
 }

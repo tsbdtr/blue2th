@@ -137,20 +137,43 @@ side to update; the comparison never trusts what a payload says about itself.
 The backend scans, pairs, trusts and connects speakers through `bluer`; a
 connected A2DP speaker appears in PipeWire as a sink. Playing to two of them is
 a **combined sink**: a shared null sink that the source plays into, and one
-`libpipewire-module-loopback` branch per selected speaker from that null sink to
-the speaker's sink. The server builds it natively, from a `pw_main_loop` thread
-of its own (`graph_pw.rs`): the null sink is an `adapter` node its connection
-owns, and each branch is loaded into the server process. The operator inspects
-it with `pw-dump`, `pw-link -l` and `pw-top`. Every non-empty selection goes through it, one speaker
-included; a separate single-speaker path once existed and was dropped because
-two paths meant two sets of defects.
+**delay branch** per selected speaker from that null sink to the speaker's sink.
+The server builds it natively, from a `pw_main_loop` thread of its own
+(`graph_pw.rs`): the null sink is an `adapter` node its connection owns, and
+each branch is a `libpipewire-module-filter-chain` holding one builtin `delay`
+node, loaded into the server process (#81). A branch appears as two nodes:
+
+- `blue2th_delay.<n>.in`, the capture side, with `node.autoconnect = false`:
+  nothing links it on its own. The server links the combined sink's
+  `monitor_FL`/`monitor_FR` ports into its `input_FL`/`input_FR` through
+  `link-factory`, pairing ports by `audio.channel`. Those links belong to the
+  server's connection and die with it.
+- `blue2th_delay.<n>.out`, the playback side, with `target.object` set to the
+  speaker's node and `node.dont-reconnect = true`, so a speaker that goes away
+  never has its branch moved onto the PC's own speakers (#67).
+
+A branch is live only when both its monitor links and its links into the
+speaker are present; a dead one is unloaded and reloaded alone on the next
+pass. The operator view is `pw-link -l`, which shows the monitor → delay and
+delay → speaker links, and `pw-dump`, which shows `"delay:Delay (s)"` in each
+`.in` node's `Props`; `pw-top` shows what is running. Every non-empty selection
+goes through the combined sink, one speaker included; a separate
+single-speaker path once existed and was dropped because two paths meant two
+sets of defects.
 
 Classic A2DP gives two speakers no shared clock, so they drift apart by a fixed
 amount that depends on the speaker. Each branch carries a **latency offset**
-the user tunes from the phone, 0 to 750 ms, applied as that loopback's
-latency on top of a base buffer every branch gets. Offsets are remembered by
-speaker address and restored when that speaker is selected again, across
-restarts.
+the user tunes from the phone, 0 to 750 ms, applied as the delay of that
+branch's `delay` node, with nothing added (the 50 ms base of the
+`module-loopback` branches of #79 was dropped in #81). The delay node is loaded
+with a `max-delay` of 1 s, and an offset change is set on it live, as a `Props`
+parameter, without unloading anything: the other speakers are not touched.
+Each speaker is reconciled alone: a missing branch is loaded alone, an
+unwanted one unloaded alone. Every branch loaded is reloaded once more, alone,
+on the first pass at least five seconds later: a branch can come up linked and
+silent, and a second load that far after the first starts it (#75). Offsets are
+remembered by speaker address and restored when that speaker is selected
+again, across restarts.
 
 The selection is capped at two speakers. It separates the **intent** — the
 addresses the user asked to play on — from the live selection: losing a
@@ -283,8 +306,8 @@ is compared; both rules, and the defects that taught them, are in `CLAUDE.md`.
 - **`librespot` is unofficial**, requires a Premium account, and can break when
   Spotify changes its protocol. The Spotify application must list the account
   on its Development-mode allowlist, or playback fails with no visible error.
-- **The audio path runs in the server process.** The loopback branches are
-  loaded into `blue2th-server` itself (#79), so a crashed server cuts the sound
+- **The audio path runs in the server process.** The delay branches are
+  loaded into `blue2th-server` itself (#79, #81), so a crashed server cuts the sound
   at once, where the `pactl`-era modules outlived it (#78).
 - **Background listening on Android** rests on presence reports and a grace
   period rather than a foreground service.
