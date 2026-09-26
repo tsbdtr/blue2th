@@ -248,6 +248,15 @@ pub mod fake {
             self.state().new_branch_liveness = live;
         }
 
+        /// Make the loaded branch `id` report `live` from now on, as a branch
+        /// that loses its links does.
+        pub fn set_branch_liveness(&self, id: u32, live: Option<bool>) {
+            let mut state = self.state();
+            for branch in state.branches.iter_mut().filter(|b| b.loaded.id == id) {
+                branch.loaded.live = live;
+            }
+        }
+
         /// Give `sink` a volume to read back.
         pub fn set_volume(&self, sink: &str, level: f32) {
             let mut state = self.state();

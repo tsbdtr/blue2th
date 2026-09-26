@@ -1770,8 +1770,10 @@ async fn set_target_offset(
 
 /// Make a just-changed offset audible without replaying: the offset only exists
 /// as the delay of the speaker's branch, so it has to be pushed into the live
-/// PipeWire graph, where it is set on the delay node in place. Best-effort — a failure here must not turn a slider drag into an error,
-/// and the new value is applied anyway on the next `/play` or Spotify start.
+/// PipeWire graph, where it is set on the delay node in place. Best-effort — a
+/// failure here must not turn a slider drag into an error, and the next
+/// reconciliation (the repair tick, `/play`, a Spotify start) retunes the branch
+/// anyway.
 async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarget]) {
     let Some(target) = speakers.iter().find(|s| s.address == addr) else {
         return;

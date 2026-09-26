@@ -738,8 +738,8 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
 }
 
 /// The routing logic, driven through a [`Graph`] rather than against PipeWire
-/// directly (#79). It owns the two registers the reconciliation carries from one
-/// pass to the next, so two routers never see each other's history.
+/// directly (#79). It owns the confirmation register the reconciliation carries
+/// from one pass to the next, so two routers never see each other's history.
 pub struct AudioRouter {
     /// The graph every routing decision is read from and applied to.
     graph: Box<dyn Graph>,
@@ -774,7 +774,7 @@ impl AudioRouter {
             return;
         }
         tracing::info!(
-            "confirming reload of {} armed for [{}], in {} s",
+            "confirming reload of {}'s [{}] armed, due in {} s",
             sink_name,
             loaded.join(", "),
             CONFIRM_GAP.as_secs()
@@ -1014,8 +1014,10 @@ impl AudioRouter {
     /// null sink and the other speakers' branches receive no call, so whatever
     /// feeds the sink — the tone player or `librespot` — keeps streaming.
     ///
-    /// A speaker with no branch is not an error: its offset is stored by the
-    /// caller, and the branch loads with it on the next reconciliation.
+    /// A speaker whose sink is listed but carries no branch is not an error:
+    /// its offset is stored by the caller, and the branch loads with it on the
+    /// next reconciliation. A speaker whose sink is absent is an `Err`, as it
+    /// was when a retune reloaded the branch.
     pub fn retune_branch(
         &mut self,
         sink_name: &str,
@@ -1809,7 +1811,7 @@ mod tests {
     // The prefix names the loaded node only up to the `.` PipeWire puts before the
     // card index: a node that merely *opens* with the prefix is a different node,
     // the rule `sink_matching_prefix` already resolves by. A plain `starts_with`
-    // here would call that foreign loopback the branch and leave it in place.
+    // here would call that foreign branch this speaker's and leave it in place.
     #[test]
     fn test_reconcile_branches_prefix_matches_the_node_only_at_a_dot_boundary() {
         let spec = combine_sink_plan(&[SpeakerTarget {
@@ -1875,7 +1877,7 @@ mod tests {
 
     // Criterion (same one, the other side): the prefix comparison must not match
     // a different speaker's node, or a selection change would leave the wrong
-    // loopback in place and never load the right one.
+    // branch in place and never load the right one.
     #[test]
     fn test_reconcile_branches_prefix_does_not_match_another_speakers_node() {
         let spec = combine_sink_plan(&[SpeakerTarget {
@@ -2321,7 +2323,7 @@ mod tests {
     }
 
     // Criterion (moved back): a speaker dropped from the selection yields exactly
-    // one unload, naming the resolved node its loopback feeds, and never the null
+    // one unload, naming the resolved node its branch feeds, and never the null
     // sink.
     #[test]
     fn test_reconcile_branches_dropped_speaker_unloads_only_that_branch() {
@@ -2743,7 +2745,8 @@ mod router_tests {
 
     // Non-nominal: the sink list reads back naming nothing — not even the
     // combined sink the pass was entered for. A graph that names nothing
-    // describes nothing, so it is treated exactly like an unreadable list: the pass ends without unloading anything. Driven through
+    // describes nothing, so it is treated exactly like an unreadable list: the
+    // pass ends without unloading anything. Driven through
     // `reconcile_combined` directly, since the route entry point would already
     // have turned an empty list into a build.
     #[test]
@@ -3133,8 +3136,8 @@ mod router_tests {
     }
 
     // Nominal: a speaker added mid-playback is loaded alone; the branch
-    // already playing keeps its id, and since the added speaker's sink never
-    // left, no confirming reload follows.
+    // already playing keeps its id, and the pass after it, still inside the
+    // gap, touches nothing.
     #[test]
     fn test_route_added_speaker_leaves_the_playing_branch_untouched() {
         let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
@@ -3278,6 +3281,78 @@ mod router_tests {
         assert_eq!(branch_into(&fake, SINK_A), a);
     }
 
+    // Criterion (guard, only after the gap): a branch loaded again in the very
+    // pass its confirmation falls due — ruled dead, then replaced — is not
+    // reloaded milliseconds after that load, which broke a start that worked
+    // (#75). It waits for a gap of its own; the other branch owed in that
+    // pass is confirmed alone.
+    #[test]
+    fn test_route_branch_replaced_when_its_confirmation_falls_due_waits_its_own_gap() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "loading pass failed: {result:?}");
+        let a = branch_into(&fake, SINK_A);
+        let b = branch_into(&fake, SINK_B);
+
+        // A gap later both are owed, but B's branch has just died.
+        fake.set_branch_liveness(b, Some(false));
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(
+            changes,
+            vec![unload(b), load(SINK_B, 30), unload(a), load(SINK_A, 0)],
+            "B replaced once, A confirmed alone"
+        );
+        let replaced = branch_into(&fake, SINK_B);
+
+        // Its own gap later, the replacement is confirmed, and A is not again.
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(
+            result.is_ok(),
+            "pass after the replacement failed: {result:?}"
+        );
+        let changes: Vec<GraphCall> = fake.calls().into_iter().filter(changes_the_graph).collect();
+        assert_eq!(changes, vec![unload(replaced), load(SINK_B, 30)]);
+    }
+
+    // Criterion (guard, a build clears everything armed before it): a reload
+    // armed before a build is forgotten by it, even for a branch the build did
+    // not reload. The case: the combined sink vanished (a daemon restart), the
+    // build's load of B reported an error, and B's branch came up anyway — as a
+    // `PipeWireGraph` load can, when the module is kept and a later round trip
+    // fails. The next pass, a gap after the first arming but not after the
+    // build, owes nothing.
+    #[test]
+    fn test_route_build_forgets_the_reloads_armed_before_it() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "first build failed: {result:?}");
+
+        // One second later: the combined sink is gone, and B's load errs.
+        fake.remove_sink(COMBINED);
+        fake.fail_for(GraphOp::LoadBranch, SINK_B);
+        advance(&clock, Duration::from_secs(1));
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_err(), "B's load was made to fail: {result:?}");
+        fake.clear_failures();
+        let b = fake.seed_branch(COMBINED, SINK_B, 30, Some(true));
+
+        // A gap after the first build, inside the gap after the second one.
+        advance(&clock, CONFIRM_GAP - Duration::from_secs(1));
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "pass after the rebuild failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(branch_into(&fake, SINK_B), b);
+    }
+
     // Non-nominal: an empty target names no node, so it is answered without the
     // graph being read at all — not even the sink list. A read is a round trip
     // to the graph thread, and one that could only ever answer "nothing".
@@ -3292,9 +3367,11 @@ mod router_tests {
         assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
     }
 
-    // Criterion: the confirmation register and the last-pass sink list are
-    // fields of `AudioRouter` — a router that armed a rebuild, and that has seen
-    // other sinks, changes nothing for a second router in the same process.
+    // Criterion: the confirmation register is a field of `AudioRouter` — a
+    // router that armed a reload changes nothing for a second router in the
+    // same process. The second router's passes run a gap after the first
+    // router armed, so a shared register would hand them its reload: they
+    // would consume it, and the first router would then owe nothing.
     #[test]
     fn test_two_routers_do_not_share_the_confirmation_register() {
         // The first router goes through a speaker coming back, which arms it.
@@ -3315,7 +3392,8 @@ mod router_tests {
         let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
         let second_fake = FakeGraph::with_sinks(&[sink_c, COMBINED]);
         let c = second_fake.seed_branch(COMBINED, sink_c, 0, Some(true));
-        let mut second = router_on(&second_fake);
+        let (mut second, second_clock) = router_with_clock(&second_fake);
+        advance(&second_clock, CONFIRM_GAP);
         for pass in 0..2 {
             let result = second.route_for_targets(&[target("AA:BB:CC:DD:EE:03", 0)]);
             assert!(result.is_ok(), "second router, pass {pass}: {result:?}");
@@ -3334,7 +3412,7 @@ mod router_tests {
         assert!(result.is_ok(), "first router, pass 3: {result:?}");
         assert!(
             first_fake.calls().iter().any(changes_the_graph),
-            "the first router lost its armed rebuild: {:?}",
+            "the first router lost its armed reload: {:?}",
             first_fake.calls()
         );
     }

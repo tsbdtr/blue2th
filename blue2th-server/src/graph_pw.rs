@@ -369,6 +369,19 @@ fn branch_node_ids(mirror: &Mirror, id: u32) -> Vec<u32> {
         .collect()
 }
 
+/// The globals a teardown of `sink_name` destroys: both nodes of each of the
+/// graph's own `branches`, and whatever [`foreign_combined_globals`] takes.
+/// A branch's capture side targets nothing, so the foreign rule cannot find
+/// it: its nodes are named by id instead.
+pub(crate) fn teardown_globals(mirror: &Mirror, sink_name: &str, branches: &[u32]) -> Vec<u32> {
+    let mut doomed: BTreeSet<u32> = branches
+        .iter()
+        .flat_map(|id| branch_node_ids(mirror, *id))
+        .collect();
+    doomed.extend(foreign_combined_globals(mirror, sink_name));
+    doomed.into_iter().collect()
+}
+
 /// `value` as a quoted SPA-JSON string.
 fn spa_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
@@ -1218,21 +1231,6 @@ impl PwConnection {
             .map_err(pw_error("cannot bind the delay node"))
     }
 
-    /// Unload branch `id` by destroying its two stream nodes: the filter-chain
-    /// module destroys itself once its streams are gone.
-    ///
-    /// Not `pw_impl_module_destroy`: a module whose target vanished destroys
-    /// itself too, with no notice to this code, so its handle can dangle at any
-    /// time. Its nodes are looked up in the daemon's registry instead, where a
-    /// module that is gone has none left to destroy.
-    fn unload(&self, mirror: &Mirror, id: u32) {
-        let nodes = branch_node_ids(mirror, id);
-        tracing::debug!("unloading delay branch {id}: destroying nodes {nodes:?}");
-        for node in nodes {
-            self.destroy_global(node);
-        }
-    }
-
     fn destroy_global(&self, id: u32) {
         let _ = self.registry.destroy_global(id);
     }
@@ -1529,7 +1527,13 @@ impl LoopState<PwConnector> {
     /// Link `sink_name`'s monitor into branch `id`'s capture side, channel to
     /// channel, and keep the links and a proxy of that capture node with the
     /// module. Called once [`ready_to_wire`] holds on `self.mirror`.
+    ///
+    /// One attempt per branch: the wait ends before the first link, so a
+    /// branch whose links cannot be made is judged by the links it has — dead
+    /// — and reloaded by the router, rather than retried, and warned about, on
+    /// every turn of the loop until the grace runs out.
     fn wire_branch(&mut self, sink_name: &str, id: u32) -> Result<(), AudioError> {
+        self.mark_links_made(id);
         let in_name = branch_node_name(id, "in");
         let pairs = channel_port_pairs(&self.mirror, sink_name, &in_name);
         for (out_port, in_port) in pairs {
@@ -1553,7 +1557,6 @@ impl LoopState<PwConnector> {
         if let Some((_, _, module)) = self.modules.get_mut(&id) {
             module.in_node = Some(in_node);
         }
-        self.mark_links_made(id);
         let deadline = self.deadline;
         self.connection()?.roundtrip(deadline)
     }
@@ -1584,6 +1587,13 @@ impl LoopState<PwConnector> {
         }
     }
 
+    /// Unload branch `id` by destroying its two stream nodes: the filter-chain
+    /// module destroys itself once its streams are gone.
+    ///
+    /// Not `pw_impl_module_destroy`: a module whose target vanished destroys
+    /// itself too, with no notice to this code, so its handle can dangle at any
+    /// time. Its nodes are looked up in the daemon's registry instead, where a
+    /// module that is gone has none left to destroy.
     fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
         self.sync_mirror()?;
         // Dropping the module drops its link proxies first, which destroys the
@@ -1591,15 +1601,23 @@ impl LoopState<PwConnector> {
         if self.take_module(id).is_none() {
             return Err(AudioError::PipeWire(format!("no delay branch {id}")));
         }
-        let mirror = std::mem::take(&mut self.mirror);
-        self.connection()?.unload(&mirror, id);
-        self.mirror = mirror;
+        let nodes = branch_node_ids(&self.mirror, id);
+        tracing::debug!("unloading delay branch {id}: destroying nodes {nodes:?}");
+        let connection = self.connection()?;
+        for node in nodes {
+            connection.destroy_global(node);
+        }
         self.sync_mirror()
     }
 
     /// Set branch `id`'s delay on its capture node, in place: a `Props` param,
-    /// nothing unloaded (#81). The delay is recorded once the daemon has taken
-    /// the param, so the branch reports what was last applied.
+    /// nothing unloaded (#81). The delay is recorded once a round trip sent
+    /// after the param has completed, so the branch reports what was last sent.
+    ///
+    /// That round trip proves the daemon has read the param, not that the node
+    /// accepted it: a refusal comes back as a core `error` naming the node's
+    /// proxy, which the core listener does not follow — it watches
+    /// `PW_ID_CORE` only.
     fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
         let bytes = delay_props_pod(delay_ms as f32 / 1000.0)?;
         let pod = Pod::from_bytes(&bytes)
@@ -1623,16 +1641,18 @@ impl LoopState<PwConnector> {
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
         // Dropping the proxy destroys the node this connection created.
         drop(self.take_null_sink(sink_name));
-        // A partial view destroys nothing: the sync must succeed first.
+        // A partial view destroys nothing: the sync must succeed first, and
+        // the modules are only forgotten once it has.
         self.sync_mirror()?;
-        // The branches' capture sides target nothing, so the foreign-globals
-        // rule does not find them: their nodes are named by id instead.
-        let mut doomed = Vec::new();
-        for (id, _) in self.modules_for(sink_name) {
+        let branches: Vec<u32> = self
+            .modules_for(sink_name)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let doomed = teardown_globals(&self.mirror, sink_name, &branches);
+        for id in branches {
             self.take_module(id);
-            doomed.extend(branch_node_ids(&self.mirror, id));
         }
-        doomed.extend(foreign_combined_globals(&self.mirror, sink_name));
         tracing::debug!("teardown of {sink_name}: destroying globals {doomed:?}");
         let connection = self.connection()?;
         for id in doomed {
@@ -1943,10 +1963,12 @@ mod tests {
 
     // Criterion: the filter graph is one builtin `delay` whose `"Delay (s)"`
     // control is `delay_ms / 1000` written with three decimals — 0 included,
-    // which is a delay of zero and not "no branch", up to `MAX_OFFSET_MS`.
+    // which is a delay of zero and not "no branch", up to `MAX_OFFSET_MS`. The
+    // near miss: 5 ms is `0.005`, which an unpadded millisecond part writes
+    // as `0.5`, a hundred times too long.
     #[test]
     fn test_delay_chain_module_args_carries_the_offset_in_seconds() {
-        for (delay_ms, expected) in [(0, "0.000"), (120, "0.120"), (750, "0.750")] {
+        for (delay_ms, expected) in [(0, "0.000"), (5, "0.005"), (120, "0.120"), (750, "0.750")] {
             let delay = delay_node(&chain_args(SPEAKER, delay_ms, 3));
 
             assert_eq!(word(&delay, "type"), Some("builtin"), "{delay_ms} ms");
@@ -2166,6 +2188,30 @@ mod tests {
                 )],
                 "{seconds} s"
             );
+        }
+    }
+
+    // Criterion (non-nominal): a delay the branch's `delay` node cannot hold is
+    // refused before a param is built — below zero, beyond
+    // `MAX_DELAY_SECONDS`, an infinity, and NaN, which a check written as
+    // `s < 0.0 || s > MAX` lets through. The near misses: both ends of the
+    // range are accepted.
+    #[test]
+    fn test_delay_props_pod_refuses_a_delay_the_branch_cannot_hold() {
+        for seconds in [
+            -0.001_f32,
+            MAX_DELAY_SECONDS + 0.001,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            assert!(
+                matches!(delay_props_pod(seconds), Err(AudioError::PipeWire(_))),
+                "{seconds} s was accepted"
+            );
+        }
+        for seconds in [0.0_f32, MAX_DELAY_SECONDS] {
+            assert!(delay_props_pod(seconds).is_ok(), "{seconds} s was refused");
         }
     }
 
@@ -2498,6 +2544,32 @@ mod tests {
         assert!(
             !branch_liveness(&mirror, 1, COMBINED, ""),
             "a link into a nameless sink feeds no named speaker"
+        );
+    }
+
+    // ─── teardown_globals ────────────────────────────────────────────────────
+
+    // Criterion (teardown): a teardown destroys both nodes of each of
+    // the graph's own branches, found by their exact names, next to the
+    // combined sink the foreign rule takes. The near misses: branch 10, whose
+    // names open with `blue2th_delay.1`, and `blue2th_combined_old`, which
+    // opens with the combined sink's name, are spared; and without the listed
+    // ids the branches are not found at all — their capture side targets
+    // nothing, so the foreign rule alone never reaches them.
+    #[test]
+    fn test_teardown_globals_takes_the_listed_branches_and_the_combined_sink() {
+        let mirror = liveness_mirror(&[]);
+
+        assert_eq!(teardown_globals(&mirror, COMBINED, &[1]), vec![61, 90, 91]);
+        assert_eq!(
+            teardown_globals(&mirror, COMBINED, &[]),
+            vec![61],
+            "the foreign rule alone never finds a delay branch"
+        );
+        assert_eq!(
+            teardown_globals(&mirror, "", &[1]),
+            vec![90, 91],
+            "an empty sink name takes no combined sink"
         );
     }
 
@@ -3736,8 +3808,9 @@ mod tests {
 
     // Criterion: `next_module_id` announces the id `add_module` then hands out,
     // across sinks and across a lost connection. `load_branch` names the
-    // loopback's nodes `blue2th_loop.<id>` before the module is added: a
-    // mismatch would leave liveness and unload looking for another branch.
+    // branch's nodes `blue2th_delay.<id>.in` / `.out` before the module is
+    // added: a mismatch would leave liveness, the links and unload looking for
+    // another branch.
     #[test]
     fn test_loop_state_next_module_id_is_the_id_add_module_hands_out() {
         let (mut state, _) = fake_state(0);
