@@ -45,8 +45,10 @@ pub trait Graph: Send {
     fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError>;
     /// Remove the combined sink `sink_name` and every branch belonging to it.
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError>;
-    /// Make `sink` the default sink.
-    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError>;
+    /// Delete `default.configured.audio.sink` when, and only when, its value
+    /// names `sink_name` exactly (#66), and answer whether it did. Any other
+    /// value is left as it is.
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError>;
     /// The volume of `sink` as a fraction, `None` when it cannot be read.
     fn sink_volume(&mut self, sink: &str) -> Option<f32>;
     /// Set the volume of `sink` to `level`, a fraction.
@@ -61,6 +63,7 @@ pub mod fake {
 
     use super::{Graph, LoadedBranch};
     use crate::audio::{AudioError, CombineBranch};
+    use crate::graph_pw::configured_default_names;
     use std::sync::{Arc, Mutex, MutexGuard};
 
     /// One call the fake received. Reads are recorded too, so a test can assert
@@ -92,8 +95,8 @@ pub mod fake {
         Teardown {
             sink_name: String,
         },
-        SetDefaultSink {
-            sink: String,
+        ClearStaleDefaultSink {
+            sink_name: String,
         },
         SetSinkVolume {
             sink: String,
@@ -121,7 +124,7 @@ pub mod fake {
         UnloadBranch,
         SetBranchDelay,
         Teardown,
-        SetDefaultSink,
+        ClearStaleDefaultSink,
         SinkVolume,
         SetSinkVolume,
     }
@@ -146,7 +149,9 @@ pub mod fake {
         sinks: Vec<String>,
         branches: Vec<SeededBranch>,
         volumes: Vec<(String, f32)>,
-        default_sink: Option<String>,
+        /// The raw value of `default.configured.audio.sink`, as WirePlumber
+        /// stores it: `{"name":"<node>"}`, or anything else a user left there.
+        configured_default: Option<String>,
         next_id: u32,
         new_branch_liveness: Option<bool>,
         log: Vec<GraphCall>,
@@ -176,7 +181,7 @@ pub mod fake {
                     sinks: Vec::new(),
                     branches: Vec::new(),
                     volumes: Vec::new(),
-                    default_sink: None,
+                    configured_default: None,
                     next_id: 1,
                     new_branch_liveness: Some(true),
                     log: Vec::new(),
@@ -264,6 +269,12 @@ pub mod fake {
             state.volumes.push((sink.to_string(), level));
         }
 
+        /// Put `value` in `default.configured.audio.sink`, as an earlier run of
+        /// blue2th or a `wpctl set-default` left it; `None` is no key at all.
+        pub fn set_configured_default(&self, value: Option<&str>) {
+            self.state().configured_default = value.map(str::to_string);
+        }
+
         /// Fail every call to `op`.
         pub fn fail(&self, op: GraphOp) {
             self.state().rules.push(FailRule {
@@ -339,10 +350,11 @@ pub mod fake {
             self.state().sinks.clone()
         }
 
-        /// The default sink, if one was ever set.
-        pub fn default_sink(&self) -> Option<String> {
+        /// The raw value of `default.configured.audio.sink`, `None` when the
+        /// key is absent.
+        pub fn configured_default(&self) -> Option<String> {
             // Cloned out of the lock, as a snapshot.
-            self.state().default_sink.clone()
+            self.state().configured_default.clone()
         }
 
         /// How many calls were refused for carrying an empty node name.
@@ -492,20 +504,20 @@ pub mod fake {
             Ok(())
         }
 
-        fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
+        fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
             let mut state = self.state();
-            state.log.push(GraphCall::SetDefaultSink {
-                sink: sink.to_string(),
+            state.log.push(GraphCall::ClearStaleDefaultSink {
+                sink_name: sink_name.to_string(),
             });
-            state.refuse_empty(GraphOp::SetDefaultSink, &[sink])?;
-            state.check(GraphOp::SetDefaultSink, sink)?;
-            if !state.sinks.iter().any(|s| s == sink) {
-                return Err(AudioError::PipeWire(format!(
-                    "fake graph: no such sink {sink}"
-                )));
+            state.refuse_empty(GraphOp::ClearStaleDefaultSink, &[sink_name])?;
+            state.check(GraphOp::ClearStaleDefaultSink, sink_name)?;
+            // The same decision `PipeWireGraph` takes, so the fake never clears
+            // what the real graph would keep.
+            if !configured_default_names(state.configured_default.as_deref(), sink_name) {
+                return Ok(false);
             }
-            state.default_sink = Some(sink.to_string());
-            Ok(())
+            state.configured_default = None;
+            Ok(true)
         }
 
         fn sink_volume(&mut self, sink: &str) -> Option<f32> {
@@ -571,7 +583,7 @@ mod tests {
         ));
         assert!(matches!(fake.teardown(""), Err(AudioError::PipeWire(_))));
         assert!(matches!(
-            fake.set_default_sink(""),
+            fake.clear_stale_default_sink(""),
             Err(AudioError::PipeWire(_))
         ));
         assert!(matches!(
@@ -628,7 +640,7 @@ mod tests {
         fake.sinks().unwrap();
         fake.load_branch(COMBINED, SPEAKER, 50).unwrap();
         fake.branches(COMBINED).unwrap();
-        fake.set_default_sink(COMBINED).unwrap();
+        fake.set_sink_volume(SPEAKER, 0.5).unwrap();
 
         assert_eq!(
             fake.calls(),
@@ -641,8 +653,9 @@ mod tests {
                     real_sink: SPEAKER.to_string(),
                     latency_ms: 50
                 },
-                GraphCall::SetDefaultSink {
-                    sink: COMBINED.to_string()
+                GraphCall::SetSinkVolume {
+                    sink: SPEAKER.to_string(),
+                    level: 0.5
                 },
             ]
         );
@@ -747,6 +760,74 @@ mod tests {
         fake.clear_failures();
         assert!(fake.set_branch_delay(a, 120).is_ok());
         assert_eq!(fake.loaded(COMBINED)[0].branch.latency_ms, 120);
+    }
+
+    /// `default.configured.audio.sink` as `pw-metadata -n default 0` showed it
+    /// on the dev PC on 2026-09-24 and 2026-09-26, after earlier versions of
+    /// blue2th had written it (`type:'Spa:String:JSON'`).
+    const STALE_DEFAULT: &str = r#"{"name":"blue2th_combined"}"#;
+
+    // Criterion: `FakeGraph` models a configured default — seeded, read back,
+    // and cleared by `clear_stale_default_sink` when it names the sink exactly,
+    // which answers `true` and records the call. A second clear finds nothing.
+    #[test]
+    fn test_fake_graph_clears_a_configured_default_naming_the_sink() {
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        fake.set_configured_default(Some(STALE_DEFAULT));
+        assert_eq!(fake.configured_default().as_deref(), Some(STALE_DEFAULT));
+
+        assert_eq!(fake.clear_stale_default_sink(COMBINED).ok(), Some(true));
+        assert_eq!(fake.configured_default(), None);
+
+        assert_eq!(fake.clear_stale_default_sink(COMBINED).ok(), Some(false));
+        assert_eq!(
+            fake.calls(),
+            vec![
+                GraphCall::ClearStaleDefaultSink {
+                    sink_name: COMBINED.to_string()
+                },
+                GraphCall::ClearStaleDefaultSink {
+                    sink_name: COMBINED.to_string()
+                },
+            ]
+        );
+    }
+
+    // Criterion (guard, exact name): a configured default naming another sink —
+    // including one whose name merely starts with the combined sink's — is left
+    // exactly as it is, and the clear answers `false`.
+    #[test]
+    fn test_fake_graph_keeps_a_configured_default_naming_another_sink() {
+        for other in [
+            r#"{"name":"blue2th_combined_old"}"#,
+            // `default.audio.sink` on the dev PC, 2026-09-26: a real sink value.
+            r#"{"name":"bluez_output.80_99_E7_63_50_29.1"}"#,
+        ] {
+            let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+            fake.set_configured_default(Some(other));
+
+            assert_eq!(fake.clear_stale_default_sink(COMBINED).ok(), Some(false));
+            assert_eq!(fake.configured_default().as_deref(), Some(other));
+        }
+        // The near-miss's twin, which the same fake does clear.
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        fake.set_configured_default(Some(STALE_DEFAULT));
+        assert_eq!(fake.clear_stale_default_sink(COMBINED).ok(), Some(true));
+    }
+
+    // Criterion (non-nominal): a clear the graph refuses is an `Err`, and the
+    // configured default is left as it was.
+    #[test]
+    fn test_fake_graph_a_failed_clear_leaves_the_configured_default() {
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        fake.set_configured_default(Some(STALE_DEFAULT));
+        fake.fail(GraphOp::ClearStaleDefaultSink);
+
+        assert!(matches!(
+            fake.clear_stale_default_sink(COMBINED),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert_eq!(fake.configured_default().as_deref(), Some(STALE_DEFAULT));
     }
 
     // Criterion: liveness is reported as `Some(true)`, `Some(false)` or `None`.

@@ -20,7 +20,7 @@ Read the **Affected Layers** section of your prompt — review only those layers
   `foo_inner()` `#[cfg(target_os = "android")]` + non-Android fallback) and reuses
   `jni_util::env()` and its exception-clearing helper; error type `JniError`.
 - **server** — `blue2th-server` (Axum/Tokio). `src/{lib,main,bluetooth,audio}.rs`,
-  `tests/`. `bluer`/PipeWire/`rodio` are hardware-bound; the `audio.rs` no-op test
+  `tests/`. `bluer` and PipeWire (`graph_pw.rs`, `tone.rs`) are hardware-bound; the `audio.rs` no-op test
   output must keep working. Handlers propagate errors with `?`, never panic.
 - **proto** — `blue2th-proto`. **Must stay target-agnostic** — no platform/hardware deps.
 

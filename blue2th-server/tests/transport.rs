@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Integration tests for the phase 3 transport feature: route wiring,
-//! embedded-file decoding, and the gated PipeWire hardware test.
+//! Integration tests for the phase 3 transport feature: route wiring and the
+//! gated PipeWire hardware test.
 //!
 //! Route tests exercise the router in-process via `app().oneshot(...)`, mirroring
 //! the existing `test_health_endpoint_*` style. They are expected to FAIL until
@@ -33,9 +33,6 @@ fn build_app() -> axum::Router {
         AuthStore::with_token(TOKEN),
     )
 }
-
-/// Embedded test tone, read directly from the asset for the decode test.
-const TEST_TONE_WAV: &[u8] = include_bytes!("../assets/test-tone.wav");
 
 // Criterion: `GET /playback` returns the current `PlaybackState`.
 #[tokio::test]
@@ -90,61 +87,27 @@ async fn test_play_without_connected_speaker_returns_client_error() {
     );
 }
 
-// Criterion: the embedded test file decodes to non-silent PCM (verified without
-// audio output). The tone is a 2s 440Hz stereo sine at 48kHz.
-#[test]
-fn test_embedded_tone_decodes_to_non_silent_stereo_pcm() {
-    use rodio::Source;
-
-    let cursor = std::io::Cursor::new(TEST_TONE_WAV.to_vec());
-    let decoder = rodio::Decoder::new(cursor).expect("decode embedded test tone");
-
-    let channels = decoder.channels().get();
-    let sample_rate = decoder.sample_rate().get();
-
-    assert_eq!(channels, 2, "test tone must be stereo");
-    assert_eq!(sample_rate, 48_000, "test tone must be 48kHz");
-
-    // Collect samples (f32) and compute RMS; a 2s stereo 48kHz file holds about
-    // 2 * 2 * 48000 = 192000 samples.
-    let samples: Vec<f32> = decoder.collect();
-    let expected = 2usize * channels as usize * sample_rate as usize;
-    let tolerance = expected / 20; // ±5% for codec priming/padding.
-    assert!(
-        samples.len().abs_diff(expected) <= tolerance,
-        "sample count {} far from expected {}",
-        samples.len(),
-        expected
-    );
-
-    let sum_sq: f64 = samples.iter().map(|s| (*s as f64) * (*s as f64)).sum();
-    let rms = (sum_sq / samples.len() as f64).sqrt();
-    assert!(rms > 0.0, "decoded audio must be non-silent (RMS > 0)");
-}
-
-// Criterion (gated hardware): with a PipeWire `module-null-sink` set as default,
-// `AudioEngine::play` (with the real `RodioOutput`) must produce a running
-// `Stream/Output/Audio` node in the PipeWire graph. Requires a live PipeWire
-// daemon + ALSA backend, so it is ignored in CI / normal runs. Drives the engine
-// directly (not the router) to exercise the real output seam without needing a
-// connected Bluetooth speaker.
+// Criterion (gated hardware, #66): `AudioEngine::play` with the real
+// `PipeWireToneOutput` pinned to a null sink produces a running
+// `blue2th_tone` stream node, without the default sink being touched. Requires
+// a live PipeWire daemon, so it is ignored in CI / normal runs. Drives the
+// engine directly (not the router) to exercise the real output seam without
+// needing a connected Bluetooth speaker.
 #[test]
 #[ignore = "requires a live PipeWire daemon; run manually with --ignored"]
 fn test_play_streams_running_output_node_to_pipewire() {
     use std::{process::Command, time::Duration};
 
     use blue2th_proto::PlaybackStatus;
-    use blue2th_server::audio::{AudioEngine, RodioOutput};
+    use blue2th_server::{audio::AudioEngine, tone::PipeWireToneOutput};
 
-    // Remember the current default sink so we can restore it afterwards.
-    let previous_default = Command::new("pactl")
+    let default_before = Command::new("pactl")
         .args(["get-default-sink"])
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
-    // Load an in-memory null sink and make it the default playback target.
+    // An in-memory null sink the tone is pinned to; it is never made default.
     let load = Command::new("pactl")
         .args([
             "load-module",
@@ -155,12 +118,9 @@ fn test_play_streams_running_output_node_to_pipewire() {
         .expect("load module-null-sink");
     let module_id = String::from_utf8_lossy(&load.stdout).trim().to_string();
     assert!(!module_id.is_empty(), "module-null-sink failed to load");
-    let _ = Command::new("pactl")
-        .args(["set-default-sink", "blue2th_test_sink"])
-        .status();
 
-    // Drive the real rodio output.
-    let mut engine = AudioEngine::with_output(Box::new(RodioOutput::new()));
+    let mut engine =
+        AudioEngine::with_output(Box::new(PipeWireToneOutput::new("blue2th_test_sink")));
     let state = engine.play().expect("play starts the output");
     assert_eq!(state.status, PlaybackStatus::Playing);
 
@@ -168,26 +128,27 @@ fn test_play_streams_running_output_node_to_pipewire() {
     std::thread::sleep(Duration::from_millis(800));
     let dump = Command::new("pw-dump").output().expect("run pw-dump");
     let graph = String::from_utf8_lossy(&dump.stdout);
+    let default_after = Command::new("pactl")
+        .args(["get-default-sink"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
-    // Tear down before asserting so a failed assertion still restores audio.
+    // Tear down before asserting so a failed assertion still cleans up.
     let _ = engine.stop();
     let _ = Command::new("pactl")
         .args(["unload-module", &module_id])
         .status();
-    if let Some(prev) = previous_default {
-        let _ = Command::new("pactl")
-            .args(["set-default-sink", &prev])
-            .status();
-    }
 
     assert!(
-        graph.contains("Stream/Output/Audio"),
-        "no Stream/Output/Audio node found in the PipeWire graph"
+        graph.contains("\"node.name\": \"blue2th_tone\""),
+        "no blue2th_tone node found in the PipeWire graph"
     );
     assert!(
         graph.contains("\"state\": \"running\""),
         "no running node found in the PipeWire graph"
     );
+    assert_eq!(default_after, default_before, "the default sink moved");
 }
 
 // Criterion: dropping a speaker from the selection empties it and returns to

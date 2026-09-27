@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@v7
 
       # The verified list from ci.yml, copied verbatim: the server alone needs
-      # only D-Bus and ALSA, but the workspace resolves the mobile crate's host
+      # only D-Bus and PipeWire, but the workspace resolves the mobile crate's host
       # dependencies too, and a shorter list fails at link time with a message
       # that says very little. Keep the two lists identical.
       - name: Install native dependencies
@@ -78,7 +78,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
             libdbus-1-dev \
-            libasound2-dev \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
@@ -89,7 +88,11 @@ jobs:
             libclang-dev \
             clang
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The same pinned toolchain as ci.yml: a release builds with the compiler
+      # its pull requests were checked with.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -156,8 +159,9 @@ jobs:
           sdkmanager --install "build-tools;36.0.0" "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >>"$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.1
           targets: aarch64-linux-android
 
       - uses: Swatinem/rust-cache@v2

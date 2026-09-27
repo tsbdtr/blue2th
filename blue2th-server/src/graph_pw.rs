@@ -86,9 +86,9 @@ pub(crate) enum Command {
         sink_name: String,
         reply: Reply<()>,
     },
-    SetDefaultSink {
-        sink: String,
-        reply: Reply<()>,
+    ClearStaleDefaultSink {
+        sink_name: String,
+        reply: Reply<bool>,
     },
     SinkVolume {
         sink: String,
@@ -240,10 +240,10 @@ impl Graph for PipeWireGraph {
         })?
     }
 
-    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
-        named("sink", sink)?;
-        self.ask(|reply| Command::SetDefaultSink {
-            sink: sink.to_string(),
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
+        named("sink", sink_name)?;
+        self.ask(|reply| Command::ClearStaleDefaultSink {
+            sink_name: sink_name.to_string(),
             reply,
         })?
     }
@@ -624,9 +624,23 @@ pub(crate) fn foreign_combined_globals(mirror: &Mirror, sink_name: &str) -> Vec<
     selected.into_iter().collect()
 }
 
-/// The value written to `default.configured.audio.sink` to make `sink` default.
-pub(crate) fn default_sink_metadata_value(sink: &str) -> String {
-    serde_json::json!({ "name": sink }).to_string()
+/// The metadata key WirePlumber keeps the user's chosen default sink in.
+const CONFIGURED_DEFAULT_SINK_KEY: &str = "default.configured.audio.sink";
+
+/// Whether `value`, read from `default.configured.audio.sink`, names
+/// `sink_name` exactly (#66).
+///
+/// The value is read as the JSON object WirePlumber writes, `{"name": …}`, and
+/// the name is compared whole: a substring or prefix check would also match the
+/// user's own sink whose name merely contains the combined sink's.
+pub(crate) fn configured_default_names(value: Option<&str>, sink_name: &str) -> bool {
+    if sink_name.is_empty() {
+        return false;
+    }
+    let Some(parsed) = value.and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()) else {
+        return false;
+    };
+    parsed.get("name").and_then(serde_json::Value::as_str) == Some(sink_name)
 }
 
 /// The device and `Route` index carrying `sink`'s volume.
@@ -1235,8 +1249,14 @@ impl PwConnection {
         let _ = self.registry.destroy_global(id);
     }
 
-    /// Point the `default` metadata's configured sink at `sink`.
-    fn set_default_sink(&self, sink: &str, deadline: Instant) -> Result<(), AudioError> {
+    /// Delete the `default` metadata's configured sink when it names
+    /// `sink_name` exactly, and answer whether it did. Nothing else is ever
+    /// written: the server only removes a preference it left there itself.
+    fn clear_stale_default_sink(
+        &self,
+        sink_name: &str,
+        deadline: Instant,
+    ) -> Result<bool, AudioError> {
         let metadata = {
             let shared = self.shared.borrow();
             let global = shared
@@ -1255,13 +1275,30 @@ impl PwConnection {
                 .bind::<Metadata, _>(global)
                 .map_err(pw_error("cannot bind the default metadata"))?
         };
-        metadata.set_property(
-            0,
-            "default.configured.audio.sink",
-            Some("Spa:String:JSON"),
-            Some(&default_sink_metadata_value(sink)),
-        );
-        self.roundtrip(deadline)
+        // A freshly bound metadata replays every property it holds, so one
+        // round trip delivers the current value, or none when the key is absent.
+        let configured: Rc<RefCell<Option<String>>> = Rc::default();
+        let listener = metadata
+            .add_listener_local()
+            .property({
+                let configured = Rc::clone(&configured);
+                move |subject, key, _type, value| {
+                    if subject == 0 && key == Some(CONFIGURED_DEFAULT_SINK_KEY) {
+                        *configured.borrow_mut() = value.map(str::to_string);
+                    }
+                    0
+                }
+            })
+            .register();
+        let synced = self.roundtrip(deadline);
+        drop(listener);
+        synced?;
+        if !configured_default_names(configured.borrow().as_deref(), sink_name) {
+            return Ok(false);
+        }
+        metadata.set_property(0, CONFIGURED_DEFAULT_SINK_KEY, None, None);
+        self.roundtrip(deadline)?;
+        Ok(true)
     }
 
     /// Bind the device `device_id` and read its `Route` param.
@@ -1661,10 +1698,11 @@ impl LoopState<PwConnector> {
         self.sync_mirror()
     }
 
-    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
         self.sync_mirror()?;
         let deadline = self.deadline;
-        self.connection()?.set_default_sink(sink, deadline)
+        self.connection()?
+            .clear_stale_default_sink(sink_name, deadline)
     }
 
     fn sink_volume(&mut self, sink: &str) -> Option<f32> {
@@ -1733,8 +1771,8 @@ fn handle(state: &mut LoopState<PwConnector>, command: Command) {
         Command::Teardown { sink_name, reply } => {
             let _ = reply.send(state.teardown(&sink_name));
         },
-        Command::SetDefaultSink { sink, reply } => {
-            let _ = reply.send(state.set_default_sink(&sink));
+        Command::ClearStaleDefaultSink { sink_name, reply } => {
+            let _ = reply.send(state.clear_stale_default_sink(&sink_name));
         },
         Command::SinkVolume { sink, reply } => {
             let _ = reply.send(state.sink_volume(&sink));
@@ -3018,27 +3056,144 @@ mod tests {
         );
     }
 
-    // ─── default_sink_metadata_value ─────────────────────────────────────────
+    // ─── configured_default_names ────────────────────────────────────────────
 
-    // Criterion: `set_default_sink` writes `{"name": "<sink>"}` on
-    // `default.configured.audio.sink`, the JSON the session manager reads the
-    // configured default sink from.
+    /// `default.configured.audio.sink` as `pw-metadata -n default 0` showed it
+    /// on the dev PC on 2026-09-24 and 2026-09-26, left there by earlier
+    /// versions of blue2th: `update: id:0 key:'default.configured.audio.sink'
+    /// value:'{"name":"blue2th_combined"}' type:'Spa:String:JSON'`.
+    const CAPTURED_STALE_DEFAULT: &str = r#"{"name":"blue2th_combined"}"#;
+
+    /// `default.audio.sink` from the same capture, once the server had
+    /// stopped: the shape of a value naming a real speaker.
+    const CAPTURED_SPEAKER_DEFAULT: &str = r#"{"name":"bluez_output.80_99_E7_63_50_29.1"}"#;
+
+    // Criterion: the value an earlier version of blue2th left, naming the
+    // combined sink exactly, is one to clear.
     #[test]
-    fn test_default_sink_metadata_value_is_a_json_object_naming_the_sink() {
-        let value: Option<serde_json::Value> =
-            serde_json::from_str(&default_sink_metadata_value(COMBINED)).ok();
-
-        assert_eq!(value, Some(serde_json::json!({ "name": COMBINED })));
+    fn test_configured_default_names_the_combined_sink_exactly() {
+        assert!(configured_default_names(
+            Some(CAPTURED_STALE_DEFAULT),
+            COMBINED
+        ));
     }
 
-    // Criterion: the value is JSON, not a template — a name carrying a quote
-    // stays one string.
+    // Criterion (non-nominal): a configured default naming another sink — a
+    // speaker, the PC's own output — is never cleared.
     #[test]
-    fn test_default_sink_metadata_value_escapes_the_name() {
-        let value: Option<serde_json::Value> =
-            serde_json::from_str(&default_sink_metadata_value("odd\"sink")).ok();
+    fn test_configured_default_names_leaves_another_sink() {
+        assert!(!configured_default_names(
+            Some(CAPTURED_SPEAKER_DEFAULT),
+            COMBINED
+        ));
+        assert!(!configured_default_names(
+            Some(r#"{"name":"alsa_output.pci-0000_00_1f.3.analog-stereo"}"#),
+            COMBINED
+        ));
+        // The same value is recognised when it is the one asked about: the
+        // answer above depends on the name, not on the shape.
+        assert!(configured_default_names(
+            Some(CAPTURED_SPEAKER_DEFAULT),
+            "bluez_output.80_99_E7_63_50_29.1"
+        ));
+    }
 
-        assert_eq!(value, Some(serde_json::json!({ "name": "odd\"sink" })));
+    // Criterion (guard, exact name, never a prefix): a sink whose name starts
+    // with, ends with or contains the combined sink's is the user's other
+    // sink. A `starts_with` or `contains` check would clear it.
+    #[test]
+    fn test_configured_default_names_never_matches_a_longer_name() {
+        for longer in [
+            r#"{"name":"blue2th_combined_old"}"#,
+            r#"{"name":"old_blue2th_combined"}"#,
+            r#"{"name":"xblue2th_combinedx"}"#,
+        ] {
+            assert!(
+                !configured_default_names(Some(longer), COMBINED),
+                "{longer} names another sink"
+            );
+        }
+        // Nor the other way round: a shorter name is not the combined sink.
+        assert!(!configured_default_names(
+            Some(r#"{"name":"blue2th"}"#),
+            COMBINED
+        ));
+        // The exact name, in the same shape, is.
+        assert!(configured_default_names(
+            Some(r#"{"name":"blue2th_combined"}"#),
+            COMBINED
+        ));
+    }
+
+    // Criterion (non-nominal): an absent, empty or malformed value — anything
+    // that is not the JSON object WirePlumber writes — touches nothing, even
+    // when the combined sink's name appears in it verbatim.
+    #[test]
+    fn test_configured_default_names_of_a_malformed_or_absent_value_is_false() {
+        for value in [
+            None,
+            Some(""),
+            Some("not json"),
+            Some(r#"{"nom":"blue2th_combined"}"#),
+            // The bare name, and the name as a JSON string: a substring check
+            // says yes to both, a reader of `{"name": …}` to neither.
+            Some("blue2th_combined"),
+            Some(r#""blue2th_combined""#),
+            // Truncated.
+            Some(r#"{"name":"blue2th_combined""#),
+            // The name is not a string.
+            Some(r#"{"name":["blue2th_combined"]}"#),
+        ] {
+            assert!(
+                !configured_default_names(value, COMBINED),
+                "{value:?} is not a configured default naming the combined sink"
+            );
+        }
+        assert!(configured_default_names(
+            Some(CAPTURED_STALE_DEFAULT),
+            COMBINED
+        ));
+    }
+
+    /// `default.configured.audio.sink` as `wpctl set-default` writes it, with
+    /// spaces, captured with `pw-metadata -n default 0` on the dev PC on
+    /// 2026-09-27. Earlier versions of blue2th wrote the same object without
+    /// them.
+    const CAPTURED_WPCTL_DEFAULT: &str =
+        r#"{ "name": "alsa_output.pci-0000_c4_00.6.HiFi__Speaker__sink" }"#;
+
+    // The value is read as JSON, not matched as text: the spaced form
+    // `wpctl set-default` writes names a sink as surely as the compact one, so
+    // a combined sink written that way is cleared, and the PC's speakers
+    // written that way are left alone.
+    #[test]
+    fn test_configured_default_names_reads_the_spaced_form_wpctl_writes() {
+        assert!(configured_default_names(
+            Some(r#"{ "name": "blue2th_combined" }"#),
+            COMBINED
+        ));
+        assert!(!configured_default_names(
+            Some(CAPTURED_WPCTL_DEFAULT),
+            COMBINED
+        ));
+        assert!(configured_default_names(
+            Some(CAPTURED_WPCTL_DEFAULT),
+            "alsa_output.pci-0000_c4_00.6.HiFi__Speaker__sink"
+        ));
+    }
+
+    // Criterion (guard, empty sink name): two empty values must not compare
+    // equal into a deletion, and an empty name matches nothing.
+    #[test]
+    fn test_configured_default_names_of_an_empty_sink_name_is_false() {
+        assert!(!configured_default_names(Some(r#"{"name":""}"#), ""));
+        assert!(!configured_default_names(Some(CAPTURED_STALE_DEFAULT), ""));
+        assert!(!configured_default_names(None, ""));
+        // A non-empty name in the same position is answered.
+        assert!(configured_default_names(
+            Some(CAPTURED_STALE_DEFAULT),
+            COMBINED
+        ));
     }
 
     // ─── Volume on the device Route ──────────────────────────────────────────
@@ -3415,9 +3570,11 @@ mod tests {
                         log.push(format!("teardown {sink_name}"));
                         let _ = reply.send(Ok(()));
                     },
-                    Command::SetDefaultSink { sink, reply } => {
-                        log.push(format!("set_default_sink {sink}"));
-                        let _ = reply.send(Ok(()));
+                    Command::ClearStaleDefaultSink { sink_name, reply } => {
+                        log.push(format!("clear_stale_default_sink {sink_name}"));
+                        // `true`, which no stub answers: the handle must hand
+                        // back what the loop said.
+                        let _ = reply.send(Ok(true));
                     },
                     Command::SinkVolume { sink, reply } => {
                         log.push(format!("sink_volume {sink}"));
@@ -3471,7 +3628,7 @@ mod tests {
         assert!(graph.unload_branch(7).is_ok());
         assert!(graph.set_branch_delay(9, 250).is_ok());
         assert!(graph.teardown(COMBINED).is_ok());
-        assert!(graph.set_default_sink(SPEAKER).is_ok());
+        assert_eq!(graph.clear_stale_default_sink(COMBINED).ok(), Some(true));
         assert_eq!(graph.sink_volume(SPEAKER), Some(0.5));
         assert!(graph.set_sink_volume(SPEAKER, 0.25).is_ok());
 
@@ -3485,7 +3642,7 @@ mod tests {
                 "unload_branch 7".to_string(),
                 "set_branch_delay 9 250".to_string(),
                 format!("teardown {COMBINED}"),
-                format!("set_default_sink {SPEAKER}"),
+                format!("clear_stale_default_sink {COMBINED}"),
                 format!("sink_volume {SPEAKER}"),
                 format!("set_sink_volume {SPEAKER} 0.25"),
             ]
@@ -3626,7 +3783,7 @@ mod tests {
         ));
         assert!(matches!(graph.branches(""), Err(AudioError::PipeWire(_))));
         assert!(matches!(
-            graph.set_default_sink(""),
+            graph.clear_stale_default_sink(""),
             Err(AudioError::PipeWire(_))
         ));
         assert!(matches!(
@@ -3661,6 +3818,7 @@ mod tests {
         let sinks = graph.sinks();
         let teardown = graph.teardown(COMBINED);
         let retune = graph.set_branch_delay(1, 120);
+        let clear = graph.clear_stale_default_sink(COMBINED);
 
         assert!(
             matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
@@ -3670,6 +3828,10 @@ mod tests {
         assert!(
             matches!(retune, Err(AudioError::PipeWire(_))),
             "a retune goes through the loop like every command, got {retune:?}"
+        );
+        assert!(
+            matches!(clear, Err(AudioError::PipeWire(_))),
+            "a clear goes through the loop like every command, got {clear:?}"
         );
         assert_eq!(graph.sink_volume(SPEAKER), None);
         assert!(
