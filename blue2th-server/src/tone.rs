@@ -101,7 +101,8 @@ pub fn tone_frames(position: usize, count: usize) -> Vec<f32> {
 fn write_tone(out: &mut [u8], position: usize) -> usize {
     let range = tone_range(position, out.len() / TONE_STRIDE);
     let written = range.len();
-    for (frame, n) in out.chunks_exact_mut(TONE_STRIDE).zip(range) {
+    let (frames, _) = out.as_chunks_mut::<TONE_STRIDE>();
+    for (frame, n) in frames.iter_mut().zip(range) {
         let bytes = tone_sample(n).to_le_bytes();
         for sample in frame.chunks_exact_mut(bytes.len()) {
             sample.copy_from_slice(&bytes);
@@ -714,7 +715,8 @@ mod tests {
         let tone = whole_tone();
         assert_eq!(tone.len(), 192_000);
 
-        let differing = tone.chunks_exact(2).position(|frame| frame[0] != frame[1]);
+        let (frames, _) = tone.as_chunks::<2>();
+        let differing = frames.iter().position(|[left, right]| left != right);
 
         assert_eq!(differing, None, "a frame with L != R");
         assert!(peak(&tone) > 0.0, "and the channels are not both silent");
@@ -743,10 +745,8 @@ mod tests {
 
     /// The F32LE samples a buffer holds.
     fn decode(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .collect()
+        let (samples, _) = bytes.as_chunks::<4>();
+        samples.iter().map(|b| f32::from_le_bytes(*b)).collect()
     }
 
     // The buffer the stream hands the daemon holds the generator's samples in

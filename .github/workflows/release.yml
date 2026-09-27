@@ -88,7 +88,11 @@ jobs:
             libclang-dev \
             clang
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The same pinned toolchain as ci.yml: a release builds with the compiler
+      # its pull requests were checked with.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -155,8 +159,9 @@ jobs:
           sdkmanager --install "build-tools;36.0.0" "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >>"$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.1
           targets: aarch64-linux-android
 
       - uses: Swatinem/rust-cache@v2

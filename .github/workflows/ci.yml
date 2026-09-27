@@ -57,8 +57,13 @@ jobs:
             libclang-dev \
             clang
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `@stable`: a new stable release brings new clippy lints, and
+      # `-D warnings` turns them into failures a local run on an older toolchain
+      # never sees (#66's pull request failed on `chunks_exact_to_as_chunks`,
+      # new in 1.98). Bump it on purpose, with `rustup update` on the dev PC.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
