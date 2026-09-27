@@ -35,6 +35,7 @@ use pw::node::{Node, NodeListener};
 use pw::properties::PropertiesBox;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::types::ObjectType;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::audio::{AudioError, CombineBranch};
 use crate::graph::{Graph, LoadedBranch};
@@ -107,8 +108,45 @@ pub(crate) trait LoopSender: Send {
     fn send(&self, command: Command) -> Result<(), Command>;
 }
 
-/// Starts a loop thread and returns the sender into it.
-pub(crate) type SpawnLoop = Box<dyn FnMut() -> Box<dyn LoopSender> + Send>;
+/// Starts a loop thread and returns the sender into it. The argument is where
+/// that thread reports its [`GraphEvent`]s: `None` for a graph nobody watches.
+pub(crate) type SpawnLoop =
+    Box<dyn FnMut(Option<UnboundedSender<GraphEvent>>) -> Box<dyn LoopSender> + Send>;
+
+/// What the registry reports to the rest of the server (#80): a speaker's
+/// `bluez_output.*` sink appearing or vanishing, and the connection to the
+/// daemon coming back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphEvent {
+    SinkAppeared { name: String, at: Instant },
+    SinkVanished { name: String, at: Instant },
+    Reconnected,
+}
+
+/// Which registry callback a global came through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegistryChange {
+    Added,
+    Removed,
+}
+
+/// The event a registry change of a node with `props` is, if it is a speaker
+/// sink's.
+pub(crate) fn speaker_sink_event(
+    _change: RegistryChange,
+    _props: &BTreeMap<String, String>,
+    _at: Instant,
+) -> Option<GraphEvent> {
+    // Red-phase stub (#80).
+    None
+}
+
+/// How long the loop waits before its next reconnect attempt, after
+/// `failures` failed ones.
+pub(crate) fn reconnect_delay(_failures: u32) -> Duration {
+    // Red-phase stub (#80).
+    Duration::ZERO
+}
 
 /// The handle the router owns: a sender into the loop thread, and the means to
 /// start a new thread when the previous one has died.
@@ -124,12 +162,19 @@ impl PipeWireGraph {
         Self::with_loop(Box::new(spawn_loop_thread))
     }
 
+    /// Start the loop thread now, connected at once, reporting its
+    /// [`GraphEvent`]s to `events`.
+    pub fn watch(&mut self, events: UnboundedSender<GraphEvent>) {
+        // Red-phase stub (#80).
+        drop(events);
+    }
+
     /// A graph with no loop thread at all: every command errs at once, as when
     /// the thread cannot be started. It never reaches a daemon, which is what
     /// the store-free routers the integration tests build need: a graph over
     /// the session's daemon would tear down the operator's live combined sink.
     pub fn detached() -> Self {
-        Self::with_loop(Box::new(|| Box::new(NoLoop)))
+        Self::with_loop(Box::new(|_| Box::new(NoLoop)))
     }
 
     /// A graph whose loop threads are started by `spawn_loop`.
@@ -144,12 +189,12 @@ impl PipeWireGraph {
     /// replacing one that has died.
     fn send(&mut self, command: Command) -> Result<(), AudioError> {
         let spawn_loop = &mut self.spawn_loop;
-        let sender = self.sender.get_or_insert_with(|| spawn_loop());
+        let sender = self.sender.get_or_insert_with(|| spawn_loop(None));
         let Err(command) = sender.send(command) else {
             return Ok(());
         };
         // The thread is gone: a new one answers this very command.
-        let fresh = spawn_loop();
+        let fresh = spawn_loop(None);
         let sent = fresh.send(command);
         self.sender = Some(fresh);
         sent.map_err(|_| AudioError::PipeWire("the PipeWire graph thread is not running".into()))
@@ -909,7 +954,7 @@ impl LoopSender for PwLoopSender {
 }
 
 /// Start a loop thread; [`NoLoop`] when the thread cannot even be started.
-fn spawn_loop_thread() -> Box<dyn LoopSender> {
+fn spawn_loop_thread(_events: Option<UnboundedSender<GraphEvent>>) -> Box<dyn LoopSender> {
     let (sender, receiver) = pw::channel::channel::<Command>();
     match std::thread::Builder::new()
         .name("pipewire-graph".into())
@@ -998,6 +1043,8 @@ struct InProcessModule {
 #[derive(Default)]
 struct Shared {
     mirror: Mirror,
+    /// Where speaker sink events go; `None` for a graph nobody watches.
+    events: Option<UnboundedSender<GraphEvent>>,
     globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
     done: Option<i32>,
     lost: bool,
@@ -3596,7 +3643,7 @@ mod tests {
     fn test_a_command_is_answered_by_the_loop_thread() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move || {
+        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
             answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
         }));
 
@@ -3617,7 +3664,7 @@ mod tests {
     fn test_every_method_sends_its_own_command_with_its_arguments() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move || {
+        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
             answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
         }));
 
@@ -3656,7 +3703,7 @@ mod tests {
         // The receivers are kept alive and never read: the thread is "stuck".
         let parked: Arc<Mutex<Vec<mpsc::Receiver<Command>>>> = Arc::new(Mutex::new(Vec::new()));
         let keep = Arc::clone(&parked);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move || {
+        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
             let (tx, rx) = mpsc::channel::<Command>();
             keep.lock().unwrap().push(rx);
             Box::new(tx) as Box<dyn LoopSender>
@@ -3697,7 +3744,7 @@ mod tests {
     // is an error at once — a dropped reply is not a slow one.
     #[test]
     fn test_a_dropped_reply_errs_without_waiting_for_the_timeout() {
-        let mut graph = PipeWireGraph::with_loop(Box::new(|| {
+        let mut graph = PipeWireGraph::with_loop(Box::new(|_| {
             let (tx, rx) = mpsc::channel::<Command>();
             std::thread::spawn(move || {
                 // Take one command and drop it, reply sender included.
@@ -3729,7 +3776,7 @@ mod tests {
         let count = Arc::clone(&spawned);
         let received = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move || {
+        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
             if count.fetch_add(1, Ordering::SeqCst) == 0 {
                 // The first thread is already dead: its receiver is gone.
                 let (tx, rx) = mpsc::channel::<Command>();
@@ -3764,7 +3811,7 @@ mod tests {
     fn test_an_empty_name_is_refused_before_reaching_the_loop() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move || {
+        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
             answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
         }));
 
@@ -4392,6 +4439,491 @@ mod tests {
         assert!(
             kept_branch_load(3, Err(AudioError::PipeWire("sync timed out".to_string()))).is_ok(),
             "a kept branch whose follow-up failed still reports its load"
+        );
+    }
+
+    // ─── #80: speaker sink events ────────────────────────────────────────────
+    //
+    // The node names and classes below come from a live `pw-dump`, 2026-09-26/27
+    // (JBL Xtreme 3 + WH-1000XM5 on PipeWire 1.x): the two `bluez_output.*`
+    // nodes are `Audio/Sink`, `bluez_input.*` is the headset's source,
+    // `bluez_capture_internal.*` a stream, and `blue2th_delay.<n>.out` is
+    // `Stream/Output/Audio`. What no capture shows — a stream *named* like a
+    // speaker sink, or a name that is only the prefix — is synthetic, and says so.
+
+    /// The WH-1000XM5's sink, as `pw-dump` listed it.
+    const SONY_SINK: &str = "bluez_output.80_99_E7_63_50_29.1";
+    /// The JBL Xtreme 3's sink, as `pw-dump` listed it.
+    const JBL_SINK: &str = "bluez_output.2C_FD_B4_D3_AC_21.1";
+
+    fn props(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn sink_props(name: &str) -> BTreeMap<String, String> {
+        props(&[
+            ("node.name", name),
+            ("media.class", "Audio/Sink"),
+            ("device.api", "bluez5"),
+        ])
+    }
+
+    // Criterion: a `bluez_output.*` `Audio/Sink` announced by the registry is
+    // `SinkAppeared`, carrying its node name and the instant it was seen.
+    #[test]
+    fn test_speaker_sink_event_of_a_bluez_sink_added_is_sink_appeared() {
+        let at = Instant::now();
+
+        assert_eq!(
+            speaker_sink_event(RegistryChange::Added, &sink_props(JBL_SINK), at),
+            Some(GraphEvent::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at
+            })
+        );
+    }
+
+    // Criterion: the same sink removed is `SinkVanished`, never `SinkAppeared`
+    // — the two changes are not confused.
+    #[test]
+    fn test_speaker_sink_event_of_a_bluez_sink_removed_is_sink_vanished() {
+        let at = Instant::now();
+
+        assert_eq!(
+            speaker_sink_event(RegistryChange::Removed, &sink_props(SONY_SINK), at),
+            Some(GraphEvent::SinkVanished {
+                name: SONY_SINK.to_string(),
+                at
+            })
+        );
+    }
+
+    // Criterion (guard, only `bluez_output.`): an `Audio/Sink` of any other
+    // name emits nothing, added or removed. The near misses pass the class
+    // check and only the name guard excludes them: the PC's own ALSA output,
+    // and the combined null sink this server creates. The control: a speaker
+    // sink under the same class does emit.
+    #[test]
+    fn test_speaker_sink_event_ignores_a_non_bluez_sink() {
+        let at = Instant::now();
+        assert!(
+            speaker_sink_event(RegistryChange::Added, &sink_props(SONY_SINK), at).is_some(),
+            "control: a speaker sink of the same class emits"
+        );
+
+        for name in ["alsa_output.pci-0000_00_1f.3.analog-stereo", COMBINED] {
+            let near_miss = props(&[("node.name", name), ("media.class", "Audio/Sink")]);
+            for change in [RegistryChange::Added, RegistryChange::Removed] {
+                assert_eq!(
+                    speaker_sink_event(change, &near_miss, at),
+                    None,
+                    "{name} ({change:?}) is not a speaker sink"
+                );
+            }
+        }
+    }
+
+    // Criterion (guard, only `Audio/Sink`): a node named like a speaker that
+    // is not a sink emits nothing. The near miss only the class guard
+    // excludes: a `Stream/Output/Audio` named `bluez_output.<MAC>.1`
+    // (synthetic — the class of the real `blue2th_delay.<n>.out` streams, under
+    // a speaker's name). Also the real headset source and capture stream.
+    #[test]
+    fn test_speaker_sink_event_ignores_a_bluez_node_that_is_not_a_sink() {
+        let at = Instant::now();
+        assert!(
+            speaker_sink_event(RegistryChange::Added, &sink_props(SONY_SINK), at).is_some(),
+            "control: the same name as an Audio/Sink emits"
+        );
+
+        let not_sinks = [
+            props(&[
+                ("node.name", SONY_SINK),
+                ("media.class", "Stream/Output/Audio"),
+            ]),
+            props(&[("node.name", SONY_SINK)]),
+            props(&[
+                ("node.name", "bluez_input.80:99:E7:63:50:29"),
+                ("media.class", "Audio/Source"),
+            ]),
+            props(&[
+                ("node.name", "bluez_capture_internal.80:99:E7:63:50:29"),
+                ("media.class", "Stream/Input/Audio"),
+            ]),
+            props(&[
+                ("node.name", "blue2th_delay.3.out"),
+                ("media.class", "Stream/Output/Audio"),
+            ]),
+        ];
+        for near_miss in &not_sinks {
+            for change in [RegistryChange::Added, RegistryChange::Removed] {
+                assert_eq!(
+                    speaker_sink_event(change, near_miss, at),
+                    None,
+                    "{near_miss:?} ({change:?}) is not a speaker sink"
+                );
+            }
+        }
+    }
+
+    // Criterion (guard, the empty name): no event for an `Audio/Sink` whose
+    // name is empty or missing, nor for one that is the bare prefix
+    // `bluez_output.` with no address after it. The bare prefix is the near
+    // miss a plain `starts_with("bluez_output.")` accepts; it names no speaker
+    // (it is `bluez_sink_prefix("")`), so it is the empty value in the
+    // address's position. Synthetic: no capture holds such a node.
+    #[test]
+    fn test_speaker_sink_event_of_an_empty_name_is_none() {
+        let at = Instant::now();
+        assert!(
+            speaker_sink_event(RegistryChange::Added, &sink_props(JBL_SINK), at).is_some(),
+            "control: a named speaker sink emits"
+        );
+
+        let nameless = [
+            sink_props(""),
+            props(&[("media.class", "Audio/Sink")]),
+            sink_props("bluez_output."),
+        ];
+        for near_miss in &nameless {
+            for change in [RegistryChange::Added, RegistryChange::Removed] {
+                assert_eq!(
+                    speaker_sink_event(change, near_miss, at),
+                    None,
+                    "{near_miss:?} ({change:?}) names no speaker"
+                );
+            }
+        }
+    }
+
+    // Criterion: the reconnect backoff walks 1 s, 2 s, 5 s, 10 s, then 30 s for
+    // every later attempt. `failures` counts the attempts that already failed,
+    // so the first retry after the loss (`0`) waits 1 s.
+    #[test]
+    fn test_reconnect_delay_walks_one_two_five_ten_then_thirty() {
+        let delays: Vec<u64> = (0..=6).map(|f| reconnect_delay(f).as_secs()).collect();
+
+        assert_eq!(delays, vec![1, 2, 5, 10, 30, 30, 30]);
+    }
+
+    // Criterion (guard, bounded backoff): however many attempts failed, the
+    // delay is 30 s — it never overflows and never exceeds it.
+    #[test]
+    fn test_reconnect_delay_never_exceeds_thirty_seconds() {
+        assert_eq!(reconnect_delay(50), Duration::from_secs(30));
+        assert_eq!(reconnect_delay(u32::MAX), Duration::from_secs(30));
+    }
+
+    // ─── #80: the registry callbacks emit the events ─────────────────────────
+
+    /// A `Shared` whose events go to the returned receiver.
+    fn watched_shared() -> (Shared, tokio::sync::mpsc::UnboundedReceiver<GraphEvent>) {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Shared {
+            events: Some(events),
+            ..Shared::default()
+        };
+        (shared, receiver)
+    }
+
+    /// Deliver a `global` event for `id` to `shared`, as the registry listener
+    /// does. Builds real PipeWire properties: no daemon is involved.
+    fn announce(shared: &mut Shared, id: u32, type_: ObjectType, pairs: &[(&str, &str)]) {
+        let mut properties = PropertiesBox::new();
+        for (key, value) in pairs {
+            properties.insert(*key, *value);
+        }
+        let global: GlobalObject<&libspa::utils::dict::DictRef> = GlobalObject {
+            id,
+            permissions: pw::permissions::PermissionFlags::empty(),
+            type_,
+            version: 3,
+            props: Some(properties.dict()),
+        };
+        shared.add_global(&global);
+    }
+
+    /// Every event waiting in `receiver`, without waiting for more.
+    fn pending(receiver: &mut tokio::sync::mpsc::UnboundedReceiver<GraphEvent>) -> Vec<GraphEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// The name an event carries, and whether it appeared: the `at` is the
+    /// callback's own `Instant::now()`, which a test cannot name.
+    fn named_change(event: &GraphEvent) -> Option<(&'static str, String)> {
+        match event {
+            GraphEvent::SinkAppeared { name, .. } => Some(("appeared", name.clone())),
+            GraphEvent::SinkVanished { name, .. } => Some(("vanished", name.clone())),
+            GraphEvent::Reconnected => None,
+        }
+    }
+
+    // Criterion: `Shared::add_global` emits `SinkAppeared` for a speaker sink
+    // the registry announces, and still mirrors the node. The near miss in the
+    // same registry burst: a stream named like the speaker, which the mirror
+    // keeps but which emits nothing.
+    #[test]
+    fn test_add_global_of_a_speaker_sink_emits_sink_appeared() {
+        let (mut shared, mut receiver) = watched_shared();
+
+        announce(
+            &mut shared,
+            61,
+            ObjectType::Node,
+            &[
+                ("node.name", SONY_SINK),
+                ("media.class", "Stream/Output/Audio"),
+            ],
+        );
+        announce(
+            &mut shared,
+            62,
+            ObjectType::Node,
+            &[("node.name", JBL_SINK), ("media.class", "Audio/Sink")],
+        );
+
+        let events = pending(&mut receiver);
+        assert_eq!(
+            events.iter().filter_map(named_change).collect::<Vec<_>>(),
+            vec![("appeared", JBL_SINK.to_string())]
+        );
+        assert_eq!(events.len(), 1, "one event, got {events:?}");
+        assert!(shared.mirror.nodes.contains_key(&61));
+        assert!(shared.mirror.nodes.contains_key(&62));
+    }
+
+    // Criterion: `Shared::remove_global` emits `SinkVanished`, reading the
+    // node's props from the mirror **before** forgetting them — the removal
+    // itself carries only an id. Removing it first would leave nothing to
+    // read, and no event. The near miss: a non-speaker sink removed in the
+    // same burst emits nothing.
+    #[test]
+    fn test_remove_global_of_a_mirrored_speaker_sink_emits_sink_vanished() {
+        let (mut shared, mut receiver) = watched_shared();
+        shared.mirror.nodes.insert(
+            70,
+            node(&[("node.name", SONY_SINK), ("media.class", "Audio/Sink")]),
+        );
+        shared.mirror.nodes.insert(
+            71,
+            node(&[
+                ("node.name", "alsa_output.pci-0000_00_1f.3.analog-stereo"),
+                ("media.class", "Audio/Sink"),
+            ]),
+        );
+
+        shared.remove_global(71);
+        shared.remove_global(70);
+
+        let events = pending(&mut receiver);
+        assert_eq!(
+            events.iter().filter_map(named_change).collect::<Vec<_>>(),
+            vec![("vanished", SONY_SINK.to_string())]
+        );
+        assert_eq!(events.len(), 1, "one event, got {events:?}");
+        assert!(shared.mirror.nodes.is_empty(), "both nodes are forgotten");
+    }
+
+    // Criterion: a removal of an id the mirror does not know — a link, a
+    // port, or a global it never saw — emits nothing. The control: the
+    // speaker sink the mirror does know emits, in the same run.
+    #[test]
+    fn test_remove_global_of_an_unknown_id_emits_nothing() {
+        let (mut shared, mut receiver) = watched_shared();
+        shared.mirror.nodes.insert(
+            70,
+            node(&[("node.name", JBL_SINK), ("media.class", "Audio/Sink")]),
+        );
+        shared.mirror.links.insert(
+            80,
+            LinkEntry {
+                output_node: 70,
+                input_node: 12,
+            },
+        );
+
+        shared.remove_global(80);
+        shared.remove_global(999);
+        assert!(
+            pending(&mut receiver).is_empty(),
+            "a link and an unknown id emit nothing"
+        );
+
+        shared.remove_global(70);
+        assert_eq!(
+            pending(&mut receiver)
+                .iter()
+                .filter_map(named_change)
+                .collect::<Vec<_>>(),
+            vec![("vanished", JBL_SINK.to_string())],
+            "control: the mirrored speaker sink emits"
+        );
+    }
+
+    // Criterion (non-nominal): the event consumer is gone — the loop drops
+    // events silently, never blocks and never panics, and still keeps its
+    // mirror, which routing depends on.
+    #[test]
+    fn test_add_global_with_the_consumer_gone_still_mirrors_the_node() {
+        let (mut shared, receiver) = watched_shared();
+        drop(receiver);
+
+        announce(
+            &mut shared,
+            62,
+            ObjectType::Node,
+            &[("node.name", JBL_SINK), ("media.class", "Audio/Sink")],
+        );
+        shared.remove_global(62);
+        announce(
+            &mut shared,
+            63,
+            ObjectType::Node,
+            &[("node.name", JBL_SINK), ("media.class", "Audio/Sink")],
+        );
+
+        assert!(shared.mirror.nodes.contains_key(&63));
+        assert!(!shared.mirror.nodes.contains_key(&62));
+    }
+
+    // Criterion: a graph nobody watches — `detached()`, the route tests'
+    // graph — holds no sender, so its callbacks emit nothing and nothing
+    // fails for the lack of one.
+    #[test]
+    fn test_add_global_of_an_unwatched_graph_only_mirrors() {
+        let mut shared = Shared::default();
+
+        announce(
+            &mut shared,
+            62,
+            ObjectType::Node,
+            &[("node.name", JBL_SINK), ("media.class", "Audio/Sink")],
+        );
+        shared.remove_global(62);
+
+        assert!(shared.mirror.nodes.is_empty());
+    }
+
+    // ─── #80: `watch` ────────────────────────────────────────────────────────
+
+    /// A graph whose loop threads answer like a healthy graph, recording for
+    /// each thread started whether it was handed an event sender. A thread
+    /// handed one reports `Reconnected` through it, so a test can tell the
+    /// watched sender from any other.
+    fn recording_graph(handed: Arc<Mutex<Vec<bool>>>) -> PipeWireGraph {
+        PipeWireGraph::with_loop(Box::new(
+            move |events: Option<UnboundedSender<GraphEvent>>| {
+                handed.lock().unwrap().push(events.is_some());
+                if let Some(events) = events {
+                    let _ = events.send(GraphEvent::Reconnected);
+                }
+                answering_loop(vec![SPEAKER.to_string()], Arc::new(Mutex::new(Vec::new())))
+            },
+        ))
+    }
+
+    // Criterion: `watch` starts the loop thread at once — no command needed —
+    // and hands it the sender it was given, so the thread's events reach
+    // that receiver. Checked on the handle's state, not by timing.
+    #[test]
+    fn test_watch_starts_the_loop_thread_at_once_with_the_event_sender() {
+        let handed = Arc::new(Mutex::new(Vec::new()));
+        let mut graph = recording_graph(Arc::clone(&handed));
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        graph.watch(events);
+
+        assert!(
+            graph.sender.is_some(),
+            "the loop thread was started by watch"
+        );
+        assert_eq!(
+            *handed.lock().unwrap(),
+            vec![true],
+            "one thread, handed the sender"
+        );
+        assert_eq!(receiver.try_recv().ok(), Some(GraphEvent::Reconnected));
+
+        // A command reuses the thread `watch` started.
+        assert!(graph.sinks().is_ok());
+        assert_eq!(handed.lock().unwrap().len(), 1, "no second thread");
+    }
+
+    // Criterion: a watched graph keeps reporting after its thread died — the
+    // thread started in its place is handed the same sender. Without it, the
+    // events would stop for good after the first thread's death.
+    #[test]
+    fn test_a_loop_thread_replacing_a_dead_one_keeps_the_event_sender() {
+        let handed = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&handed);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let mut graph = PipeWireGraph::with_loop(Box::new(
+            move |events: Option<UnboundedSender<GraphEvent>>| {
+                record.lock().unwrap().push(events.is_some());
+                if starts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // The first thread dies at once: its receiver is gone.
+                    let (tx, rx) = mpsc::channel::<Command>();
+                    drop(rx);
+                    return Box::new(tx) as Box<dyn LoopSender>;
+                }
+                if let Some(events) = events {
+                    let _ = events.send(GraphEvent::Reconnected);
+                }
+                answering_loop(vec![SPEAKER.to_string()], Arc::new(Mutex::new(Vec::new())))
+            },
+        ));
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        graph.watch(events);
+        let answer = graph.sinks();
+
+        assert_eq!(answer.ok(), Some(vec![SPEAKER.to_string()]));
+        assert_eq!(
+            *handed.lock().unwrap(),
+            vec![true, true],
+            "the dead thread and its replacement were both handed the sender"
+        );
+        assert_eq!(receiver.try_recv().ok(), Some(GraphEvent::Reconnected));
+    }
+
+    // Criterion: a graph nobody watches hands its loop thread no event sender,
+    // and still starts it only on the first command (#79).
+    #[test]
+    fn test_an_unwatched_graph_hands_its_loop_no_event_sender() {
+        let handed = Arc::new(Mutex::new(Vec::new()));
+        let mut graph = recording_graph(Arc::clone(&handed));
+        assert!(graph.sender.is_none(), "nothing started before a command");
+
+        assert!(graph.sinks().is_ok());
+
+        assert_eq!(*handed.lock().unwrap(), vec![false]);
+    }
+
+    // Criterion: `detached()` emits nothing, even watched, and reaches no
+    // daemon: its commands still err at once. The control that the channel
+    // works at all is the watch test above.
+    #[test]
+    fn test_detached_graph_watched_emits_nothing() {
+        let mut graph = PipeWireGraph::detached();
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        graph.watch(events);
+        let sinks = graph.sinks();
+
+        assert!(
+            matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
+            "got {sinks:?}"
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "no event from a detached graph"
         );
     }
 }

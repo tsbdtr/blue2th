@@ -19,6 +19,7 @@ use std::{
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
 
 use crate::graph::{Graph, LoadedBranch};
+use crate::graph_pw::GraphEvent;
 
 /// Clamp a requested volume into the valid `0.0..=1.0` range.
 ///
@@ -391,6 +392,33 @@ pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 /// confirmed, not only a speaker that came back.
 pub const CONFIRM_GAP: Duration = BRANCH_REPAIR_TICK;
 
+/// How often the safety-net repair pass runs (#80).
+// Red-phase stub (#80): still the old tick.
+pub const SAFETY_NET_TICK: Duration = BRANCH_REPAIR_TICK;
+
+/// What woke a repair pass (#80).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PassReason {
+    SinkAppeared { name: String, at: Instant },
+    SinkVanished { name: String },
+    ConfirmationDue,
+    SafetyNet,
+    Reconnected,
+}
+
+impl std::fmt::Display for PassReason {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Red-phase stub (#80).
+        Ok(())
+    }
+}
+
+/// The reason `event` wakes a repair pass for `selection`, if it does.
+pub fn wake_for(_event: &GraphEvent, _selection: &[SpeakerTarget]) -> Option<PassReason> {
+    // Red-phase stub (#80).
+    None
+}
+
 /// What a selection change has to do to an already-loaded combined sink: the
 /// branches to load, the loaded ones to retune in place, and the loaded ones to
 /// unload.
@@ -486,6 +514,12 @@ impl ConfirmationRegister {
     /// Forget every armed reload: a graph built from nothing owes none of them.
     fn clear(&mut self) {
         self.due.clear();
+    }
+
+    /// When the earliest armed reload falls due; `None` when nothing is armed.
+    fn next_due(&self) -> Option<Instant> {
+        // Red-phase stub (#80).
+        None
     }
 }
 
@@ -599,6 +633,12 @@ impl AudioRouter {
             confirmation: ConfirmationRegister::default(),
             clock,
         }
+    }
+
+    /// When the earliest confirming reload falls due; `None` when none is armed.
+    pub fn next_confirmation_due(&self) -> Option<Instant> {
+        // Red-phase stub (#80).
+        None
     }
 
     /// Arm the confirming reload of every branch a pass has just loaded.
@@ -2170,6 +2210,313 @@ mod tests {
         assert!(register.take_due(loaded + CONFIRM_GAP).is_empty());
     }
 
+    // ─── #80: the confirmation timer's due time ──────────────────────────────
+
+    // Criterion: `next_due` is `None` while nothing is armed — a fresh
+    // register, and one armed only with an empty name, which arms nothing.
+    // The control: a named sink armed makes it `Some`.
+    #[test]
+    fn test_confirmation_register_next_due_is_none_when_nothing_is_armed() {
+        let mut register = ConfirmationRegister::default();
+        let loaded = Instant::now();
+        assert_eq!(register.next_due(), None, "a fresh register");
+
+        register.arm(&names(&[""]), loaded);
+        assert_eq!(register.next_due(), None, "an empty name arms nothing");
+
+        register.arm(&names(&["bluez_output.A"]), loaded);
+        assert!(
+            register.next_due().is_some(),
+            "control: a named sink is armed"
+        );
+    }
+
+    // Criterion: `next_due` is the **earliest** armed time plus `CONFIRM_GAP`,
+    // not the first armed: here A is armed first but later in time, so an
+    // answer read from the arming order is off by three seconds. Arming B
+    // again restarts its wait, and the earliest becomes A's.
+    #[test]
+    fn test_confirmation_register_next_due_is_the_earliest_armed_plus_the_gap() {
+        let mut register = ConfirmationRegister::default();
+        let start = Instant::now();
+        register.arm(&names(&["bluez_output.A"]), start + Duration::from_secs(3));
+        register.arm(&names(&["bluez_output.B"]), start);
+
+        assert_eq!(register.next_due(), Some(start + CONFIRM_GAP));
+
+        register.arm(&names(&["bluez_output.B"]), start + Duration::from_secs(4));
+        assert_eq!(
+            register.next_due(),
+            Some(start + Duration::from_secs(3) + CONFIRM_GAP),
+            "B's wait restarted, so A's reload comes first"
+        );
+    }
+
+    // Criterion: once a due sink is taken, `next_due` moves on to the next one
+    // still armed, and to `None` once every reload was handed out — a
+    // confirming reload does not arm itself.
+    #[test]
+    fn test_confirmation_register_next_due_moves_on_once_a_due_sink_is_taken() {
+        let mut register = ConfirmationRegister::default();
+        let first = Instant::now();
+        let second = first + Duration::from_secs(2);
+        register.arm(&names(&["bluez_output.A"]), first);
+        register.arm(&names(&["bluez_output.B"]), second);
+
+        assert_eq!(
+            register.take_due(first + CONFIRM_GAP),
+            names(&["bluez_output.A"])
+        );
+        assert_eq!(register.next_due(), Some(second + CONFIRM_GAP));
+
+        assert_eq!(
+            register.take_due(second + CONFIRM_GAP),
+            names(&["bluez_output.B"])
+        );
+        assert_eq!(register.next_due(), None);
+    }
+
+    // Criterion (guard, the gap does not follow the tick): `CONFIRM_GAP` is
+    // 5 s while the safety net ticks every 30 s. A derivation left in place
+    // would make the gap 30 s and delay #81's remedy sixfold.
+    #[test]
+    fn test_confirm_gap_stays_five_seconds_whatever_the_tick() {
+        assert_eq!(CONFIRM_GAP, Duration::from_secs(5));
+        assert_ne!(
+            CONFIRM_GAP, SAFETY_NET_TICK,
+            "the gap no longer derives from the tick"
+        );
+    }
+
+    // Criterion: the safety net ticks every 30 s, longer than the gap: the
+    // confirmation has a timer of its own and never waits for the net.
+    #[test]
+    fn test_safety_net_tick_is_thirty_seconds_and_longer_than_the_gap() {
+        assert_eq!(SAFETY_NET_TICK, Duration::from_secs(30));
+        assert!(SAFETY_NET_TICK > CONFIRM_GAP);
+    }
+
+    // ─── #80: which events wake a repair pass ────────────────────────────────
+
+    /// The JBL Xtreme 3 and the WH-1000XM5, as #81's manual verification and a
+    /// live `pw-dump` (2026-09-26/27) named them.
+    const JBL: &str = "2C:FD:B4:D3:AC:21";
+    const JBL_SINK: &str = "bluez_output.2C_FD_B4_D3_AC_21.1";
+    const SONY: &str = "80:99:E7:63:50:29";
+    const SONY_SINK: &str = "bluez_output.80_99_E7_63_50_29.1";
+
+    fn selected(macs: &[&str]) -> Vec<SpeakerTarget> {
+        macs.iter()
+            .map(|mac| SpeakerTarget {
+                address: mac.to_string(),
+                offset_ms: 0,
+            })
+            .collect()
+    }
+
+    fn appeared(name: &str, at: Instant) -> GraphEvent {
+        GraphEvent::SinkAppeared {
+            name: name.to_string(),
+            at,
+        }
+    }
+
+    fn vanished(name: &str, at: Instant) -> GraphEvent {
+        GraphEvent::SinkVanished {
+            name: name.to_string(),
+            at,
+        }
+    }
+
+    // Criterion: a sink event wakes a pass when a selected speaker's
+    // `bluez_sink_prefix` names that sink — both ways, appearing and
+    // vanishing. The address is mapped through `bluez_sink_prefix`, so a
+    // selection holding it in lower case still names the upper-case node.
+    #[test]
+    fn test_wake_for_wakes_for_a_selected_speakers_sink() {
+        let at = Instant::now();
+        let selection = selected(&[SONY, JBL]);
+
+        assert!(wake_for(&appeared(JBL_SINK, at), &selection).is_some());
+        assert_eq!(
+            wake_for(&vanished(SONY_SINK, at), &selection),
+            Some(PassReason::SinkVanished {
+                name: SONY_SINK.to_string()
+            })
+        );
+        assert!(
+            wake_for(&appeared(JBL_SINK, at), &selected(&["2c:fd:b4:d3:ac:21"])).is_some(),
+            "a lower-case address names the same sink"
+        );
+    }
+
+    // Criterion (non-nominal): an event for a sink no selected speaker names —
+    // an unselected speaker, the PC's own output — wakes nothing. The control:
+    // the selected speaker's own sink, in the same selection, wakes.
+    #[test]
+    fn test_wake_for_ignores_a_sink_no_selected_speaker_names() {
+        let at = Instant::now();
+        let selection = selected(&[SONY]);
+        assert!(
+            wake_for(&appeared(SONY_SINK, at), &selection).is_some(),
+            "control: the selected speaker's sink wakes"
+        );
+
+        assert_eq!(wake_for(&appeared(JBL_SINK, at), &selection), None);
+        assert_eq!(wake_for(&vanished(JBL_SINK, at), &selection), None);
+        assert_eq!(
+            wake_for(
+                &appeared("alsa_output.pci-0000_00_1f.3.analog-stereo", at),
+                &selection
+            ),
+            None
+        );
+    }
+
+    // Criterion (guard, exact sink, never a longer address): a selection
+    // holding `AA:BB:CC:DD:EE:01` does not wake for a sink whose address only
+    // starts the same. Both near misses pass a bare `starts_with` of the
+    // prefix; only #81's `.` boundary rejects them. The controls: the exact
+    // prefix and the prefix followed by `.` wake.
+    #[test]
+    fn test_wake_for_does_not_take_a_longer_address_for_a_selected_one() {
+        let at = Instant::now();
+        let selection = selected(&["AA:BB:CC:DD:EE:01"]);
+        assert!(wake_for(
+            &appeared("bluez_output.AA_BB_CC_DD_EE_01.1", at),
+            &selection
+        )
+        .is_some());
+        assert!(wake_for(&appeared("bluez_output.AA_BB_CC_DD_EE_01", at), &selection).is_some());
+
+        for longer in [
+            "bluez_output.AA_BB_CC_DD_EE_01_02.1",
+            "bluez_output.AA_BB_CC_DD_EE_010.1",
+        ] {
+            assert_eq!(
+                wake_for(&appeared(longer, at), &selection),
+                None,
+                "{longer} is another speaker"
+            );
+            assert_eq!(wake_for(&vanished(longer, at), &selection), None);
+        }
+    }
+
+    // Criterion (guard, the empty value): an empty selection wakes nothing —
+    // no sink event, and not `Reconnected` either: with nothing selected the
+    // pass has nothing to repair. The control: the same events with a
+    // selection wake.
+    #[test]
+    fn test_wake_for_of_an_empty_selection_wakes_nothing() {
+        let at = Instant::now();
+        let events = [
+            appeared(SONY_SINK, at),
+            vanished(SONY_SINK, at),
+            GraphEvent::Reconnected,
+        ];
+
+        for event in &events {
+            assert!(
+                wake_for(event, &selected(&[SONY])).is_some(),
+                "control: {event:?} wakes with a selection"
+            );
+            assert_eq!(
+                wake_for(event, &[]),
+                None,
+                "{event:?} with nothing selected"
+            );
+        }
+    }
+
+    // Criterion: `Reconnected` always wakes a pass, whichever speakers are
+    // selected — the registry was re-read, so every branch may be gone.
+    #[test]
+    fn test_wake_for_always_wakes_on_reconnected() {
+        for selection in [selected(&[SONY]), selected(&[JBL]), selected(&[SONY, JBL])] {
+            assert_eq!(
+                wake_for(&GraphEvent::Reconnected, &selection),
+                Some(PassReason::Reconnected)
+            );
+        }
+    }
+
+    // Criterion: the reason carries the event's sink name and time, so the
+    // pass line can say what woke it and how long after. Two speakers are
+    // selected, so a name taken from the selection instead of the event shows.
+    #[test]
+    fn test_wake_for_carries_the_sink_name_and_time() {
+        let at = Instant::now();
+        let selection = selected(&[SONY, JBL]);
+
+        assert_eq!(
+            wake_for(&appeared(JBL_SINK, at), &selection),
+            Some(PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at
+            })
+        );
+        assert_eq!(
+            wake_for(&vanished(JBL_SINK, at), &selection),
+            Some(PassReason::SinkVanished {
+                name: JBL_SINK.to_string()
+            })
+        );
+    }
+
+    // Criterion (non-nominal, `restore_during_playback = false`): a speaker
+    // that dropped off during playback stays in the intent but is not
+    // re-selected, so its returning sink wakes nothing and it does not start
+    // playing under the user's hands. The near miss: the speaker is in the
+    // intent — a filter read from the intent would wake. The control: the
+    // speaker still selected wakes.
+    #[test]
+    fn test_wake_for_ignores_a_returning_speaker_left_out_of_the_selection() {
+        let at = Instant::now();
+        let both = vec![SONY.to_string(), JBL.to_string()];
+        let mut targets = crate::targets::SpeakerTargets::new();
+        targets.select(SONY, &both).unwrap();
+        targets.select(JBL, &both).unwrap();
+        // The JBL is switched off: pruned from the selection, kept in the intent.
+        targets.retain_connected(&[SONY.to_string()]);
+        assert!(targets.intended().contains(&JBL.to_string()));
+
+        assert_eq!(wake_for(&appeared(JBL_SINK, at), &targets.speakers()), None);
+        assert!(
+            wake_for(&appeared(SONY_SINK, at), &targets.speakers()).is_some(),
+            "control: the speaker still selected wakes"
+        );
+    }
+
+    // Criterion: every pass logs what woke it — a sink appeared or vanished
+    // with its name, the confirmation came due, the safety net, or a
+    // reconnection. Five reasons, five distinct renderings, and the sink
+    // events name their sink.
+    #[test]
+    fn test_pass_reason_names_what_woke_the_pass() {
+        let reasons = [
+            PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: Instant::now(),
+            },
+            PassReason::SinkVanished {
+                name: SONY_SINK.to_string(),
+            },
+            PassReason::ConfirmationDue,
+            PassReason::SafetyNet,
+            PassReason::Reconnected,
+        ];
+        let lines: Vec<String> = reasons.iter().map(|r| r.to_string()).collect();
+
+        assert!(lines[0].contains(JBL_SINK), "got {:?}", lines[0]);
+        assert!(lines[1].contains(SONY_SINK), "got {:?}", lines[1]);
+        for (i, line) in lines.iter().enumerate() {
+            assert!(!line.is_empty(), "reason {i} renders as nothing");
+            for other in &lines[i + 1..] {
+                assert_ne!(line, other, "two reasons read the same");
+            }
+        }
+    }
+
     // Criterion: with every selected speaker switched off, nothing is reachable —
     // and the reconciliation asks for no rebuild at all rather than for the whole
     // selection. Asking would spawn a load per tick for nodes that do not exist.
@@ -3725,5 +4072,36 @@ mod router_tests {
             sink: SINK_A.to_string()
         }));
         assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion (#80): the router exposes when its earliest confirming reload
+    // falls due — nothing before a load, the load's time plus `CONFIRM_GAP`
+    // after it, and nothing again once the reload ran, since a confirming
+    // reload does not arm itself.
+    #[test]
+    fn test_router_next_confirmation_due_follows_the_branch_it_loaded() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let loaded_at = *clock.lock().unwrap();
+        assert_eq!(router.next_confirmation_due(), None, "nothing loaded yet");
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "the load failed: {result:?}");
+        assert_eq!(fake.calls(), vec![load(SINK_A, 0)]);
+        assert_eq!(
+            router.next_confirmation_due(),
+            Some(loaded_at + CONFIRM_GAP)
+        );
+
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "the reload failed: {result:?}");
+        assert!(
+            fake.calls().contains(&load(SINK_A, 0)),
+            "control: the reload ran, got {:?}",
+            fake.calls()
+        );
+        assert_eq!(router.next_confirmation_due(), None);
     }
 }
