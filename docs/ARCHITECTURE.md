@@ -161,6 +161,17 @@ goes through the combined sink, one speaker included; a separate
 single-speaker path once existed and was dropped because two paths meant two
 sets of defects.
 
+The server **never writes the PC's default sink** (#66): the sources are pinned
+to the combined sink rather than routed to it through the default. `librespot`
+gets the combined sink as its `--device`; the test tone is a PipeWire stream the
+server generates itself (`tone.rs`), a 440 Hz sine named `blue2th_tone` with
+`target.object` set to the combined sink and `node.dont-reconnect = true`, so a
+torn-down combined sink never has the tone moved onto the PC's own speakers. The
+rest of the desktop's sound stays on whatever default the user chose. The only
+default the server ever touches is a `default.configured.audio.sink` naming the
+combined sink exactly, which earlier versions left behind: the first build
+deletes it.
+
 Classic A2DP gives two speakers no shared clock, so they drift apart by a fixed
 amount that depends on the speaker. Each branch carries a **latency offset**
 the user tunes from the phone, 0 to 750 ms, applied as the delay of that

@@ -11,7 +11,7 @@ name: PR title
 #
 # ci.yml cannot simply add `edited`: it carries `cancel-in-progress`, so every
 # edit to a title *or a description* would cancel the running build and restart a
-# job matrix that installs the GTK/WebKit and D-Bus/ALSA stacks. This check is a
+# job matrix that installs the GTK/WebKit and D-Bus/PipeWire stacks. This check is a
 # checkout and a grep, so it gets its own trigger and its own concurrency group.
 
 on:

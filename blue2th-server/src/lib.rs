@@ -52,7 +52,7 @@ pub mod targets;
 pub mod tone;
 pub mod watchdog;
 
-use audio::{AudioEngine, AudioError, AudioRouter, RodioOutput};
+use audio::{AudioEngine, AudioError, AudioRouter};
 use auth::AuthStore;
 use spotify::{SpotifyBackend, SpotifyError};
 use spotify_auth::{SpotifyApiError, SpotifyAuth, Transport};
@@ -710,10 +710,11 @@ fn app_with_auth_and_targets(
     let mut volume_policy = spotify_volume::Policy::new();
     volume_policy.set_lock(server_name.spotify_volume_lock());
     let state = AppState {
-        // Real playback output (rodio → PipeWire); the device is opened lazily on
-        // the first `/play`, so building the router stays cheap and CI-safe.
+        // Real playback output: a PipeWire stream pinned to the combined sink
+        // (#66). It connects lazily on the first `/play`, so building the router
+        // stays cheap and CI-safe.
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
-            RodioOutput::new(),
+            tone::PipeWireToneOutput::new(spotify::COMBINED_SINK_NAME),
         )))),
         router: Arc::new(Mutex::new(AudioRouter::new(graph))),
         targets: Arc::new(Mutex::new(speaker_targets)),
@@ -1081,7 +1082,7 @@ fn spawn_idle_watchdog(state: AppState) {
     });
 }
 
-/// `POST /play` — start (or resume) playback of the embedded test file, routed
+/// `POST /play` — start (or resume) playback of the test tone, routed
 /// through the PipeWire combined sink spanning the current target selection. An
 /// empty selection (`Idle`) is rejected (4xx).
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {

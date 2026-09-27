@@ -17,7 +17,7 @@ A single **cargo workspace** with three layers (design record in `docs/ARCHITECT
   JNI left is `jni_util.rs` (multicast lock) and `lifecycle.rs` (presence hooks).
   The workspace root holds no package of its own — it is a virtual manifest.
 - **server** — `blue2th-server`: Axum/Tokio backend on the Linux PC. Drives BlueZ
-  (`bluer`) and audio (`rodio`/PipeWire). This is where the audio engine lives.
+  (`bluer`) and audio (PipeWire). This is where the audio engine lives.
 - **proto** — `blue2th-proto`: serde DTOs shared by mobile and server. **Must stay
   target-agnostic** — no platform or hardware dependencies, ever.
 

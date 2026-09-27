@@ -1,36 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! PC backend audio engine: rodio sink lifecycle (play/pause/stop), PipeWire
-//! sink volume, and the shared playback state.
+//! PC backend audio engine: the test tone's lifecycle (play/pause/stop),
+//! PipeWire sink volume, and the shared playback state.
 //!
-//! Phase 3 uses `rodio` (which decodes via `symphonia`) as a disposable test
-//! source; the decoded stream goes to PipeWire, which routes it to the
-//! connected speaker's sink. Volume targets the PipeWire sink, not rodio's
-//! internal gain, so it is reused unchanged once the source becomes
-//! `librespot` in phase 5.
+//! The test tone is a PipeWire stream pinned to the combined sink (see
+//! [`crate::tone`]), so the PC's default sink is never written (#66). Volume
+//! targets each speaker's PipeWire device, not the source, so the same path
+//! serves `librespot`.
 //!
 //! Kept behind a small interface (this module) so the audio engine can be
 //! swapped out later without touching the route layer.
 
 use std::{
     cell::RefCell,
-    io::Cursor,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
-        Arc,
-    },
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
+
+// The test modules reach `Arc` through `super::*`; production code no longer
+// shares anything across threads here since the output moved to `tone` (#66).
+#[cfg(test)]
+use std::sync::Arc;
 
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
 
 use crate::graph::{Graph, LoadedBranch};
-
-/// The embedded test tone shipped with the backend (2s 440Hz stereo sine,
-/// 48kHz PCM 16-bit).
-pub const TEST_TONE_WAV: &[u8] = include_bytes!("../assets/test-tone.wav");
 
 /// Clamp a requested volume into the valid `0.0..=1.0` range.
 ///
@@ -83,9 +76,8 @@ pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
 }
 
 /// Pluggable audio output. The engine drives the state machine and delegates the
-/// actual sound to an implementation of this trait, so the rodio test source can
-/// be swapped for `librespot` in phase 5 and so tests can run without an audio
-/// device. `Send` is required because the engine lives behind an
+/// actual sound to an implementation of this trait, so tests can run without an
+/// audio device. `Send` is required because the engine lives behind an
 /// `Arc<Mutex<_>>` shared across async tasks.
 pub trait AudioOutput: Send {
     /// Begin streaming the test tone from its start (fresh playback).
@@ -143,7 +135,7 @@ impl AudioEngine {
     }
 
     /// A fresh, stopped engine at full volume driving the given output. The
-    /// router uses this with [`RodioOutput`] for real playback.
+    /// router uses this with [`crate::tone::PipeWireToneOutput`] for real playback.
     pub fn with_output(output: Box<dyn AudioOutput>) -> Self {
         Self {
             status: PlaybackStatus::Stopped,
@@ -152,7 +144,7 @@ impl AudioEngine {
         }
     }
 
-    /// Start (or resume) playback of the embedded test file. Idempotent while
+    /// Start (or resume) playback of the test tone. Idempotent while
     /// already playing.
     ///
     /// This drives only the in-memory state machine and the (host-gated) audio
@@ -196,10 +188,12 @@ impl AudioEngine {
         self.playback_state()
     }
 
-    /// If the output finished playing on its own while we still believe we are
-    /// `Playing`, fall back to `Stopped`.
+    /// If the output finished on its own — the tone played out, or its stream
+    /// lost its target — while we still believe we are `Playing` or `Paused`,
+    /// fall back to `Stopped`, so the next play starts it afresh rather than
+    /// resuming a stream that is gone (#66).
     fn reconcile(&mut self) {
-        if self.status == PlaybackStatus::Playing && self.output.is_finished() {
+        if self.status != PlaybackStatus::Stopped && self.output.is_finished() {
             self.status = PlaybackStatus::Stopped;
         }
     }
@@ -223,10 +217,10 @@ impl AudioEngine {
     // --- Output seam ---------------------------------------------------------
     //
     // These delegate to the pluggable `AudioOutput`. `NullOutput` makes them
-    // no-ops (tests, no audio device); `RodioOutput` performs real playback and
-    // sets the PipeWire sink volume.
+    // no-ops (tests, no audio device); `PipeWireToneOutput` performs real
+    // playback.
 
-    /// Begin streaming the embedded tone to the connected speaker's sink.
+    /// Begin streaming the test tone into the combined sink.
     fn start_output(&mut self) -> Result<(), AudioError> {
         self.output.start()
     }
@@ -275,162 +269,6 @@ impl std::fmt::Display for AudioError {
 }
 
 impl std::error::Error for AudioError {}
-
-/// Commands sent to the dedicated audio thread. The cpal output stream is
-/// `!Send`, so it must stay on a single thread; the engine talks to it over this
-/// channel instead of holding it directly.
-enum AudioCmd {
-    /// Start fresh playback of `tone`; the reply reports whether the device
-    /// opened and the tone decoded.
-    Play {
-        tone: &'static [u8],
-        reply: SyncSender<Result<(), String>>,
-    },
-    Pause,
-    Resume,
-    Stop,
-}
-
-/// Real audio output: streams the decoded tone to the default PipeWire sink via
-/// rodio (cpal → ALSA → PipeWire) on a dedicated thread. It sets no volume of its
-/// own: `POST /volume` goes through [`AudioRouter::set_sink_volume`], which writes
-/// each speaker's device `Route`. The thread and device are created lazily on the first
-/// `start`, so constructing this (e.g. when the router is built) never touches an
-/// audio device — important for CI / hosts without PipeWire.
-#[derive(Default)]
-pub struct RodioOutput {
-    tx: Option<Sender<AudioCmd>>,
-    handle: Option<JoinHandle<()>>,
-    /// Set by the audio thread when the current playback reaches its end on its
-    /// own; read by `is_finished` so the engine can return to `Stopped`.
-    ended: Arc<AtomicBool>,
-}
-
-impl RodioOutput {
-    /// Create an output that opens no device until the first `start`.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Send a command to the audio thread, spawning it lazily on first use and
-    /// mapping a dead thread to an error.
-    fn send(&mut self, cmd: AudioCmd) -> Result<(), AudioError> {
-        if self.tx.is_none() {
-            let (tx, rx) = mpsc::channel::<AudioCmd>();
-            // Share the end-of-playback flag with the thread.
-            let ended = Arc::clone(&self.ended);
-            self.handle = Some(std::thread::spawn(move || run_audio_thread(rx, ended)));
-            self.tx = Some(tx);
-        }
-        match &self.tx {
-            Some(tx) => tx
-                .send(cmd)
-                .map_err(|_| AudioError::PipeWire("audio thread is not running".to_string())),
-            None => Err(AudioError::PipeWire("audio thread unavailable".to_string())),
-        }
-    }
-}
-
-impl AudioOutput for RodioOutput {
-    fn start(&mut self) -> Result<(), AudioError> {
-        let (reply, reply_rx) = mpsc::sync_channel::<Result<(), String>>(1);
-        self.send(AudioCmd::Play {
-            tone: TEST_TONE_WAV,
-            reply,
-        })?;
-        reply_rx
-            .recv()
-            .map_err(|_| AudioError::PipeWire("audio thread stopped before replying".to_string()))?
-            .map_err(AudioError::Decode)
-    }
-
-    fn resume(&mut self) -> Result<(), AudioError> {
-        self.send(AudioCmd::Resume)
-    }
-
-    fn pause(&mut self) -> Result<(), AudioError> {
-        self.send(AudioCmd::Pause)
-    }
-
-    fn stop(&mut self) -> Result<(), AudioError> {
-        self.send(AudioCmd::Stop)
-    }
-
-    fn is_finished(&self) -> bool {
-        self.ended.load(Ordering::Relaxed)
-    }
-}
-
-/// The audio thread: owns the cpal output stream and the current player, and
-/// reacts to commands. Exits when the command channel is dropped.
-fn run_audio_thread(rx: Receiver<AudioCmd>, ended: Arc<AtomicBool>) {
-    let mut device: Option<rodio::MixerDeviceSink> = None;
-    let mut player: Option<rodio::Player> = None;
-
-    loop {
-        // Poll between commands so the natural end of the tone is detected even
-        // while no command arrives.
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(AudioCmd::Play { tone, reply }) => {
-                ended.store(false, Ordering::Relaxed);
-                // Reopen the output device on each play so it binds to the
-                // *current* default sink: the route layer points the default at
-                // the combined sink just before calling play.
-                if let Some(previous) = player.take() {
-                    previous.stop();
-                }
-                // Drop the previous device so the new one binds to the current
-                // default sink (pointed at the combined sink just before this
-                // call).
-                drop(device.take());
-                let result = match rodio::DeviceSinkBuilder::open_default_sink() {
-                    Ok(mut dev) => {
-                        // The engine controls the stream lifecycle; suppress
-                        // rodio's stderr warning when the sink is dropped.
-                        dev.log_on_drop(false);
-                        let outcome = match rodio::play(dev.mixer(), Cursor::new(tone)) {
-                            Ok(p) => {
-                                player = Some(p);
-                                Ok(())
-                            },
-                            Err(e) => Err(format!("decode/play tone: {e}")),
-                        };
-                        device = Some(dev);
-                        outcome
-                    },
-                    Err(e) => Err(format!("open default audio sink: {e}")),
-                };
-                let _ = reply.send(result);
-            },
-            Ok(AudioCmd::Pause) => {
-                if let Some(p) = &player {
-                    p.pause();
-                }
-            },
-            Ok(AudioCmd::Resume) => {
-                if let Some(p) = &player {
-                    p.play();
-                }
-            },
-            Ok(AudioCmd::Stop) => {
-                if let Some(p) = player.take() {
-                    p.stop();
-                }
-                ended.store(false, Ordering::Relaxed);
-            },
-            Err(RecvTimeoutError::Timeout) => {
-                // The tone has played to the end: mark it so the engine returns
-                // to Stopped on the next state query.
-                if let Some(p) = &player {
-                    if p.empty() {
-                        ended.store(true, Ordering::Relaxed);
-                    }
-                }
-            },
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
 
 /// One branch of a PipeWire combined sink: the speaker's `bluez_output.*` sink
 /// node name and the per-speaker delay (ms) to apply to that branch.
@@ -798,9 +636,9 @@ impl AudioRouter {
         self.route_to_combined(&combine_sink_plan(speakers))
     }
 
-    /// Route playback to a combined sink spanning the plan's speakers, so the
-    /// player (which opens the default sink) reaches each of them, delayed by its
-    /// own offset for tunable sync. Built as a shared null sink the player feeds,
+    /// Route playback to a combined sink spanning the plan's speakers, so a
+    /// player pinned to it reaches each of them, delayed by its own offset for
+    /// tunable sync. Built as a shared null sink the player feeds,
     /// plus one delay branch per speaker into its real `bluez_output.*` sink.
     ///
     /// Idempotent — when the combined sink is already up it reconciles the
@@ -827,6 +665,21 @@ impl AudioRouter {
             spec.branches.len(),
             branches_for_log(&spec.branches)
         );
+        // A default an earlier version left naming this sink (#66) goes before
+        // the sink is recreated, so WirePlumber falls back to a choice of its
+        // own. Losing that cleanup never costs the speakers their sound.
+        match self.graph.clear_stale_default_sink(&spec.sink_name) {
+            Ok(true) => tracing::info!(
+                "cleared the configured default sink naming {}, left by an earlier version; \
+                 choose the PC's default with `wpctl set-default <id>`",
+                spec.sink_name
+            ),
+            Ok(false) => {},
+            Err(err) => tracing::warn!(
+                "could not check the configured default sink for {}: {err}",
+                spec.sink_name
+            ),
+        }
         self.graph.teardown(&spec.sink_name)?;
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
@@ -836,16 +689,13 @@ impl AudioRouter {
         // Nothing armed before this build concerns the branches it just loaded.
         self.confirmation.clear();
         self.arm_confirmation(&spec.sink_name, &report.loaded);
-        // Make the player target the combined sink. Done even when a branch failed, so
-        // the speakers that did load are fed while the next tick retries the others.
-        self.graph.set_default_sink(&spec.sink_name)?;
         report.into_result()
     }
 
     /// Bring an already-loaded combined sink in line with the plan, without ever
     /// touching the null sink: that is what keeps a live stream playing across a
-    /// selection change, since re-pointing the default sink does not move a stream
-    /// that is already open.
+    /// selection change, since a stream pinned to the null sink stays linked to
+    /// it only while it exists.
     ///
     /// Each speaker is handled alone (#81): dead branches go, unwanted ones go, a
     /// branch at another delay is retuned in place, and a missing one is loaded —
@@ -934,11 +784,6 @@ impl AudioRouter {
         }
         let report = self.load_planned_branches_live(&spec.sink_name, &plan.to_load);
         failures.extend(report.failures);
-        // The sink already exists, so it is usually already the default; this repairs
-        // the case where the default moved away meanwhile — another application, or a
-        // device that came back. Re-pointing the default at the sink a stream is
-        // already on leaves that stream where it is.
-        self.graph.set_default_sink(&spec.sink_name)?;
 
         // Learn which branches are owed their confirmation before arming this
         // pass's loads, so a branch is never confirmed in the pass that loaded it;
@@ -983,7 +828,6 @@ impl AudioRouter {
         }
         let second = self.load_planned_branches_live(&spec.sink_name, &confirming);
         failures.extend(second.failures);
-        self.graph.set_default_sink(&spec.sink_name)?;
         BranchLoadReport {
             loaded: second.loaded,
             failures,

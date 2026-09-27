@@ -86,10 +86,6 @@ pub(crate) enum Command {
         sink_name: String,
         reply: Reply<()>,
     },
-    SetDefaultSink {
-        sink: String,
-        reply: Reply<()>,
-    },
     ClearStaleDefaultSink {
         sink_name: String,
         reply: Reply<bool>,
@@ -244,17 +240,12 @@ impl Graph for PipeWireGraph {
         })?
     }
 
-    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
-        named("sink", sink)?;
-        self.ask(|reply| Command::SetDefaultSink {
-            sink: sink.to_string(),
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
+        named("sink", sink_name)?;
+        self.ask(|reply| Command::ClearStaleDefaultSink {
+            sink_name: sink_name.to_string(),
             reply,
         })?
-    }
-
-    fn clear_stale_default_sink(&mut self, _sink_name: &str) -> Result<bool, AudioError> {
-        // Red-phase stub (#66): answers without reaching the loop.
-        Ok(false)
     }
 
     fn sink_volume(&mut self, sink: &str) -> Option<f32> {
@@ -633,16 +624,23 @@ pub(crate) fn foreign_combined_globals(mirror: &Mirror, sink_name: &str) -> Vec<
     selected.into_iter().collect()
 }
 
-/// The value written to `default.configured.audio.sink` to make `sink` default.
-pub(crate) fn default_sink_metadata_value(sink: &str) -> String {
-    serde_json::json!({ "name": sink }).to_string()
-}
+/// The metadata key WirePlumber keeps the user's chosen default sink in.
+const CONFIGURED_DEFAULT_SINK_KEY: &str = "default.configured.audio.sink";
 
 /// Whether `value`, read from `default.configured.audio.sink`, names
 /// `sink_name` exactly (#66).
-pub(crate) fn configured_default_names(_value: Option<&str>, _sink_name: &str) -> bool {
-    // Red-phase stub.
-    false
+///
+/// The value is read as the JSON object WirePlumber writes, `{"name": …}`, and
+/// the name is compared whole: a substring or prefix check would also match the
+/// user's own sink whose name merely contains the combined sink's.
+pub(crate) fn configured_default_names(value: Option<&str>, sink_name: &str) -> bool {
+    if sink_name.is_empty() {
+        return false;
+    }
+    let Some(parsed) = value.and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()) else {
+        return false;
+    };
+    parsed.get("name").and_then(serde_json::Value::as_str) == Some(sink_name)
 }
 
 /// The device and `Route` index carrying `sink`'s volume.
@@ -1251,8 +1249,14 @@ impl PwConnection {
         let _ = self.registry.destroy_global(id);
     }
 
-    /// Point the `default` metadata's configured sink at `sink`.
-    fn set_default_sink(&self, sink: &str, deadline: Instant) -> Result<(), AudioError> {
+    /// Delete the `default` metadata's configured sink when it names
+    /// `sink_name` exactly, and answer whether it did. Nothing else is ever
+    /// written: the server only removes a preference it left there itself.
+    fn clear_stale_default_sink(
+        &self,
+        sink_name: &str,
+        deadline: Instant,
+    ) -> Result<bool, AudioError> {
         let metadata = {
             let shared = self.shared.borrow();
             let global = shared
@@ -1271,13 +1275,30 @@ impl PwConnection {
                 .bind::<Metadata, _>(global)
                 .map_err(pw_error("cannot bind the default metadata"))?
         };
-        metadata.set_property(
-            0,
-            "default.configured.audio.sink",
-            Some("Spa:String:JSON"),
-            Some(&default_sink_metadata_value(sink)),
-        );
-        self.roundtrip(deadline)
+        // A freshly bound metadata replays every property it holds, so one
+        // round trip delivers the current value, or none when the key is absent.
+        let configured: Rc<RefCell<Option<String>>> = Rc::default();
+        let listener = metadata
+            .add_listener_local()
+            .property({
+                let configured = Rc::clone(&configured);
+                move |subject, key, _type, value| {
+                    if subject == 0 && key == Some(CONFIGURED_DEFAULT_SINK_KEY) {
+                        *configured.borrow_mut() = value.map(str::to_string);
+                    }
+                    0
+                }
+            })
+            .register();
+        let synced = self.roundtrip(deadline);
+        drop(listener);
+        synced?;
+        if !configured_default_names(configured.borrow().as_deref(), sink_name) {
+            return Ok(false);
+        }
+        metadata.set_property(0, CONFIGURED_DEFAULT_SINK_KEY, None, None);
+        self.roundtrip(deadline)?;
+        Ok(true)
     }
 
     /// Bind the device `device_id` and read its `Route` param.
@@ -1677,10 +1698,11 @@ impl LoopState<PwConnector> {
         self.sync_mirror()
     }
 
-    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
         self.sync_mirror()?;
         let deadline = self.deadline;
-        self.connection()?.set_default_sink(sink, deadline)
+        self.connection()?
+            .clear_stale_default_sink(sink_name, deadline)
     }
 
     fn sink_volume(&mut self, sink: &str) -> Option<f32> {
@@ -1749,12 +1771,8 @@ fn handle(state: &mut LoopState<PwConnector>, command: Command) {
         Command::Teardown { sink_name, reply } => {
             let _ = reply.send(state.teardown(&sink_name));
         },
-        Command::SetDefaultSink { sink, reply } => {
-            let _ = reply.send(state.set_default_sink(&sink));
-        },
-        Command::ClearStaleDefaultSink { reply, .. } => {
-            // Red-phase stub (#66).
-            let _ = reply.send(Ok(false));
+        Command::ClearStaleDefaultSink { sink_name, reply } => {
+            let _ = reply.send(state.clear_stale_default_sink(&sink_name));
         },
         Command::SinkVolume { sink, reply } => {
             let _ = reply.send(state.sink_volume(&sink));
@@ -3523,10 +3541,6 @@ mod tests {
                     },
                     Command::Teardown { sink_name, reply } => {
                         log.push(format!("teardown {sink_name}"));
-                        let _ = reply.send(Ok(()));
-                    },
-                    Command::SetDefaultSink { sink, reply } => {
-                        log.push(format!("set_default_sink {sink}"));
                         let _ = reply.send(Ok(()));
                     },
                     Command::ClearStaleDefaultSink { sink_name, reply } => {

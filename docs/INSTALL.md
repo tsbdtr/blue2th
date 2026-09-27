@@ -35,7 +35,7 @@ pairing mode and tap it in the app; the backend pairs and connects it.
 Each [release](https://github.com/tsbdtr/blue2th/releases) ships
 `blue2th-server-<version>-x86_64-linux-gnu.tar.gz`: the binary and the two licence
 texts. Built on Ubuntu 24.04, it runs on any distribution with glibc 2.39 or
-newer and the shared libraries above (`libasound`, `libdbus`, `libpipewire-0.3`).
+newer and the shared libraries above (`libdbus`, `libpipewire-0.3`).
 
 ```bash
 tar xzf blue2th-server-<version>-x86_64-linux-gnu.tar.gz
@@ -46,8 +46,8 @@ install -m 755 blue2th-server-<version>-x86_64-linux-gnu/blue2th-server ~/.local
 
 To build it instead, install a stable Rust toolchain and the development
 packages the build links against (`pkg-config`, `libdbus-1-dev`,
-`libasound2-dev`, `libpipewire-0.3-dev`, `libclang-dev`, `clang` on Debian;
-`dbus-devel`, `alsa-lib-devel`, `pipewire-devel`, `clang-devel` on Fedora —
+`libpipewire-0.3-dev`, `libclang-dev`, `clang` on Debian;
+`dbus-devel`, `pipewire-devel`, `clang-devel` on Fedora —
 clang because the PipeWire bindings are generated at build time), then:
 
 ```bash
@@ -167,3 +167,24 @@ Replace the binary and restart. The state directory is kept, so the phone stays
 paired and the offsets survive. The app and the backend check each other's
 protocol version on every contact: an *incompatible* status on the phone means
 one side is behind — the message says which.
+
+### From a version that made `blue2th_combined` the default sink
+
+Earlier versions made their combined sink the PC's default sink, so every
+application's sound — a browser, a notification — went to the Bluetooth
+speakers. The backend no longer touches the default sink (#66): Spotify and the
+test tone are pinned to the combined sink instead. The first time it builds the
+combined sink, it deletes the preference those versions left
+(`default.configured.audio.sink` naming `blue2th_combined`, and only that) and
+logs a line saying so.
+
+WirePlumber then picks the default itself, and it picks the sink with the
+highest priority — often a Bluetooth speaker or headset rather than the PC's own
+output. Choose the default once, by hand:
+
+```bash
+wpctl status                # find the id of the PC's own output under "Sinks"
+wpctl set-default <id>
+```
+
+A preference naming any other sink is never touched, so this choice sticks.

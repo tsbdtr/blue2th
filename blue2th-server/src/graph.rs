@@ -45,8 +45,6 @@ pub trait Graph: Send {
     fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError>;
     /// Remove the combined sink `sink_name` and every branch belonging to it.
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError>;
-    /// Make `sink` the default sink.
-    fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError>;
     /// Delete `default.configured.audio.sink` when, and only when, its value
     /// names `sink_name` exactly (#66), and answer whether it did. Any other
     /// value is left as it is.
@@ -97,9 +95,6 @@ pub mod fake {
         Teardown {
             sink_name: String,
         },
-        SetDefaultSink {
-            sink: String,
-        },
         ClearStaleDefaultSink {
             sink_name: String,
         },
@@ -129,7 +124,6 @@ pub mod fake {
         UnloadBranch,
         SetBranchDelay,
         Teardown,
-        SetDefaultSink,
         ClearStaleDefaultSink,
         SinkVolume,
         SetSinkVolume,
@@ -507,24 +501,6 @@ pub mod fake {
             state.check(GraphOp::Teardown, sink_name)?;
             state.sinks.retain(|s| s != sink_name);
             state.branches.retain(|b| b.combined != sink_name);
-            Ok(())
-        }
-
-        fn set_default_sink(&mut self, sink: &str) -> Result<(), AudioError> {
-            let mut state = self.state();
-            state.log.push(GraphCall::SetDefaultSink {
-                sink: sink.to_string(),
-            });
-            state.refuse_empty(GraphOp::SetDefaultSink, &[sink])?;
-            state.check(GraphOp::SetDefaultSink, sink)?;
-            if !state.sinks.iter().any(|s| s == sink) {
-                return Err(AudioError::PipeWire(format!(
-                    "fake graph: no such sink {sink}"
-                )));
-            }
-            // What the write stored: the configured default, in WirePlumber's
-            // JSON shape.
-            state.configured_default = Some(serde_json::json!({ "name": sink }).to_string());
             Ok(())
         }
 
