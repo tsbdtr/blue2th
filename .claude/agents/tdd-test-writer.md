@@ -27,7 +27,7 @@ layers listed there.
   - Unit tests → `#[cfg(test)]` in the relevant `blue2th-frontend/src/*.rs`.
     Integration tests → `blue2th-frontend/tests/`.
 - **server** — `blue2th-server` (Axum 0.8 / Tokio). `src/{lib,main,bluetooth,audio}.rs`.
-  - Drives **BlueZ** via `bluer` and audio via `rodio`/PipeWire; exposes REST routes
+  - Drives **BlueZ** via `bluer` and audio via PipeWire (the `pipewire` crate); exposes REST routes
     + the transport playback state machine (`audio.rs`).
   - Unit tests → `#[cfg(test)]` in `blue2th-server/src/*.rs`. Integration/route tests →
     `blue2th-server/tests/` (e.g. existing `transport.rs`; route tests use `tower::ServiceExt::oneshot`).
@@ -36,7 +36,7 @@ layers listed there.
   - Tests → `#[cfg(test)]` in `blue2th-proto/src/lib.rs` (typically serde round-trip / JSON shape).
 
 ## Hardware is NOT testable in this sandbox
-BlueZ (`bluer`), PipeWire and the audio device (`cpal`/`rodio`) are unavailable to
+BlueZ (`bluer`), the PipeWire daemon and the audio devices behind it are unavailable to
 agents and to CI. **Never write a test that requires real hardware.**
 - Test pure logic only: state machines, request/response mapping, DTO serde, validation,
   error mapping, volume/offset math.

@@ -3155,6 +3155,33 @@ mod tests {
         ));
     }
 
+    /// `default.configured.audio.sink` as `wpctl set-default` writes it, with
+    /// spaces, captured with `pw-metadata -n default 0` on the dev PC on
+    /// 2026-09-27. Earlier versions of blue2th wrote the same object without
+    /// them.
+    const CAPTURED_WPCTL_DEFAULT: &str =
+        r#"{ "name": "alsa_output.pci-0000_c4_00.6.HiFi__Speaker__sink" }"#;
+
+    // The value is read as JSON, not matched as text: the spaced form
+    // `wpctl set-default` writes names a sink as surely as the compact one, so
+    // a combined sink written that way is cleared, and the PC's speakers
+    // written that way are left alone.
+    #[test]
+    fn test_configured_default_names_reads_the_spaced_form_wpctl_writes() {
+        assert!(configured_default_names(
+            Some(r#"{ "name": "blue2th_combined" }"#),
+            COMBINED
+        ));
+        assert!(!configured_default_names(
+            Some(CAPTURED_WPCTL_DEFAULT),
+            COMBINED
+        ));
+        assert!(configured_default_names(
+            Some(CAPTURED_WPCTL_DEFAULT),
+            "alsa_output.pci-0000_c4_00.6.HiFi__Speaker__sink"
+        ));
+    }
+
     // Criterion (guard, empty sink name): two empty values must not compare
     // equal into a deletion, and an empty name matches nothing.
     #[test]

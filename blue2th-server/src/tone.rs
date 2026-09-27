@@ -40,6 +40,9 @@ pub const TONE_FADE_FRAMES: usize = 480;
 /// The tone's channel count: stereo, interleaved.
 const TONE_CHANNELS: usize = 2;
 
+/// The size of one frame in the stream's buffers: one F32 sample per channel.
+const TONE_STRIDE: usize = std::mem::size_of::<f32>() * TONE_CHANNELS;
+
 /// The node name the tone's stream carries.
 const TONE_NODE_NAME: &str = "blue2th_tone";
 
@@ -69,19 +72,42 @@ fn envelope(n: usize) -> f64 {
     }
 }
 
+/// The sample of frame `n`, the same on every channel.
+fn tone_sample(n: usize) -> f32 {
+    // The phase is taken from the frame index, not accumulated, so a chunk
+    // read anywhere is exactly the same samples.
+    let cycles = n as f64 * f64::from(TONE_FREQUENCY_HZ) / f64::from(TONE_RATE);
+    let phase = std::f64::consts::TAU * cycles.fract();
+    (f64::from(TONE_AMPLITUDE) * envelope(n) * phase.sin()) as f32
+}
+
+/// The frames `position..` of the tone that `count` frames reach, cut at its
+/// end.
+fn tone_range(position: usize, count: usize) -> std::ops::Range<usize> {
+    position..position.saturating_add(count).min(TONE_FRAMES)
+}
+
 /// Up to `count` frames of the tone from frame `position`, stereo interleaved.
 pub fn tone_frames(position: usize, count: usize) -> Vec<f32> {
-    let end = position.saturating_add(count).min(TONE_FRAMES);
-    let mut samples = Vec::with_capacity(end.saturating_sub(position) * TONE_CHANNELS);
-    for n in position..end {
-        // The phase is taken from the frame index, not accumulated, so a
-        // chunk read anywhere is exactly the same samples.
-        let cycles = n as f64 * f64::from(TONE_FREQUENCY_HZ) / f64::from(TONE_RATE);
-        let phase = std::f64::consts::TAU * cycles.fract();
-        let sample = (f64::from(TONE_AMPLITUDE) * envelope(n) * phase.sin()) as f32;
-        samples.extend(std::iter::repeat_n(sample, TONE_CHANNELS));
+    tone_range(position, count)
+        .flat_map(|n| std::iter::repeat_n(tone_sample(n), TONE_CHANNELS))
+        .collect()
+}
+
+/// Write the tone from frame `position` into `out`, as many whole frames as
+/// fit, in the stream's format (F32LE, interleaved), and answer how many
+/// frames were written. Nothing is allocated: this runs on the realtime
+/// thread.
+fn write_tone(out: &mut [u8], position: usize) -> usize {
+    let range = tone_range(position, out.len() / TONE_STRIDE);
+    let written = range.len();
+    for (frame, n) in out.chunks_exact_mut(TONE_STRIDE).zip(range) {
+        let bytes = tone_sample(n).to_le_bytes();
+        for sample in frame.chunks_exact_mut(bytes.len()) {
+            sample.copy_from_slice(&bytes);
+        }
     }
-    samples
+    written
 }
 
 /// The properties of the tone's stream, pinning it to `target`.
@@ -262,25 +288,16 @@ fn fill_buffer(stream: &Stream, position: &AtomicUsize, finished: &AtomicBool) {
     let Some(data) = buffer.datas_mut().first_mut() else {
         return;
     };
-    let stride = std::mem::size_of::<f32>() * TONE_CHANNELS;
-    let written = match data.data() {
-        Some(slice) => {
-            let samples = tone_frames(position.load(Ordering::Relaxed), slice.len() / stride);
-            for (bytes, sample) in slice.chunks_exact_mut(4).zip(&samples) {
-                bytes.copy_from_slice(&sample.to_le_bytes());
-            }
-            samples.len() / TONE_CHANNELS
-        },
-        None => 0,
-    };
+    let from = position.load(Ordering::Relaxed);
+    let written = data.data().map_or(0, |out| write_tone(out, from));
     let reached = position.fetch_add(written, Ordering::Relaxed) + written;
     if written == 0 && reached >= TONE_FRAMES {
         finished.store(true, Ordering::Relaxed);
     }
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;
-    *chunk.stride_mut() = stride as i32;
-    *chunk.size_mut() = (written * stride) as u32;
+    *chunk.stride_mut() = TONE_STRIDE as i32;
+    *chunk.size_mut() = (written * TONE_STRIDE) as u32;
 }
 
 /// The stream playing the tone, and the listener carrying its callbacks.
@@ -722,6 +739,69 @@ mod tests {
         assert!(middle == whole[60_000..61_554], "a chunk from the middle");
     }
 
+    // ─── write_tone ──────────────────────────────────────────────────────────
+
+    /// The F32LE samples a buffer holds.
+    fn decode(bytes: &[u8]) -> Vec<f32> {
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    }
+
+    // The buffer the stream hands the daemon holds the generator's samples in
+    // the format the stream offers — F32 little-endian, interleaved, both
+    // channels — and the answer is the number of frames written. The chunk is
+    // taken mid-tone, where a silent or a byte-swapped buffer cannot pass.
+    #[test]
+    fn test_write_tone_encodes_the_tone_as_interleaved_little_endian_f32() {
+        let mut buffer = vec![0_u8; 1_024 * TONE_STRIDE];
+
+        let written = write_tone(&mut buffer, 30_000);
+
+        assert_eq!(written, 1_024);
+        let samples = decode(&buffer);
+        assert!(
+            samples == tone_frames(30_000, 1_024),
+            "not the tone's samples"
+        );
+        assert!(peak(&samples) > 0.24, "a silent buffer: {}", peak(&samples));
+        assert_eq!(samples[0], samples[1], "L = R");
+    }
+
+    // Only whole frames are written: the bytes of a partial frame at the end of
+    // the buffer are left as they were, and are not counted.
+    #[test]
+    fn test_write_tone_writes_whole_frames_only() {
+        let mut buffer = vec![0xAA_u8; 10 * TONE_STRIDE + 5];
+
+        let written = write_tone(&mut buffer, 1_000);
+
+        assert_eq!(written, 10);
+        assert!(decode(&buffer[..10 * TONE_STRIDE]) == tone_frames(1_000, 10));
+        assert_eq!(&buffer[10 * TONE_STRIDE..], &[0xAA; 5]);
+    }
+
+    // At the end of the tone, what is left is written, then nothing: the
+    // empty answer is what raises `finished`, and the buffer is untouched.
+    #[test]
+    fn test_write_tone_at_the_end_writes_what_is_left_then_nothing() {
+        let mut buffer = vec![0xAA_u8; 1_024 * TONE_STRIDE];
+        assert_eq!(write_tone(&mut buffer, 95_999), 1, "one frame is left");
+        assert_eq!(
+            decode(&buffer[..TONE_STRIDE]),
+            vec![0.0, 0.0],
+            "the last frame"
+        );
+
+        let mut buffer = vec![0xAA_u8; 1_024 * TONE_STRIDE];
+        assert_eq!(write_tone(&mut buffer, 96_000), 0);
+        assert!(
+            buffer.iter().all(|b| *b == 0xAA),
+            "a buffer past the end was written"
+        );
+    }
+
     // ─── tone_stream_props ───────────────────────────────────────────────────
 
     // Criterion (guard, pinned without fallback): the stream is an audio
@@ -730,11 +810,12 @@ mod tests {
     // `node.dont-reconnect = true` keeps it from being moved to the PC's own
     // speakers when the target goes (#67). The second target is the one the
     // #110 spike pinned a stream to (2026-09-10).
-    #[test]
+    //
     // The pin carries both `node.dont-reconnect` (the target going away mid-tone
     // moves it nowhere) and `node.dont-fallback` (a target missing when the
     // stream first links sends it nowhere either, never to the default sink —
     // the PC's own speakers, #67).
+    #[test]
     fn test_tone_stream_props_pins_the_stream_to_the_target_without_reconnect() {
         for target in [COMBINED, "bluez_output.2C_FD_B4_D3_AC_21.1"] {
             let props = tone_stream_props(target);

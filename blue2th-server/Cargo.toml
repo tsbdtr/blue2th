@@ -40,8 +40,9 @@ serde = { workspace = true }
 serde_json = "1"
 # #79: the audio graph is driven natively, from a `pw_main_loop` thread
 # (`graph_pw.rs`); #66: the test tone is a stream pinned to the combined sink
-# (`tone.rs`), so the server never writes the PC's default sink. Both are MIT and link `libpipewire-0.3` (runtime) and need
-# its dev headers plus clang at build time: bindgen generates the -sys crates.
+# (`tone.rs`), so the server never writes the PC's default sink. Both are MIT
+# and link `libpipewire-0.3` (runtime) and need its dev headers plus clang at
+# build time: bindgen generates the -sys crates.
 # `v0_3_44` because that is the release where `target.object` replaced
 # `node.target` as the key pinning a stream to its node, and every loopback
 # branch pins both of its ends with it.

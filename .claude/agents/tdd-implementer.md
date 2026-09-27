@@ -26,8 +26,8 @@ Read the **Affected Layers** section of your prompt — implement only in those 
     `use_context_provider` pattern.
 - **server** — `blue2th-server` (Axum 0.8 / Tokio). `src/{lib,main,bluetooth,audio}.rs`.
   - Axum handlers return a `Result`/`IntoResponse`; propagate errors with `?`, never panic.
-  - `bluer` (BlueZ) and `rodio`/PipeWire (`audio.rs`) are hardware-bound: keep them behind
-    the abstractions already in those files. `audio.rs` has a **no-op output for tests** —
+  - `bluer` (BlueZ) and PipeWire (`graph_pw.rs`, the tone stream in `tone.rs`) are
+    hardware-bound: keep them behind the abstractions already in those files. `audio.rs` has a **no-op output for tests** —
     keep that path working; never require a real device to pass tests.
 - **proto** — `blue2th-proto` (serde DTOs shared by mobile + server).
   - **Must stay target-agnostic**: no platform/hardware dependencies. Derive

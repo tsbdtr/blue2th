@@ -16,11 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-// The test modules reach `Arc` through `super::*`; production code no longer
-// shares anything across threads here since the output moved to `tone` (#66).
-#[cfg(test)]
-use std::sync::Arc;
-
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
 
 use crate::graph::{Graph, LoadedBranch};
@@ -252,8 +247,6 @@ impl Default for AudioEngine {
 pub enum AudioError {
     /// No speaker is connected, so playback cannot be routed anywhere.
     NoSpeakerConnected,
-    /// The embedded test file is missing or could not be decoded.
-    Decode(String),
     /// The PipeWire daemon is unreachable or rejected the request.
     PipeWire(String),
 }
@@ -262,7 +255,6 @@ impl std::fmt::Display for AudioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AudioError::NoSpeakerConnected => write!(f, "no speaker connected"),
-            AudioError::Decode(msg) => write!(f, "failed to decode audio: {msg}"),
             AudioError::PipeWire(msg) => write!(f, "PipeWire error: {msg}"),
         }
     }
@@ -989,6 +981,7 @@ mod tests {
     use crate::targets::MAX_OFFSET_MS;
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — value below 0 saturates
     // to 0.0.
@@ -2432,7 +2425,7 @@ mod tests {
 mod router_tests {
     use super::*;
     use crate::graph::fake::{FakeGraph, GraphCall, GraphOp};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     const COMBINED: &str = "blue2th_combined";
     const MAC_A: &str = "AA:BB:CC:DD:EE:01";

@@ -1984,7 +1984,7 @@ impl From<AudioError> for AppError {
         match err {
             // No connected speaker is a precondition failure, not a server bug.
             AudioError::NoSpeakerConnected => AppError::bad_request(err.to_string()),
-            AudioError::Decode(_) | AudioError::PipeWire(_) => AppError::internal(err.to_string()),
+            AudioError::PipeWire(_) => AppError::internal(err.to_string()),
         }
     }
 }
