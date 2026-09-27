@@ -88,8 +88,8 @@ pub fn reported_volume(levels: &[Option<f32>], commanded: f32) -> f32 {
 /// device. `Send` is required because the engine lives behind an
 /// `Arc<Mutex<_>>` shared across async tasks.
 pub trait AudioOutput: Send {
-    /// Begin streaming `tone` to the connected speaker's sink (fresh playback).
-    fn start(&mut self, tone: &'static [u8]) -> Result<(), AudioError>;
+    /// Begin streaming the test tone from its start (fresh playback).
+    fn start(&mut self) -> Result<(), AudioError>;
     /// Resume a previously paused stream.
     fn resume(&mut self) -> Result<(), AudioError>;
     /// Pause the stream, keeping its position.
@@ -109,7 +109,7 @@ pub trait AudioOutput: Send {
 pub struct NullOutput;
 
 impl AudioOutput for NullOutput {
-    fn start(&mut self, _tone: &'static [u8]) -> Result<(), AudioError> {
+    fn start(&mut self) -> Result<(), AudioError> {
         Ok(())
     }
     fn resume(&mut self) -> Result<(), AudioError> {
@@ -228,7 +228,7 @@ impl AudioEngine {
 
     /// Begin streaming the embedded tone to the connected speaker's sink.
     fn start_output(&mut self) -> Result<(), AudioError> {
-        self.output.start(TEST_TONE_WAV)
+        self.output.start()
     }
 
     /// Resume a paused output stream.
@@ -332,9 +332,12 @@ impl RodioOutput {
 }
 
 impl AudioOutput for RodioOutput {
-    fn start(&mut self, tone: &'static [u8]) -> Result<(), AudioError> {
+    fn start(&mut self) -> Result<(), AudioError> {
         let (reply, reply_rx) = mpsc::sync_channel::<Result<(), String>>(1);
-        self.send(AudioCmd::Play { tone, reply })?;
+        self.send(AudioCmd::Play {
+            tone: TEST_TONE_WAV,
+            reply,
+        })?;
         reply_rx
             .recv()
             .map_err(|_| AudioError::PipeWire("audio thread stopped before replying".to_string()))?
@@ -1141,6 +1144,7 @@ mod tests {
     use super::*;
     use crate::targets::MAX_OFFSET_MS;
     use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     // Criterion: `POST /volume` clamps to `0.0..=1.0` — value below 0 saturates
     // to 0.0.
@@ -1200,6 +1204,113 @@ mod tests {
 
         let state = engine.stop().expect("stop succeeds");
         assert_eq!(state.status, PlaybackStatus::Stopped);
+    }
+
+    /// An output recording what the engine asked of it, in order, and
+    /// optionally refusing to start — as the tone stream does with no daemon.
+    struct RecordingOutput {
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        refuse_start: bool,
+        /// Raised by the test to play a stream that ended on its own.
+        finished: Arc<AtomicBool>,
+    }
+
+    impl AudioOutput for RecordingOutput {
+        fn start(&mut self) -> Result<(), AudioError> {
+            self.log.lock().unwrap().push("start");
+            if self.refuse_start {
+                return Err(AudioError::PipeWire("no PipeWire daemon".to_string()));
+            }
+            Ok(())
+        }
+        fn resume(&mut self) -> Result<(), AudioError> {
+            self.log.lock().unwrap().push("resume");
+            Ok(())
+        }
+        fn pause(&mut self) -> Result<(), AudioError> {
+            self.log.lock().unwrap().push("pause");
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), AudioError> {
+            self.log.lock().unwrap().push("stop");
+            Ok(())
+        }
+        fn is_finished(&self) -> bool {
+            self.finished.load(Ordering::Relaxed)
+        }
+    }
+
+    // Criterion: `AudioOutput::start` takes no tone, and the state machine is
+    // otherwise unchanged — each transition is one call of its own on the
+    // output: a pause and a play resume (keeping the tone's position) rather
+    // than stop and start it again, and a play after a stop starts afresh.
+    #[test]
+    fn test_engine_drives_start_pause_resume_stop_on_the_output() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engine = AudioEngine::with_output(Box::new(RecordingOutput {
+            log: Arc::clone(&log),
+            refuse_start: false,
+            finished: Arc::default(),
+        }));
+
+        assert!(engine.play().is_ok());
+        assert!(engine.play().is_ok(), "a play while playing is idempotent");
+        assert!(engine.pause().is_ok());
+        assert!(engine.play().is_ok());
+        assert!(engine.stop().is_ok());
+        assert!(engine.play().is_ok());
+
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["start", "pause", "resume", "stop", "start"]
+        );
+    }
+
+    // Non-nominal: the tone's target vanished while it was paused — the last
+    // speaker deselected, whose handler pauses the engine and then tears the
+    // combined sink down, so the stream went `Unconnected`. The engine reads
+    // that as `Stopped`, and the next play starts the tone afresh: resuming a
+    // dead stream played nothing until a stop. The near miss, a pause then a
+    // play on a live stream, resumes it (`test_engine_drives_start_pause_…`).
+    #[test]
+    fn test_engine_play_after_the_output_ended_while_paused_starts_afresh() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let finished = Arc::new(AtomicBool::new(false));
+        let mut engine = AudioEngine::with_output(Box::new(RecordingOutput {
+            log: Arc::clone(&log),
+            refuse_start: false,
+            finished: Arc::clone(&finished),
+        }));
+        assert!(engine.play().is_ok());
+        assert!(engine.pause().is_ok());
+
+        finished.store(true, Ordering::Relaxed);
+
+        assert_eq!(engine.poll_state().status, PlaybackStatus::Stopped);
+        finished.store(false, Ordering::Relaxed);
+        assert!(engine.play().is_ok());
+        assert_eq!(*log.lock().unwrap(), vec!["start", "pause", "start"]);
+        assert_eq!(engine.poll_state().status, PlaybackStatus::Playing);
+    }
+
+    // Non-nominal: with no PipeWire daemon the output refuses to start — the
+    // error comes back from `play` at once, and the engine stays `Stopped`.
+    #[test]
+    fn test_engine_play_with_a_refused_start_errs_and_stays_stopped() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engine = AudioEngine::with_output(Box::new(RecordingOutput {
+            log: Arc::clone(&log),
+            refuse_start: true,
+            finished: Arc::default(),
+        }));
+
+        let played = engine.play();
+
+        assert!(
+            matches!(played, Err(AudioError::PipeWire(_))),
+            "got {played:?}"
+        );
+        assert_eq!(engine.poll_state().status, PlaybackStatus::Stopped);
     }
 
     // Criterion: pause/stop while stopped are idempotent (unchanged state).
@@ -2541,9 +2652,9 @@ mod router_tests {
         }
     }
 
-    fn set_default(sink: &str) -> GraphCall {
-        GraphCall::SetDefaultSink {
-            sink: sink.to_string(),
+    fn clear_stale(sink_name: &str) -> GraphCall {
+        GraphCall::ClearStaleDefaultSink {
+            sink_name: sink_name.to_string(),
         }
     }
 
@@ -2571,10 +2682,9 @@ mod router_tests {
         ids.first().copied().unwrap_or_default()
     }
 
-    /// Whether `call` removes or adds something — everything mutating except
-    /// re-pointing the default sink.
+    /// Whether `call` removes, adds or rewrites something.
     fn changes_the_graph(call: &GraphCall) -> bool {
-        call.is_mutating() && !matches!(call, GraphCall::SetDefaultSink { .. })
+        call.is_mutating()
     }
 
     /// A graph where both speakers are connected and the combined sink carries a
@@ -2592,12 +2702,12 @@ mod router_tests {
         vec![target(MAC_A, 0), target(MAC_B, 30)]
     }
 
-    // Criterion: on an empty graph, `route_for_targets` creates the sink, loads
-    // one branch per reachable speaker at a delay of its offset, then sets
-    // the default sink. The leading teardown is today's guard against stacking
-    // modules on a leftover.
+    // Criterion: on an empty graph, `route_for_targets` first clears a stale
+    // configured default (#66), then creates the sink and loads one branch per
+    // reachable speaker at a delay of its offset — and writes no default sink.
+    // The teardown is today's guard against stacking modules on a leftover.
     #[test]
-    fn test_route_on_an_empty_graph_creates_the_sink_loads_each_branch_then_sets_the_default() {
+    fn test_route_on_an_empty_graph_creates_the_sink_then_loads_each_branch() {
         let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
         let mut router = router_on(&fake);
 
@@ -2607,14 +2717,198 @@ mod router_tests {
         assert_eq!(
             fake.calls(),
             vec![
+                clear_stale(COMBINED),
                 teardown(COMBINED),
                 create(COMBINED),
                 load(SINK_A, 0),
                 load(SINK_B, 250),
-                set_default(COMBINED),
             ]
         );
-        assert_eq!(fake.default_sink().as_deref(), Some(COMBINED));
+        assert_eq!(fake.configured_default(), None, "no default was written");
+    }
+
+    /// `default.configured.audio.sink` as earlier versions of blue2th left it,
+    /// captured with `pw-metadata -n default 0` on the dev PC on 2026-09-24 and
+    /// 2026-09-26.
+    const STALE_DEFAULT: &str = r#"{"name":"blue2th_combined"}"#;
+
+    /// A configured default the user chose: the PC's own speakers.
+    const PC_DEFAULT: &str = r#"{"name":"alsa_output.pci-0000_00_1f.3.analog-stereo"}"#;
+
+    // Criterion (guard, the router never writes the default): across a build,
+    // a reconcile, a retune and a confirming reload, the configured default
+    // the user chose is never rewritten, and no call but the build's one
+    // clear concerns the default at all.
+    #[test]
+    fn test_route_never_writes_the_default_sink() {
+        let fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_A, SINK_B]);
+        fake.set_configured_default(Some(PC_DEFAULT));
+        let (mut router, clock) = router_with_clock(&fake);
+
+        // A build.
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                clear_stale(COMBINED),
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 0),
+                load(SINK_B, 30),
+            ]
+        );
+        let a = branch_into(&fake, SINK_A);
+
+        // A reconcile, within the gap: nothing at all.
+        advance(&clock, Duration::from_secs(1));
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "reconcile failed: {result:?}");
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+
+        // A retune: the delay, and nothing else.
+        fake.clear_calls();
+        let result = router.retune_branch(
+            COMBINED,
+            &CombineBranch {
+                sink: bluez_sink_prefix(MAC_A),
+                latency_ms: 120,
+            },
+        );
+        assert!(result.is_ok(), "retune failed: {result:?}");
+        assert_eq!(fake.calls(), vec![set_delay(a, 120)]);
+
+        // The confirming reload, a gap after the build: branches only.
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&[target(MAC_A, 120), target(MAC_B, 30)]);
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 4, "both branches reloaded: {calls:?}");
+        assert!(
+            calls.iter().all(|c| matches!(
+                c,
+                GraphCall::UnloadBranch { .. } | GraphCall::LoadBranch { .. }
+            )),
+            "a confirmation touches branches only: {calls:?}"
+        );
+
+        assert_eq!(
+            fake.configured_default().as_deref(),
+            Some(PC_DEFAULT),
+            "the user's default was rewritten"
+        );
+    }
+
+    // Criterion: `build_combined` clears a configured default naming the
+    // combined sink exactly, and does so before it creates the sink.
+    #[test]
+    fn test_build_clears_a_stale_default_naming_the_combined_sink_before_creating_it() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_configured_default(Some(STALE_DEFAULT));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "build failed: {result:?}");
+        let calls = fake.calls();
+        let cleared_at = calls.iter().position(|c| *c == clear_stale(COMBINED));
+        let created_at = calls.iter().position(|c| *c == create(COMBINED));
+        assert!(
+            matches!((cleared_at, created_at), (Some(cleared), Some(created)) if cleared < created),
+            "the stale default is cleared before the sink is created: {calls:?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| **c == clear_stale(COMBINED))
+                .count(),
+            1,
+            "cleared once: {calls:?}"
+        );
+        assert_eq!(fake.configured_default(), None, "the stale key is gone");
+    }
+
+    // Criterion (non-nominal): a configured default naming another sink —
+    // here the near-miss sharing the combined sink's opening characters, and
+    // the PC's speakers — is left exactly as it is, although the build asked.
+    #[test]
+    fn test_build_leaves_a_default_naming_another_sink() {
+        for other in [r#"{"name":"blue2th_combined_old"}"#, PC_DEFAULT] {
+            let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+            fake.set_configured_default(Some(other));
+            let mut router = router_on(&fake);
+
+            let result = router.route_for_targets(&steady_selection());
+
+            assert!(result.is_ok(), "build failed: {result:?}");
+            assert!(
+                fake.calls().contains(&clear_stale(COMBINED)),
+                "the build asked: {:?}",
+                fake.calls()
+            );
+            assert_eq!(fake.configured_default().as_deref(), Some(other));
+        }
+    }
+
+    // Criterion (non-nominal): reading or clearing the metadata fails — the
+    // build goes on, creates the sink and loads every branch, and the route
+    // answers `Ok`: losing the cleanup never costs the speakers their sound.
+    #[test]
+    fn test_build_goes_on_when_clearing_the_default_fails() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_configured_default(Some(STALE_DEFAULT));
+        fake.fail(GraphOp::ClearStaleDefaultSink);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(
+            result.is_ok(),
+            "a failed clear failed the build: {result:?}"
+        );
+        assert_eq!(
+            fake.calls(),
+            vec![
+                clear_stale(COMBINED),
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 0),
+                load(SINK_B, 30),
+            ]
+        );
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_A, SINK_B]);
+    }
+
+    // Criterion (guard, only on a build, never on reconcile): a reconcile pass
+    // does not even ask — the stale value is seeded, so a router clearing on
+    // every pass would remove it here.
+    #[test]
+    fn test_reconcile_never_touches_the_default() {
+        let (fake, _, _) = steady_graph(Some(true));
+        fake.set_configured_default(Some(STALE_DEFAULT));
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0), target(MAC_B, 120)]);
+
+        assert!(result.is_ok(), "reconcile failed: {result:?}");
+        assert!(
+            !fake
+                .all_calls()
+                .iter()
+                .any(|c| matches!(c, GraphCall::ClearStaleDefaultSink { .. })),
+            "a reconcile asked to clear the default: {:?}",
+            fake.all_calls()
+        );
+        let b = branch_into(&fake, SINK_B);
+        assert_eq!(fake.calls(), vec![set_delay(b, 120)]);
+        assert_eq!(fake.configured_default().as_deref(), Some(STALE_DEFAULT));
     }
 
     // Criterion: a build tears a leftover down first, so branches that outlived
@@ -2635,16 +2929,16 @@ mod router_tests {
     }
 
     // Criterion: on a graph that already matches the plan, a pass performs no
-    // mutating call except `set_default_sink`.
+    // mutating call at all — not even a write of the default sink (#66).
     #[test]
-    fn test_route_on_a_steady_graph_makes_no_mutating_call_but_the_default_sink() {
+    fn test_route_on_a_steady_graph_makes_no_mutating_call() {
         let (fake, _, _) = steady_graph(Some(true));
         let mut router = router_on(&fake);
 
         let result = router.route_for_targets(&steady_selection());
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
     }
 
     // Criterion: a steady graph stays steady pass after pass — the repair tick
@@ -2659,14 +2953,7 @@ mod router_tests {
             assert!(result.is_ok(), "pass {pass} failed: {result:?}");
         }
 
-        assert_eq!(
-            fake.calls(),
-            vec![
-                set_default(COMBINED),
-                set_default(COMBINED),
-                set_default(COMBINED)
-            ]
-        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
         let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![a, b]);
     }
@@ -2684,10 +2971,7 @@ mod router_tests {
         let result = router.route_for_targets(&steady_selection());
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        assert_eq!(
-            fake.calls(),
-            vec![unload(dead), load(SINK_B, 30), set_default(COMBINED)]
-        );
+        assert_eq!(fake.calls(), vec![unload(dead), load(SINK_B, 30)]);
         // Exactly one branch per speaker is left: never two onto one.
         let sinks: Vec<String> = fake
             .loaded(COMBINED)
@@ -2775,7 +3059,7 @@ mod router_tests {
         let result = router.route_for_targets(&steady_selection());
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
         let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![a, b]);
     }
@@ -2794,10 +3078,7 @@ mod router_tests {
             assert!(result.is_ok(), "pass {pass} failed: {result:?}");
         }
 
-        assert_eq!(
-            fake.calls(),
-            vec![set_default(COMBINED), set_default(COMBINED)]
-        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
         let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![a]);
     }
@@ -2812,15 +3093,15 @@ mod router_tests {
         let result = router.route_for_targets(&[target(MAC_A, 0)]);
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        assert_eq!(fake.calls(), vec![unload(b), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![unload(b)]);
         let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![a]);
     }
 
-    // Non-nominal: one branch fails to load — the other is still attempted, the
-    // default sink is still set, the failure comes back as `PipeWire`.
+    // Non-nominal: one branch fails to load — the other is still attempted, and
+    // the failure comes back as `PipeWire`.
     #[test]
-    fn test_route_with_one_failing_branch_still_loads_the_other_and_sets_the_default() {
+    fn test_route_with_one_failing_branch_still_loads_the_other() {
         let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
         fake.fail_for(GraphOp::LoadBranch, SINK_A);
         let mut router = router_on(&fake);
@@ -2830,11 +3111,11 @@ mod router_tests {
         assert_eq!(
             fake.calls(),
             vec![
+                clear_stale(COMBINED),
                 teardown(COMBINED),
                 create(COMBINED),
                 load(SINK_A, 0),
                 load(SINK_B, 30),
-                set_default(COMBINED),
             ]
         );
         let message = match result {
@@ -2866,7 +3147,16 @@ mod router_tests {
         };
         assert!(message.contains(SINK_A), "unexpected error: {message}");
         assert!(message.contains(SINK_B), "unexpected error: {message}");
-        assert_eq!(fake.calls().last(), Some(&set_default(COMBINED)));
+        assert_eq!(
+            fake.calls(),
+            vec![
+                clear_stale(COMBINED),
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 0),
+                load(SINK_B, 30),
+            ]
+        );
     }
 
     // Non-nominal: empty selection — `NoSpeakerConnected`, and the graph receives
@@ -2987,14 +3277,14 @@ mod router_tests {
         // Pass 1: speaker B is off. Nothing to do.
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 1 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
 
         // Pass 2: B is back, and its branch is loaded alone.
         fake.add_sink(SINK_B);
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 2 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![load(SINK_B, 30), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![load(SINK_B, 30)]);
         let b = branch_into(&fake, SINK_B);
         assert_eq!(branch_into(&fake, SINK_A), a);
 
@@ -3011,7 +3301,6 @@ mod router_tests {
             .cloned()
             .collect();
         assert_eq!(changes, vec![unload(b), load(SINK_B, 30)]);
-        assert_eq!(calls.last(), Some(&set_default(COMBINED)));
         assert_eq!(branch_into(&fake, SINK_A), a, "A was never touched");
         let confirmed = branch_into(&fake, SINK_B);
         assert_ne!(confirmed, b, "B's branch was reloaded");
@@ -3021,7 +3310,7 @@ mod router_tests {
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 4 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
         let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![a, confirmed]);
     }
@@ -3038,10 +3327,7 @@ mod router_tests {
 
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "select failed: {result:?}");
-        assert_eq!(
-            fake.calls(),
-            vec![load(SINK_A, 0), load(SINK_B, 30), set_default(COMBINED)]
-        );
+        assert_eq!(fake.calls(), vec![load(SINK_A, 0), load(SINK_B, 30)]);
         let a = branch_into(&fake, SINK_A);
         let b = branch_into(&fake, SINK_B);
 
@@ -3050,11 +3336,7 @@ mod router_tests {
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "play failed: {result:?}");
-        assert_eq!(
-            fake.calls(),
-            vec![set_default(COMBINED)],
-            "nothing reloaded"
-        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new(), "nothing reloaded");
 
         // The repair tick after the gap reloads both, each alone.
         advance(&clock, CONFIRM_GAP);
@@ -3095,17 +3377,14 @@ mod router_tests {
 
         let result = router.route_for_targets(&selection);
         assert!(result.is_ok(), "pass 1 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
 
         fake.add_sink(SINK_A);
         fake.add_sink(SINK_B);
         fake.clear_calls();
         let result = router.route_for_targets(&selection);
         assert!(result.is_ok(), "pass 2 failed: {result:?}");
-        assert_eq!(
-            fake.calls(),
-            vec![load(SINK_A, 0), load(SINK_B, 30), set_default(COMBINED)]
-        );
+        assert_eq!(fake.calls(), vec![load(SINK_A, 0), load(SINK_B, 30)]);
         let a = branch_into(&fake, SINK_A);
         let b = branch_into(&fake, SINK_B);
 
@@ -3132,7 +3411,7 @@ mod router_tests {
         fake.clear_calls();
         let result = router.route_for_targets(&selection);
         assert!(result.is_ok(), "pass 4 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
     }
 
     // Nominal: a speaker added mid-playback is loaded alone; the branch
@@ -3146,18 +3425,18 @@ mod router_tests {
 
         let result = router.route_for_targets(&[target(MAC_A, 0)]);
         assert!(result.is_ok(), "pass 1 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
 
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 2 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![load(SINK_B, 30), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![load(SINK_B, 30)]);
         assert_eq!(branch_into(&fake, SINK_A), a);
 
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass 3 failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
     }
 
     // Nominal: moving one speaker's offset retunes its branch in place — one
@@ -3171,7 +3450,7 @@ mod router_tests {
         let result = router.route_for_targets(&[target(MAC_A, 0), target(MAC_B, 120)]);
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_delay(b, 120), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![set_delay(b, 120)]);
         assert_eq!(
             loaded_delays(&fake),
             vec![(a, SINK_A.to_string(), 0), (b, SINK_B.to_string(), 120)]
@@ -3207,7 +3486,6 @@ mod router_tests {
                 set_delay(a, 100),
                 load(SINK_B, 30),
                 load(sink_c, 60),
-                set_default(COMBINED),
             ]
         );
     }
@@ -3245,11 +3523,7 @@ mod router_tests {
             result.is_ok(),
             "pass after the confirmation failed: {result:?}"
         );
-        assert_eq!(
-            fake.calls(),
-            vec![set_default(COMBINED)],
-            "confirmed once only"
-        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new(), "confirmed once only");
     }
 
     // Criterion: a speaker deselected and reselected while its sink never left
@@ -3264,11 +3538,11 @@ mod router_tests {
         // Pass 1: B deselected, its branch goes. Pass 2: B reselected.
         let result = router.route_for_targets(&[target(MAC_A, 0)]);
         assert!(result.is_ok(), "deselect failed: {result:?}");
-        assert_eq!(fake.calls(), vec![unload(b), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![unload(b)]);
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "reselect failed: {result:?}");
-        assert_eq!(fake.calls(), vec![load(SINK_B, 30), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![load(SINK_B, 30)]);
         let reselected = branch_into(&fake, SINK_B);
 
         // A gap later: B's branch alone is reloaded.
@@ -3349,7 +3623,7 @@ mod router_tests {
         fake.clear_calls();
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "pass after the rebuild failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_default(COMBINED)]);
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
         assert_eq!(branch_into(&fake, SINK_B), b);
     }
 
@@ -3398,10 +3672,7 @@ mod router_tests {
             let result = second.route_for_targets(&[target("AA:BB:CC:DD:EE:03", 0)]);
             assert!(result.is_ok(), "second router, pass {pass}: {result:?}");
         }
-        assert_eq!(
-            second_fake.calls(),
-            vec![set_default(COMBINED), set_default(COMBINED)]
-        );
+        assert_eq!(second_fake.calls(), Vec::<GraphCall>::new());
         let ids: Vec<u32> = second_fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![c]);
 
@@ -3514,7 +3785,7 @@ mod router_tests {
         let result = router.route_for_targets(&[target(MAC_A, 120), target(MAC_B, 30)]);
 
         assert!(result.is_ok(), "route failed: {result:?}");
-        assert_eq!(fake.calls(), vec![set_delay(a, 120), set_default(COMBINED)]);
+        assert_eq!(fake.calls(), vec![set_delay(a, 120)]);
         assert_eq!(
             loaded_delays(&fake),
             vec![(a, SINK_A.to_string(), 120), (b, SINK_B.to_string(), 30)]

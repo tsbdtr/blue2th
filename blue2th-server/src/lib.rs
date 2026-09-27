@@ -49,6 +49,7 @@ pub mod spotify_auth;
 pub mod spotify_volume;
 mod state_store;
 pub mod targets;
+pub mod tone;
 pub mod watchdog;
 
 use audio::{AudioEngine, AudioError, AudioRouter, RodioOutput};
@@ -2783,7 +2784,7 @@ mod tests {
     }
 
     impl audio::AudioOutput for FinishesOnTheSecondPoll {
-        fn start(&mut self, _tone: &'static [u8]) -> Result<(), AudioError> {
+        fn start(&mut self) -> Result<(), AudioError> {
             Ok(())
         }
         fn resume(&mut self) -> Result<(), AudioError> {
@@ -2956,6 +2957,9 @@ mod tests {
         assert_eq!(
             fake.calls(),
             vec![
+                GraphCall::ClearStaleDefaultSink {
+                    sink_name: "blue2th_combined".to_string()
+                },
                 GraphCall::Teardown {
                     sink_name: "blue2th_combined".to_string()
                 },
@@ -2966,9 +2970,6 @@ mod tests {
                     sink_name: "blue2th_combined".to_string(),
                     real_sink: sink.to_string(),
                     latency_ms: 0
-                },
-                GraphCall::SetDefaultSink {
-                    sink: "blue2th_combined".to_string()
                 },
             ]
         );
