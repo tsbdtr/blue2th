@@ -130,22 +130,44 @@ pub(crate) enum RegistryChange {
     Removed,
 }
 
+/// The prefix every speaker sink's node name opens with.
+const SPEAKER_SINK_PREFIX: &str = "bluez_output.";
+
 /// The event a registry change of a node with `props` is, if it is a speaker
-/// sink's.
+/// sink's: an `Audio/Sink` whose `node.name` is `bluez_output.` followed by
+/// something. The bare prefix names no speaker, so it emits nothing.
 pub(crate) fn speaker_sink_event(
-    _change: RegistryChange,
-    _props: &BTreeMap<String, String>,
-    _at: Instant,
+    change: RegistryChange,
+    props: &BTreeMap<String, String>,
+    at: Instant,
 ) -> Option<GraphEvent> {
-    // Red-phase stub (#80).
-    None
+    if props.get("media.class").map(String::as_str) != Some("Audio/Sink") {
+        return None;
+    }
+    let name = props.get("node.name")?;
+    let address = name.strip_prefix(SPEAKER_SINK_PREFIX)?;
+    if address.is_empty() {
+        return None;
+    }
+    // Cloned: the event leaves the loop thread, the props stay in the mirror.
+    let name = name.clone();
+    Some(match change {
+        RegistryChange::Added => GraphEvent::SinkAppeared { name, at },
+        RegistryChange::Removed => GraphEvent::SinkVanished { name, at },
+    })
 }
 
 /// How long the loop waits before its next reconnect attempt, after
 /// `failures` failed ones.
-pub(crate) fn reconnect_delay(_failures: u32) -> Duration {
-    // Red-phase stub (#80).
-    Duration::ZERO
+pub(crate) fn reconnect_delay(failures: u32) -> Duration {
+    let seconds = match failures {
+        0 => 1,
+        1 => 2,
+        2 => 5,
+        3 => 10,
+        _ => 30,
+    };
+    Duration::from_secs(seconds)
 }
 
 /// The handle the router owns: a sender into the loop thread, and the means to
@@ -153,6 +175,8 @@ pub(crate) fn reconnect_delay(_failures: u32) -> Duration {
 pub struct PipeWireGraph {
     spawn_loop: SpawnLoop,
     sender: Option<Box<dyn LoopSender>>,
+    /// Where every loop thread started for this graph reports its events.
+    events: Option<UnboundedSender<GraphEvent>>,
 }
 
 impl PipeWireGraph {
@@ -164,9 +188,14 @@ impl PipeWireGraph {
 
     /// Start the loop thread now, connected at once, reporting its
     /// [`GraphEvent`]s to `events`.
+    ///
+    /// Meant to be called once, before any command: a thread already running
+    /// is replaced by one that reports.
     pub fn watch(&mut self, events: UnboundedSender<GraphEvent>) {
-        // Red-phase stub (#80).
-        drop(events);
+        self.events = Some(events);
+        // Cloned: each thread started, including one replacing a dead one,
+        // holds a sender of its own.
+        self.sender = Some((self.spawn_loop)(self.events.clone()));
     }
 
     /// A graph with no loop thread at all: every command errs at once, as when
@@ -182,6 +211,7 @@ impl PipeWireGraph {
         Self {
             spawn_loop,
             sender: None,
+            events: None,
         }
     }
 
@@ -189,12 +219,16 @@ impl PipeWireGraph {
     /// replacing one that has died.
     fn send(&mut self, command: Command) -> Result<(), AudioError> {
         let spawn_loop = &mut self.spawn_loop;
-        let sender = self.sender.get_or_insert_with(|| spawn_loop(None));
+        let events = &self.events;
+        // Cloned: every thread started holds a sender of its own.
+        let sender = self
+            .sender
+            .get_or_insert_with(|| spawn_loop(events.clone()));
         let Err(command) = sender.send(command) else {
             return Ok(());
         };
         // The thread is gone: a new one answers this very command.
-        let fresh = spawn_loop(None);
+        let fresh = spawn_loop(events.clone());
         let sent = fresh.send(command);
         self.sender = Some(fresh);
         sent.map_err(|_| AudioError::PipeWire("the PipeWire graph thread is not running".into()))
@@ -779,7 +813,6 @@ impl<C: Connector> LoopState<C> {
     }
 
     /// Whether a connection is currently held.
-    #[cfg(test)]
     pub(crate) fn is_connected(&self) -> bool {
         self.connection.is_some()
     }
@@ -954,11 +987,11 @@ impl LoopSender for PwLoopSender {
 }
 
 /// Start a loop thread; [`NoLoop`] when the thread cannot even be started.
-fn spawn_loop_thread(_events: Option<UnboundedSender<GraphEvent>>) -> Box<dyn LoopSender> {
+fn spawn_loop_thread(events: Option<UnboundedSender<GraphEvent>>) -> Box<dyn LoopSender> {
     let (sender, receiver) = pw::channel::channel::<Command>();
     match std::thread::Builder::new()
         .name("pipewire-graph".into())
-        .spawn(move || run_loop_thread(receiver))
+        .spawn(move || run_loop_thread(receiver, events))
     {
         Ok(thread) => Box::new(PwLoopSender { sender, thread }),
         Err(e) => {
@@ -970,7 +1003,15 @@ fn spawn_loop_thread(_events: Option<UnboundedSender<GraphEvent>>) -> Box<dyn Lo
 
 /// The loop thread: receive commands, answer each against the daemon, and
 /// drop the connection's state when the daemon goes away.
-fn run_loop_thread(receiver: pw::channel::Receiver<Command>) {
+///
+/// A watched loop — one handed `events` — connects at once and, once the
+/// connection is lost, reconnects on its own after [`reconnect_delay`], so a
+/// restarted daemon is noticed without waiting for a command (#80). An
+/// unwatched one connects on its first command, as before.
+fn run_loop_thread(
+    receiver: pw::channel::Receiver<Command>,
+    events: Option<UnboundedSender<GraphEvent>>,
+) {
     pw::init();
     let mainloop = match MainLoopRc::new(None) {
         Ok(mainloop) => mainloop,
@@ -986,12 +1027,38 @@ fn run_loop_thread(receiver: pw::channel::Receiver<Command>) {
         let inbox = Rc::clone(&inbox);
         move |command| inbox.borrow_mut().push_back(command)
     });
+    let watched = events.is_some();
     let mut state = LoopState::new(PwConnector {
         mainloop: mainloop.clone(),
+        events,
     });
+    let mut reconnect = ReconnectWatch::new(Instant::now());
     loop {
-        mainloop.loop_().iterate(Timeout::Infinite);
-        state.forget_a_lost_connection();
+        if watched && !state.is_connected() && Instant::now() >= reconnect.next_attempt {
+            match state.reconnect() {
+                Ok(()) => reconnect.connected(state.connector.events.as_ref()),
+                Err(e) => {
+                    let delay = reconnect.failed(Instant::now());
+                    tracing::warn!(
+                        "cannot reach PipeWire ({e}); next attempt in {} s",
+                        delay.as_secs()
+                    );
+                },
+            }
+        }
+        let timeout = if watched && !state.is_connected() {
+            Timeout::Finite(
+                reconnect
+                    .next_attempt
+                    .saturating_duration_since(Instant::now()),
+            )
+        } else {
+            Timeout::Infinite
+        };
+        mainloop.loop_().iterate(timeout);
+        if state.forget_a_lost_connection() {
+            reconnect.lost(Instant::now());
+        }
         state.wire_waiting_branches();
         loop {
             let next = inbox.borrow_mut().pop_front();
@@ -999,7 +1066,64 @@ fn run_loop_thread(receiver: pw::channel::Receiver<Command>) {
                 break;
             };
             handle(&mut state, command);
-            state.forget_a_lost_connection();
+            if state.forget_a_lost_connection() {
+                reconnect.lost(Instant::now());
+            }
+        }
+        // A command reconnects on its own: that is a reconnection too.
+        if state.is_connected() {
+            reconnect.connected(state.connector.events.as_ref());
+        }
+    }
+}
+
+/// When a watched loop next tries to reconnect, and whether it owes a
+/// [`GraphEvent::Reconnected`] once it has.
+struct ReconnectWatch {
+    failures: u32,
+    next_attempt: Instant,
+    /// Set once a held connection was lost: the first connection of the
+    /// thread is not a reconnection.
+    owes_reconnected: bool,
+}
+
+impl ReconnectWatch {
+    /// A thread that has not connected yet, and tries at once.
+    fn new(now: Instant) -> Self {
+        Self {
+            failures: 0,
+            next_attempt: now,
+            owes_reconnected: false,
+        }
+    }
+
+    /// The connection was lost at `now`: the first retry waits
+    /// `reconnect_delay(0)`.
+    fn lost(&mut self, now: Instant) {
+        self.failures = 0;
+        self.next_attempt = now + reconnect_delay(0);
+        self.owes_reconnected = true;
+    }
+
+    /// An attempt at `now` failed; returns how long until the next one.
+    fn failed(&mut self, now: Instant) -> Duration {
+        self.failures = self.failures.saturating_add(1);
+        let delay = reconnect_delay(self.failures);
+        self.next_attempt = now + delay;
+        delay
+    }
+
+    /// A connection is held: reset the count, and report the reconnection
+    /// once. A closed channel is ignored — the consumer is gone.
+    fn connected(&mut self, events: Option<&UnboundedSender<GraphEvent>>) {
+        self.failures = 0;
+        if !self.owes_reconnected {
+            return;
+        }
+        self.owes_reconnected = false;
+        tracing::info!("PipeWire connection back");
+        if let Some(events) = events {
+            let _ = events.send(GraphEvent::Reconnected);
         }
     }
 }
@@ -1011,6 +1135,8 @@ fn pw_error(what: &'static str) -> impl Fn(pw::Error) -> AudioError {
 /// Opens [`PwConnection`]s on the loop thread's main loop.
 struct PwConnector {
     mainloop: MainLoopRc,
+    /// Handed to every connection's registry callbacks.
+    events: Option<UnboundedSender<GraphEvent>>,
 }
 
 impl Connector for PwConnector {
@@ -1024,7 +1150,8 @@ impl Connector for PwConnector {
     }
 
     fn connect(&mut self, context: &ContextRc) -> Result<PwConnection, AudioError> {
-        PwConnection::open(&self.mainloop, context)
+        // Cloned: each connection's callbacks hold a sender of their own.
+        PwConnection::open(&self.mainloop, context, self.events.clone())
     }
 }
 
@@ -1072,14 +1199,21 @@ struct Route {
 }
 
 impl PwConnection {
-    fn open(mainloop: &MainLoopRc, context: &ContextRc) -> Result<Self, AudioError> {
+    fn open(
+        mainloop: &MainLoopRc,
+        context: &ContextRc,
+        events: Option<UnboundedSender<GraphEvent>>,
+    ) -> Result<Self, AudioError> {
         let core = context
             .connect_rc(None)
             .map_err(pw_error("cannot connect to PipeWire"))?;
         let registry = core
             .get_registry_rc()
             .map_err(pw_error("cannot read the PipeWire registry"))?;
-        let shared = Rc::new(RefCell::new(Shared::default()));
+        let shared = Rc::new(RefCell::new(Shared {
+            events,
+            ..Shared::default()
+        }));
         let core_listener = core
             .add_listener_local()
             .done({
@@ -1409,6 +1543,11 @@ impl Shared {
             .unwrap_or_default();
         match global.type_ {
             ObjectType::Node => {
+                self.emit(speaker_sink_event(
+                    RegistryChange::Added,
+                    &props,
+                    Instant::now(),
+                ));
                 self.mirror.nodes.insert(global.id, NodeEntry { props });
             },
             ObjectType::Device => {
@@ -1440,11 +1579,24 @@ impl Shared {
     }
 
     fn remove_global(&mut self, id: u32) {
+        // Read before the node is forgotten: the removal carries only its id.
+        let event = self.mirror.nodes.get(&id).and_then(|node| {
+            speaker_sink_event(RegistryChange::Removed, &node.props, Instant::now())
+        });
+        self.emit(event);
         self.mirror.nodes.remove(&id);
         self.mirror.links.remove(&id);
         self.mirror.ports.remove(&id);
         self.mirror.devices.remove(&id);
         self.globals.remove(&id);
+    }
+
+    /// Send `event` to the watcher, if there is one. Never blocks; a closed
+    /// channel means the consumer is gone, and the event is dropped.
+    fn emit(&self, event: Option<GraphEvent>) {
+        if let (Some(events), Some(event)) = (&self.events, event) {
+            let _ = events.send(event);
+        }
     }
 }
 
@@ -1516,11 +1668,27 @@ fn route_pod(route: &Route, volumes: Vec<f32>) -> Result<Vec<u8>, AudioError> {
 }
 
 impl LoopState<PwConnector> {
-    /// Drop everything the connection held once the daemon has gone away.
-    fn forget_a_lost_connection(&mut self) {
-        if self.connection.as_ref().is_some_and(PwConnection::is_lost) {
+    /// Drop everything the connection held once the daemon has gone away,
+    /// and answer whether it did.
+    fn forget_a_lost_connection(&mut self) -> bool {
+        let lost = self.connection.as_ref().is_some_and(PwConnection::is_lost);
+        if lost {
             self.on_disconnect();
         }
+        lost
+    }
+
+    /// Connect, and re-read the whole registry in one round trip.
+    fn reconnect(&mut self) -> Result<(), AudioError> {
+        self.deadline = Instant::now() + COMMAND_TIMEOUT;
+        let deadline = self.deadline;
+        let result = self
+            .connection()
+            .and_then(|connection| connection.roundtrip(deadline));
+        if result.is_err() {
+            self.forget_a_lost_connection();
+        }
+        result
     }
 
     /// Refresh the mirror from the daemon.

@@ -341,13 +341,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let _mdns = advertise(&record);
 
+    // The registry's speaker sink events drive the branch repair (#80).
+    let (events, graph_events) = tokio::sync::mpsc::unbounded_channel();
+    let mut graph = graph_pw::PipeWireGraph::spawn();
+    graph.watch(events);
     let (router, state) = app_with_auth_and_targets(
         SpotifyAuth::new(),
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
         auth_store,
-        Box::new(graph_pw::PipeWireGraph::spawn()),
+        Box::new(graph),
     );
+    spawn_event_repair(state.clone(), graph_events);
+    spawn_confirmation_timer(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("blue2th-server listening on http://{addr}");
@@ -978,9 +984,11 @@ async fn auto_reconnect_pass(state: &AppState) {
     }
 }
 
-/// Start the branch repair pass (#75): re-run the routing reconciliation on a
-/// tick, so a speaker whose branch is missing or dead is fed again without the
-/// user deselecting and reselecting it.
+/// Start the safety-net repair pass (#75, #80): re-run the routing
+/// reconciliation every [`audio::SAFETY_NET_TICK`], for what no registry event
+/// reports — the combined sink destroyed by hand, a branch ruled dead. The
+/// speakers' sinks appearing and vanishing are handled by
+/// [`spawn_event_repair`] as they happen.
 ///
 /// A tick of its own rather than work on the `/devices` poll, which runs per
 /// client: the cost would otherwise multiply by the number of connected apps.
@@ -996,7 +1004,7 @@ fn spawn_branch_repair(state: AppState) {
             // whatever the previous run left, nothing is playing yet, and the
             // selection is restored by its own pass. A repair on the first
             // instant would only reconcile against a selection nobody asked for.
-            tokio::time::sleep(audio::BRANCH_REPAIR_TICK).await;
+            tokio::time::sleep(audio::SAFETY_NET_TICK).await;
             branch_repair_pass(&state, audio::PassReason::SafetyNet).await;
         }
     });
@@ -1007,19 +1015,55 @@ fn spawn_branch_repair(state: AppState) {
 /// task ends once every sender is gone and the queue is drained.
 fn spawn_event_repair(
     state: AppState,
-    events: tokio::sync::mpsc::UnboundedReceiver<graph_pw::GraphEvent>,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<graph_pw::GraphEvent>,
 ) -> tokio::task::JoinHandle<()> {
-    // Red-phase stub (#80).
     tokio::spawn(async move {
-        drop((state, events));
+        while let Some(first) = events.recv().await {
+            let speakers = state.targets.lock().await.speakers();
+            let mut reasons = Vec::new();
+            let mut next = Some(first);
+            while let Some(event) = next {
+                tracing::debug!("graph event: {event:?}");
+                reasons.extend(audio::wake_for(&event, &speakers));
+                next = events.try_recv().ok();
+            }
+            // One pass for the whole drain, named after what woke it first.
+            if let Some(reason) = reasons.into_iter().next() {
+                branch_repair_pass(&state, reason).await;
+            }
+        }
     })
 }
 
 /// Start the confirmation timer (#80): sleep until the router's earliest
-/// confirming reload falls due, then run one pass for it.
+/// confirming reload falls due, then run one pass for it. After every pass it
+/// reads the due time again; with nothing armed it waits for the router to arm
+/// a reload.
 fn spawn_confirmation_timer(state: AppState) {
-    // Red-phase stub (#80).
-    drop(state);
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let armed = state.router.lock().await.confirmation_armed();
+        loop {
+            let due = state.router.lock().await.next_confirmation_due();
+            let Some(due) = due else {
+                armed.notified().await;
+                continue;
+            };
+            tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+            branch_repair_pass(&state, audio::PassReason::ConfirmationDue).await;
+            // A pass that could not take the reload — nothing playing, a graph
+            // that cannot be read — leaves it due: wait for a new arming or a
+            // gap, rather than spinning on a time already past.
+            if state.router.lock().await.next_confirmation_due() == Some(due) {
+                tokio::select! {
+                    () = armed.notified() => {},
+                    () = tokio::time::sleep(audio::CONFIRM_GAP) => {},
+                }
+            }
+        }
+    });
 }
 
 /// One repair pass: reconcile the combined sink against the current selection.
@@ -1032,8 +1076,6 @@ fn spawn_confirmation_timer(state: AppState) {
 /// were already playing. A failure stays a warning: the next tick simply tries
 /// again, which is what repairs the race.
 async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
-    // Red-phase stub (#80): the reason is not logged yet.
-    let _ = reason;
     let speakers = state.targets.lock().await.speakers();
     // "Playing" covers both sources — the local tone and the Spotify backend —
     // exactly as the restore pass reads it: a branch that carries nothing only
@@ -1050,8 +1092,24 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
     if !audio::should_repair_branches(&speakers, anything_playing) {
         return;
     }
-    if let Err(e) = state.router.lock().await.route_for_targets(&speakers) {
-        tracing::warn!("branch repair could not re-route: {e}");
+    let (routed, changed) = {
+        let mut router = state.router.lock().await;
+        let before = router.graph_changes();
+        let routed = router.route_for_targets(&speakers);
+        (routed, router.graph_changes() != before)
+    };
+    // A pass that changed nothing stays silent: the safety net runs every 30 s.
+    if changed {
+        match &reason {
+            audio::PassReason::SinkAppeared { at, .. } => tracing::info!(
+                "repair pass woken by {reason}, {} ms after the event, changed the graph",
+                at.elapsed().as_millis()
+            ),
+            _ => tracing::info!("repair pass woken by {reason} changed the graph"),
+        }
+    }
+    if let Err(e) = routed {
+        tracing::warn!("branch repair ({reason}) could not re-route: {e}");
     }
 }
 

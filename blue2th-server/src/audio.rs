@@ -375,11 +375,6 @@ pub fn should_repair_branches(selection: &[SpeakerTarget], anything_playing: boo
     !selection.is_empty() && anything_playing
 }
 
-/// How often the repair pass looks at the graph. Short enough that a speaker
-/// coming back is fed again within seconds, and it reads the graph only while a
-/// selection is actually playing.
-pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
-
 /// How long after a branch is loaded it is reloaded once, to confirm it.
 ///
 /// A branch loaded towards a Bluetooth sink can come up complete — linked,
@@ -390,11 +385,16 @@ pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 /// silent speaker, the operator's workaround, is the same gap by hand. Seen at
 /// startup and after a daemon restart on the #81 build, so every load is
 /// confirmed, not only a speaker that came back.
-pub const CONFIRM_GAP: Duration = BRANCH_REPAIR_TICK;
+///
+/// A literal of its own, not the safety net's tick: the confirmation has its
+/// own timer (#80), and a gap following a 30 s tick would delay the remedy
+/// sixfold.
+pub const CONFIRM_GAP: Duration = Duration::from_secs(5);
 
-/// How often the safety-net repair pass runs (#80).
-// Red-phase stub (#80): still the old tick.
-pub const SAFETY_NET_TICK: Duration = BRANCH_REPAIR_TICK;
+/// How often the safety-net repair pass runs (#80). Registry events drive the
+/// repair; this net only catches what no event reports, such as the combined
+/// sink destroyed by hand.
+pub const SAFETY_NET_TICK: Duration = Duration::from_secs(30);
 
 /// What woke a repair pass (#80).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,16 +407,48 @@ pub enum PassReason {
 }
 
 impl std::fmt::Display for PassReason {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Red-phase stub (#80).
-        Ok(())
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SinkAppeared { name, .. } => write!(f, "sink {name} appeared"),
+            Self::SinkVanished { name } => write!(f, "sink {name} vanished"),
+            Self::ConfirmationDue => f.write_str("a confirming reload fell due"),
+            Self::SafetyNet => f.write_str("the safety net"),
+            Self::Reconnected => f.write_str("the PipeWire connection came back"),
+        }
     }
 }
 
 /// The reason `event` wakes a repair pass for `selection`, if it does.
-pub fn wake_for(_event: &GraphEvent, _selection: &[SpeakerTarget]) -> Option<PassReason> {
-    // Red-phase stub (#80).
-    None
+///
+/// A sink event wakes only when a selected speaker's [`bluez_sink_prefix`]
+/// names that sink under `prefix_names_node`'s rule; with nothing selected
+/// there is nothing to repair, so nothing wakes.
+pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassReason> {
+    if selection.is_empty() {
+        return None;
+    }
+    let selected = |name: &str| {
+        selection
+            .iter()
+            .any(|speaker| prefix_names_node(&bluez_sink_prefix(&speaker.address), name))
+    };
+    match event {
+        GraphEvent::SinkAppeared { name, at } if selected(name) => {
+            Some(PassReason::SinkAppeared {
+                // Cloned: the reason outlives the borrowed event.
+                name: name.clone(),
+                at: *at,
+            })
+        },
+        GraphEvent::SinkVanished { name, .. } if selected(name) => {
+            Some(PassReason::SinkVanished {
+                // Cloned: the reason outlives the borrowed event.
+                name: name.clone(),
+            })
+        },
+        GraphEvent::Reconnected => Some(PassReason::Reconnected),
+        _ => None,
+    }
 }
 
 /// What a selection change has to do to an already-loaded combined sink: the
@@ -518,8 +550,10 @@ impl ConfirmationRegister {
 
     /// When the earliest armed reload falls due; `None` when nothing is armed.
     fn next_due(&self) -> Option<Instant> {
-        // Red-phase stub (#80).
-        None
+        self.due
+            .iter()
+            .map(|(_, armed_at)| *armed_at + CONFIRM_GAP)
+            .min()
     }
 }
 
@@ -615,6 +649,12 @@ pub struct AudioRouter {
     confirmation: ConfirmationRegister,
     /// What "now" is for the confirmation; a test drives it by hand.
     clock: Box<dyn Fn() -> Instant + Send>,
+    /// Poked whenever a confirming reload is armed, so the confirmation timer
+    /// waiting on an empty register learns of it (#80).
+    armed: std::sync::Arc<tokio::sync::Notify>,
+    /// How many changes this router has made to the graph: a pass compares it
+    /// before and after to tell whether it changed anything.
+    changes: u64,
 }
 
 impl AudioRouter {
@@ -632,13 +672,24 @@ impl AudioRouter {
             graph,
             confirmation: ConfirmationRegister::default(),
             clock,
+            armed: std::sync::Arc::default(),
+            changes: 0,
         }
     }
 
     /// When the earliest confirming reload falls due; `None` when none is armed.
     pub fn next_confirmation_due(&self) -> Option<Instant> {
-        // Red-phase stub (#80).
-        None
+        self.confirmation.next_due()
+    }
+
+    /// Notified each time a confirming reload is armed.
+    pub fn confirmation_armed(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.armed)
+    }
+
+    /// How many changes this router has made to the graph so far.
+    pub fn graph_changes(&self) -> u64 {
+        self.changes
     }
 
     /// Arm the confirming reload of every branch a pass has just loaded.
@@ -654,6 +705,7 @@ impl AudioRouter {
         );
         let now = (self.clock)();
         self.confirmation.arm(loaded, now);
+        self.armed.notify_one();
     }
 
     /// Apply the PipeWire routing a selection calls for: every non-empty selection
@@ -712,6 +764,7 @@ impl AudioRouter {
                 spec.sink_name
             ),
         }
+        self.changes += 1;
         self.graph.teardown(&spec.sink_name)?;
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
@@ -747,6 +800,7 @@ impl AudioRouter {
             // Best-effort: a branch that is already gone is not an error, and one
             // failure must not stop the rest of a repair.
             let _ = self.graph.unload_branch(dead.id);
+            self.changes += 1;
         }
         // Unknown liveness keeps the branch: a transient read failure would
         // otherwise read as "everything is dead" and reload every branch under
@@ -785,6 +839,7 @@ impl AudioRouter {
                 up.id,
                 up.branch.sink
             );
+            self.changes += 1;
             self.graph.unload_branch(up.id)?;
         }
 
@@ -800,6 +855,7 @@ impl AudioRouter {
                 );
                 // One rejected delay must not stop the other speakers' repair; it
                 // is reported, and the next pass retunes it again.
+                self.changes += 1;
                 if let Err(err) = self.graph.set_branch_delay(up.id, retune.latency_ms) {
                     failures.push(err.to_string());
                 }
@@ -855,6 +911,7 @@ impl AudioRouter {
                 .iter()
                 .any(|planned| prefix_names_node(&planned.sink, &branch.branch.sink))
             {
+                self.changes += 1;
                 self.graph.unload_branch(branch.id)?;
             }
         }
@@ -877,7 +934,7 @@ impl AudioRouter {
         // `load_planned_branches` holds both closures at once and each one needs
         // the graph, so the exclusive borrow is handed out per call instead.
         let graph = RefCell::new(&mut self.graph);
-        load_planned_branches(
+        let report = load_planned_branches(
             branches,
             |branch| resolve_branch_sink(graph.borrow_mut().as_mut(), branch),
             |branch, real_sink| {
@@ -885,7 +942,9 @@ impl AudioRouter {
                     .borrow_mut()
                     .load_branch(sink_name, real_sink, branch.latency_ms)
             },
-        )
+        );
+        self.changes += report.loaded.len() as u64;
+        report
     }
 
     /// Change one speaker's delay **in place**: the new value is set on that
