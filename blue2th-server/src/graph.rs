@@ -49,6 +49,10 @@ pub trait Graph: Send {
     /// names `sink_name` exactly (#66), and answer whether it did. Any other
     /// value is left as it is.
     fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError>;
+    /// Ask the session manager to move every output stream that asked for
+    /// `sink_name` back onto it (#139), and answer how many were asked. No
+    /// such stream is `Ok(0)`, not an error.
+    fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError>;
     /// The volume of `sink` as a fraction, `None` when it cannot be read.
     fn sink_volume(&mut self, sink: &str) -> Option<f32>;
     /// Set the volume of `sink` to `level`, a fraction.
@@ -98,6 +102,9 @@ pub mod fake {
         ClearStaleDefaultSink {
             sink_name: String,
         },
+        RetargetStreams {
+            sink_name: String,
+        },
         SetSinkVolume {
             sink: String,
             level: f32,
@@ -125,6 +132,7 @@ pub mod fake {
         SetBranchDelay,
         Teardown,
         ClearStaleDefaultSink,
+        RetargetStreams,
         SinkVolume,
         SetSinkVolume,
     }
@@ -319,6 +327,17 @@ pub mod fake {
                 .filter(|call| call.is_mutating())
                 // Cloned out of the lock: the log keeps growing behind it.
                 .cloned()
+                .collect()
+        }
+
+        /// The mutating calls received, in order, less the stream
+        /// re-targeting (#139): where that call sits among a build's branch
+        /// loads is the router's choice, so a test pinning the rest of a
+        /// build's sequence reads this instead of [`Self::calls`].
+        pub fn routing_calls(&self) -> Vec<GraphCall> {
+            self.calls()
+                .into_iter()
+                .filter(|call| !matches!(call, GraphCall::RetargetStreams { .. }))
                 .collect()
         }
 
@@ -518,6 +537,18 @@ pub mod fake {
             }
             state.configured_default = None;
             Ok(true)
+        }
+
+        fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
+            let mut state = self.state();
+            state.log.push(GraphCall::RetargetStreams {
+                sink_name: sink_name.to_string(),
+            });
+            state.refuse_empty(GraphOp::RetargetStreams, &[sink_name])?;
+            state.check(GraphOp::RetargetStreams, sink_name)?;
+            // No stream is modelled: a paused `librespot` holds none, and
+            // re-targeting nothing is a success.
+            Ok(0)
         }
 
         fn sink_volume(&mut self, sink: &str) -> Option<f32> {
@@ -828,6 +859,47 @@ mod tests {
             Err(AudioError::PipeWire(_))
         ));
         assert_eq!(fake.configured_default().as_deref(), Some(STALE_DEFAULT));
+    }
+
+    // Criterion (#139): the fake records `retarget_streams` as a mutating
+    // call naming the sink, answers `Ok(0)` — no stream is modelled, and
+    // re-targeting nothing is a success — fails it when told to, and refuses
+    // an empty sink name. `routing_calls` leaves only that call out.
+    #[test]
+    fn test_fake_graph_records_retarget_streams_and_fails_it_when_told() {
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        fake.create_combined_sink(COMBINED).unwrap();
+
+        assert_eq!(fake.retarget_streams(COMBINED).ok(), Some(0));
+        assert_eq!(
+            fake.calls(),
+            vec![
+                GraphCall::CreateCombinedSink {
+                    sink_name: COMBINED.to_string()
+                },
+                GraphCall::RetargetStreams {
+                    sink_name: COMBINED.to_string()
+                },
+            ]
+        );
+        assert_eq!(
+            fake.routing_calls(),
+            vec![GraphCall::CreateCombinedSink {
+                sink_name: COMBINED.to_string()
+            }]
+        );
+
+        fake.fail(GraphOp::RetargetStreams);
+        assert!(matches!(
+            fake.retarget_streams(COMBINED),
+            Err(AudioError::PipeWire(_))
+        ));
+        fake.clear_failures();
+        assert!(matches!(
+            fake.retarget_streams(""),
+            Err(AudioError::PipeWire(_))
+        ));
+        assert_eq!(fake.empty_names_refused(), 1);
     }
 
     // Criterion: liveness is reported as `Some(true)`, `Some(false)` or `None`.

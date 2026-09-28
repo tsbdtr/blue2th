@@ -1077,7 +1077,11 @@ fn spawn_confirmation_timer(state: AppState) {
 ///
 /// `reason` is what woke the pass. It is logged only when the pass changed the
 /// graph, so a pass that found everything in place leaves no line.
-async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
+///
+/// Answers whether the pass fell back to pausing Spotify (#139), which only a
+/// pass woken by the combined sink's removal ever does, and only when it could
+/// not rebuild the sink or re-target the streams onto it.
+async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) -> bool {
     let speakers = state.targets.lock().await.speakers();
     // "Playing" covers both sources — the local tone and the Spotify backend —
     // exactly as the restore pass reads it: a branch that carries nothing only
@@ -1092,7 +1096,7 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
     // The single guard, and it runs before the graph is touched: an idle backend — no
     // selection, or nothing playing — asks PipeWire nothing at all.
     if !audio::should_repair_branches(&speakers, anything_playing) {
-        return;
+        return false;
     }
     let (routed, changed) = {
         let mut router = state.router.lock().await;
@@ -1106,6 +1110,8 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
     if let Err(e) = routed {
         tracing::warn!("repair pass (woken by: {reason}) could not re-route: {e}");
     }
+    // Red-phase stub (#139): never falls back.
+    false
 }
 
 /// The line a repair pass woken by `reason` logs once it is done, at `now`;
@@ -3055,7 +3061,7 @@ mod tests {
             played.map(|Json(p)| p.status).map_err(|_| "error response")
         );
         assert_eq!(
-            fake.calls(),
+            fake.routing_calls(),
             vec![
                 GraphCall::ClearStaleDefaultSink {
                     sink_name: "blue2th_combined".to_string()
@@ -3386,6 +3392,305 @@ mod tests {
             repair_pass_line(&audio::PassReason::SafetyNet, true, at).as_deref(),
             Some("repair pass (woken by: the safety net) changed the graph")
         );
+    }
+
+    // ─── #139: the combined sink removed from outside ────────────────────────
+
+    fn combined_sink_vanished() -> graph_pw::GraphEvent {
+        graph_pw::GraphEvent::CombinedSinkVanished {
+            name: COMBINED_SINK.to_string(),
+            at: std::time::Instant::now(),
+        }
+    }
+
+    fn combined_reason() -> audio::PassReason {
+        audio::PassReason::CombinedSinkVanished {
+            name: COMBINED_SINK.to_string(),
+        }
+    }
+
+    /// Every reason but the combined sink's removal.
+    fn other_reasons() -> Vec<audio::PassReason> {
+        vec![
+            audio::PassReason::SafetyNet,
+            audio::PassReason::SinkVanished {
+                name: JBL_SINK.to_string(),
+            },
+            audio::PassReason::ConfirmationDue,
+            audio::PassReason::Reconnected,
+            audio::PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: std::time::Instant::now(),
+            },
+        ]
+    }
+
+    /// A state with the JBL selected and the tone playing — which is what gets
+    /// a pass past its guard without a `librespot` — over `fake`, whose
+    /// combined sink is gone: destroyed from outside. The JBL's sink is there
+    /// when `speaker_up` is set.
+    async fn vanished_state(fake: &graph::fake::FakeGraph, speaker_up: bool) -> AppState {
+        if speaker_up {
+            fake.add_sink(JBL_SINK);
+        }
+        let state = test_state_on(AudioEngine::new(), fake);
+        state
+            .targets
+            .lock()
+            .await
+            .select(JBL, &[JBL.to_string()])
+            .expect("a connected speaker can be selected");
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        state
+    }
+
+    /// How many times `fake` was asked to create the combined sink: one per
+    /// pass that rebuilt it.
+    fn rebuilds(fake: &graph::fake::FakeGraph) -> usize {
+        fake.calls()
+            .iter()
+            .filter(|call| matches!(call, graph::fake::GraphCall::CreateCombinedSink { .. }))
+            .count()
+    }
+
+    /// How many times `fake` was asked to re-target the streams.
+    fn retargets(fake: &graph::fake::FakeGraph) -> usize {
+        fake.calls()
+            .iter()
+            .filter(|call| matches!(call, graph::fake::GraphCall::RetargetStreams { .. }))
+            .count()
+    }
+
+    /// The fallback pauses Spotify only: the tone, playing throughout, is
+    /// never paused, and nothing is claimed while no `librespot` ran. Reusing
+    /// `pause_sources_until_restored`, which pauses the engine too and claims
+    /// its pause, fails here.
+    async fn assert_tone_untouched_and_nothing_claimed(state: &AppState) {
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "the fallback pauses Spotify, never the tone"
+        );
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "nothing was silenced, so nothing is claimed"
+        );
+    }
+
+    // Criterion (#139): the pass line covers the combined sink's removal — it
+    // names the reason when the pass changed the graph, and there is no line
+    // when it did not.
+    #[test]
+    fn test_repair_pass_line_names_the_combined_sink_s_removal() {
+        let now = std::time::Instant::now();
+
+        let line = repair_pass_line(&combined_reason(), true, now);
+
+        assert!(
+            line.as_deref()
+                .is_some_and(|line| line.starts_with("repair pass (woken by: ")
+                    && line.contains(COMBINED_SINK)
+                    && line.ends_with(") changed the graph")),
+            "got {line:?}"
+        );
+        assert_eq!(repair_pass_line(&combined_reason(), false, now), None);
+    }
+
+    // Criterion (#139): a pass woken by the combined sink's removal that cannot
+    // rebuild it — no selected speaker has a sink any more — falls back to
+    // pausing Spotify. With no `librespot` running, the pause silenced
+    // nothing: no claim, and the tone is not paused.
+    #[tokio::test]
+    async fn test_repair_pass_after_the_combined_sink_s_removal_falls_back_when_the_rebuild_fails()
+    {
+        let fake = graph::fake::FakeGraph::new();
+        let state = vanished_state(&fake, false).await;
+
+        let fell_back = branch_repair_pass(&state, combined_reason()).await;
+
+        assert!(rebuilds(&fake) >= 1, "the pass tried: {:?}", fake.calls());
+        assert!(fell_back, "the failed rebuild falls back to the pause");
+        assert_tone_untouched_and_nothing_claimed(&state).await;
+    }
+
+    // Criterion (#139): a pass woken by the combined sink's removal that
+    // rebuilt it but could not re-target the streams falls back to the pause
+    // too, while the speakers' branches stay loaded.
+    #[tokio::test]
+    async fn test_repair_pass_after_the_combined_sink_s_removal_falls_back_when_the_retarget_fails()
+    {
+        let fake = graph::fake::FakeGraph::new();
+        fake.fail(graph::fake::GraphOp::RetargetStreams);
+        let state = vanished_state(&fake, true).await;
+
+        let fell_back = branch_repair_pass(&state, combined_reason()).await;
+
+        assert_eq!(retargets(&fake), 1, "calls: {:?}", fake.calls());
+        assert_eq!(
+            fake.loaded(COMBINED_SINK)
+                .into_iter()
+                .map(|b| b.branch.sink)
+                .collect::<Vec<_>>(),
+            vec![JBL_SINK.to_string()],
+            "the route itself went through"
+        );
+        assert!(fell_back, "the failed re-target falls back to the pause");
+        assert_tone_untouched_and_nothing_claimed(&state).await;
+    }
+
+    // Criterion (#139, guard, only on failure): a pass woken by the combined
+    // sink's removal that rebuilt the sink and re-targeted the streams never
+    // falls back. The near miss: the same reason, the same missing sink —
+    // only the successful rebuild and re-target spare it the pause.
+    #[tokio::test]
+    async fn test_repair_pass_after_the_combined_sink_s_removal_that_rebuilt_never_falls_back() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = vanished_state(&fake, true).await;
+
+        let fell_back = branch_repair_pass(&state, combined_reason()).await;
+
+        assert_eq!(rebuilds(&fake), 1, "calls: {:?}", fake.calls());
+        assert_eq!(retargets(&fake), 1, "calls: {:?}", fake.calls());
+        assert!(!fell_back, "a successful rebuild never pauses");
+        assert_tone_untouched_and_nothing_claimed(&state).await;
+    }
+
+    // Criterion (#139, guard, only this reason pauses): a pass woken by any
+    // other reason never falls back, even when its route fails or its
+    // re-targeting does. The control: the combined sink's removal on the
+    // same failing graph does.
+    #[tokio::test]
+    async fn test_repair_pass_woken_by_another_reason_never_falls_back() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = vanished_state(&fake, false).await;
+        assert!(
+            branch_repair_pass(&state, combined_reason()).await,
+            "control: the combined sink's removal falls back on this graph"
+        );
+
+        for reason in other_reasons() {
+            // The route fails: no speaker sink.
+            let fake = graph::fake::FakeGraph::new();
+            let state = vanished_state(&fake, false).await;
+            let label = format!("{reason:?}");
+            assert!(
+                !branch_repair_pass(&state, reason.clone()).await,
+                "{label} with a failed route"
+            );
+            assert!(rebuilds(&fake) >= 1, "{label}: the pass ran");
+            assert_tone_untouched_and_nothing_claimed(&state).await;
+
+            // The route goes through, the re-targeting fails.
+            let fake = graph::fake::FakeGraph::new();
+            fake.fail(graph::fake::GraphOp::RetargetStreams);
+            let state = vanished_state(&fake, true).await;
+            assert!(
+                !branch_repair_pass(&state, reason).await,
+                "{label} with a failed re-target"
+            );
+            assert_tone_untouched_and_nothing_claimed(&state).await;
+        }
+    }
+
+    // Criterion (#139): a fallback pause that silenced nothing claims nothing.
+    // Here `librespot` runs — a real subprocess stands in for it, which is also
+    // what gets the pass past its guard with the tone stopped — and the pause
+    // request fails, the Web API being out of reach without a login. The pass
+    // falls back, the request fails, and no claim is left for a restore path
+    // to resume on.
+    #[tokio::test]
+    async fn test_fallback_pause_that_silenced_nothing_claims_nothing() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = test_state_on(AudioEngine::new(), &fake);
+        state
+            .targets
+            .lock()
+            .await
+            .select(JBL, &[JBL.to_string()])
+            .expect("a connected speaker can be selected");
+        let child =
+            spotify::spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+        state.spotify.lock().await.adopt_child_for_test(child);
+        assert_eq!(
+            state.spotify.lock().await.status().status,
+            blue2th_proto::SpotifyStatus::Running,
+            "the fixture must start from a running librespot"
+        );
+
+        let fell_back = branch_repair_pass(&state, combined_reason()).await;
+
+        let stopped = state.spotify.lock().await.stop();
+        assert!(stopped.is_ok(), "the stand-in is stopped: {stopped:?}");
+        assert!(fell_back, "the failed rebuild falls back to the pause");
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "a pause that failed claims nothing"
+        );
+    }
+
+    // Criterion (#139): the event consumer wakes a pass for the combined
+    // sink's removal, and that pass rebuilds the sink and re-targets the
+    // streams at once, without waiting for the safety net.
+    #[tokio::test]
+    async fn test_event_consumer_rebuilds_after_the_combined_sink_s_removal() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = vanished_state(&fake, true).await;
+
+        consume(&state, vec![combined_sink_vanished()]).await;
+
+        assert_eq!(rebuilds(&fake), 1, "calls: {:?}", fake.calls());
+        assert_eq!(retargets(&fake), 1, "calls: {:?}", fake.calls());
+    }
+
+    // Criterion (#139): a burst carrying a selected speaker's sink appearing
+    // first and the combined sink's removal after it runs one pass, not two.
+    // The reason that pass carries is pinned by `wake_for_burst`'s own tests;
+    // the consumer runs nothing else.
+    #[tokio::test]
+    async fn test_event_consumer_runs_one_pass_for_a_burst_with_the_combined_sink_s_removal() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = vanished_state(&fake, true).await;
+
+        consume(
+            &state,
+            vec![sink_appeared(JBL_SINK), combined_sink_vanished()],
+        )
+        .await;
+
+        assert_eq!(rebuilds(&fake), 1, "calls: {:?}", fake.calls());
+        assert_eq!(retargets(&fake), 1, "calls: {:?}", fake.calls());
+    }
+
+    // Criterion (#139): with nothing selected, the combined sink's removal
+    // wakes nothing — the graph is not even read. The control: once the JBL
+    // is selected, the same event rebuilds.
+    #[tokio::test]
+    async fn test_event_consumer_ignores_the_combined_sink_s_removal_with_nothing_selected() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = test_state_on(AudioEngine::new(), &fake);
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+
+        consume(&state, vec![combined_sink_vanished()]).await;
+        assert!(fake.all_calls().is_empty(), "calls: {:?}", fake.all_calls());
+
+        state
+            .targets
+            .lock()
+            .await
+            .select(JBL, &[JBL.to_string()])
+            .expect("a connected speaker can be selected");
+        consume(&state, vec![combined_sink_vanished()]).await;
+        assert_eq!(rebuilds(&fake), 1, "control: a selection rebuilds");
     }
 
     /// Let every task that is ready run, without moving the paused clock.
