@@ -412,8 +412,9 @@ impl std::fmt::Display for PassReason {
         match self {
             Self::SinkAppeared { name, .. } => write!(f, "sink {name} appeared"),
             Self::SinkVanished { name } => write!(f, "sink {name} vanished"),
-            // Red-phase stub (#139): renders as nothing.
-            Self::CombinedSinkVanished { .. } => f.write_str(""),
+            Self::CombinedSinkVanished { name } => {
+                write!(f, "combined sink {name} removed from outside")
+            },
             Self::ConfirmationDue => f.write_str("a confirming reload fell due"),
             Self::SafetyNet => f.write_str("the safety net"),
             Self::Reconnected => f.write_str("the PipeWire connection came back"),
@@ -449,6 +450,12 @@ pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassR
                 name: name.clone(),
             })
         },
+        GraphEvent::CombinedSinkVanished { name, .. } => {
+            Some(PassReason::CombinedSinkVanished {
+                // Cloned: the reason outlives the borrowed event.
+                name: name.clone(),
+            })
+        },
         GraphEvent::Reconnected => Some(PassReason::Reconnected),
         _ => None,
     }
@@ -459,17 +466,22 @@ pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassR
 /// wins wherever it sits, so the fallback it may call for is never lost to a
 /// speaker event drained before it; otherwise the first event that wakes.
 pub fn wake_for_burst(events: &[GraphEvent], selection: &[SpeakerTarget]) -> Option<PassReason> {
-    // Red-phase stub: today's first-wins fold.
-    events.iter().find_map(|event| wake_for(event, selection))
+    let reasons = events.iter().filter_map(|event| wake_for(event, selection));
+    let mut first = None;
+    for reason in reasons {
+        if matches!(reason, PassReason::CombinedSinkVanished { .. }) {
+            return Some(reason);
+        }
+        first = first.or(Some(reason));
+    }
+    first
 }
 
 /// Whether a repair pass woken by `reason` must fall back to pausing Spotify
 /// (#139), given whether its route succeeded and whether the re-targeting of
 /// the streams did.
 pub fn fallback_pause_due(reason: &PassReason, routed_ok: bool, retargeted_ok: bool) -> bool {
-    // Red-phase stub: never.
-    let _ = (reason, routed_ok, retargeted_ok);
-    false
+    matches!(reason, PassReason::CombinedSinkVanished { .. }) && !(routed_ok && retargeted_ok)
 }
 
 /// What a selection change has to do to an already-loaded combined sink: the
@@ -677,6 +689,9 @@ pub struct AudioRouter {
     /// unload, a retune, a build — a refused call counting for none. A pass
     /// compares it before and after to tell whether it changed anything.
     changes: u64,
+    /// Whether the last route created the combined sink and could not
+    /// re-target the streams onto it (#139).
+    retarget_failed: bool,
 }
 
 impl AudioRouter {
@@ -696,6 +711,7 @@ impl AudioRouter {
             clock,
             armed: std::sync::Arc::default(),
             changes: 0,
+            retarget_failed: false,
         }
     }
 
@@ -719,8 +735,7 @@ impl AudioRouter {
     /// and then failed to re-target the streams onto it (#139). A route that
     /// created nothing, or re-targeted successfully, answers `false`.
     pub(crate) fn last_retarget_failed(&self) -> bool {
-        // Red-phase stub: never reports a failure.
-        false
+        self.retarget_failed
     }
 
     /// Arm the confirming reload of every branch a pass has just loaded.
@@ -745,6 +760,7 @@ impl AudioRouter {
     /// stream behind (#70, #53). The single seam used by `/play` and by the Spotify
     /// backend, so both agree on where audio goes.
     pub fn route_for_targets(&mut self, speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
+        self.retarget_failed = false;
         if speakers.is_empty() {
             return Err(AudioError::NoSpeakerConnected);
         }
@@ -799,6 +815,21 @@ impl AudioRouter {
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
         self.changes += 1;
+        // A stream that asked for the sink before it was destroyed is not
+        // moved back by the session manager on its own (#139). Losing this
+        // never fails the route: the pass reads the flag and falls back.
+        // Not a graph change: it moves no branch and loads nothing.
+        match self.graph.retarget_streams(&spec.sink_name) {
+            Ok(0) => {},
+            Ok(count) => tracing::info!("re-targeted {count} stream(s) onto {}", spec.sink_name),
+            Err(err) => {
+                tracing::warn!(
+                    "could not re-target the streams onto {}: {err}",
+                    spec.sink_name
+                );
+                self.retarget_failed = true;
+            },
+        }
         // One delay branch per speaker: combined.monitor -> real sink, delayed by
         // the speaker's offset, the per-branch sync tuning.
         let report = self.load_planned_branches_live(&spec.sink_name, &spec.branches);

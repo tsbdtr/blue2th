@@ -336,9 +336,11 @@ impl Graph for PipeWireGraph {
     }
 
     fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
-        // Red-phase stub (#139): sends nothing and re-targets nothing.
-        let _ = sink_name;
-        Ok(0)
+        named("sink", sink_name)?;
+        self.ask(|reply| Command::RetargetStreams {
+            sink_name: sink_name.to_string(),
+            reply,
+        })?
     }
 
     fn sink_volume(&mut self, sink: &str) -> Option<f32> {
@@ -720,9 +722,18 @@ pub(crate) fn foreign_combined_globals(mirror: &Mirror, sink_name: &str) -> Vec<
 /// The ids of the output streams that asked for `sink_name` (#139): the
 /// `Stream/Output/Audio` nodes whose `target.object` equals it exactly.
 pub(crate) fn streams_targeting(mirror: &Mirror, sink_name: &str) -> Vec<u32> {
-    // Red-phase stub: answers no stream at all.
-    let _ = (mirror, sink_name);
-    Vec::new()
+    if sink_name.is_empty() {
+        return Vec::new();
+    }
+    mirror
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.prop("media.class") == Some("Stream/Output/Audio")
+                && node.prop("target.object") == Some(sink_name)
+        })
+        .map(|(id, _)| *id)
+        .collect()
 }
 
 /// The metadata key WirePlumber keeps the user's chosen default sink in.
@@ -1212,6 +1223,9 @@ struct Shared {
     globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
     done: Option<i32>,
     lost: bool,
+    /// The combined sinks this connection holds the proxy for, by node id
+    /// (#139): only their removal is someone else's doing.
+    combined_sinks: BTreeMap<u32, String>,
 }
 
 /// A connection to the daemon and the registry mirror it keeps.
@@ -1475,24 +1489,7 @@ impl PwConnection {
         sink_name: &str,
         deadline: Instant,
     ) -> Result<bool, AudioError> {
-        let metadata = {
-            let shared = self.shared.borrow();
-            let global = shared
-                .globals
-                .values()
-                .find(|global| {
-                    global.type_ == ObjectType::Metadata
-                        && global
-                            .props
-                            .as_ref()
-                            .and_then(|props| props.get("metadata.name"))
-                            == Some("default")
-                })
-                .ok_or_else(|| AudioError::PipeWire("no default metadata object".into()))?;
-            self.registry
-                .bind::<Metadata, _>(global)
-                .map_err(pw_error("cannot bind the default metadata"))?
-        };
+        let metadata = self.default_metadata()?;
         // A freshly bound metadata replays every property it holds, so one
         // round trip delivers the current value, or none when the key is absent.
         let configured: Rc<RefCell<Option<String>>> = Rc::default();
@@ -1517,6 +1514,43 @@ impl PwConnection {
         metadata.set_property(0, CONFIGURED_DEFAULT_SINK_KEY, None, None);
         self.roundtrip(deadline)?;
         Ok(true)
+    }
+
+    /// Bind the `default` metadata object, where WirePlumber keeps its
+    /// preferences and the streams' targets.
+    fn default_metadata(&self) -> Result<Metadata, AudioError> {
+        let shared = self.shared.borrow();
+        let global = shared
+            .globals
+            .values()
+            .find(|global| {
+                global.type_ == ObjectType::Metadata
+                    && global
+                        .props
+                        .as_ref()
+                        .and_then(|props| props.get("metadata.name"))
+                        == Some("default")
+            })
+            .ok_or_else(|| AudioError::PipeWire("no default metadata object".into()))?;
+        self.registry
+            .bind::<Metadata, _>(global)
+            .map_err(pw_error("cannot bind the default metadata"))
+    }
+
+    /// Write `sink_name` as the `target.object` of every stream in `streams`
+    /// into the `default` metadata, the untyped write `pw-metadata` makes
+    /// (#139). `target.node` is left alone.
+    fn retarget_streams(
+        &self,
+        streams: &[u32],
+        sink_name: &str,
+        deadline: Instant,
+    ) -> Result<(), AudioError> {
+        let metadata = self.default_metadata()?;
+        for id in streams {
+            metadata.set_property(*id, "target.object", None, Some(sink_name));
+        }
+        self.roundtrip(deadline)
     }
 
     /// Bind the device `device_id` and read its `Route` param.
@@ -1618,15 +1652,13 @@ impl Shared {
     /// Record that this connection holds the proxy owning the combined sink
     /// `sink_name`, whose node is `id` (#139).
     fn hold_combined_sink(&mut self, id: u32, sink_name: &str) {
-        // Red-phase stub: remembers nothing.
-        let _ = (id, sink_name);
+        self.combined_sinks.insert(id, sink_name.to_string());
     }
 
     /// Record that the proxy owning the combined sink `sink_name` has been
     /// dropped, so its removal is this server's own teardown (#139).
     fn release_combined_sink(&mut self, sink_name: &str) {
-        // Red-phase stub: forgets nothing.
-        let _ = sink_name;
+        self.combined_sinks.retain(|_, name| name != sink_name);
     }
 
     fn remove_global(&mut self, id: u32) {
@@ -1635,6 +1667,15 @@ impl Shared {
             speaker_sink_event(RegistryChange::Removed, &node.props, Instant::now())
         });
         self.emit(event);
+        // Forgotten with its node: PipeWire reuses ids.
+        let combined =
+            self.combined_sinks
+                .remove(&id)
+                .map(|name| GraphEvent::CombinedSinkVanished {
+                    name,
+                    at: Instant::now(),
+                });
+        self.emit(combined);
         self.mirror.nodes.remove(&id);
         self.mirror.links.remove(&id);
         self.mirror.ports.remove(&id);
@@ -1775,7 +1816,10 @@ impl LoopState<PwConnector> {
     }
 
     fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        let before: BTreeSet<u32> = self.mirror.node_ids_named(sink_name).collect();
         let node = self.connection()?.create_null_sink(sink_name)?;
+        // A proxy this replaces is dropped here: its removal is ours.
+        self.release_combined_sink(sink_name);
         self.set_null_sink(sink_name, node);
         self.sync_mirror()?;
         if !sink_names(&self.mirror)
@@ -1786,7 +1830,44 @@ impl LoopState<PwConnector> {
                 "the combined sink {sink_name} did not appear"
             )));
         }
+        // The node that appeared with the proxy is the one it owns.
+        let created: Vec<u32> = self
+            .mirror
+            .node_ids_named(sink_name)
+            .filter(|id| !before.contains(id))
+            .collect();
+        if let Some(connection) = self.connection.as_ref() {
+            let mut shared = connection.shared.borrow_mut();
+            for id in created {
+                shared.hold_combined_sink(id, sink_name);
+            }
+        }
         Ok(())
+    }
+
+    /// Forget that the combined sink `sink_name` is held, before its proxy is
+    /// dropped: the removal the registry reports next is this server's own.
+    fn release_combined_sink(&mut self, sink_name: &str) {
+        if let Some(connection) = self.connection.as_ref() {
+            connection
+                .shared
+                .borrow_mut()
+                .release_combined_sink(sink_name);
+        }
+    }
+
+    /// Move every output stream that asked for `sink_name` back onto it (#139),
+    /// and answer how many were asked.
+    fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
+        self.sync_mirror()?;
+        let streams = streams_targeting(&self.mirror, sink_name);
+        if streams.is_empty() {
+            return Ok(0);
+        }
+        let deadline = self.deadline;
+        self.connection()?
+            .retarget_streams(&streams, sink_name, deadline)?;
+        Ok(streams.len())
     }
 
     fn load_branch(
@@ -1942,7 +2023,9 @@ impl LoopState<PwConnector> {
     }
 
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
-        // Dropping the proxy destroys the node this connection created.
+        // Dropping the proxy destroys the node this connection created, and
+        // that removal is not someone else's (#139).
+        self.release_combined_sink(sink_name);
         drop(self.take_null_sink(sink_name));
         // A partial view destroys nothing: the sync must succeed first, and
         // the modules are only forgotten once it has.
@@ -2041,9 +2124,7 @@ fn handle(state: &mut LoopState<PwConnector>, command: Command) {
             let _ = reply.send(state.clear_stale_default_sink(&sink_name));
         },
         Command::RetargetStreams { sink_name, reply } => {
-            // Red-phase stub (#139): re-targets nothing.
-            let _ = sink_name;
-            let _ = reply.send(Ok(0));
+            let _ = reply.send(state.retarget_streams(&sink_name));
         },
         Command::SinkVolume { sink, reply } => {
             let _ = reply.send(state.sink_volume(&sink));

@@ -1020,15 +1020,15 @@ fn spawn_event_repair(
     tokio::spawn(async move {
         while let Some(first) = events.recv().await {
             let speakers = state.targets.lock().await.speakers();
-            // One pass for the whole drain, named after the first event that woke.
-            let mut reason = None;
+            // One pass for the whole drain, named by `wake_for_burst`.
+            let mut burst = Vec::new();
             let mut next = Some(first);
             while let Some(event) = next {
                 tracing::debug!("graph event: {event:?}");
-                reason = reason.or_else(|| audio::wake_for(&event, &speakers));
+                burst.push(event);
                 next = events.try_recv().ok();
             }
-            if let Some(reason) = reason {
+            if let Some(reason) = audio::wake_for_burst(&burst, &speakers) {
                 branch_repair_pass(&state, reason).await;
             }
         }
@@ -1098,20 +1098,37 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) -> bool
     if !audio::should_repair_branches(&speakers, anything_playing) {
         return false;
     }
-    let (routed, changed) = {
+    let (routed, changed, retargeted_ok) = {
         let mut router = state.router.lock().await;
         let before = router.graph_changes();
         let routed = router.route_for_targets(&speakers);
-        (routed, router.graph_changes() != before)
+        (
+            routed,
+            router.graph_changes() != before,
+            !router.last_retarget_failed(),
+        )
     };
     if let Some(line) = repair_pass_line(&reason, changed, std::time::Instant::now()) {
         tracing::info!("{line}");
     }
+    let routed_ok = routed.is_ok();
     if let Err(e) = routed {
         tracing::warn!("repair pass (woken by: {reason}) could not re-route: {e}");
     }
-    // Red-phase stub (#139): never falls back.
-    false
+    if !audio::fallback_pause_due(&reason, routed_ok, retargeted_ok) {
+        return false;
+    }
+    // Spotify only (#139): the fallback exists for `librespot`'s stream, which
+    // the session manager moves onto the PC's own speakers once the sink it
+    // asked for is gone.
+    tracing::warn!(
+        "repair pass (woken by: {reason}) could not bring the streams back: pausing Spotify"
+    );
+    let spotify_silenced = pause_spotify_now(state).await;
+    if targets::may_claim_pause(spotify_silenced, false) {
+        state.backend_paused_sources.store(true, Ordering::SeqCst);
+    }
+    true
 }
 
 /// The line a repair pass woken by `reason` logs once it is done, at `now`;
