@@ -195,6 +195,34 @@ deselect clears the intent. Routing is rebuilt only when the selection actually
 moved, because the reconciliation runs on every `/devices` poll and tearing the
 PipeWire graph down every couple of seconds would cut the audio.
 
+### Repair
+
+A repair pass reconciles the combined sink against the selection, and runs
+only while something plays. Four things wake one (#80):
+
+- **Registry events.** The graph thread already receives every registry
+  `global` and `global_remove` to keep its mirror; for an `Audio/Sink` named
+  `bluez_output.<address>` it also emits `SinkAppeared` or `SinkVanished`. The
+  server wakes a pass only for a sink a *selected* speaker names, so a speaker
+  left out of the selection, or the PC's own output, changes nothing. A
+  returning speaker's branch is loaded from its sink's own event rather than
+  from a poll that could come before the bluez5 module had created the sink
+  (#75). Events queued together are drained together and run one pass.
+- **The confirmation timer.** It sleeps until the earliest confirming reload
+  falls due, five seconds after the load, and runs one pass for it. A pass
+  that cannot take the reload (nothing plays, the graph cannot be read) leaves
+  it armed, and the timer tries again one gap later or at the next load,
+  whichever comes first. The next routing takes it too.
+- **The safety net.** Every 30 s, for what no event reports: the combined sink
+  destroyed by hand, or a branch ruled dead.
+- **A reconnection.** When the connection to the daemon is lost, the graph
+  thread reconnects on its own after 1 s, 2 s, 5 s and 10 s, then every 30 s;
+  once back, it re-reads the registry and emits one `Reconnected`. Commands
+  sent during the outage fail, as they did before.
+
+A pass that changed the graph logs what woke it; one that changed nothing stays
+silent.
+
 ### Auto-reconnect
 
 The backend also dials remembered speakers itself: the persisted intent is the

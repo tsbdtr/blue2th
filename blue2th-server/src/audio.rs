@@ -19,6 +19,7 @@ use std::{
 use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
 
 use crate::graph::{Graph, LoadedBranch};
+use crate::graph_pw::GraphEvent;
 
 /// Clamp a requested volume into the valid `0.0..=1.0` range.
 ///
@@ -374,11 +375,6 @@ pub fn should_repair_branches(selection: &[SpeakerTarget], anything_playing: boo
     !selection.is_empty() && anything_playing
 }
 
-/// How often the repair pass looks at the graph. Short enough that a speaker
-/// coming back is fed again within seconds, and it reads the graph only while a
-/// selection is actually playing.
-pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
-
 /// How long after a branch is loaded it is reloaded once, to confirm it.
 ///
 /// A branch loaded towards a Bluetooth sink can come up complete — linked,
@@ -389,7 +385,71 @@ pub const BRANCH_REPAIR_TICK: Duration = Duration::from_secs(5);
 /// silent speaker, the operator's workaround, is the same gap by hand. Seen at
 /// startup and after a daemon restart on the #81 build, so every load is
 /// confirmed, not only a speaker that came back.
-pub const CONFIRM_GAP: Duration = BRANCH_REPAIR_TICK;
+///
+/// A literal of its own, not the safety net's tick: the confirmation has its
+/// own timer (#80), and a gap following a 30 s tick would delay the remedy
+/// sixfold.
+pub const CONFIRM_GAP: Duration = Duration::from_secs(5);
+
+/// How often the safety-net repair pass runs (#80). Registry events drive the
+/// repair; this net only catches what no event reports, such as the combined
+/// sink destroyed by hand.
+pub const SAFETY_NET_TICK: Duration = Duration::from_secs(30);
+
+/// What woke a repair pass (#80).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PassReason {
+    SinkAppeared { name: String, at: Instant },
+    SinkVanished { name: String },
+    ConfirmationDue,
+    SafetyNet,
+    Reconnected,
+}
+
+impl std::fmt::Display for PassReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SinkAppeared { name, .. } => write!(f, "sink {name} appeared"),
+            Self::SinkVanished { name } => write!(f, "sink {name} vanished"),
+            Self::ConfirmationDue => f.write_str("a confirming reload fell due"),
+            Self::SafetyNet => f.write_str("the safety net"),
+            Self::Reconnected => f.write_str("the PipeWire connection came back"),
+        }
+    }
+}
+
+/// The reason `event` wakes a repair pass for `selection`, if it does.
+///
+/// A sink event wakes only when a selected speaker's [`bluez_sink_prefix`]
+/// names that sink under `prefix_names_node`'s rule; with nothing selected
+/// there is nothing to repair, so nothing wakes.
+pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassReason> {
+    if selection.is_empty() {
+        return None;
+    }
+    let selected = |name: &str| {
+        selection
+            .iter()
+            .any(|speaker| prefix_names_node(&bluez_sink_prefix(&speaker.address), name))
+    };
+    match event {
+        GraphEvent::SinkAppeared { name, at } if selected(name) => {
+            Some(PassReason::SinkAppeared {
+                // Cloned: the reason outlives the borrowed event.
+                name: name.clone(),
+                at: *at,
+            })
+        },
+        GraphEvent::SinkVanished { name, .. } if selected(name) => {
+            Some(PassReason::SinkVanished {
+                // Cloned: the reason outlives the borrowed event.
+                name: name.clone(),
+            })
+        },
+        GraphEvent::Reconnected => Some(PassReason::Reconnected),
+        _ => None,
+    }
+}
 
 /// What a selection change has to do to an already-loaded combined sink: the
 /// branches to load, the loaded ones to retune in place, and the loaded ones to
@@ -487,6 +547,14 @@ impl ConfirmationRegister {
     fn clear(&mut self) {
         self.due.clear();
     }
+
+    /// When the earliest armed reload falls due; `None` when nothing is armed.
+    fn next_due(&self) -> Option<Instant> {
+        self.due
+            .iter()
+            .map(|(_, armed_at)| *armed_at + CONFIRM_GAP)
+            .min()
+    }
 }
 
 /// The planned branches whose speaker sink is actually present in `sinks`.
@@ -581,6 +649,13 @@ pub struct AudioRouter {
     confirmation: ConfirmationRegister,
     /// What "now" is for the confirmation; a test drives it by hand.
     clock: Box<dyn Fn() -> Instant + Send>,
+    /// Poked whenever a confirming reload is armed, so the confirmation timer
+    /// waiting on an empty register learns of it (#80).
+    armed: std::sync::Arc<tokio::sync::Notify>,
+    /// How many changes the graph has accepted from this router — a load, an
+    /// unload, a retune, a build — a refused call counting for none. A pass
+    /// compares it before and after to tell whether it changed anything.
+    changes: u64,
 }
 
 impl AudioRouter {
@@ -598,7 +673,25 @@ impl AudioRouter {
             graph,
             confirmation: ConfirmationRegister::default(),
             clock,
+            armed: std::sync::Arc::default(),
+            changes: 0,
         }
+    }
+
+    /// When the earliest confirming reload falls due; `None` when none is armed.
+    pub fn next_confirmation_due(&self) -> Option<Instant> {
+        self.confirmation.next_due()
+    }
+
+    /// Notified each time a confirming reload is armed, so the confirmation
+    /// timer waiting on an empty register learns of it.
+    pub(crate) fn confirmation_armed(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.armed)
+    }
+
+    /// How many changes the graph has accepted from this router so far.
+    pub(crate) fn graph_changes(&self) -> u64 {
+        self.changes
     }
 
     /// Arm the confirming reload of every branch a pass has just loaded.
@@ -614,6 +707,7 @@ impl AudioRouter {
         );
         let now = (self.clock)();
         self.confirmation.arm(loaded, now);
+        self.armed.notify_one();
     }
 
     /// Apply the PipeWire routing a selection calls for: every non-empty selection
@@ -675,6 +769,7 @@ impl AudioRouter {
         self.graph.teardown(&spec.sink_name)?;
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
+        self.changes += 1;
         // One delay branch per speaker: combined.monitor -> real sink, delayed by
         // the speaker's offset, the per-branch sync tuning.
         let report = self.load_planned_branches_live(&spec.sink_name, &spec.branches);
@@ -706,7 +801,9 @@ impl AudioRouter {
             );
             // Best-effort: a branch that is already gone is not an error, and one
             // failure must not stop the rest of a repair.
-            let _ = self.graph.unload_branch(dead.id);
+            if self.graph.unload_branch(dead.id).is_ok() {
+                self.changes += 1;
+            }
         }
         // Unknown liveness keeps the branch: a transient read failure would
         // otherwise read as "everything is dead" and reload every branch under
@@ -746,6 +843,7 @@ impl AudioRouter {
                 up.branch.sink
             );
             self.graph.unload_branch(up.id)?;
+            self.changes += 1;
         }
 
         let mut failures = Vec::new();
@@ -760,8 +858,9 @@ impl AudioRouter {
                 );
                 // One rejected delay must not stop the other speakers' repair; it
                 // is reported, and the next pass retunes it again.
-                if let Err(err) = self.graph.set_branch_delay(up.id, retune.latency_ms) {
-                    failures.push(err.to_string());
+                match self.graph.set_branch_delay(up.id, retune.latency_ms) {
+                    Ok(()) => self.changes += 1,
+                    Err(err) => failures.push(err.to_string()),
                 }
             }
         }
@@ -816,6 +915,7 @@ impl AudioRouter {
                 .any(|planned| prefix_names_node(&planned.sink, &branch.branch.sink))
             {
                 self.graph.unload_branch(branch.id)?;
+                self.changes += 1;
             }
         }
         let second = self.load_planned_branches_live(&spec.sink_name, &confirming);
@@ -837,7 +937,7 @@ impl AudioRouter {
         // `load_planned_branches` holds both closures at once and each one needs
         // the graph, so the exclusive borrow is handed out per call instead.
         let graph = RefCell::new(&mut self.graph);
-        load_planned_branches(
+        let report = load_planned_branches(
             branches,
             |branch| resolve_branch_sink(graph.borrow_mut().as_mut(), branch),
             |branch, real_sink| {
@@ -845,7 +945,9 @@ impl AudioRouter {
                     .borrow_mut()
                     .load_branch(sink_name, real_sink, branch.latency_ms)
             },
-        )
+        );
+        self.changes += report.loaded.len() as u64;
+        report
     }
 
     /// Change one speaker's delay **in place**: the new value is set on that
@@ -2168,6 +2270,313 @@ mod tests {
         register.clear();
 
         assert!(register.take_due(loaded + CONFIRM_GAP).is_empty());
+    }
+
+    // ─── #80: the confirmation timer's due time ──────────────────────────────
+
+    // Criterion: `next_due` is `None` while nothing is armed — a fresh
+    // register, and one armed only with an empty name, which arms nothing.
+    // The control: a named sink armed makes it `Some`.
+    #[test]
+    fn test_confirmation_register_next_due_is_none_when_nothing_is_armed() {
+        let mut register = ConfirmationRegister::default();
+        let loaded = Instant::now();
+        assert_eq!(register.next_due(), None, "a fresh register");
+
+        register.arm(&names(&[""]), loaded);
+        assert_eq!(register.next_due(), None, "an empty name arms nothing");
+
+        register.arm(&names(&["bluez_output.A"]), loaded);
+        assert!(
+            register.next_due().is_some(),
+            "control: a named sink is armed"
+        );
+    }
+
+    // Criterion: `next_due` is the **earliest** armed time plus `CONFIRM_GAP`,
+    // not the first armed: here A is armed first but later in time, so an
+    // answer read from the arming order is off by three seconds. Arming B
+    // again restarts its wait, and the earliest becomes A's.
+    #[test]
+    fn test_confirmation_register_next_due_is_the_earliest_armed_plus_the_gap() {
+        let mut register = ConfirmationRegister::default();
+        let start = Instant::now();
+        register.arm(&names(&["bluez_output.A"]), start + Duration::from_secs(3));
+        register.arm(&names(&["bluez_output.B"]), start);
+
+        assert_eq!(register.next_due(), Some(start + CONFIRM_GAP));
+
+        register.arm(&names(&["bluez_output.B"]), start + Duration::from_secs(4));
+        assert_eq!(
+            register.next_due(),
+            Some(start + Duration::from_secs(3) + CONFIRM_GAP),
+            "B's wait restarted, so A's reload comes first"
+        );
+    }
+
+    // Criterion: once a due sink is taken, `next_due` moves on to the next one
+    // still armed, and to `None` once every reload was handed out — a
+    // confirming reload does not arm itself.
+    #[test]
+    fn test_confirmation_register_next_due_moves_on_once_a_due_sink_is_taken() {
+        let mut register = ConfirmationRegister::default();
+        let first = Instant::now();
+        let second = first + Duration::from_secs(2);
+        register.arm(&names(&["bluez_output.A"]), first);
+        register.arm(&names(&["bluez_output.B"]), second);
+
+        assert_eq!(
+            register.take_due(first + CONFIRM_GAP),
+            names(&["bluez_output.A"])
+        );
+        assert_eq!(register.next_due(), Some(second + CONFIRM_GAP));
+
+        assert_eq!(
+            register.take_due(second + CONFIRM_GAP),
+            names(&["bluez_output.B"])
+        );
+        assert_eq!(register.next_due(), None);
+    }
+
+    // Criterion (guard, the gap does not follow the tick): `CONFIRM_GAP` is
+    // 5 s while the safety net ticks every 30 s. A derivation left in place
+    // would make the gap 30 s and delay #81's remedy sixfold.
+    #[test]
+    fn test_confirm_gap_stays_five_seconds_whatever_the_tick() {
+        assert_eq!(CONFIRM_GAP, Duration::from_secs(5));
+        assert_ne!(
+            CONFIRM_GAP, SAFETY_NET_TICK,
+            "the gap no longer derives from the tick"
+        );
+    }
+
+    // Criterion: the safety net ticks every 30 s, longer than the gap: the
+    // confirmation has a timer of its own and never waits for the net.
+    #[test]
+    fn test_safety_net_tick_is_thirty_seconds_and_longer_than_the_gap() {
+        assert_eq!(SAFETY_NET_TICK, Duration::from_secs(30));
+        assert!(SAFETY_NET_TICK > CONFIRM_GAP);
+    }
+
+    // ─── #80: which events wake a repair pass ────────────────────────────────
+
+    /// The JBL Xtreme 3 and the WH-1000XM5, as #81's manual verification and a
+    /// live `pw-dump` (2026-09-26/27) named them.
+    const JBL: &str = "2C:FD:B4:D3:AC:21";
+    const JBL_SINK: &str = "bluez_output.2C_FD_B4_D3_AC_21.1";
+    const SONY: &str = "80:99:E7:63:50:29";
+    const SONY_SINK: &str = "bluez_output.80_99_E7_63_50_29.1";
+
+    fn selected(macs: &[&str]) -> Vec<SpeakerTarget> {
+        macs.iter()
+            .map(|mac| SpeakerTarget {
+                address: mac.to_string(),
+                offset_ms: 0,
+            })
+            .collect()
+    }
+
+    fn appeared(name: &str, at: Instant) -> GraphEvent {
+        GraphEvent::SinkAppeared {
+            name: name.to_string(),
+            at,
+        }
+    }
+
+    fn vanished(name: &str, at: Instant) -> GraphEvent {
+        GraphEvent::SinkVanished {
+            name: name.to_string(),
+            at,
+        }
+    }
+
+    // Criterion: a sink event wakes a pass when a selected speaker's
+    // `bluez_sink_prefix` names that sink — both ways, appearing and
+    // vanishing. The address is mapped through `bluez_sink_prefix`, so a
+    // selection holding it in lower case still names the upper-case node.
+    #[test]
+    fn test_wake_for_wakes_for_a_selected_speakers_sink() {
+        let at = Instant::now();
+        let selection = selected(&[SONY, JBL]);
+
+        assert!(wake_for(&appeared(JBL_SINK, at), &selection).is_some());
+        assert_eq!(
+            wake_for(&vanished(SONY_SINK, at), &selection),
+            Some(PassReason::SinkVanished {
+                name: SONY_SINK.to_string()
+            })
+        );
+        assert!(
+            wake_for(&appeared(JBL_SINK, at), &selected(&["2c:fd:b4:d3:ac:21"])).is_some(),
+            "a lower-case address names the same sink"
+        );
+    }
+
+    // Criterion (non-nominal): an event for a sink no selected speaker names —
+    // an unselected speaker, the PC's own output — wakes nothing. The control:
+    // the selected speaker's own sink, in the same selection, wakes.
+    #[test]
+    fn test_wake_for_ignores_a_sink_no_selected_speaker_names() {
+        let at = Instant::now();
+        let selection = selected(&[SONY]);
+        assert!(
+            wake_for(&appeared(SONY_SINK, at), &selection).is_some(),
+            "control: the selected speaker's sink wakes"
+        );
+
+        assert_eq!(wake_for(&appeared(JBL_SINK, at), &selection), None);
+        assert_eq!(wake_for(&vanished(JBL_SINK, at), &selection), None);
+        assert_eq!(
+            wake_for(
+                &appeared("alsa_output.pci-0000_00_1f.3.analog-stereo", at),
+                &selection
+            ),
+            None
+        );
+    }
+
+    // Criterion (guard, exact sink, never a longer address): a selection
+    // holding `AA:BB:CC:DD:EE:01` does not wake for a sink whose address only
+    // starts the same. Both near misses pass a bare `starts_with` of the
+    // prefix; only #81's `.` boundary rejects them. The controls: the exact
+    // prefix and the prefix followed by `.` wake.
+    #[test]
+    fn test_wake_for_does_not_take_a_longer_address_for_a_selected_one() {
+        let at = Instant::now();
+        let selection = selected(&["AA:BB:CC:DD:EE:01"]);
+        assert!(wake_for(
+            &appeared("bluez_output.AA_BB_CC_DD_EE_01.1", at),
+            &selection
+        )
+        .is_some());
+        assert!(wake_for(&appeared("bluez_output.AA_BB_CC_DD_EE_01", at), &selection).is_some());
+
+        for longer in [
+            "bluez_output.AA_BB_CC_DD_EE_01_02.1",
+            "bluez_output.AA_BB_CC_DD_EE_010.1",
+        ] {
+            assert_eq!(
+                wake_for(&appeared(longer, at), &selection),
+                None,
+                "{longer} is another speaker"
+            );
+            assert_eq!(wake_for(&vanished(longer, at), &selection), None);
+        }
+    }
+
+    // Criterion (guard, the empty value): an empty selection wakes nothing —
+    // no sink event, and not `Reconnected` either: with nothing selected the
+    // pass has nothing to repair. The control: the same events with a
+    // selection wake.
+    #[test]
+    fn test_wake_for_of_an_empty_selection_wakes_nothing() {
+        let at = Instant::now();
+        let events = [
+            appeared(SONY_SINK, at),
+            vanished(SONY_SINK, at),
+            GraphEvent::Reconnected,
+        ];
+
+        for event in &events {
+            assert!(
+                wake_for(event, &selected(&[SONY])).is_some(),
+                "control: {event:?} wakes with a selection"
+            );
+            assert_eq!(
+                wake_for(event, &[]),
+                None,
+                "{event:?} with nothing selected"
+            );
+        }
+    }
+
+    // Criterion: `Reconnected` always wakes a pass, whichever speakers are
+    // selected — the registry was re-read, so every branch may be gone.
+    #[test]
+    fn test_wake_for_always_wakes_on_reconnected() {
+        for selection in [selected(&[SONY]), selected(&[JBL]), selected(&[SONY, JBL])] {
+            assert_eq!(
+                wake_for(&GraphEvent::Reconnected, &selection),
+                Some(PassReason::Reconnected)
+            );
+        }
+    }
+
+    // Criterion: the reason carries the event's sink name and time, so the
+    // pass line can say what woke it and how long after. Two speakers are
+    // selected, so a name taken from the selection instead of the event shows.
+    #[test]
+    fn test_wake_for_carries_the_sink_name_and_time() {
+        let at = Instant::now();
+        let selection = selected(&[SONY, JBL]);
+
+        assert_eq!(
+            wake_for(&appeared(JBL_SINK, at), &selection),
+            Some(PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at
+            })
+        );
+        assert_eq!(
+            wake_for(&vanished(JBL_SINK, at), &selection),
+            Some(PassReason::SinkVanished {
+                name: JBL_SINK.to_string()
+            })
+        );
+    }
+
+    // Criterion (non-nominal, `restore_during_playback = false`): a speaker
+    // that dropped off during playback stays in the intent but is not
+    // re-selected, so its returning sink wakes nothing and it does not start
+    // playing under the user's hands. The near miss: the speaker is in the
+    // intent — a filter read from the intent would wake. The control: the
+    // speaker still selected wakes.
+    #[test]
+    fn test_wake_for_ignores_a_returning_speaker_left_out_of_the_selection() {
+        let at = Instant::now();
+        let both = vec![SONY.to_string(), JBL.to_string()];
+        let mut targets = crate::targets::SpeakerTargets::new();
+        targets.select(SONY, &both).unwrap();
+        targets.select(JBL, &both).unwrap();
+        // The JBL is switched off: pruned from the selection, kept in the intent.
+        targets.retain_connected(&[SONY.to_string()]);
+        assert!(targets.intended().contains(&JBL.to_string()));
+
+        assert_eq!(wake_for(&appeared(JBL_SINK, at), &targets.speakers()), None);
+        assert!(
+            wake_for(&appeared(SONY_SINK, at), &targets.speakers()).is_some(),
+            "control: the speaker still selected wakes"
+        );
+    }
+
+    // Criterion: every pass logs what woke it — a sink appeared or vanished
+    // with its name, the confirmation came due, the safety net, or a
+    // reconnection. Five reasons, five distinct renderings, and the sink
+    // events name their sink.
+    #[test]
+    fn test_pass_reason_names_what_woke_the_pass() {
+        let reasons = [
+            PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: Instant::now(),
+            },
+            PassReason::SinkVanished {
+                name: SONY_SINK.to_string(),
+            },
+            PassReason::ConfirmationDue,
+            PassReason::SafetyNet,
+            PassReason::Reconnected,
+        ];
+        let lines: Vec<String> = reasons.iter().map(|r| r.to_string()).collect();
+
+        assert!(lines[0].contains(JBL_SINK), "got {:?}", lines[0]);
+        assert!(lines[1].contains(SONY_SINK), "got {:?}", lines[1]);
+        for (i, line) in lines.iter().enumerate() {
+            assert!(!line.is_empty(), "reason {i} renders as nothing");
+            for other in &lines[i + 1..] {
+                assert_ne!(line, other, "two reasons read the same");
+            }
+        }
     }
 
     // Criterion: with every selected speaker switched off, nothing is reachable —
@@ -3725,5 +4134,125 @@ mod router_tests {
             sink: SINK_A.to_string()
         }));
         assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion (#80): the router exposes when its earliest confirming reload
+    // falls due — nothing before a load, the load's time plus `CONFIRM_GAP`
+    // after it, and nothing again once the reload ran, since a confirming
+    // reload does not arm itself.
+    #[test]
+    fn test_router_next_confirmation_due_follows_the_branch_it_loaded() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let loaded_at = *clock.lock().unwrap();
+        assert_eq!(router.next_confirmation_due(), None, "nothing loaded yet");
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "the load failed: {result:?}");
+        assert_eq!(fake.calls(), vec![load(SINK_A, 0)]);
+        assert_eq!(
+            router.next_confirmation_due(),
+            Some(loaded_at + CONFIRM_GAP)
+        );
+
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "the reload failed: {result:?}");
+        assert!(
+            fake.calls().contains(&load(SINK_A, 0)),
+            "control: the reload ran, got {:?}",
+            fake.calls()
+        );
+        assert_eq!(router.next_confirmation_due(), None);
+    }
+
+    // Criterion (#80): a pass logs what woke it only when it changed the graph,
+    // and `graph_changes` is how it tells. Every change the graph accepts
+    // counts once: here a dead unload, an unwanted unload, a retune and two
+    // loads — five calls, five changes. A steady pass after it counts none.
+    #[test]
+    fn test_router_graph_changes_counts_each_change_the_graph_accepted() {
+        let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let sink_d = "bluez_output.AA_BB_CC_DD_EE_04.1";
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, sink_c, sink_d, COMBINED]);
+        fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        fake.seed_branch(COMBINED, sink_c, 60, Some(false));
+        fake.seed_branch(COMBINED, sink_d, 30, Some(true));
+        let mut router = router_on(&fake);
+        let selection = [
+            target(MAC_A, 100),
+            target(MAC_B, 30),
+            target("AA:BB:CC:DD:EE:03", 60),
+        ];
+        assert_eq!(router.graph_changes(), 0, "a fresh router changed nothing");
+
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls().len(), 5, "calls: {:?}", fake.calls());
+        assert_eq!(router.graph_changes(), 5);
+
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "steady pass failed: {result:?}");
+        assert_eq!(router.graph_changes(), 5, "a steady pass changes nothing");
+    }
+
+    // Criterion (#80): a build from nothing is a change — the combined sink
+    // counts once, each branch loaded once more: one sink and two branches are
+    // three. The confirming reload a gap later is two more, one unload and one
+    // load per branch reloaded: here both, so four.
+    #[test]
+    fn test_router_graph_changes_counts_a_build_and_its_confirming_reload() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let (mut router, clock) = router_with_clock(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert_eq!(router.graph_changes(), 3, "calls: {:?}", fake.calls());
+
+        advance(&clock, CONFIRM_GAP);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        assert_eq!(router.graph_changes(), 3 + 4, "calls: {:?}", fake.calls());
+    }
+
+    // Criterion (#80): a call the graph refused changed nothing, so it does
+    // not count — or a pass that only failed would log that it changed the
+    // graph. The near misses, each attempted and recorded by the fake: a
+    // rejected retune, a refused unload of an unwanted branch, and a refused
+    // unload of a dead one, whose replacement load still counts.
+    #[test]
+    fn test_router_graph_changes_counts_no_call_the_graph_refused() {
+        let (fake, a, _) = steady_graph(Some(true));
+        fake.fail(GraphOp::SetBranchDelay);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&[target(MAC_A, 120), target(MAC_B, 30)]);
+        assert!(result.is_err(), "the retune was rejected: {result:?}");
+        assert_eq!(fake.calls(), vec![set_delay(a, 120)], "it was attempted");
+        assert_eq!(router.graph_changes(), 0);
+
+        let (fake, a, _) = steady_graph(Some(true));
+        fake.fail(GraphOp::UnloadBranch);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&[target(MAC_B, 30)]);
+        assert!(result.is_err(), "the unload was refused: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(a)], "it was attempted");
+        assert_eq!(router.graph_changes(), 0);
+
+        let (fake, dead_a, dead_b) = steady_graph(Some(false));
+        fake.fail(GraphOp::UnloadBranch);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                unload(dead_a),
+                unload(dead_b),
+                load(SINK_A, 0),
+                load(SINK_B, 30)
+            ]
+        );
+        assert_eq!(router.graph_changes(), 2, "the two loads, not the unloads");
     }
 }

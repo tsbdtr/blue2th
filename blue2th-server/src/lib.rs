@@ -341,13 +341,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let _mdns = advertise(&record);
 
+    // The registry's speaker sink events drive the branch repair (#80).
+    let (events, graph_events) = tokio::sync::mpsc::unbounded_channel();
+    let mut graph = graph_pw::PipeWireGraph::spawn();
+    graph.watch(events);
     let (router, state) = app_with_auth_and_targets(
         SpotifyAuth::new(),
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
         auth_store,
-        Box::new(graph_pw::PipeWireGraph::spawn()),
+        Box::new(graph),
     );
+    spawn_event_repair(state.clone(), graph_events);
+    spawn_confirmation_timer(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("blue2th-server listening on http://{addr}");
@@ -978,9 +984,11 @@ async fn auto_reconnect_pass(state: &AppState) {
     }
 }
 
-/// Start the branch repair pass (#75): re-run the routing reconciliation on a
-/// tick, so a speaker whose branch is missing or dead is fed again without the
-/// user deselecting and reselecting it.
+/// Start the safety-net repair pass (#75, #80): re-run the routing
+/// reconciliation every [`audio::SAFETY_NET_TICK`], for what no registry event
+/// reports — the combined sink destroyed by hand, a branch ruled dead. The
+/// speakers' sinks appearing and vanishing are handled by
+/// [`spawn_event_repair`] as they happen.
 ///
 /// A tick of its own rather than work on the `/devices` poll, which runs per
 /// client: the cost would otherwise multiply by the number of connected apps.
@@ -996,8 +1004,64 @@ fn spawn_branch_repair(state: AppState) {
             // whatever the previous run left, nothing is playing yet, and the
             // selection is restored by its own pass. A repair on the first
             // instant would only reconcile against a selection nobody asked for.
-            tokio::time::sleep(audio::BRANCH_REPAIR_TICK).await;
-            branch_repair_pass(&state).await;
+            tokio::time::sleep(audio::SAFETY_NET_TICK).await;
+            branch_repair_pass(&state, audio::PassReason::SafetyNet).await;
+        }
+    });
+}
+
+/// Start the event consumer (#80): drain the graph's events, and run one repair
+/// pass per drain when at least one of them concerns a selected speaker. The
+/// task ends once every sender is gone and the queue is drained.
+fn spawn_event_repair(
+    state: AppState,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<graph_pw::GraphEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(first) = events.recv().await {
+            let speakers = state.targets.lock().await.speakers();
+            // One pass for the whole drain, named after the first event that woke.
+            let mut reason = None;
+            let mut next = Some(first);
+            while let Some(event) = next {
+                tracing::debug!("graph event: {event:?}");
+                reason = reason.or_else(|| audio::wake_for(&event, &speakers));
+                next = events.try_recv().ok();
+            }
+            if let Some(reason) = reason {
+                branch_repair_pass(&state, reason).await;
+            }
+        }
+    })
+}
+
+/// Start the confirmation timer (#80): sleep until the router's earliest
+/// confirming reload falls due, then run one pass for it. After every pass it
+/// reads the due time again; with nothing armed it waits for the router to arm
+/// a reload.
+fn spawn_confirmation_timer(state: AppState) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let armed = state.router.lock().await.confirmation_armed();
+        loop {
+            let due = state.router.lock().await.next_confirmation_due();
+            let Some(due) = due else {
+                armed.notified().await;
+                continue;
+            };
+            tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+            branch_repair_pass(&state, audio::PassReason::ConfirmationDue).await;
+            // A pass that could not take the reload — nothing playing, a graph
+            // that cannot be read — leaves it due: wait for a new arming or a
+            // gap, rather than spinning on a time already past.
+            if state.router.lock().await.next_confirmation_due() == Some(due) {
+                tokio::select! {
+                    () = armed.notified() => {},
+                    () = tokio::time::sleep(audio::CONFIRM_GAP) => {},
+                }
+            }
         }
     });
 }
@@ -1007,11 +1071,13 @@ fn spawn_branch_repair(state: AppState) {
 /// A graph that already matches the plan is left untouched, so the common case
 /// costs nothing and the audio runs on; a branch that failed to load — the race
 /// where PipeWire had not created the `bluez_output.*` node yet — or one ruled
-/// dead is rebuilt, and rebuilding one branch rebuilds the whole selection (see
-/// `audio::reconcile_branches`), so a repair is a brief cut on the speakers that
-/// were already playing. A failure stays a warning: the next tick simply tries
-/// again, which is what repairs the race.
-async fn branch_repair_pass(state: &AppState) {
+/// dead is loaded again alone, and the speakers already playing are not touched
+/// (see `audio::reconcile_branches`). A failure stays a warning: the next
+/// event, confirmation or safety-net tick tries again.
+///
+/// `reason` is what woke the pass. It is logged only when the pass changed the
+/// graph, so a pass that found everything in place leaves no line.
+async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
     let speakers = state.targets.lock().await.speakers();
     // "Playing" covers both sources — the local tone and the Spotify backend —
     // exactly as the restore pass reads it: a branch that carries nothing only
@@ -1028,9 +1094,42 @@ async fn branch_repair_pass(state: &AppState) {
     if !audio::should_repair_branches(&speakers, anything_playing) {
         return;
     }
-    if let Err(e) = state.router.lock().await.route_for_targets(&speakers) {
-        tracing::warn!("branch repair could not re-route: {e}");
+    let (routed, changed) = {
+        let mut router = state.router.lock().await;
+        let before = router.graph_changes();
+        let routed = router.route_for_targets(&speakers);
+        (routed, router.graph_changes() != before)
+    };
+    if let Some(line) = repair_pass_line(&reason, changed, std::time::Instant::now()) {
+        tracing::info!("{line}");
     }
+    if let Err(e) = routed {
+        tracing::warn!("repair pass (woken by: {reason}) could not re-route: {e}");
+    }
+}
+
+/// The line a repair pass woken by `reason` logs once it is done, at `now`;
+/// `None` when it did not change the graph — the safety net runs every 30 s,
+/// and a pass that found everything in place leaves no line.
+///
+/// For a sink that appeared, the line carries the time from the event to `now`:
+/// from the sink's arrival to its branch being loaded, the gap #75's race is
+/// measured by.
+fn repair_pass_line(
+    reason: &audio::PassReason,
+    changed: bool,
+    now: std::time::Instant,
+) -> Option<String> {
+    if !changed {
+        return None;
+    }
+    Some(match reason {
+        audio::PassReason::SinkAppeared { at, .. } => format!(
+            "repair pass (woken by: {reason}) changed the graph {} ms after the event",
+            now.saturating_duration_since(*at).as_millis()
+        ),
+        _ => format!("repair pass (woken by: {reason}) changed the graph"),
+    })
 }
 
 /// Start the idle watchdog: once the now-playing SSE feed has had no reader for
@@ -3025,5 +3124,415 @@ mod tests {
             .map(|l| (l.id, l.branch.latency_ms))
             .collect();
         assert_eq!(delays, vec![(a, 0), (b, 120)]);
+    }
+
+    // ─── #80: the event consumer and the confirmation timer ──────────────────
+    //
+    // Driven with the in-memory graph and a real `unbounded_channel`: nothing
+    // here reaches a PipeWire daemon.
+
+    /// The JBL Xtreme 3 and its sink, as #81's manual verification and a live
+    /// `pw-dump` (2026-09-26/27) named them; the WH-1000XM5's sink.
+    const JBL: &str = "2C:FD:B4:D3:AC:21";
+    const JBL_SINK: &str = "bluez_output.2C_FD_B4_D3_AC_21.1";
+    const SONY_SINK: &str = "bluez_output.80_99_E7_63_50_29.1";
+    const COMBINED_SINK: &str = "blue2th_combined";
+
+    fn sink_appeared(name: &str) -> graph_pw::GraphEvent {
+        graph_pw::GraphEvent::SinkAppeared {
+            name: name.to_string(),
+            at: std::time::Instant::now(),
+        }
+    }
+
+    fn sink_vanished(name: &str) -> graph_pw::GraphEvent {
+        graph_pw::GraphEvent::SinkVanished {
+            name: name.to_string(),
+            at: std::time::Instant::now(),
+        }
+    }
+
+    /// A state with the JBL selected over a steady graph — the combined sink
+    /// up and the JBL's branch live, nothing armed — so every repair pass
+    /// reads the branches exactly once and changes nothing. Playing when
+    /// `playing` is set. The calls made while setting it up are forgotten.
+    async fn steady_state(fake: &graph::fake::FakeGraph, playing: bool) -> AppState {
+        fake.add_sink(JBL_SINK);
+        fake.add_sink(COMBINED_SINK);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let state = test_state_on(AudioEngine::new(), fake);
+        state
+            .targets
+            .lock()
+            .await
+            .select(JBL, &[JBL.to_string()])
+            .expect("a connected speaker can be selected");
+        if playing {
+            state
+                .engine
+                .lock()
+                .await
+                .play()
+                .expect("the null output plays");
+        }
+        fake.clear_calls();
+        state
+    }
+
+    /// How many repair passes reached the graph: each one reads the combined
+    /// sink's branches once on a steady graph.
+    fn passes(fake: &graph::fake::FakeGraph) -> usize {
+        fake.all_calls()
+            .iter()
+            .filter(|call| matches!(call, graph::fake::GraphCall::Branches { .. }))
+            .count()
+    }
+
+    /// Queue `events`, close the channel, and run the consumer until it has
+    /// drained them all and ended.
+    async fn consume(state: &AppState, events: Vec<graph_pw::GraphEvent>) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        for event in events {
+            sender.send(event).expect("the receiver is alive");
+        }
+        drop(sender);
+        // Cheap: every field of the state is an `Arc`.
+        let task = spawn_event_repair(state.clone(), receiver);
+        let ended = tokio::time::timeout(Duration::from_secs(5), task).await;
+        assert!(
+            matches!(ended, Ok(Ok(()))),
+            "the consumer ends once its channel is closed and drained: {ended:?}"
+        );
+    }
+
+    // Criterion (guard, one pass per burst): three events queued together —
+    // the speaker's sink vanishing and coming back, and a reconnection, each
+    // of which wakes on its own — are drained together and run exactly one
+    // pass, not three.
+    #[tokio::test]
+    async fn test_event_consumer_runs_one_pass_for_a_burst_of_events() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = steady_state(&fake, true).await;
+
+        consume(
+            &state,
+            vec![
+                sink_vanished(JBL_SINK),
+                sink_appeared(JBL_SINK),
+                graph_pw::GraphEvent::Reconnected,
+            ],
+        )
+        .await;
+
+        assert_eq!(passes(&fake), 1, "calls: {:?}", fake.all_calls());
+    }
+
+    // Criterion (non-nominal): an event for a sink no selected speaker names
+    // — the unselected Sony, a longer address that only starts like the
+    // JBL's — runs no pass: the graph is not even read. The control, on the
+    // same state: the JBL's own sink runs one.
+    #[tokio::test]
+    async fn test_event_consumer_ignores_an_event_for_an_unselected_sink() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = steady_state(&fake, true).await;
+
+        consume(
+            &state,
+            vec![
+                sink_appeared(SONY_SINK),
+                sink_vanished(SONY_SINK),
+                sink_appeared("bluez_output.2C_FD_B4_D3_AC_21_02.1"),
+            ],
+        )
+        .await;
+        assert!(fake.all_calls().is_empty(), "calls: {:?}", fake.all_calls());
+
+        consume(&state, vec![sink_appeared(JBL_SINK)]).await;
+        assert_eq!(passes(&fake), 1, "control: the JBL's sink wakes a pass");
+    }
+
+    // Criterion (non-nominal): while nothing plays, an event for a selected
+    // speaker runs no pass — `should_repair_branches` still guards it, and the
+    // graph is built at the next play. The control: once playing, the same
+    // events run one.
+    #[tokio::test]
+    async fn test_event_consumer_runs_no_pass_while_nothing_plays() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = steady_state(&fake, false).await;
+
+        consume(
+            &state,
+            vec![sink_appeared(JBL_SINK), graph_pw::GraphEvent::Reconnected],
+        )
+        .await;
+        assert!(fake.all_calls().is_empty(), "calls: {:?}", fake.all_calls());
+
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        consume(
+            &state,
+            vec![sink_appeared(JBL_SINK), graph_pw::GraphEvent::Reconnected],
+        )
+        .await;
+        assert_eq!(
+            passes(&fake),
+            1,
+            "control: the same events wake a pass once playing"
+        );
+    }
+
+    /// A state whose router reads tokio's paused clock, with the JBL selected
+    /// and the null output playing, over `fake`.
+    async fn timed_state(fake: &graph::fake::FakeGraph) -> AppState {
+        let mut state = test_state_on(AudioEngine::new(), fake);
+        state.router = Arc::new(Mutex::new(AudioRouter::with_clock(
+            Box::new(fake.clone()),
+            Box::new(|| tokio::time::Instant::now().into_std()),
+        )));
+        state
+            .targets
+            .lock()
+            .await
+            .select(JBL, &[JBL.to_string()])
+            .expect("a connected speaker can be selected");
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        state
+    }
+
+    /// The branch load into the JBL's sink.
+    fn jbl_load() -> graph::fake::GraphCall {
+        graph::fake::GraphCall::LoadBranch {
+            sink_name: COMBINED_SINK.to_string(),
+            real_sink: JBL_SINK.to_string(),
+            latency_ms: 0,
+        }
+    }
+
+    /// Load the JBL's branch through the pass its sink's arrival wakes, which
+    /// arms its confirming reload; the calls are forgotten. Returns the id of
+    /// the one branch loaded.
+    async fn load_the_jbl(state: &AppState, fake: &graph::fake::FakeGraph) -> u32 {
+        branch_repair_pass(
+            state,
+            audio::PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: std::time::Instant::now(),
+            },
+        )
+        .await;
+        assert_eq!(fake.calls(), vec![jbl_load()]);
+        let loaded: Vec<u32> = fake.loaded(COMBINED_SINK).iter().map(|b| b.id).collect();
+        assert_eq!(loaded.len(), 1);
+        fake.clear_calls();
+        loaded[0]
+    }
+
+    // Criterion: a pass that changed nothing logs nothing, whatever woke it —
+    // the safety net runs every 30 s and a steady graph must leave no line.
+    // The control: each reason, once the pass changed the graph, has a line.
+    #[test]
+    fn test_repair_pass_line_of_a_pass_that_changed_nothing_is_none() {
+        let now = std::time::Instant::now();
+        let reasons = [
+            audio::PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: now,
+            },
+            audio::PassReason::SinkVanished {
+                name: JBL_SINK.to_string(),
+            },
+            audio::PassReason::ConfirmationDue,
+            audio::PassReason::SafetyNet,
+            audio::PassReason::Reconnected,
+        ];
+
+        for reason in &reasons {
+            assert_eq!(repair_pass_line(reason, false, now), None, "{reason:?}");
+            assert!(
+                repair_pass_line(reason, true, now).is_some(),
+                "control: {reason:?} logs once the graph changed"
+            );
+        }
+    }
+
+    // Criterion: the line names what woke the pass, set off from the rest of
+    // the sentence, and for a sink that appeared it carries the milliseconds
+    // from the event to the end of the pass — #75's race was 149 ms.
+    #[test]
+    fn test_repair_pass_line_names_the_reason_and_the_ms_since_the_sink_appeared() {
+        let at = std::time::Instant::now();
+        let appeared = audio::PassReason::SinkAppeared {
+            name: JBL_SINK.to_string(),
+            at,
+        };
+
+        assert_eq!(
+            repair_pass_line(&appeared, true, at + Duration::from_millis(149)).as_deref(),
+            Some(
+                "repair pass (woken by: sink bluez_output.2C_FD_B4_D3_AC_21.1 appeared) \
+                 changed the graph 149 ms after the event"
+            )
+        );
+        assert_eq!(
+            repair_pass_line(&audio::PassReason::SafetyNet, true, at).as_deref(),
+            Some("repair pass (woken by: the safety net) changed the graph")
+        );
+    }
+
+    /// Let every task that is ready run, without moving the paused clock.
+    async fn settle() {
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    // Criterion: the confirmation timer sleeps until the router's earliest
+    // confirming reload falls due, then runs one pass that reloads that
+    // branch alone — one unload, one load — without waiting for the 30 s
+    // safety net. Not a moment before the gap, and only once. Halfway through
+    // the gap no pass has even read the graph: the timer sleeps rather than
+    // polling, which the register alone would hide, since an early pass
+    // reloads nothing. Driven on tokio's paused clock, which the router's
+    // clock follows here.
+    #[tokio::test(start_paused = true)]
+    async fn test_confirmation_timer_wakes_a_pass_when_the_confirmation_falls_due() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        let state = timed_state(&fake).await;
+        let load = jbl_load();
+
+        let loaded = load_the_jbl(&state, &fake).await;
+
+        spawn_confirmation_timer(state.clone());
+        settle().await;
+        tokio::time::advance(audio::CONFIRM_GAP / 2).await;
+        settle().await;
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "the timer sleeps: no pass reads the graph halfway through the gap"
+        );
+        tokio::time::advance(audio::CONFIRM_GAP / 2 - Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            Vec::<GraphCall>::new(),
+            "no reload before the gap"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::UnloadBranch { id: loaded }, load],
+            "the confirming reload, of that branch alone"
+        );
+
+        fake.clear_calls();
+        tokio::time::advance(audio::CONFIRM_GAP * 2).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            Vec::<GraphCall>::new(),
+            "only once: the reload does not arm itself"
+        );
+    }
+
+    // Criterion: a timer with nothing armed waits for an arming rather than
+    // for the safety net. Here it is started first, on an empty register; the
+    // load arms a reload while it waits, and that reload runs one gap later,
+    // not a moment before. Without the router's arming notification the timer
+    // would sleep on until the process ends.
+    #[tokio::test(start_paused = true)]
+    async fn test_confirmation_timer_wakes_for_a_reload_armed_while_it_waits() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        let state = timed_state(&fake).await;
+        spawn_confirmation_timer(state.clone());
+        settle().await;
+
+        let loaded = load_the_jbl(&state, &fake).await;
+        settle().await;
+        tokio::time::advance(audio::CONFIRM_GAP - Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "not before the gap"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::UnloadBranch { id: loaded }, jbl_load()]
+        );
+    }
+
+    // Criterion: a reload that falls due while nothing plays is neither
+    // dropped nor retried in a loop. The pass it wakes is guarded out, so the
+    // reload stays armed; the timer then waits one more gap. Playback resumes
+    // a second after the due time: a timer spinning on the past due time
+    // would reload at once, this one reloads when the gap is over.
+    #[tokio::test(start_paused = true)]
+    async fn test_confirmation_timer_keeps_a_reload_due_while_nothing_plays_without_spinning() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        let state = timed_state(&fake).await;
+        let loaded = load_the_jbl(&state, &fake).await;
+        let due = state.router.lock().await.next_confirmation_due();
+        assert!(due.is_some(), "the load armed a reload");
+        spawn_confirmation_timer(state.clone());
+        settle().await;
+        state
+            .engine
+            .lock()
+            .await
+            .stop()
+            .expect("the null output stops");
+
+        tokio::time::advance(audio::CONFIRM_GAP).await;
+        settle().await;
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new(), "nothing plays");
+        assert_eq!(
+            state.router.lock().await.next_confirmation_due(),
+            due,
+            "the reload is still armed"
+        );
+
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "the timer waits for the gap, it does not spin"
+        );
+
+        tokio::time::advance(audio::CONFIRM_GAP - Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::UnloadBranch { id: loaded }, jbl_load()],
+            "the reload left due runs one gap later"
+        );
+        assert_eq!(state.router.lock().await.next_confirmation_due(), None);
     }
 }
