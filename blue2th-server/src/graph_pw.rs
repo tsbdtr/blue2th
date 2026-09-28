@@ -189,8 +189,10 @@ impl PipeWireGraph {
     /// Start the loop thread now, connected at once, reporting its
     /// [`GraphEvent`]s to `events`.
     ///
-    /// Meant to be called once, before any command: a thread already running
-    /// is replaced by one that reports.
+    /// Called once, before any command. A thread an earlier command started is
+    /// not stopped by it: dropping a `pw::channel::Sender` neither closes the
+    /// channel nor wakes its loop, so that thread would keep running — and
+    /// keep what it created — beside the watched one.
     pub fn watch(&mut self, events: UnboundedSender<GraphEvent>) {
         self.events = Some(events);
         // Cloned: each thread started, including one replacing a dead one,
@@ -1034,9 +1036,15 @@ fn run_loop_thread(
     });
     let mut reconnect = ReconnectWatch::new(Instant::now());
     loop {
-        if watched && !state.is_connected() && Instant::now() >= reconnect.next_attempt {
+        if watched && reconnect.attempt_due(state.is_connected(), Instant::now()) {
             match state.reconnect() {
                 Ok(()) => reconnect.connected(state.connector.events.as_ref()),
+                // Connected, but the daemon did not answer the re-read in time:
+                // the connection is kept, as a command keeps it, and the next
+                // command reads the registry again.
+                Err(e) if state.is_connected() => {
+                    tracing::warn!("PipeWire reconnected, but the registry re-read failed: {e}");
+                },
                 Err(e) => {
                     let delay = reconnect.failed(Instant::now());
                     tracing::warn!(
@@ -1046,14 +1054,9 @@ fn run_loop_thread(
                 },
             }
         }
-        let timeout = if watched && !state.is_connected() {
-            Timeout::Finite(
-                reconnect
-                    .next_attempt
-                    .saturating_duration_since(Instant::now()),
-            )
-        } else {
-            Timeout::Infinite
+        let timeout = match reconnect.wait(state.is_connected(), Instant::now()) {
+            Some(left) if watched => Timeout::Finite(left),
+            _ => Timeout::Infinite,
         };
         mainloop.loop_().iterate(timeout);
         if state.forget_a_lost_connection() {
@@ -1097,8 +1100,23 @@ impl ReconnectWatch {
         }
     }
 
-    /// The connection was lost at `now`: the first retry waits
-    /// `reconnect_delay(0)`.
+    /// Whether a watched loop tries to reconnect at `now`: only while it holds
+    /// no connection, and once the backoff has run out.
+    fn attempt_due(&self, connected: bool, now: Instant) -> bool {
+        !connected && now >= self.next_attempt
+    }
+
+    /// How long a watched loop may block waiting for the daemon at `now`:
+    /// until its next attempt while it holds no connection — zero once that
+    /// is past — and for as long as it takes (`None`) while it holds one.
+    fn wait(&self, connected: bool, now: Instant) -> Option<Duration> {
+        (!connected).then(|| self.next_attempt.saturating_duration_since(now))
+    }
+
+    /// The connection was lost at `now`: the walk starts again, and the first
+    /// retry waits `reconnect_delay(0)`. The only place the count is reset —
+    /// the count matters only once a connection is lost, and a command can
+    /// connect and lose one before [`Self::connected`] ever sees it.
     fn lost(&mut self, now: Instant) {
         self.failures = 0;
         self.next_attempt = now + reconnect_delay(0);
@@ -1113,10 +1131,9 @@ impl ReconnectWatch {
         delay
     }
 
-    /// A connection is held: reset the count, and report the reconnection
-    /// once. A closed channel is ignored — the consumer is gone.
+    /// A connection is held: report the reconnection, once per loss. A closed
+    /// channel is ignored — the consumer is gone.
     fn connected(&mut self, events: Option<&UnboundedSender<GraphEvent>>) {
-        self.failures = 0;
         if !self.owes_reconnected {
             return;
         }
@@ -5093,5 +5110,146 @@ mod tests {
             receiver.try_recv().is_err(),
             "no event from a detached graph"
         );
+    }
+
+    // ─── #80: the watched loop's reconnect schedule ──────────────────────────
+
+    /// Every `Reconnected` waiting in `receiver`.
+    fn reconnections(receiver: &mut tokio::sync::mpsc::UnboundedReceiver<GraphEvent>) -> usize {
+        pending(receiver)
+            .iter()
+            .filter(|event| **event == GraphEvent::Reconnected)
+            .count()
+    }
+
+    // Criterion: once the connection is lost, the loop retries after 1 s, 2 s,
+    // 5 s, 10 s, then every 30 s — each delay counted from the attempt that
+    // failed, and each attempt due exactly then, not a moment before.
+    #[test]
+    fn test_reconnect_watch_after_a_loss_retries_at_one_two_five_ten_then_thirty() {
+        let lost_at = Instant::now();
+        let mut watch = ReconnectWatch::new(lost_at);
+        watch.lost(lost_at);
+
+        let mut now = lost_at;
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            let wait = watch.wait(false, now).unwrap_or_default();
+            assert!(!watch.attempt_due(false, now + wait - Duration::from_millis(1)));
+            now += wait;
+            assert!(watch.attempt_due(false, now), "due after {wait:?}");
+            waits.push(wait.as_secs());
+            watch.failed(now);
+        }
+
+        assert_eq!(waits, vec![1, 2, 5, 10, 30, 30]);
+    }
+
+    // Criterion: a loop that holds a connection neither retries nor wakes to
+    // retry — it blocks until the daemon or a command wakes it. A loop that
+    // holds none never blocks past its next attempt, and not at all once that
+    // is past: an infinite wait there would leave a restarted daemon unnoticed
+    // until the next command.
+    #[test]
+    fn test_reconnect_watch_waits_for_ever_only_while_connected() {
+        let start = Instant::now();
+        let mut watch = ReconnectWatch::new(start);
+        watch.lost(start);
+
+        assert_eq!(watch.wait(true, start), None);
+        assert!(!watch.attempt_due(true, start + Duration::from_secs(60)));
+
+        assert_eq!(watch.wait(false, start), Some(Duration::from_secs(1)));
+        assert_eq!(
+            watch.wait(false, start + Duration::from_secs(5)),
+            Some(Duration::ZERO),
+            "an attempt already due waits for nothing"
+        );
+    }
+
+    // Criterion: a fresh thread tries at once, and its first connection is
+    // not a reconnection — it emits nothing, so startup wakes no pass.
+    #[test]
+    fn test_reconnect_watch_first_connection_emits_nothing() {
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let start = Instant::now();
+        let mut watch = ReconnectWatch::new(start);
+        assert!(
+            watch.attempt_due(false, start),
+            "a fresh thread tries at once"
+        );
+
+        watch.connected(Some(&events));
+
+        assert_eq!(reconnections(&mut receiver), 0);
+    }
+
+    // Criterion (guard, exactly one): a connection back after a loss emits one
+    // `Reconnected`, however many failed attempts came first — and no more
+    // while it holds, although the loop reports "connected" on every wake-up.
+    // A second loss owes a second one.
+    #[test]
+    fn test_reconnect_watch_emits_exactly_one_reconnected_per_loss() {
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let now = Instant::now();
+        let mut watch = ReconnectWatch::new(now);
+        watch.connected(Some(&events));
+
+        watch.lost(now);
+        watch.failed(now);
+        watch.failed(now);
+        for _ in 0..3 {
+            watch.connected(Some(&events));
+        }
+        assert_eq!(reconnections(&mut receiver), 1);
+
+        watch.lost(now);
+        watch.connected(Some(&events));
+        watch.connected(Some(&events));
+        assert_eq!(reconnections(&mut receiver), 1, "the second loss");
+    }
+
+    // Criterion: a success resets the count, so the next loss starts the walk
+    // again at 1 s and 2 s rather than at 30 s — `lost` restarts it, as a
+    // connection a command made and lost at once never reaches `connected`.
+    // Also: the consumer gone, the `Reconnected` is dropped without a panic.
+    #[test]
+    fn test_reconnect_watch_success_resets_the_backoff() {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        drop(receiver);
+        let now = Instant::now();
+        let mut watch = ReconnectWatch::new(now);
+        watch.lost(now);
+        for _ in 0..5 {
+            watch.failed(now);
+        }
+        assert_eq!(watch.wait(false, now), Some(Duration::from_secs(30)));
+
+        watch.connected(Some(&events));
+        watch.lost(now);
+
+        assert_eq!(watch.wait(false, now), Some(Duration::from_secs(1)));
+        assert_eq!(watch.failed(now), Duration::from_secs(2));
+
+        // A command connects and loses the connection within one wake-up:
+        // `connected` never runs in between, and the walk still restarts.
+        for _ in 0..5 {
+            watch.failed(now);
+        }
+        watch.lost(now);
+        assert_eq!(watch.wait(false, now), Some(Duration::from_secs(1)));
+        assert_eq!(watch.failed(now), Duration::from_secs(2));
+    }
+
+    // Criterion (guard, bounded backoff): the failure count never overflows —
+    // after `u32::MAX` failures one more is still a 30 s wait.
+    #[test]
+    fn test_reconnect_watch_failure_count_saturates() {
+        let now = Instant::now();
+        let mut watch = ReconnectWatch::new(now);
+        watch.failures = u32::MAX;
+
+        assert_eq!(watch.failed(now), Duration::from_secs(30));
+        assert_eq!(watch.failures, u32::MAX);
     }
 }

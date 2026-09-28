@@ -1020,15 +1020,15 @@ fn spawn_event_repair(
     tokio::spawn(async move {
         while let Some(first) = events.recv().await {
             let speakers = state.targets.lock().await.speakers();
-            let mut reasons = Vec::new();
+            // One pass for the whole drain, named after the first event that woke.
+            let mut reason = None;
             let mut next = Some(first);
             while let Some(event) = next {
                 tracing::debug!("graph event: {event:?}");
-                reasons.extend(audio::wake_for(&event, &speakers));
+                reason = reason.or_else(|| audio::wake_for(&event, &speakers));
                 next = events.try_recv().ok();
             }
-            // One pass for the whole drain, named after what woke it first.
-            if let Some(reason) = reasons.into_iter().next() {
+            if let Some(reason) = reason {
                 branch_repair_pass(&state, reason).await;
             }
         }
@@ -1071,10 +1071,12 @@ fn spawn_confirmation_timer(state: AppState) {
 /// A graph that already matches the plan is left untouched, so the common case
 /// costs nothing and the audio runs on; a branch that failed to load — the race
 /// where PipeWire had not created the `bluez_output.*` node yet — or one ruled
-/// dead is rebuilt, and rebuilding one branch rebuilds the whole selection (see
-/// `audio::reconcile_branches`), so a repair is a brief cut on the speakers that
-/// were already playing. A failure stays a warning: the next tick simply tries
-/// again, which is what repairs the race.
+/// dead is loaded again alone, and the speakers already playing are not touched
+/// (see `audio::reconcile_branches`). A failure stays a warning: the next
+/// event, confirmation or safety-net tick tries again.
+///
+/// `reason` is what woke the pass. It is logged only when the pass changed the
+/// graph, so a pass that found everything in place leaves no line.
 async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
     let speakers = state.targets.lock().await.speakers();
     // "Playing" covers both sources — the local tone and the Spotify backend —
@@ -1098,19 +1100,36 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) {
         let routed = router.route_for_targets(&speakers);
         (routed, router.graph_changes() != before)
     };
-    // A pass that changed nothing stays silent: the safety net runs every 30 s.
-    if changed {
-        match &reason {
-            audio::PassReason::SinkAppeared { at, .. } => tracing::info!(
-                "repair pass woken by {reason}, {} ms after the event, changed the graph",
-                at.elapsed().as_millis()
-            ),
-            _ => tracing::info!("repair pass woken by {reason} changed the graph"),
-        }
+    if let Some(line) = repair_pass_line(&reason, changed, std::time::Instant::now()) {
+        tracing::info!("{line}");
     }
     if let Err(e) = routed {
-        tracing::warn!("branch repair ({reason}) could not re-route: {e}");
+        tracing::warn!("repair pass (woken by: {reason}) could not re-route: {e}");
     }
+}
+
+/// The line a repair pass woken by `reason` logs once it is done, at `now`;
+/// `None` when it did not change the graph — the safety net runs every 30 s,
+/// and a pass that found everything in place leaves no line.
+///
+/// For a sink that appeared, the line carries the time from the event to `now`:
+/// from the sink's arrival to its branch being loaded, the gap #75's race is
+/// measured by.
+fn repair_pass_line(
+    reason: &audio::PassReason,
+    changed: bool,
+    now: std::time::Instant,
+) -> Option<String> {
+    if !changed {
+        return None;
+    }
+    Some(match reason {
+        audio::PassReason::SinkAppeared { at, .. } => format!(
+            "repair pass (woken by: {reason}) changed the graph {} ms after the event",
+            now.saturating_duration_since(*at).as_millis()
+        ),
+        _ => format!("repair pass (woken by: {reason}) changed the graph"),
+    })
 }
 
 /// Start the idle watchdog: once the now-playing SSE feed has had no reader for
@@ -3266,6 +3285,109 @@ mod tests {
         );
     }
 
+    /// A state whose router reads tokio's paused clock, with the JBL selected
+    /// and the null output playing, over `fake`.
+    async fn timed_state(fake: &graph::fake::FakeGraph) -> AppState {
+        let mut state = test_state_on(AudioEngine::new(), fake);
+        state.router = Arc::new(Mutex::new(AudioRouter::with_clock(
+            Box::new(fake.clone()),
+            Box::new(|| tokio::time::Instant::now().into_std()),
+        )));
+        state
+            .targets
+            .lock()
+            .await
+            .select(JBL, &[JBL.to_string()])
+            .expect("a connected speaker can be selected");
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        state
+    }
+
+    /// The branch load into the JBL's sink.
+    fn jbl_load() -> graph::fake::GraphCall {
+        graph::fake::GraphCall::LoadBranch {
+            sink_name: COMBINED_SINK.to_string(),
+            real_sink: JBL_SINK.to_string(),
+            latency_ms: 0,
+        }
+    }
+
+    /// Load the JBL's branch through the pass its sink's arrival wakes, which
+    /// arms its confirming reload; the calls are forgotten. Returns the id of
+    /// the one branch loaded.
+    async fn load_the_jbl(state: &AppState, fake: &graph::fake::FakeGraph) -> u32 {
+        branch_repair_pass(
+            state,
+            audio::PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: std::time::Instant::now(),
+            },
+        )
+        .await;
+        assert_eq!(fake.calls(), vec![jbl_load()]);
+        let loaded: Vec<u32> = fake.loaded(COMBINED_SINK).iter().map(|b| b.id).collect();
+        assert_eq!(loaded.len(), 1);
+        fake.clear_calls();
+        loaded[0]
+    }
+
+    // Criterion: a pass that changed nothing logs nothing, whatever woke it —
+    // the safety net runs every 30 s and a steady graph must leave no line.
+    // The control: each reason, once the pass changed the graph, has a line.
+    #[test]
+    fn test_repair_pass_line_of_a_pass_that_changed_nothing_is_none() {
+        let now = std::time::Instant::now();
+        let reasons = [
+            audio::PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: now,
+            },
+            audio::PassReason::SinkVanished {
+                name: JBL_SINK.to_string(),
+            },
+            audio::PassReason::ConfirmationDue,
+            audio::PassReason::SafetyNet,
+            audio::PassReason::Reconnected,
+        ];
+
+        for reason in &reasons {
+            assert_eq!(repair_pass_line(reason, false, now), None, "{reason:?}");
+            assert!(
+                repair_pass_line(reason, true, now).is_some(),
+                "control: {reason:?} logs once the graph changed"
+            );
+        }
+    }
+
+    // Criterion: the line names what woke the pass, set off from the rest of
+    // the sentence, and for a sink that appeared it carries the milliseconds
+    // from the event to the end of the pass — #75's race was 149 ms.
+    #[test]
+    fn test_repair_pass_line_names_the_reason_and_the_ms_since_the_sink_appeared() {
+        let at = std::time::Instant::now();
+        let appeared = audio::PassReason::SinkAppeared {
+            name: JBL_SINK.to_string(),
+            at,
+        };
+
+        assert_eq!(
+            repair_pass_line(&appeared, true, at + Duration::from_millis(149)).as_deref(),
+            Some(
+                "repair pass (woken by: sink bluez_output.2C_FD_B4_D3_AC_21.1 appeared) \
+                 changed the graph 149 ms after the event"
+            )
+        );
+        assert_eq!(
+            repair_pass_line(&audio::PassReason::SafetyNet, true, at).as_deref(),
+            Some("repair pass (woken by: the safety net) changed the graph")
+        );
+    }
+
     /// Let every task that is ready run, without moving the paused clock.
     async fn settle() {
         for _ in 0..50 {
@@ -3286,42 +3408,10 @@ mod tests {
         use graph::fake::{FakeGraph, GraphCall};
 
         let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
-        let mut state = test_state_on(AudioEngine::new(), &fake);
-        state.router = Arc::new(Mutex::new(AudioRouter::with_clock(
-            Box::new(fake.clone()),
-            Box::new(|| tokio::time::Instant::now().into_std()),
-        )));
-        state
-            .targets
-            .lock()
-            .await
-            .select(JBL, &[JBL.to_string()])
-            .expect("a connected speaker can be selected");
-        state
-            .engine
-            .lock()
-            .await
-            .play()
-            .expect("the null output plays");
-        let load = GraphCall::LoadBranch {
-            sink_name: COMBINED_SINK.to_string(),
-            real_sink: JBL_SINK.to_string(),
-            latency_ms: 0,
-        };
+        let state = timed_state(&fake).await;
+        let load = jbl_load();
 
-        // The load, by the pass the sink's arrival woke.
-        branch_repair_pass(
-            &state,
-            audio::PassReason::SinkAppeared {
-                name: JBL_SINK.to_string(),
-                at: std::time::Instant::now(),
-            },
-        )
-        .await;
-        assert_eq!(fake.calls(), vec![load.clone()]);
-        let loaded: Vec<u32> = fake.loaded(COMBINED_SINK).iter().map(|b| b.id).collect();
-        assert_eq!(loaded.len(), 1);
-        fake.clear_calls();
+        let loaded = load_the_jbl(&state, &fake).await;
 
         spawn_confirmation_timer(state.clone());
         settle().await;
@@ -3344,7 +3434,7 @@ mod tests {
         settle().await;
         assert_eq!(
             fake.calls(),
-            vec![GraphCall::UnloadBranch { id: loaded[0] }, load],
+            vec![GraphCall::UnloadBranch { id: loaded }, load],
             "the confirming reload, of that branch alone"
         );
 
@@ -3356,5 +3446,93 @@ mod tests {
             Vec::<GraphCall>::new(),
             "only once: the reload does not arm itself"
         );
+    }
+
+    // Criterion: a timer with nothing armed waits for an arming rather than
+    // for the safety net. Here it is started first, on an empty register; the
+    // load arms a reload while it waits, and that reload runs one gap later,
+    // not a moment before. Without the router's arming notification the timer
+    // would sleep on until the process ends.
+    #[tokio::test(start_paused = true)]
+    async fn test_confirmation_timer_wakes_for_a_reload_armed_while_it_waits() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        let state = timed_state(&fake).await;
+        spawn_confirmation_timer(state.clone());
+        settle().await;
+
+        let loaded = load_the_jbl(&state, &fake).await;
+        settle().await;
+        tokio::time::advance(audio::CONFIRM_GAP - Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "not before the gap"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::UnloadBranch { id: loaded }, jbl_load()]
+        );
+    }
+
+    // Criterion: a reload that falls due while nothing plays is neither
+    // dropped nor retried in a loop. The pass it wakes is guarded out, so the
+    // reload stays armed; the timer then waits one more gap. Playback resumes
+    // a second after the due time: a timer spinning on the past due time
+    // would reload at once, this one reloads when the gap is over.
+    #[tokio::test(start_paused = true)]
+    async fn test_confirmation_timer_keeps_a_reload_due_while_nothing_plays_without_spinning() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        let state = timed_state(&fake).await;
+        let loaded = load_the_jbl(&state, &fake).await;
+        let due = state.router.lock().await.next_confirmation_due();
+        assert!(due.is_some(), "the load armed a reload");
+        spawn_confirmation_timer(state.clone());
+        settle().await;
+        state
+            .engine
+            .lock()
+            .await
+            .stop()
+            .expect("the null output stops");
+
+        tokio::time::advance(audio::CONFIRM_GAP).await;
+        settle().await;
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new(), "nothing plays");
+        assert_eq!(
+            state.router.lock().await.next_confirmation_due(),
+            due,
+            "the reload is still armed"
+        );
+
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "the timer waits for the gap, it does not spin"
+        );
+
+        tokio::time::advance(audio::CONFIRM_GAP - Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::UnloadBranch { id: loaded }, jbl_load()],
+            "the reload left due runs one gap later"
+        );
+        assert_eq!(state.router.lock().await.next_confirmation_due(), None);
     }
 }

@@ -652,8 +652,9 @@ pub struct AudioRouter {
     /// Poked whenever a confirming reload is armed, so the confirmation timer
     /// waiting on an empty register learns of it (#80).
     armed: std::sync::Arc<tokio::sync::Notify>,
-    /// How many changes this router has made to the graph: a pass compares it
-    /// before and after to tell whether it changed anything.
+    /// How many changes the graph has accepted from this router — a load, an
+    /// unload, a retune, a build — a refused call counting for none. A pass
+    /// compares it before and after to tell whether it changed anything.
     changes: u64,
 }
 
@@ -682,13 +683,14 @@ impl AudioRouter {
         self.confirmation.next_due()
     }
 
-    /// Notified each time a confirming reload is armed.
-    pub fn confirmation_armed(&self) -> std::sync::Arc<tokio::sync::Notify> {
+    /// Notified each time a confirming reload is armed, so the confirmation
+    /// timer waiting on an empty register learns of it.
+    pub(crate) fn confirmation_armed(&self) -> std::sync::Arc<tokio::sync::Notify> {
         std::sync::Arc::clone(&self.armed)
     }
 
-    /// How many changes this router has made to the graph so far.
-    pub fn graph_changes(&self) -> u64 {
+    /// How many changes the graph has accepted from this router so far.
+    pub(crate) fn graph_changes(&self) -> u64 {
         self.changes
     }
 
@@ -764,10 +766,10 @@ impl AudioRouter {
                 spec.sink_name
             ),
         }
-        self.changes += 1;
         self.graph.teardown(&spec.sink_name)?;
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
+        self.changes += 1;
         // One delay branch per speaker: combined.monitor -> real sink, delayed by
         // the speaker's offset, the per-branch sync tuning.
         let report = self.load_planned_branches_live(&spec.sink_name, &spec.branches);
@@ -799,8 +801,9 @@ impl AudioRouter {
             );
             // Best-effort: a branch that is already gone is not an error, and one
             // failure must not stop the rest of a repair.
-            let _ = self.graph.unload_branch(dead.id);
-            self.changes += 1;
+            if self.graph.unload_branch(dead.id).is_ok() {
+                self.changes += 1;
+            }
         }
         // Unknown liveness keeps the branch: a transient read failure would
         // otherwise read as "everything is dead" and reload every branch under
@@ -839,8 +842,8 @@ impl AudioRouter {
                 up.id,
                 up.branch.sink
             );
-            self.changes += 1;
             self.graph.unload_branch(up.id)?;
+            self.changes += 1;
         }
 
         let mut failures = Vec::new();
@@ -855,9 +858,9 @@ impl AudioRouter {
                 );
                 // One rejected delay must not stop the other speakers' repair; it
                 // is reported, and the next pass retunes it again.
-                self.changes += 1;
-                if let Err(err) = self.graph.set_branch_delay(up.id, retune.latency_ms) {
-                    failures.push(err.to_string());
+                match self.graph.set_branch_delay(up.id, retune.latency_ms) {
+                    Ok(()) => self.changes += 1,
+                    Err(err) => failures.push(err.to_string()),
                 }
             }
         }
@@ -911,8 +914,8 @@ impl AudioRouter {
                 .iter()
                 .any(|planned| prefix_names_node(&planned.sink, &branch.branch.sink))
             {
-                self.changes += 1;
                 self.graph.unload_branch(branch.id)?;
+                self.changes += 1;
             }
         }
         let second = self.load_planned_branches_live(&spec.sink_name, &confirming);
@@ -4162,5 +4165,94 @@ mod router_tests {
             fake.calls()
         );
         assert_eq!(router.next_confirmation_due(), None);
+    }
+
+    // Criterion (#80): a pass logs what woke it only when it changed the graph,
+    // and `graph_changes` is how it tells. Every change the graph accepts
+    // counts once: here a dead unload, an unwanted unload, a retune and two
+    // loads — five calls, five changes. A steady pass after it counts none.
+    #[test]
+    fn test_router_graph_changes_counts_each_change_the_graph_accepted() {
+        let sink_c = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let sink_d = "bluez_output.AA_BB_CC_DD_EE_04.1";
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, sink_c, sink_d, COMBINED]);
+        fake.seed_branch(COMBINED, SINK_A, 0, Some(true));
+        fake.seed_branch(COMBINED, sink_c, 60, Some(false));
+        fake.seed_branch(COMBINED, sink_d, 30, Some(true));
+        let mut router = router_on(&fake);
+        let selection = [
+            target(MAC_A, 100),
+            target(MAC_B, 30),
+            target("AA:BB:CC:DD:EE:03", 60),
+        ];
+        assert_eq!(router.graph_changes(), 0, "a fresh router changed nothing");
+
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(fake.calls().len(), 5, "calls: {:?}", fake.calls());
+        assert_eq!(router.graph_changes(), 5);
+
+        let result = router.route_for_targets(&selection);
+        assert!(result.is_ok(), "steady pass failed: {result:?}");
+        assert_eq!(router.graph_changes(), 5, "a steady pass changes nothing");
+    }
+
+    // Criterion (#80): a build from nothing is a change — the combined sink
+    // counts once, each branch loaded once more: one sink and two branches are
+    // three. The confirming reload a gap later is two more, one unload and one
+    // load per branch reloaded: here both, so four.
+    #[test]
+    fn test_router_graph_changes_counts_a_build_and_its_confirming_reload() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let (mut router, clock) = router_with_clock(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert_eq!(router.graph_changes(), 3, "calls: {:?}", fake.calls());
+
+        advance(&clock, CONFIRM_GAP);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        assert_eq!(router.graph_changes(), 3 + 4, "calls: {:?}", fake.calls());
+    }
+
+    // Criterion (#80): a call the graph refused changed nothing, so it does
+    // not count — or a pass that only failed would log that it changed the
+    // graph. The near misses, each attempted and recorded by the fake: a
+    // rejected retune, a refused unload of an unwanted branch, and a refused
+    // unload of a dead one, whose replacement load still counts.
+    #[test]
+    fn test_router_graph_changes_counts_no_call_the_graph_refused() {
+        let (fake, a, _) = steady_graph(Some(true));
+        fake.fail(GraphOp::SetBranchDelay);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&[target(MAC_A, 120), target(MAC_B, 30)]);
+        assert!(result.is_err(), "the retune was rejected: {result:?}");
+        assert_eq!(fake.calls(), vec![set_delay(a, 120)], "it was attempted");
+        assert_eq!(router.graph_changes(), 0);
+
+        let (fake, a, _) = steady_graph(Some(true));
+        fake.fail(GraphOp::UnloadBranch);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&[target(MAC_B, 30)]);
+        assert!(result.is_err(), "the unload was refused: {result:?}");
+        assert_eq!(fake.calls(), vec![unload(a)], "it was attempted");
+        assert_eq!(router.graph_changes(), 0);
+
+        let (fake, dead_a, dead_b) = steady_graph(Some(false));
+        fake.fail(GraphOp::UnloadBranch);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "route failed: {result:?}");
+        assert_eq!(
+            fake.calls(),
+            vec![
+                unload(dead_a),
+                unload(dead_b),
+                load(SINK_A, 0),
+                load(SINK_B, 30)
+            ]
+        );
+        assert_eq!(router.graph_changes(), 2, "the two loads, not the unloads");
     }
 }

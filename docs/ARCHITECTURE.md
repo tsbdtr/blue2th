@@ -209,7 +209,10 @@ only while something plays. Four things wake one (#80):
   from a poll that could come before the bluez5 module had created the sink
   (#75). Events queued together are drained together and run one pass.
 - **The confirmation timer.** It sleeps until the earliest confirming reload
-  falls due, five seconds after the load, and runs one pass for it.
+  falls due, five seconds after the load, and runs one pass for it. A pass
+  that cannot take the reload (nothing plays, the graph cannot be read) leaves
+  it armed, and the timer tries again one gap later or at the next load,
+  whichever comes first. The next routing takes it too.
 - **The safety net.** Every 30 s, for what no event reports: the combined sink
   destroyed by hand, or a branch ruled dead.
 - **A reconnection.** When the connection to the daemon is lost, the graph
