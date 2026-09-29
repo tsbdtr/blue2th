@@ -401,6 +401,7 @@ pub const SAFETY_NET_TICK: Duration = Duration::from_secs(30);
 pub enum PassReason {
     SinkAppeared { name: String, at: Instant },
     SinkVanished { name: String },
+    CombinedSinkVanished { name: String },
     ConfirmationDue,
     SafetyNet,
     Reconnected,
@@ -411,6 +412,9 @@ impl std::fmt::Display for PassReason {
         match self {
             Self::SinkAppeared { name, .. } => write!(f, "sink {name} appeared"),
             Self::SinkVanished { name } => write!(f, "sink {name} vanished"),
+            Self::CombinedSinkVanished { name } => {
+                write!(f, "combined sink {name} removed from outside")
+            },
             Self::ConfirmationDue => f.write_str("a confirming reload fell due"),
             Self::SafetyNet => f.write_str("the safety net"),
             Self::Reconnected => f.write_str("the PipeWire connection came back"),
@@ -420,9 +424,10 @@ impl std::fmt::Display for PassReason {
 
 /// The reason `event` wakes a repair pass for `selection`, if it does.
 ///
-/// A sink event wakes only when a selected speaker's [`bluez_sink_prefix`]
-/// names that sink under `prefix_names_node`'s rule; with nothing selected
-/// there is nothing to repair, so nothing wakes.
+/// A speaker sink event wakes only when a selected speaker's
+/// [`bluez_sink_prefix`] names that sink under `prefix_names_node`'s rule. The
+/// combined sink's removal is no speaker's sink, and wakes for any selection
+/// (#139). With nothing selected there is nothing to repair, so nothing wakes.
 pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassReason> {
     if selection.is_empty() {
         return None;
@@ -446,9 +451,38 @@ pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassR
                 name: name.clone(),
             })
         },
+        GraphEvent::CombinedSinkVanished { name, .. } => {
+            Some(PassReason::CombinedSinkVanished {
+                // Cloned: the reason outlives the borrowed event.
+                name: name.clone(),
+            })
+        },
         GraphEvent::Reconnected => Some(PassReason::Reconnected),
         _ => None,
     }
+}
+
+/// The reason one drained burst of `events` wakes a single repair pass for
+/// `selection`, if any of them wakes one (#139): the combined sink's removal
+/// wins wherever it sits, so the fallback it may call for is never lost to a
+/// speaker event drained before it; otherwise the first event that wakes.
+pub fn wake_for_burst(events: &[GraphEvent], selection: &[SpeakerTarget]) -> Option<PassReason> {
+    let reasons = events.iter().filter_map(|event| wake_for(event, selection));
+    let mut first = None;
+    for reason in reasons {
+        if matches!(reason, PassReason::CombinedSinkVanished { .. }) {
+            return Some(reason);
+        }
+        first = first.or(Some(reason));
+    }
+    first
+}
+
+/// Whether a repair pass woken by `reason` must fall back to pausing Spotify
+/// (#139), given whether its route succeeded and whether the re-targeting of
+/// the streams did.
+pub fn fallback_pause_due(reason: &PassReason, routed_ok: bool, retargeted_ok: bool) -> bool {
+    matches!(reason, PassReason::CombinedSinkVanished { .. }) && !(routed_ok && retargeted_ok)
 }
 
 /// What a selection change has to do to an already-loaded combined sink: the
@@ -656,6 +690,9 @@ pub struct AudioRouter {
     /// unload, a retune, a build — a refused call counting for none. A pass
     /// compares it before and after to tell whether it changed anything.
     changes: u64,
+    /// Whether the last route created the combined sink and could not
+    /// re-target the streams onto it (#139).
+    retarget_failed: bool,
 }
 
 impl AudioRouter {
@@ -675,6 +712,7 @@ impl AudioRouter {
             clock,
             armed: std::sync::Arc::default(),
             changes: 0,
+            retarget_failed: false,
         }
     }
 
@@ -692,6 +730,13 @@ impl AudioRouter {
     /// How many changes the graph has accepted from this router so far.
     pub(crate) fn graph_changes(&self) -> u64 {
         self.changes
+    }
+
+    /// Whether the last [`Self::route_for_targets`] created the combined sink
+    /// and then failed to re-target the streams onto it (#139). A route that
+    /// created nothing, or re-targeted successfully, answers `false`.
+    pub(crate) fn last_retarget_failed(&self) -> bool {
+        self.retarget_failed
     }
 
     /// Arm the confirming reload of every branch a pass has just loaded.
@@ -716,6 +761,7 @@ impl AudioRouter {
     /// stream behind (#70, #53). The single seam used by `/play` and by the Spotify
     /// backend, so both agree on where audio goes.
     pub fn route_for_targets(&mut self, speakers: &[SpeakerTarget]) -> Result<(), AudioError> {
+        self.retarget_failed = false;
         if speakers.is_empty() {
             return Err(AudioError::NoSpeakerConnected);
         }
@@ -770,6 +816,21 @@ impl AudioRouter {
         // The shared virtual sink the player streams into.
         self.graph.create_combined_sink(&spec.sink_name)?;
         self.changes += 1;
+        // A stream that asked for the sink before it was destroyed is not
+        // moved back by the session manager on its own (#139). Losing this
+        // never fails the route: the pass reads the flag and falls back.
+        // Not a graph change: it moves no branch and loads nothing.
+        match self.graph.retarget_streams(&spec.sink_name) {
+            Ok(0) => {},
+            Ok(count) => tracing::info!("re-targeted {count} stream(s) onto {}", spec.sink_name),
+            Err(err) => {
+                tracing::warn!(
+                    "could not re-target the streams onto {}: {err}",
+                    spec.sink_name
+                );
+                self.retarget_failed = true;
+            },
+        }
         // One delay branch per speaker: combined.monitor -> real sink, delayed by
         // the speaker's offset, the per-branch sync tuning.
         let report = self.load_planned_branches_live(&spec.sink_name, &spec.branches);
@@ -2579,6 +2640,210 @@ mod tests {
         }
     }
 
+    // ─── #139: the combined sink removed from outside ────────────────────────
+
+    const COMBINED_SINK: &str = "blue2th_combined";
+
+    fn combined_vanished(at: Instant) -> GraphEvent {
+        GraphEvent::CombinedSinkVanished {
+            name: COMBINED_SINK.to_string(),
+            at,
+        }
+    }
+
+    fn combined_reason() -> PassReason {
+        PassReason::CombinedSinkVanished {
+            name: COMBINED_SINK.to_string(),
+        }
+    }
+
+    // Criterion (#139): `wake_for(CombinedSinkVanished, selection)` is
+    // `Some(PassReason::CombinedSinkVanished)` carrying the sink's name, for
+    // any non-empty selection — the combined sink is no speaker's sink, so no
+    // speaker's prefix has to name it.
+    #[test]
+    fn test_wake_for_wakes_for_the_combined_sink_s_removal_with_a_selection() {
+        let at = Instant::now();
+        for selection in [selected(&[SONY]), selected(&[JBL]), selected(&[SONY, JBL])] {
+            assert_eq!(
+                wake_for(&combined_vanished(at), &selection),
+                Some(combined_reason())
+            );
+        }
+    }
+
+    // Criterion (#139, guard, the empty value): with nothing selected, the
+    // combined sink's removal wakes nothing — there is nothing to rebuild, and
+    // nothing to pause for. The control: one selected speaker, and it wakes.
+    #[test]
+    fn test_wake_for_the_combined_sink_s_removal_with_nothing_selected_wakes_nothing() {
+        let at = Instant::now();
+        assert!(
+            wake_for(&combined_vanished(at), &selected(&[JBL])).is_some(),
+            "control: a selection wakes"
+        );
+
+        assert_eq!(wake_for(&combined_vanished(at), &[]), None);
+    }
+
+    // Criterion (#139, guard, the reason is not lost in a burst): wherever the
+    // combined sink's removal sits in a drained burst — after a selected
+    // speaker's sink appearing, which a first-wins fold would keep, before
+    // it, or in the middle of three others that each wake on their own — the
+    // one pass carries its reason.
+    #[test]
+    fn test_wake_for_burst_names_the_combined_sink_s_removal_wherever_it_sits() {
+        let at = Instant::now();
+        let selection = selected(&[JBL]);
+        let bursts = [
+            vec![appeared(JBL_SINK, at), combined_vanished(at)],
+            vec![combined_vanished(at), appeared(JBL_SINK, at)],
+            vec![
+                vanished(JBL_SINK, at),
+                GraphEvent::Reconnected,
+                combined_vanished(at),
+                appeared(JBL_SINK, at),
+            ],
+            vec![combined_vanished(at)],
+        ];
+
+        for burst in &bursts {
+            assert_eq!(
+                wake_for_burst(burst, &selection),
+                Some(combined_reason()),
+                "burst {burst:?}"
+            );
+        }
+    }
+
+    // Criterion (#139): without the combined sink's removal, a burst keeps
+    // today's rule — the first event that wakes names the pass. The
+    // unselected speaker's sink, first in the burst, wakes nothing and is
+    // skipped.
+    #[test]
+    fn test_wake_for_burst_without_the_combined_sink_s_removal_keeps_the_first_reason() {
+        let at = Instant::now();
+        let burst = [
+            appeared(SONY_SINK, at),
+            appeared(JBL_SINK, at),
+            GraphEvent::Reconnected,
+        ];
+
+        assert_eq!(
+            wake_for_burst(&burst, &selected(&[JBL])),
+            Some(PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at
+            })
+        );
+    }
+
+    // Criterion (#139, guard, the empty value): with nothing selected a burst
+    // carrying the combined sink's removal wakes nothing, and an empty burst
+    // wakes nothing whatever is selected.
+    #[test]
+    fn test_wake_for_burst_of_an_empty_selection_or_burst_wakes_nothing() {
+        let at = Instant::now();
+        let burst = [appeared(JBL_SINK, at), combined_vanished(at)];
+
+        assert_eq!(wake_for_burst(&burst, &[]), None);
+        assert_eq!(wake_for_burst(&[], &selected(&[JBL])), None);
+    }
+
+    // Criterion (#139): `PassReason::CombinedSinkVanished` renders a line of
+    // its own naming the combined sink — not the line a speaker's sink
+    // vanishing reads, even for the same name, and none of the others.
+    #[test]
+    fn test_pass_reason_of_the_combined_sink_s_removal_names_the_sink_and_reads_apart() {
+        let line = combined_reason().to_string();
+
+        assert!(line.contains(COMBINED_SINK), "got {line:?}");
+        let others = [
+            PassReason::SinkAppeared {
+                name: COMBINED_SINK.to_string(),
+                at: Instant::now(),
+            },
+            PassReason::SinkVanished {
+                name: COMBINED_SINK.to_string(),
+            },
+            PassReason::ConfirmationDue,
+            PassReason::SafetyNet,
+            PassReason::Reconnected,
+        ];
+        for other in &others {
+            assert_ne!(line, other.to_string(), "reads like {other:?}");
+        }
+    }
+
+    /// Every reason but the combined sink's removal.
+    fn other_reasons() -> Vec<PassReason> {
+        vec![
+            PassReason::SinkAppeared {
+                name: JBL_SINK.to_string(),
+                at: Instant::now(),
+            },
+            PassReason::SinkVanished {
+                name: JBL_SINK.to_string(),
+            },
+            PassReason::ConfirmationDue,
+            PassReason::SafetyNet,
+            PassReason::Reconnected,
+        ]
+    }
+
+    // Criterion (#139): a pass woken by the combined sink's removal whose
+    // route failed falls back to the pause, whatever the re-targeting said —
+    // a failed build may never have reached it.
+    #[test]
+    fn test_fallback_pause_due_after_the_combined_sink_s_removal_when_the_route_fails() {
+        assert!(fallback_pause_due(&combined_reason(), false, true));
+        assert!(fallback_pause_due(&combined_reason(), false, false));
+    }
+
+    // Criterion (#139): a pass woken by the combined sink's removal whose
+    // route succeeded but whose re-targeting failed falls back too: the sink
+    // is back, the music is not on it.
+    #[test]
+    fn test_fallback_pause_due_after_the_combined_sink_s_removal_when_the_retarget_fails() {
+        assert!(fallback_pause_due(&combined_reason(), true, false));
+    }
+
+    // Criterion (#139, guard, only on failure): a pass woken by the combined
+    // sink's removal that rebuilt and re-targeted never pauses. The control:
+    // the same reason with the route failed does.
+    #[test]
+    fn test_fallback_pause_due_never_once_the_rebuild_and_the_retarget_succeeded() {
+        assert!(
+            fallback_pause_due(&combined_reason(), false, true),
+            "control: a failed route falls back"
+        );
+
+        assert!(!fallback_pause_due(&combined_reason(), true, true));
+    }
+
+    // Criterion (#139, guard, only this reason pauses): a pass woken by any
+    // other reason never falls back, whichever of the route and the
+    // re-targeting failed. The control: the combined sink's removal with the
+    // same failed route does.
+    #[test]
+    fn test_fallback_pause_due_never_for_another_reason() {
+        assert!(
+            fallback_pause_due(&combined_reason(), false, true),
+            "control: the combined sink's removal falls back"
+        );
+
+        for reason in &other_reasons() {
+            for (routed_ok, retargeted_ok) in
+                [(false, true), (false, false), (true, false), (true, true)]
+            {
+                assert!(
+                    !fallback_pause_due(reason, routed_ok, retargeted_ok),
+                    "{reason:?} with routed_ok={routed_ok} retargeted_ok={retargeted_ok}"
+                );
+            }
+        }
+    }
+
     // Criterion: with every selected speaker switched off, nothing is reachable —
     // and the reconciliation asks for no rebuild at all rather than for the whole
     // selection. Asking would spawn a load per tick for nodes that do not exist.
@@ -2961,7 +3226,7 @@ mod router_tests {
 
         assert!(result.is_ok(), "route failed: {result:?}");
         assert_eq!(
-            fake.calls(),
+            fake.routing_calls(),
             vec![
                 clear_stale(COMBINED),
                 teardown(COMBINED),
@@ -2995,7 +3260,7 @@ mod router_tests {
         let result = router.route_for_targets(&steady_selection());
         assert!(result.is_ok(), "build failed: {result:?}");
         assert_eq!(
-            fake.calls(),
+            fake.routing_calls(),
             vec![
                 clear_stale(COMBINED),
                 teardown(COMBINED),
@@ -3115,7 +3380,7 @@ mod router_tests {
             "a failed clear failed the build: {result:?}"
         );
         assert_eq!(
-            fake.calls(),
+            fake.routing_calls(),
             vec![
                 clear_stale(COMBINED),
                 teardown(COMBINED),
@@ -3155,6 +3420,168 @@ mod router_tests {
         let b = branch_into(&fake, SINK_B);
         assert_eq!(fake.calls(), vec![set_delay(b, 120)]);
         assert_eq!(fake.configured_default().as_deref(), Some(STALE_DEFAULT));
+    }
+
+    fn retarget(sink_name: &str) -> GraphCall {
+        GraphCall::RetargetStreams {
+            sink_name: sink_name.to_string(),
+        }
+    }
+
+    /// How many times the router asked the graph to re-target the streams.
+    fn retargets(fake: &FakeGraph) -> usize {
+        fake.all_calls()
+            .iter()
+            .filter(|c| matches!(c, GraphCall::RetargetStreams { .. }))
+            .count()
+    }
+
+    // Criterion (#139): a build asks the graph to re-target the streams to the
+    // combined sink, once, after it created the sink — where it sits among the
+    // branch loads is the router's choice. The rest of the build is as before.
+    #[test]
+    fn test_build_retargets_the_streams_to_the_combined_sink_after_creating_it() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "build failed: {result:?}");
+        let calls = fake.calls();
+        let created_at = calls.iter().position(|c| *c == create(COMBINED));
+        let retargeted_at = calls.iter().position(|c| *c == retarget(COMBINED));
+        assert!(
+            matches!((created_at, retargeted_at), (Some(created), Some(retargeted)) if created < retargeted),
+            "the streams are re-targeted after the sink is created: {calls:?}"
+        );
+        assert_eq!(retargets(&fake), 1, "once: {calls:?}");
+        assert_eq!(
+            fake.routing_calls(),
+            vec![
+                clear_stale(COMBINED),
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 0),
+                load(SINK_B, 30),
+            ]
+        );
+    }
+
+    // Criterion (#139, guard, re-target on creation only): a reconcile never
+    // re-targets — neither one that loads a missing branch and retunes
+    // another, which changes the graph as a build does, nor the confirming
+    // reload a gap after the build. A router re-targeting on every pass, or on
+    // every load, would do it here. The control: the build that started it
+    // did re-target.
+    #[test]
+    fn test_reconcile_never_retargets() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert_eq!(retargets(&fake), 1, "control: the build re-targeted");
+
+        // A reconcile that loads B alone and retunes A in place.
+        fake.clear_calls();
+        let result = router.route_for_targets(&[target(MAC_A, 40), target(MAC_B, 30)]);
+        assert!(result.is_ok(), "reconcile failed: {result:?}");
+        assert!(
+            fake.calls().contains(&load(SINK_B, 30)),
+            "the reconcile loaded B: {:?}",
+            fake.calls()
+        );
+        assert_eq!(retargets(&fake), 0, "calls: {:?}", fake.all_calls());
+
+        // The confirming reloads, a gap after the loads.
+        advance(&clock, CONFIRM_GAP);
+        fake.clear_calls();
+        let result = router.route_for_targets(&[target(MAC_A, 40), target(MAC_B, 30)]);
+        assert!(result.is_ok(), "confirming pass failed: {result:?}");
+        assert!(
+            fake.calls()
+                .iter()
+                .any(|c| matches!(c, GraphCall::LoadBranch { .. })),
+            "a confirming reload ran: {:?}",
+            fake.calls()
+        );
+        assert_eq!(retargets(&fake), 0, "calls: {:?}", fake.all_calls());
+    }
+
+    // Criterion (#139): a build whose sink cannot be created re-targets
+    // nothing — there is no sink to move a stream onto — and reports no
+    // re-targeting failure: the route's own error says what went wrong.
+    #[test]
+    fn test_build_whose_sink_cannot_be_created_retargets_nothing() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail(GraphOp::CreateCombinedSink);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_err(), "the sink was not created: {result:?}");
+        assert_eq!(retargets(&fake), 0, "calls: {:?}", fake.all_calls());
+        assert!(!router.last_retarget_failed());
+    }
+
+    // Criterion (#139): re-targeting zero streams — a paused `librespot` holds
+    // none — is a success: the route is `Ok` and no failure is reported, so
+    // the pass has nothing to fall back for.
+    #[test]
+    fn test_build_retargeting_zero_streams_is_success() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert_eq!(retargets(&fake), 1, "the build did re-target");
+        assert!(!router.last_retarget_failed());
+    }
+
+    // Criterion (#139): a re-targeting error does not fail the route — every
+    // branch is still loaded and the route answers `Ok` — but the router
+    // reports it, so the pass can fall back.
+    #[test]
+    fn test_build_with_a_failing_retarget_still_loads_every_branch_and_reports_it() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail(GraphOp::RetargetStreams);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(
+            result.is_ok(),
+            "a failed re-target failed the route: {result:?}"
+        );
+        assert_eq!(retargets(&fake), 1, "it was attempted");
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_A, SINK_B]);
+        assert!(router.last_retarget_failed(), "the failure is reported");
+    }
+
+    // Criterion (#139): the failure reported is the last route's. The next
+    // route — here a reconcile, which re-targets nothing — reports none, so a
+    // pass never falls back on a failure an earlier build left behind.
+    #[test]
+    fn test_last_retarget_failed_is_cleared_by_the_next_route() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail(GraphOp::RetargetStreams);
+        let mut router = router_on(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "build failed: {result:?}");
+        assert!(
+            router.last_retarget_failed(),
+            "the build's failure is reported"
+        );
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert!(result.is_ok(), "reconcile failed: {result:?}");
+        assert!(!router.last_retarget_failed());
     }
 
     // Criterion: a build tears a leftover down first, so branches that outlived
@@ -3355,7 +3782,7 @@ mod router_tests {
         let result = router.route_for_targets(&steady_selection());
 
         assert_eq!(
-            fake.calls(),
+            fake.routing_calls(),
             vec![
                 clear_stale(COMBINED),
                 teardown(COMBINED),
@@ -3394,7 +3821,7 @@ mod router_tests {
         assert!(message.contains(SINK_A), "unexpected error: {message}");
         assert!(message.contains(SINK_B), "unexpected error: {message}");
         assert_eq!(
-            fake.calls(),
+            fake.routing_calls(),
             vec![
                 clear_stale(COMBINED),
                 teardown(COMBINED),
