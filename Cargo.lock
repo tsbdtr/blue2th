@@ -376,7 +376,7 @@ dependencies = [
  "blue2th-proto",
  "dioxus",
  "futures",
- "jni 0.21.1",
+ "jni 0.22.4",
  "mdns-sd",
  "ndk-context",
  "reqwest",
