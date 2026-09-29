@@ -424,9 +424,10 @@ impl std::fmt::Display for PassReason {
 
 /// The reason `event` wakes a repair pass for `selection`, if it does.
 ///
-/// A sink event wakes only when a selected speaker's [`bluez_sink_prefix`]
-/// names that sink under `prefix_names_node`'s rule; with nothing selected
-/// there is nothing to repair, so nothing wakes.
+/// A speaker sink event wakes only when a selected speaker's
+/// [`bluez_sink_prefix`] names that sink under `prefix_names_node`'s rule. The
+/// combined sink's removal is no speaker's sink, and wakes for any selection
+/// (#139). With nothing selected there is nothing to repair, so nothing wakes.
 pub fn wake_for(event: &GraphEvent, selection: &[SpeakerTarget]) -> Option<PassReason> {
     if selection.is_empty() {
         return None;

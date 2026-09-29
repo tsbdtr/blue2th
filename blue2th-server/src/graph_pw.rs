@@ -4010,9 +4010,10 @@ mod tests {
     }
 
     // Criterion (#139, guard, the empty value): `retarget_streams` refuses an
-    // empty sink name before the loop thread sees it — every stream carrying
-    // an empty `target.object` would otherwise be asked for. The control: the
-    // combined sink's name reaches the loop, which answers.
+    // empty sink name before the loop thread sees it, as every other named
+    // command does; `streams_targeting` refuses it again on the loop side
+    // (`test_streams_targeting_of_an_empty_sink_name_takes_nothing`). The
+    // control: the combined sink's name reaches the loop, which answers.
     #[test]
     fn test_retarget_streams_refuses_an_empty_sink_name_before_the_loop() {
         let received = Arc::new(Mutex::new(Vec::new()));

@@ -1011,8 +1011,9 @@ fn spawn_branch_repair(state: AppState) {
 }
 
 /// Start the event consumer (#80): drain the graph's events, and run one repair
-/// pass per drain when at least one of them concerns a selected speaker. The
-/// task ends once every sender is gone and the queue is drained.
+/// pass per drain when at least one of them wakes one for the selection (see
+/// [`audio::wake_for_burst`]). The task ends once every sender is gone and the
+/// queue is drained.
 fn spawn_event_repair(
     state: AppState,
     mut events: tokio::sync::mpsc::UnboundedReceiver<graph_pw::GraphEvent>,
@@ -1020,19 +1021,29 @@ fn spawn_event_repair(
     tokio::spawn(async move {
         while let Some(first) = events.recv().await {
             let speakers = state.targets.lock().await.speakers();
-            // One pass for the whole drain, named by `wake_for_burst`.
-            let mut burst = Vec::new();
-            let mut next = Some(first);
-            while let Some(event) = next {
-                tracing::debug!("graph event: {event:?}");
-                burst.push(event);
-                next = events.try_recv().ok();
-            }
-            if let Some(reason) = audio::wake_for_burst(&burst, &speakers) {
+            if let Some(reason) = drain_burst_reason(first, &mut events, &speakers) {
                 branch_repair_pass(&state, reason).await;
             }
         }
     })
+}
+
+/// Drain the burst `first` opens — `first`, then every event already queued
+/// behind it in `events` — and answer the reason the one pass it wakes for
+/// `speakers` carries, if it wakes one (#139).
+fn drain_burst_reason(
+    first: graph_pw::GraphEvent,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<graph_pw::GraphEvent>,
+    speakers: &[blue2th_proto::SpeakerTarget],
+) -> Option<audio::PassReason> {
+    let mut burst = Vec::new();
+    let mut next = Some(first);
+    while let Some(event) = next {
+        tracing::debug!("graph event: {event:?}");
+        burst.push(event);
+        next = events.try_recv().ok();
+    }
+    audio::wake_for_burst(&burst, speakers)
 }
 
 /// Start the confirmation timer (#80): sleep until the router's earliest
@@ -1125,10 +1136,18 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) -> bool
         "repair pass (woken by: {reason}) could not bring the streams back: pausing Spotify"
     );
     let spotify_silenced = pause_spotify_now(state).await;
+    claim_fallback_pause(state, spotify_silenced);
+    true
+}
+
+/// Claim the repair pass's fallback pause (#139) when it silenced a playing
+/// `librespot`. A pause that silenced nothing leaves the claim as it was: a
+/// claim an earlier pause made is still owed its resume.
+fn claim_fallback_pause(state: &AppState, spotify_silenced: bool) {
+    // The fallback never touches the engine, so it has no half to report.
     if targets::may_claim_pause(spotify_silenced, false) {
         state.backend_paused_sources.store(true, Ordering::SeqCst);
     }
-    true
 }
 
 /// The line a repair pass woken by `reason` logs once it is done, at `now`;
@@ -3666,12 +3685,19 @@ mod tests {
 
     // Criterion (#139): a burst carrying a selected speaker's sink appearing
     // first and the combined sink's removal after it runs one pass, not two.
-    // The reason that pass carries is pinned by `wake_for_burst`'s own tests;
-    // the consumer runs nothing else.
+    // Counting rebuilds alone cannot tell: a second pass finds the sink
+    // standing and only reconciles. So the whole call log, reads included, is
+    // the log of one pass run on its own over the same graph — and that one
+    // pass rebuilt once. The reason it carries is pinned by
+    // `test_drain_burst_reason_names_the_combined_sink_s_removal_and_drains_the_queue`.
     #[tokio::test]
     async fn test_event_consumer_runs_one_pass_for_a_burst_with_the_combined_sink_s_removal() {
         let fake = graph::fake::FakeGraph::new();
         let state = vanished_state(&fake, true).await;
+        let one_pass = graph::fake::FakeGraph::new();
+        let alone = vanished_state(&one_pass, true).await;
+        branch_repair_pass(&alone, combined_reason()).await;
+        assert_eq!(rebuilds(&one_pass), 1, "calls: {:?}", one_pass.calls());
 
         consume(
             &state,
@@ -3679,8 +3705,61 @@ mod tests {
         )
         .await;
 
-        assert_eq!(rebuilds(&fake), 1, "calls: {:?}", fake.calls());
+        assert_eq!(fake.all_calls(), one_pass.all_calls());
         assert_eq!(retargets(&fake), 1, "calls: {:?}", fake.calls());
+    }
+
+    // Criterion (#139, guard, the reason is not lost in a burst): the drain
+    // the event consumer runs names its one pass after the combined sink's
+    // removal even when a selected speaker's sink appearing was queued first —
+    // the first-wins fold it replaced would name that one — and takes every
+    // event already queued, so no second pass follows for the same burst.
+    #[test]
+    fn test_drain_burst_reason_names_the_combined_sink_s_removal_and_drains_the_queue() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        sender
+            .send(combined_sink_vanished())
+            .expect("the receiver is alive");
+        sender
+            .send(sink_appeared(JBL_SINK))
+            .expect("the receiver is alive");
+        let speakers = [blue2th_proto::SpeakerTarget {
+            address: JBL.to_string(),
+            offset_ms: 0,
+        }];
+
+        let reason = drain_burst_reason(sink_appeared(JBL_SINK), &mut receiver, &speakers);
+
+        assert_eq!(reason, Some(combined_reason()));
+        assert!(receiver.try_recv().is_err(), "the burst was drained whole");
+    }
+
+    // Criterion (#139): a fallback pause that silenced a playing `librespot`
+    // is claimed, so a restore path may resume it; one that silenced nothing
+    // claims nothing — and leaves standing a claim an earlier pause made,
+    // which is still owed its resume.
+    #[tokio::test]
+    async fn test_claim_fallback_pause_claims_only_what_it_silenced_and_clears_nothing() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = test_state_on(AudioEngine::new(), &fake);
+
+        claim_fallback_pause(&state, false);
+        assert!(
+            !state.backend_paused_sources.load(Ordering::SeqCst),
+            "a pause that silenced nothing claims nothing"
+        );
+
+        claim_fallback_pause(&state, true);
+        assert!(
+            state.backend_paused_sources.load(Ordering::SeqCst),
+            "a pause that silenced librespot is claimed"
+        );
+
+        claim_fallback_pause(&state, false);
+        assert!(
+            state.backend_paused_sources.load(Ordering::SeqCst),
+            "an earlier claim survives a pause that silenced nothing"
+        );
     }
 
     // Criterion (#139): with nothing selected, the combined sink's removal
