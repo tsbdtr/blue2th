@@ -27,10 +27,10 @@ use axum::{
     Json, Router,
 };
 use blue2th_proto::{
-    AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
-    HealthStatus, OffsetRequest, PairRequest, PairResponse, PlaybackState, PlaybackStatus,
-    PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus,
-    SpotifyVolumeRequest, TargetsState, VolumeRequest,
+    AdapterInfo, AudioGraphStatus, AuthCallbackRequest, AuthUrlResponse, ClientPresence,
+    ConfigRequest, DeviceInfo, HealthStatus, OffsetRequest, PairRequest, PairResponse,
+    PlaybackState, PlaybackStatus, PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState,
+    SpotifyState, SpotifyStatus, SpotifyVolumeRequest, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -66,9 +66,10 @@ pub struct AppState {
     /// The audio engine, guarded for concurrent access.
     engine: Arc<Mutex<AudioEngine>>,
     /// The routing logic over the audio graph, with the history its
-    /// reconciliation carries from one pass to the next. Never locked while
-    /// another guard is awaited: a caller already holding `spotify` may take
-    /// it, never the other way round.
+    /// reconciliation carries from one pass to the next. A caller already
+    /// holding `spotify` may take it, never the other way round; the routing
+    /// applier reads `targets` while holding it, so nothing waits for it while
+    /// holding `targets`.
     router: RouterHandle,
     /// The user's playback-target selection (0–2 speakers + offsets). `/play`
     /// derives its routing mode from this; an empty selection (`Idle`) is
@@ -1014,14 +1015,40 @@ fn spawn_branch_repair(state: AppState) {
 }
 
 /// Start the background routing applier (#145): the single task a selection
-/// change hands its routing to.
+/// change hands its routing to, so a change made while the graph does not
+/// answer is applied once it does, rather than dropped at the request's bound.
 ///
-/// RED-phase skeleton: starts nothing, so the tests pinning the applier fail.
+/// Each pass takes the router with the unbounded wait and only then reads the
+/// selection: requests made while it waited fold into that one pass, which
+/// applies the latest selection rather than any snapshot taken on the way.
 fn spawn_routing_applier(state: AppState) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
-    let _ = state;
+    let mut requests = state.router.routing_requests();
+    tokio::spawn(async move {
+        while requests.changed().await.is_ok() {
+            let speakers = {
+                let mut router = state.router.lock_unbounded().await;
+                requests.borrow_and_update();
+                let speakers = state.targets.lock().await.speakers();
+                if speakers.is_empty() {
+                    if let Err(e) = router.teardown(spotify::COMBINED_SINK_NAME) {
+                        tracing::warn!("could not tear the combined sink down: {e}");
+                    }
+                    continue;
+                }
+                if let Err(e) = router.route_for_targets(&speakers) {
+                    tracing::warn!("could not re-route after a selection change: {e}");
+                    continue;
+                }
+                speakers
+            };
+            // After the router is released: a Spotify respawn takes the
+            // `spotify` guard first, then the router.
+            resync_spotify_sink(&state, &speakers).await;
+        }
+    });
 }
 
 /// Start the event consumer (#80): drain the graph's events, and run one repair
@@ -1244,11 +1271,7 @@ async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
     forget_backend_pause(&state);
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
-    state
-        .router
-        .lock_unbounded()
-        .await
-        .route_for_targets(&speakers)?;
+    state.router.route(&speakers).await?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
 }
@@ -1288,12 +1311,8 @@ async fn volume(
     if speakers.is_empty() {
         return Err(AudioError::NoSpeakerConnected.into());
     }
-    {
-        let mut router = state.router.lock_unbounded().await;
-        for target in &speakers {
-            router.set_sink_volume(&target.address, req.level)?;
-        }
-    }
+    let macs: Vec<String> = speakers.into_iter().map(|target| target.address).collect();
+    state.router.set_sink_volumes(&macs, req.level).await?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.set_volume(req.level)?))
 }
@@ -1303,21 +1322,38 @@ async fn volume(
 /// of *every* selected speaker: the live sink level when they all agree (so a
 /// change made on a speaker itself is reflected), the commanded level otherwise
 /// — see `audio::reported_volume`.
+///
+/// A router not obtained in time, or a sink list that cannot be read, is not a
+/// failed poll (#145): the reply carries the commanded level and says the
+/// graph is unresponsive.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
         engine.poll_state()
     };
     // Snapshot the selection and release the guard before the PipeWire reads.
-    let speakers = state.targets.lock().await.speakers();
-    let levels: Vec<Option<f32>> = {
-        let mut router = state.router.lock_unbounded().await;
-        speakers
-            .iter()
-            .map(|target| router.sink_volume(&target.address))
-            .collect()
-    };
-    snapshot.volume = audio::reported_volume(&levels, snapshot.volume);
+    let macs: Vec<String> = state
+        .targets
+        .lock()
+        .await
+        .speakers()
+        .into_iter()
+        .map(|target| target.address)
+        .collect();
+    // Nothing selected, nothing to read: the graph is not asked.
+    if macs.is_empty() {
+        return Json(snapshot);
+    }
+    match state.router.sink_volumes(&macs).await {
+        Ok(levels) => {
+            snapshot.volume = audio::reported_volume(&levels, snapshot.volume);
+            snapshot.audio_graph = AudioGraphStatus::Responsive;
+        },
+        Err(e) => {
+            tracing::warn!("could not read the speakers' volume: {e}");
+            snapshot.audio_graph = AudioGraphStatus::Unresponsive;
+        },
+    }
     Json(snapshot)
 }
 
@@ -1336,7 +1372,22 @@ async fn spotify_start(State(state): State<AppState>) -> Result<Json<SpotifyStat
 /// user chose is gone until the next poll writes it back. Every start site goes
 /// through here, or one path would silently leave the Connect level at full
 /// scale.
+///
+/// The router wait is bounded: a request answers 503 rather than queue behind
+/// a graph that does not answer.
 async fn start_spotify(
+    state: &AppState,
+    spotify: &mut SpotifyBackend,
+    speakers: &[SpeakerTarget],
+) -> Result<SpotifyState, AppError> {
+    let started = state.router.start_spotify(spotify, speakers).await??;
+    state.spotify_volume.lock().await.mark_respawned();
+    Ok(started)
+}
+
+/// [`start_spotify`] for the background routing applier, whose router wait is
+/// unbounded: a respawn delayed is better than a `librespot` left stopped.
+async fn start_spotify_in_background(
     state: &AppState,
     spotify: &mut SpotifyBackend,
     speakers: &[SpeakerTarget],
@@ -1655,7 +1706,10 @@ async fn set_config(
             tracing::warn!("could not stop the Spotify backend before a rename: {e}");
         }
         if let Err(e) = start_spotify(&state, &mut spotify, &speakers).await {
-            tracing::warn!("could not restart the Spotify backend after a rename: {e}");
+            tracing::warn!(
+                "could not restart the Spotify backend after a rename: {}",
+                e.message
+            );
         }
     }
 
@@ -1935,27 +1989,26 @@ async fn set_target_offset(
 /// failure here must not turn a slider drag into an error, and the next
 /// reconciliation (the repair tick, `/play`, a Spotify start) retunes the branch
 /// anyway.
+///
+/// A router not obtained in time hands the change to the routing applier
+/// (#145): its pass reconciles every branch to the offsets stored by then,
+/// so the latest one is applied once the graph answers, and a Spotify sink
+/// that moved is resynced there too.
 async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarget]) {
     let Some(target) = speakers.iter().find(|s| s.address == addr) else {
         return;
     };
     let plan = audio::combine_sink_plan(speakers);
-
-    // An offset change never moves the target sink, so this does not respawn; it
-    // stays because the target would move if the sink name ever became dynamic.
-    if resync_spotify_sink(state, speakers).await {
-        return;
-    }
-
-    let mut router = state.router.lock_unbounded().await;
-    if router.combined_sink_exists(&plan.sink_name) {
-        let branch = audio::CombineBranch {
-            sink: audio::bluez_sink_prefix(&target.address),
-            latency_ms: target.offset_ms,
-        };
-        if let Err(e) = router.retune_branch(&plan.sink_name, &branch) {
+    let branch = audio::CombineBranch {
+        sink: audio::bluez_sink_prefix(&target.address),
+        latency_ms: target.offset_ms,
+    };
+    match state.router.retune(&plan.sink_name, &branch).await {
+        Ok(()) => {},
+        Err(RouterError::TimedOut) => state.router.request_routing(),
+        Err(RouterError::Audio(e)) => {
             tracing::warn!("could not retune the speaker offset live: {e}");
-        }
+        },
     }
 }
 
@@ -1972,7 +2025,7 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
         return false;
     }
     let _ = spotify.stop();
-    if let Err(e) = start_spotify(state, &mut spotify, speakers).await {
+    if let Err(e) = start_spotify_in_background(state, &mut spotify, speakers).await {
         tracing::warn!("could not restart the Spotify backend after a routing change: {e}");
     }
     true
@@ -1983,6 +2036,10 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
 /// Selecting or deselecting a speaker used to only update the stored selection:
 /// the PipeWire routing stayed exactly as it was, so a speaker dropped from the
 /// selection kept receiving the stream and playing on.
+///
+/// The routing itself goes to the background applier (#145), which applies
+/// the selection current once it holds the router: a change made while the
+/// graph does not answer is neither lost nor delays the reply.
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
         // Nothing left to play to. Silence both sources, then tear the combined
@@ -2009,28 +2066,11 @@ async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
                 tracing::warn!("could not pause playback after the last speaker was dropped: {e}");
             }
         }
-        if let Err(e) = state
-            .router
-            .lock_unbounded()
-            .await
-            .teardown(spotify::COMBINED_SINK_NAME)
-        {
-            tracing::warn!("could not tear the combined sink down: {e}");
-        }
-        return;
     }
-    // Still a target: rebuild the routing so it spans exactly the current
-    // selection (this is what stops feeding a speaker that was just dropped).
-    if let Err(e) = state
-        .router
-        .lock_unbounded()
-        .await
-        .route_for_targets(speakers)
-    {
-        tracing::warn!("could not re-route after a selection change: {e}");
-        return;
-    }
-    resync_spotify_sink(state, speakers).await;
+    // The applier tears the combined sink down on an empty selection, and
+    // otherwise rebuilds the routing so it spans exactly the current one
+    // (this is what stops feeding a speaker that was just dropped).
+    state.router.request_routing();
 }
 
 /// `GET /targets` — the current selection, per-speaker offsets and routing mode.
@@ -2104,11 +2144,13 @@ impl AppError {
         }
     }
 
-    /// A 503 error carrying the given message (#145).
-    ///
-    /// RED-phase skeleton: answers 500, so the tests pinning it fail.
+    /// A 503 error carrying the given message (#145): the backend is up, but
+    /// something it depends on did not answer in time.
     fn service_unavailable(message: impl Into<String>) -> Self {
-        Self::internal(message)
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
     }
 
     /// A 409 error carrying the given message: the request collided with the
@@ -2162,9 +2204,10 @@ impl From<AudioError> for AppError {
 
 impl From<RouterError> for AppError {
     fn from(err: RouterError) -> Self {
-        // RED-phase skeleton: the timeout carries no message yet.
         match err {
-            RouterError::TimedOut => AppError::service_unavailable(String::new()),
+            RouterError::TimedOut => {
+                AppError::service_unavailable("the audio graph is not answering")
+            },
             RouterError::Audio(e) => e.into(),
         }
     }

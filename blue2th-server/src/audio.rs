@@ -1090,19 +1090,30 @@ impl AudioRouter {
     /// of the sink list (#145): `Err` when that list cannot be read, `Ok(None)`
     /// for a speaker whose sink is absent from a list that read fine.
     ///
-    /// RED-phase skeleton: answers nothing, so the tests pinning it fail.
+    /// An unreadable list stops the read there: while the graph does not
+    /// answer, every further call would only wait out its own timeout.
     pub fn sink_volumes(&mut self, macs: &[String]) -> Result<Vec<Option<f32>>, AudioError> {
-        let _ = macs;
-        Ok(Vec::new())
+        if macs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sinks = self.graph.sinks()?;
+        Ok(macs
+            .iter()
+            .map(|mac| {
+                sink_named_by_prefix(&sinks, &bluez_sink_prefix(mac))
+                    .and_then(|sink| self.graph.sink_volume(&sink))
+            })
+            .collect())
     }
 
     /// Find the sink BlueZ created for a speaker, matched by its MAC. The node
     /// name looks like `bluez_output.AA_BB_CC_DD_EE_FF.1` (colons → underscores),
     /// matched against the prefix from [`bluez_sink_prefix`].
+    ///
+    /// A sink list that cannot be read keeps its own error: it is a graph
+    /// failure, not a speaker without a sink (#145).
     fn bluetooth_sink_for(&mut self, mac: &str) -> Result<String, AudioError> {
-        find_sink_with_prefix(self.graph.as_mut(), &bluez_sink_prefix(mac))
-            .ok()
-            .flatten()
+        find_sink_with_prefix(self.graph.as_mut(), &bluez_sink_prefix(mac))?
             .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for speaker {mac}")))
     }
 

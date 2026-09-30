@@ -327,14 +327,15 @@ pub enum PlaybackStatus {
 
 /// Whether the backend could read the audio graph when it answered (#145).
 ///
-/// RED-phase skeleton: the wire names, the default and the field's
-/// `#[serde(default)]` are what the tests below pin.
+/// The default is `Responsive`: a reply that says nothing about the graph —
+/// one from a backend built before this field — is not a stall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AudioGraphStatus {
     /// The graph answered.
+    #[default]
     Responsive,
     /// The graph did not answer, or could not be read.
-    #[default]
     Unresponsive,
 }
 
@@ -345,7 +346,9 @@ pub struct PlaybackState {
     pub status: PlaybackStatus,
     /// Current sink volume in `0.0..=1.0`.
     pub volume: f32,
-    /// Whether the audio graph answered this request.
+    /// Whether the audio graph answered this request. Defaulted so a body
+    /// from a backend built before this field still decodes.
+    #[serde(default)]
     pub audio_graph: AudioGraphStatus,
 }
 
