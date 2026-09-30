@@ -2014,21 +2014,20 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
 
 /// Respawn `librespot` when the selection moves it to a different sink.
 /// `--device` is fixed at spawn, so re-routing alone would leave it feeding the
-/// sink it was started with. Returns whether it was restarted.
-async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bool {
+/// sink it was started with.
+async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) {
     let mut spotify = state.spotify.lock().await;
     if spotify.poll_liveness().status != SpotifyStatus::Running {
-        return false;
+        return;
     }
     let wanted = spotify::spotify_target_sink(speakers);
     if spotify.current_sink() == Some(wanted.as_str()) {
-        return false;
+        return;
     }
     let _ = spotify.stop();
     if let Err(e) = start_spotify_in_background(state, &mut spotify, speakers).await {
         tracing::warn!("could not restart the Spotify backend after a routing change: {e}");
     }
-    true
 }
 
 /// Push a selection change into the live audio graph.
@@ -4576,6 +4575,29 @@ mod tests {
                 delay_ms: 240
             }]
         );
+    }
+
+    // Criterion (#145): with the router obtained, an offset change retunes
+    // only a combined sink that is loaded — with none, the graph is asked
+    // whether it exists and nothing more. The near miss is the missing sink:
+    // a retune that skips the check goes on to read the branches of a sink
+    // that is not there.
+    #[tokio::test]
+    async fn test_offset_change_with_no_combined_sink_loaded_retunes_nothing() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let Json(reply) = set_target_offset(
+            State(state),
+            Path(JBL.to_string()),
+            Json(OffsetRequest { offset_ms: 120 }),
+        )
+        .await;
+
+        assert_eq!(offset_of(&reply, JBL), Some(120));
+        assert_eq!(fake.all_calls(), vec![GraphCall::Sinks]);
     }
 
     // Criterion (#145, #67): deselecting the last speaker behind a held

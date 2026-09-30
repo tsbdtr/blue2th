@@ -1072,23 +1072,19 @@ impl AudioRouter {
     }
 
     /// Set the speaker's sink volume by sink name, so it matches what
-    /// [`Self::sink_volume`] reads back even if the system default differs. The
+    /// [`Self::sink_volumes`] reads back even if the system default differs. The
     /// level is clamped here, before it reaches the graph.
     pub fn set_sink_volume(&mut self, mac: &str, level: f32) -> Result<(), AudioError> {
         let sink = self.bluetooth_sink_for(mac)?;
         self.graph.set_sink_volume(&sink, clamp_volume(level))
     }
 
-    /// Read the live volume of the speaker's sink — picks up a change made on the
-    /// speaker itself (AVRCP). Returns `None` on any failure.
-    pub fn sink_volume(&mut self, mac: &str) -> Option<f32> {
-        let sink = self.bluetooth_sink_for(mac).ok()?;
-        self.graph.sink_volume(&sink)
-    }
-
     /// The live volume of each speaker in `macs`, in order, over **one** read
-    /// of the sink list (#145): `Err` when that list cannot be read, `Ok(None)`
-    /// for a speaker whose sink is absent from a list that read fine.
+    /// of the sink list (#145) — picks up a change made on a speaker itself
+    /// (AVRCP). `Err` when that list cannot be read, `Ok(None)` for a speaker
+    /// whose sink is absent from a list that read fine, or whose level
+    /// [`Graph::sink_volume`] could not read: that call answers an `Option`,
+    /// so it cannot tell a failure from an unreadable route.
     ///
     /// An unreadable list stops the read there: while the graph does not
     /// answer, every further call would only wait out its own timeout.
@@ -4662,21 +4658,62 @@ mod router_tests {
     }
 
     // Criterion: the volume is read per speaker sink, over-amplification
-    // included, and an absent speaker reads as `None`.
+    // included — the 153% is passed on, not clamped, so `reported_volume` can
+    // refuse it — and an absent speaker reads as `None`. Nothing is written.
     #[test]
-    fn test_sink_volume_reads_the_speaker_sink() {
+    fn test_sink_volumes_reads_each_speaker_sink_unclamped() {
         let (fake, _, _) = steady_graph(Some(true));
         fake.set_volume(SINK_A, 0.59);
         fake.set_volume(SINK_B, 1.53);
         let mut router = router_on(&fake);
 
-        assert_eq!(router.sink_volume(MAC_A), Some(0.59));
-        assert_eq!(router.sink_volume(MAC_B), Some(1.53));
-        assert_eq!(router.sink_volume("AA:BB:CC:DD:EE:03"), None);
+        let levels = router.sink_volumes(&[
+            MAC_A.to_string(),
+            MAC_B.to_string(),
+            "AA:BB:CC:DD:EE:03".to_string(),
+        ]);
+
+        assert!(
+            matches!(&levels, Ok(l) if *l == vec![Some(0.59), Some(1.53), None]),
+            "got {levels:?}"
+        );
         assert!(fake.all_calls().contains(&GraphCall::SinkVolume {
             sink: SINK_A.to_string()
         }));
         assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion (#145, guard, the empty value asks nothing): no speaker, no
+    // read — not even of a sink list that would fail. The near miss is the
+    // failing list: without the guard the empty read errs, and `/playback`
+    // would report a stall for a selection that asked the graph nothing.
+    #[test]
+    fn test_sink_volumes_of_no_speaker_asks_the_graph_nothing() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        fake.fail(GraphOp::Sinks);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[]);
+
+        assert!(matches!(&levels, Ok(l) if l.is_empty()), "got {levels:?}");
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion (#145): a sink that is listed but whose level cannot be read
+    // is `None` in its own slot, like an absent one, and the other speaker is
+    // still read — `Graph::sink_volume` gives no reason to stop there.
+    #[test]
+    fn test_sink_volumes_answers_none_for_a_listed_sink_with_no_readable_level() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_volume(SINK_B, 0.75);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[MAC_A.to_string(), MAC_B.to_string()]);
+
+        assert!(
+            matches!(&levels, Ok(l) if *l == vec![None, Some(0.75)]),
+            "got {levels:?}"
+        );
     }
 
     // Criterion (#80): the router exposes when its earliest confirming reload
