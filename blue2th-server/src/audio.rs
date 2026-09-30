@@ -1081,25 +1081,26 @@ impl AudioRouter {
 
     /// The live volume of each speaker in `macs`, in order, over **one** read
     /// of the sink list (#145) — picks up a change made on a speaker itself
-    /// (AVRCP). `Err` when that list cannot be read, `Ok(None)` for a speaker
-    /// whose sink is absent from a list that read fine, or whose level
-    /// [`Graph::sink_volume`] could not read: that call answers an `Option`,
-    /// so it cannot tell a failure from an unreadable route.
+    /// (AVRCP). `Err` when that list cannot be read or a speaker's level
+    /// read fails (#148); `Ok(None)` for a speaker whose sink is absent from
+    /// a list that read fine, or whose sink [`Graph::sink_volume`] answered
+    /// has no level.
     ///
-    /// An unreadable list stops the read there: while the graph does not
-    /// answer, every further call would only wait out its own timeout.
+    /// A failed read stops there: while the graph does not answer, every
+    /// further call would only wait out its own timeout.
     pub fn sink_volumes(&mut self, macs: &[String]) -> Result<Vec<Option<f32>>, AudioError> {
         if macs.is_empty() {
             return Ok(Vec::new());
         }
         let sinks = self.graph.sinks()?;
-        Ok(macs
-            .iter()
-            .map(|mac| {
-                sink_named_by_prefix(&sinks, &bluez_sink_prefix(mac))
-                    .and_then(|sink| self.graph.sink_volume(&sink).ok().flatten())
-            })
-            .collect())
+        macs.iter()
+            .map(
+                |mac| match sink_named_by_prefix(&sinks, &bluez_sink_prefix(mac)) {
+                    Some(sink) => self.graph.sink_volume(&sink),
+                    None => Ok(None),
+                },
+            )
+            .collect()
     }
 
     /// Find the sink BlueZ created for a speaker, matched by its MAC. The node

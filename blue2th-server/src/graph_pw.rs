@@ -344,17 +344,11 @@ impl Graph for PipeWireGraph {
     }
 
     fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
-        if sink.is_empty() {
-            return Ok(None);
-        }
-        Ok(self
-            .ask(|reply| Command::SinkVolume {
-                sink: sink.to_string(),
-                reply,
-            })
-            .ok()
-            .and_then(Result::ok)
-            .flatten())
+        named("sink", sink)?;
+        self.ask(|reply| Command::SinkVolume {
+            sink: sink.to_string(),
+            reply,
+        })?
     }
 
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
@@ -2057,14 +2051,18 @@ impl LoopState<PwConnector> {
     }
 
     fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
-        let read = |state: &mut Self| -> Option<f32> {
-            state.sync_mirror().ok()?;
-            let target = route_target(&state.mirror, sink)?;
-            let deadline = state.deadline;
-            let (_, route) = state.connection().ok()?.route(target, deadline).ok()?;
-            volume_fraction_from_route(&route.channel_volumes)
+        self.sync_mirror()?;
+        let Some(target) = route_target(&self.mirror, sink) else {
+            return Ok(None);
         };
-        Ok(read(self))
+        let deadline = self.deadline;
+        let (_, routes) = self.connection()?.routes(target.device_id, deadline)?;
+        // A device without the sink's route is a sink with no level, not a
+        // graph that could not answer (#148).
+        Ok(routes
+            .iter()
+            .find(|route| route.device == target.route_device)
+            .and_then(|route| volume_fraction_from_route(&route.channel_volumes)))
     }
 
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {

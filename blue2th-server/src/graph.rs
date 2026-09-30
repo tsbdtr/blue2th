@@ -559,9 +559,8 @@ pub mod fake {
             state.log.push(GraphCall::SinkVolume {
                 sink: sink.to_string(),
             });
-            if state.refuse_empty(GraphOp::SinkVolume, &[sink]).is_err() {
-                return Ok(None);
-            }
+            state.refuse_empty(GraphOp::SinkVolume, &[sink])?;
+            state.check(GraphOp::SinkVolume, sink)?;
             Ok(state
                 .volumes
                 .iter()
