@@ -97,7 +97,7 @@ pub(crate) enum Command {
     },
     SinkVolume {
         sink: String,
-        reply: mpsc::Sender<Option<f32>>,
+        reply: Reply<Option<f32>>,
     },
     SetSinkVolume {
         sink: String,
@@ -343,16 +343,18 @@ impl Graph for PipeWireGraph {
         })?
     }
 
-    fn sink_volume(&mut self, sink: &str) -> Option<f32> {
+    fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
         if sink.is_empty() {
-            return None;
+            return Ok(None);
         }
-        self.ask(|reply| Command::SinkVolume {
-            sink: sink.to_string(),
-            reply,
-        })
-        .ok()
-        .flatten()
+        Ok(self
+            .ask(|reply| Command::SinkVolume {
+                sink: sink.to_string(),
+                reply,
+            })
+            .ok()
+            .and_then(Result::ok)
+            .flatten())
     }
 
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
@@ -2054,12 +2056,15 @@ impl LoopState<PwConnector> {
             .clear_stale_default_sink(sink_name, deadline)
     }
 
-    fn sink_volume(&mut self, sink: &str) -> Option<f32> {
-        self.sync_mirror().ok()?;
-        let target = route_target(&self.mirror, sink)?;
-        let deadline = self.deadline;
-        let (_, route) = self.connection().ok()?.route(target, deadline).ok()?;
-        volume_fraction_from_route(&route.channel_volumes)
+    fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
+        let read = |state: &mut Self| -> Option<f32> {
+            state.sync_mirror().ok()?;
+            let target = route_target(&state.mirror, sink)?;
+            let deadline = state.deadline;
+            let (_, route) = state.connection().ok()?.route(target, deadline).ok()?;
+            volume_fraction_from_route(&route.channel_volumes)
+        };
+        Ok(read(self))
     }
 
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
@@ -3936,7 +3941,7 @@ mod tests {
                     },
                     Command::SinkVolume { sink, reply } => {
                         log.push(format!("sink_volume {sink}"));
-                        let _ = reply.send(Some(0.5));
+                        let _ = reply.send(Ok(Some(0.5)));
                     },
                     Command::SetSinkVolume { sink, level, reply } => {
                         log.push(format!("set_sink_volume {sink} {level}"));
@@ -3959,7 +3964,7 @@ mod tests {
         }));
 
         assert_eq!(graph.sinks().ok(), Some(vec![SPEAKER.to_string()]));
-        assert_eq!(graph.sink_volume(SPEAKER), Some(0.5));
+        assert_eq!(graph.sink_volume(SPEAKER).ok(), Some(Some(0.5)));
         assert_eq!(
             *received.lock().unwrap(),
             vec!["sinks".to_string(), format!("sink_volume {SPEAKER}")]
@@ -3988,7 +3993,7 @@ mod tests {
         assert!(graph.teardown(COMBINED).is_ok());
         assert_eq!(graph.clear_stale_default_sink(COMBINED).ok(), Some(true));
         assert_eq!(graph.retarget_streams(COMBINED).ok(), Some(3));
-        assert_eq!(graph.sink_volume(SPEAKER), Some(0.5));
+        assert_eq!(graph.sink_volume(SPEAKER).ok(), Some(Some(0.5)));
         assert!(graph.set_sink_volume(SPEAKER, 0.25).is_ok());
 
         assert_eq!(
@@ -4181,7 +4186,10 @@ mod tests {
             graph.set_sink_volume("", 0.5),
             Err(AudioError::PipeWire(_))
         ));
-        assert_eq!(graph.sink_volume(""), None);
+        assert!(matches!(
+            graph.sink_volume(""),
+            Err(AudioError::PipeWire(_))
+        ));
 
         assert!(
             received.lock().unwrap().is_empty(),
@@ -4200,7 +4208,7 @@ mod tests {
     }
 
     // Criterion: a detached graph reaches no loop and no daemon — every command
-    // errs at once, and a volume reads as unknown.
+    // errs at once, a volume read included (#148): the graph cannot tell.
     #[test]
     fn test_detached_graph_errs_at_once_without_a_loop() {
         let mut graph = PipeWireGraph::detached();
@@ -4210,6 +4218,7 @@ mod tests {
         let teardown = graph.teardown(COMBINED);
         let retune = graph.set_branch_delay(1, 120);
         let clear = graph.clear_stale_default_sink(COMBINED);
+        let volume = graph.sink_volume(SPEAKER);
 
         assert!(
             matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
@@ -4224,11 +4233,152 @@ mod tests {
             matches!(clear, Err(AudioError::PipeWire(_))),
             "a clear goes through the loop like every command, got {clear:?}"
         );
-        assert_eq!(graph.sink_volume(SPEAKER), None);
+        assert!(
+            matches!(&volume, Err(AudioError::PipeWire(m)) if m.contains("not running")),
+            "a volume read goes through the loop like every command, got {volume:?}"
+        );
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "no timeout is waited out, waited {:?}",
             started.elapsed()
+        );
+    }
+
+    // ─── #148: a level read the graph could not answer is an `Err` ─────────
+
+    /// A speaker sink the volume loop answers with a level.
+    const LEVELLED: &str = "bluez_output.AA_BB_CC_DD_EE_0A.1";
+    /// A speaker sink the volume loop answers with no level: no route, or a
+    /// route with no channel volume.
+    const NO_LEVEL: &str = "bluez_output.AA_BB_CC_DD_EE_0B.1";
+    /// A speaker sink the volume loop answers with its own error.
+    const BROKEN: &str = "bluez_output.AA_BB_CC_DD_EE_0C.1";
+    /// The loop's own error for `BROKEN`, which the handle must hand back.
+    const LOOP_ERROR: &str = "the speaker's Route enumeration timed out";
+
+    /// A loop thread that answers `SinkVolume` by sink name and records each
+    /// sink it was asked about. A name it does not know — the empty one
+    /// included — is `Ok(None)`, as the real loop's mirror lookup, matching
+    /// nothing, would answer. Every other command is dropped unanswered.
+    fn volume_loop(received: Arc<Mutex<Vec<String>>>) -> Box<dyn LoopSender> {
+        let (tx, rx) = mpsc::channel::<Command>();
+        std::thread::spawn(move || {
+            for command in rx {
+                if let Command::SinkVolume { sink, reply } = command {
+                    let answer = match sink.as_str() {
+                        LEVELLED => Ok(Some(0.42)),
+                        BROKEN => Err(AudioError::PipeWire(LOOP_ERROR.to_string())),
+                        _ => Ok(None),
+                    };
+                    received.lock().unwrap().push(sink);
+                    let _ = reply.send(answer);
+                }
+            }
+        });
+        Box::new(tx)
+    }
+
+    /// A graph whose every loop thread is a [`volume_loop`] recording into
+    /// the returned log.
+    fn volume_graph() -> (PipeWireGraph, Arc<Mutex<Vec<String>>>) {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&received);
+        let graph = PipeWireGraph::with_loop(Box::new(move |_| volume_loop(Arc::clone(&log))));
+        (graph, received)
+    }
+
+    // Criterion (#148): the handle hands the loop's own answer back as is —
+    // `Ok(Some(_))`, `Ok(None)` and `Err` each, the loop's message included.
+    // The near miss is `BROKEN`: swallowing the loop's `Err` into `Ok(None)`
+    // passes the other two reads.
+    #[test]
+    fn test_sink_volume_hands_back_the_loop_s_answer_as_is() {
+        let (mut graph, received) = volume_graph();
+
+        assert_eq!(graph.sink_volume(LEVELLED).ok(), Some(Some(0.42)));
+        assert_eq!(graph.sink_volume(NO_LEVEL).ok(), Some(None));
+        let broken = graph.sink_volume(BROKEN);
+        assert!(
+            matches!(&broken, Err(AudioError::PipeWire(m)) if m == LOOP_ERROR),
+            "the loop's own error is handed back, got {broken:?}"
+        );
+        assert_eq!(*received.lock().unwrap(), vec![LEVELLED, NO_LEVEL, BROKEN]);
+    }
+
+    // Criterion (#148): a loop thread that does not answer a level read
+    // within the reply timeout is an `Err` naming the timeout — the graph
+    // cannot tell — not a sink without a level.
+    #[test]
+    fn test_sink_volume_without_an_answer_errs_after_the_timeout() {
+        // The receivers are kept alive and never read: the thread is "stuck".
+        let parked: Arc<Mutex<Vec<mpsc::Receiver<Command>>>> = Arc::new(Mutex::new(Vec::new()));
+        let keep = Arc::clone(&parked);
+        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
+            let (tx, rx) = mpsc::channel::<Command>();
+            keep.lock().unwrap().push(rx);
+            Box::new(tx) as Box<dyn LoopSender>
+        }));
+
+        let answer = graph.sink_volume(SPEAKER);
+
+        assert!(
+            matches!(&answer, Err(AudioError::PipeWire(m)) if m.contains("did not answer within 2 s")),
+            "a timed-out read is an Err naming the timeout, got {answer:?}"
+        );
+    }
+
+    // Criterion (#148): a loop thread that took the level read and dropped it
+    // unanswered is an `Err`, at once.
+    #[test]
+    fn test_sink_volume_with_a_dropped_reply_errs_at_once() {
+        let mut graph = PipeWireGraph::with_loop(Box::new(|_| {
+            let (tx, rx) = mpsc::channel::<Command>();
+            std::thread::spawn(move || {
+                // Take one command and drop it, reply sender included.
+                let _ = rx.recv();
+            });
+            Box::new(tx) as Box<dyn LoopSender>
+        }));
+
+        let started = Instant::now();
+        let answer = graph.sink_volume(SPEAKER);
+
+        assert!(
+            matches!(&answer, Err(AudioError::PipeWire(m)) if m.contains("dropped the command")),
+            "a dropped read is an Err, got {answer:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a dropped reply is known at once, waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    // Criterion (#148, guard, the empty value): an empty sink name is an
+    // `Err` and sends no command. The near miss is the empty name itself:
+    // without the guard it reaches the loop, which matches nothing and
+    // answers `Ok(None)` — a sink with no level, to the caller. The control:
+    // a real sink name reaches the loop, which answers.
+    #[test]
+    fn test_sink_volume_refuses_an_empty_sink_name_before_the_loop() {
+        let (mut graph, received) = volume_graph();
+
+        let refused = graph.sink_volume("");
+        assert!(
+            matches!(&refused, Err(AudioError::PipeWire(m)) if m.contains("empty")),
+            "an empty name is refused, got {refused:?}"
+        );
+        assert!(
+            received.lock().unwrap().is_empty(),
+            "an empty name reached the loop: {:?}",
+            received.lock().unwrap()
+        );
+
+        assert_eq!(graph.sink_volume(LEVELLED).ok(), Some(Some(0.42)));
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![LEVELLED],
+            "control: a real sink name reaches the loop"
         );
     }
 

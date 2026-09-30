@@ -1097,7 +1097,7 @@ impl AudioRouter {
             .iter()
             .map(|mac| {
                 sink_named_by_prefix(&sinks, &bluez_sink_prefix(mac))
-                    .and_then(|sink| self.graph.sink_volume(&sink))
+                    .and_then(|sink| self.graph.sink_volume(&sink).ok().flatten())
             })
             .collect())
     }
@@ -4699,9 +4699,12 @@ mod router_tests {
         assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
     }
 
-    // Criterion (#145): a sink that is listed but whose level cannot be read
-    // is `None` in its own slot, like an absent one, and the other speaker is
-    // still read — `Graph::sink_volume` gives no reason to stop there.
+    // Criterion (#145, #148, guard, no level is not a failure): a sink that
+    // is listed but has no level is `None` in its own slot, like an absent
+    // one, and the other speaker is still read — `Graph::sink_volume`
+    // answered `Ok(None)`, which is not a reason to stop. The near miss is
+    // the listed `SINK_A` with no level set: an implementation reading every
+    // `None` as a failure errs here only.
     #[test]
     fn test_sink_volumes_answers_none_for_a_listed_sink_with_no_readable_level() {
         let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
@@ -4713,6 +4716,58 @@ mod router_tests {
         assert!(
             matches!(&levels, Ok(l) if *l == vec![None, Some(0.75)]),
             "got {levels:?}"
+        );
+    }
+
+    // Criterion (#148, guard, stops at the first failure): the first
+    // speaker's level read failing is an `Err`, and the second speaker's
+    // level is never asked — while the graph does not answer, that read would
+    // only wait out its own timeout. The near miss is `SINK_B`, listed and
+    // readable: a read that collects every result and then looks for an
+    // `Err` still errs, but asks for it.
+    #[test]
+    fn test_sink_volumes_errs_on_the_first_failed_level_read_and_asks_nothing_more() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_volume(SINK_A, 0.25);
+        fake.set_volume(SINK_B, 0.75);
+        fake.fail_for(GraphOp::SinkVolume, SINK_A);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[MAC_A.to_string(), MAC_B.to_string()]);
+
+        assert!(
+            matches!(&levels, Err(AudioError::PipeWire(m)) if m.contains("SinkVolume told to fail")),
+            "the graph's failure is handed back, got {levels:?}"
+        );
+        assert_eq!(
+            fake.all_calls(),
+            vec![
+                GraphCall::Sinks,
+                GraphCall::SinkVolume {
+                    sink: SINK_A.to_string()
+                },
+            ],
+            "nothing is asked after the failed read"
+        );
+    }
+
+    // Criterion (#148, guard, a failure is never "no level"): the *last*
+    // speaker's level read failing is an `Err` too, not `None` in its slot.
+    // The near miss is that position: with nothing left to ask, only the
+    // swallowing of the failure tells the two apart.
+    #[test]
+    fn test_sink_volumes_errs_when_the_last_level_read_fails() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_volume(SINK_A, 0.25);
+        fake.set_volume(SINK_B, 0.25);
+        fake.fail_for(GraphOp::SinkVolume, SINK_B);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[MAC_A.to_string(), MAC_B.to_string()]);
+
+        assert!(
+            matches!(&levels, Err(AudioError::PipeWire(_))),
+            "a failed read is not a sink without a level, got {levels:?}"
         );
     }
 
