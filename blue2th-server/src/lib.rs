@@ -27,10 +27,10 @@ use axum::{
     Json, Router,
 };
 use blue2th_proto::{
-    AdapterInfo, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
-    HealthStatus, OffsetRequest, PairRequest, PairResponse, PlaybackState, PlaybackStatus,
-    PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus,
-    SpotifyVolumeRequest, TargetsState, VolumeRequest,
+    AdapterInfo, AudioGraphStatus, AuthCallbackRequest, AuthUrlResponse, ClientPresence,
+    ConfigRequest, DeviceInfo, HealthStatus, OffsetRequest, PairRequest, PairResponse,
+    PlaybackState, PlaybackStatus, PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState,
+    SpotifyState, SpotifyStatus, SpotifyVolumeRequest, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -44,6 +44,7 @@ pub mod graph;
 pub mod graph_pw;
 pub mod identity;
 pub mod reconnect;
+pub mod router_handle;
 pub mod spotify;
 pub mod spotify_auth;
 pub mod spotify_volume;
@@ -54,6 +55,7 @@ pub mod watchdog;
 
 use audio::{AudioEngine, AudioError, AudioRouter};
 use auth::AuthStore;
+use router_handle::{RouterError, RouterHandle};
 use spotify::{SpotifyBackend, SpotifyError};
 use spotify_auth::{SpotifyApiError, SpotifyAuth, Transport};
 use targets::{SelectError, SpeakerTargets};
@@ -64,10 +66,11 @@ pub struct AppState {
     /// The audio engine, guarded for concurrent access.
     engine: Arc<Mutex<AudioEngine>>,
     /// The routing logic over the audio graph, with the history its
-    /// reconciliation carries from one pass to the next. Never locked while
-    /// another guard is awaited: a caller already holding `spotify` may take
-    /// it, never the other way round.
-    router: Arc<Mutex<AudioRouter>>,
+    /// reconciliation carries from one pass to the next. A caller already
+    /// holding `spotify` may take it, never the other way round; the routing
+    /// applier reads `targets` while holding it, so nothing waits for it while
+    /// holding `targets`.
+    router: RouterHandle,
     /// The user's playback-target selection (0–2 speakers + offsets). `/play`
     /// derives its routing mode from this; an empty selection (`Idle`) is
     /// rejected with a 4xx so a stream never starts with nowhere to go.
@@ -722,7 +725,7 @@ fn app_with_auth_and_targets(
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
             tone::PipeWireToneOutput::new(spotify::COMBINED_SINK_NAME),
         )))),
-        router: Arc::new(Mutex::new(AudioRouter::new(graph))),
+        router: RouterHandle::new(AudioRouter::new(graph)),
         targets: Arc::new(Mutex::new(speaker_targets)),
         connected: Arc::new(Mutex::new(Vec::new())),
         spotify: Arc::new(Mutex::new(spotify)),
@@ -738,6 +741,7 @@ fn app_with_auth_and_targets(
     spawn_idle_watchdog(state.clone());
     spawn_auto_reconnect(state.clone());
     spawn_branch_repair(state.clone());
+    spawn_routing_applier(state.clone());
 
     // Built from `ROUTES`, never alongside it: the guard is applied per entry,
     // so a route can only exist here by being listed — and by declaring whether
@@ -1010,6 +1014,43 @@ fn spawn_branch_repair(state: AppState) {
     });
 }
 
+/// Start the background routing applier (#145): the single task a selection
+/// change hands its routing to, so a change made while the graph does not
+/// answer is applied once it does, rather than dropped at the request's bound.
+///
+/// Each pass takes the router with the unbounded wait and only then reads the
+/// selection: requests made while it waited fold into that one pass, which
+/// applies the latest selection rather than any snapshot taken on the way.
+fn spawn_routing_applier(state: AppState) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let mut requests = state.router.routing_requests();
+    tokio::spawn(async move {
+        while requests.changed().await.is_ok() {
+            let speakers = {
+                let mut router = state.router.lock_unbounded().await;
+                requests.borrow_and_update();
+                let speakers = state.targets.lock().await.speakers();
+                if speakers.is_empty() {
+                    if let Err(e) = router.teardown(spotify::COMBINED_SINK_NAME) {
+                        tracing::warn!("could not tear the combined sink down: {e}");
+                    }
+                    continue;
+                }
+                if let Err(e) = router.route_for_targets(&speakers) {
+                    tracing::warn!("could not re-route after a selection change: {e}");
+                    continue;
+                }
+                speakers
+            };
+            // After the router is released: a Spotify respawn takes the
+            // `spotify` guard first, then the router.
+            resync_spotify_sink(&state, &speakers).await;
+        }
+    });
+}
+
 /// Start the event consumer (#80): drain the graph's events, and run one repair
 /// pass per drain when at least one of them wakes one for the selection (see
 /// [`audio::wake_for_burst`]). The task ends once every sender is gone and the
@@ -1055,9 +1096,9 @@ fn spawn_confirmation_timer(state: AppState) {
         return;
     }
     tokio::spawn(async move {
-        let armed = state.router.lock().await.confirmation_armed();
+        let armed = state.router.lock_unbounded().await.confirmation_armed();
         loop {
-            let due = state.router.lock().await.next_confirmation_due();
+            let due = state.router.lock_unbounded().await.next_confirmation_due();
             let Some(due) = due else {
                 armed.notified().await;
                 continue;
@@ -1067,7 +1108,7 @@ fn spawn_confirmation_timer(state: AppState) {
             // A pass that could not take the reload — nothing playing, a graph
             // that cannot be read — leaves it due: wait for a new arming or a
             // gap, rather than spinning on a time already past.
-            if state.router.lock().await.next_confirmation_due() == Some(due) {
+            if state.router.lock_unbounded().await.next_confirmation_due() == Some(due) {
                 tokio::select! {
                     () = armed.notified() => {},
                     () = tokio::time::sleep(audio::CONFIRM_GAP) => {},
@@ -1110,7 +1151,7 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) -> bool
         return false;
     }
     let (routed, changed, retargeted_ok) = {
-        let mut router = state.router.lock().await;
+        let mut router = state.router.lock_unbounded().await;
         let before = router.graph_changes();
         let routed = router.route_for_targets(&speakers);
         (
@@ -1230,7 +1271,7 @@ async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppE
     forget_backend_pause(&state);
     // Snapshot the selection and release the guard before the blocking PipeWire calls.
     let speakers = state.targets.lock().await.speakers();
-    state.router.lock().await.route_for_targets(&speakers)?;
+    state.router.route(&speakers).await?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
 }
@@ -1270,12 +1311,8 @@ async fn volume(
     if speakers.is_empty() {
         return Err(AudioError::NoSpeakerConnected.into());
     }
-    {
-        let mut router = state.router.lock().await;
-        for target in &speakers {
-            router.set_sink_volume(&target.address, req.level)?;
-        }
-    }
+    let macs: Vec<String> = speakers.into_iter().map(|target| target.address).collect();
+    state.router.set_sink_volumes(&macs, req.level).await?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.set_volume(req.level)?))
 }
@@ -1285,21 +1322,38 @@ async fn volume(
 /// of *every* selected speaker: the live sink level when they all agree (so a
 /// change made on a speaker itself is reflected), the commanded level otherwise
 /// — see `audio::reported_volume`.
+///
+/// A router not obtained in time, or a sink list that cannot be read, is not a
+/// failed poll (#145): the reply carries the commanded level and says the
+/// graph is unresponsive.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
         engine.poll_state()
     };
     // Snapshot the selection and release the guard before the PipeWire reads.
-    let speakers = state.targets.lock().await.speakers();
-    let levels: Vec<Option<f32>> = {
-        let mut router = state.router.lock().await;
-        speakers
-            .iter()
-            .map(|target| router.sink_volume(&target.address))
-            .collect()
-    };
-    snapshot.volume = audio::reported_volume(&levels, snapshot.volume);
+    let macs: Vec<String> = state
+        .targets
+        .lock()
+        .await
+        .speakers()
+        .into_iter()
+        .map(|target| target.address)
+        .collect();
+    // Nothing selected, nothing to read: the graph is not asked.
+    if macs.is_empty() {
+        return Json(snapshot);
+    }
+    match state.router.sink_volumes(&macs).await {
+        Ok(levels) => {
+            snapshot.volume = audio::reported_volume(&levels, snapshot.volume);
+            snapshot.audio_graph = AudioGraphStatus::Responsive;
+        },
+        Err(e) => {
+            tracing::warn!("could not read the speakers' volume: {e}");
+            snapshot.audio_graph = AudioGraphStatus::Unresponsive;
+        },
+    }
     Json(snapshot)
 }
 
@@ -1318,13 +1372,28 @@ async fn spotify_start(State(state): State<AppState>) -> Result<Json<SpotifyStat
 /// user chose is gone until the next poll writes it back. Every start site goes
 /// through here, or one path would silently leave the Connect level at full
 /// scale.
+///
+/// The router wait is bounded: a request answers 503 rather than queue behind
+/// a graph that does not answer.
 async fn start_spotify(
+    state: &AppState,
+    spotify: &mut SpotifyBackend,
+    speakers: &[SpeakerTarget],
+) -> Result<SpotifyState, AppError> {
+    let started = state.router.start_spotify(spotify, speakers).await??;
+    state.spotify_volume.lock().await.mark_respawned();
+    Ok(started)
+}
+
+/// [`start_spotify`] for the background routing applier, whose router wait is
+/// unbounded: a respawn delayed is better than a `librespot` left stopped.
+async fn start_spotify_in_background(
     state: &AppState,
     spotify: &mut SpotifyBackend,
     speakers: &[SpeakerTarget],
 ) -> Result<SpotifyState, SpotifyError> {
     let started = {
-        let mut router = state.router.lock().await;
+        let mut router = state.router.lock_unbounded().await;
         spotify.start(&mut router, speakers)?
     };
     state.spotify_volume.lock().await.mark_respawned();
@@ -1637,7 +1706,10 @@ async fn set_config(
             tracing::warn!("could not stop the Spotify backend before a rename: {e}");
         }
         if let Err(e) = start_spotify(&state, &mut spotify, &speakers).await {
-            tracing::warn!("could not restart the Spotify backend after a rename: {e}");
+            tracing::warn!(
+                "could not restart the Spotify backend after a rename: {}",
+                e.message
+            );
         }
     }
 
@@ -1917,47 +1989,45 @@ async fn set_target_offset(
 /// failure here must not turn a slider drag into an error, and the next
 /// reconciliation (the repair tick, `/play`, a Spotify start) retunes the branch
 /// anyway.
+///
+/// A router not obtained in time hands the change to the routing applier
+/// (#145): its pass reconciles every branch to the offsets stored by then,
+/// so the latest one is applied once the graph answers, and a Spotify sink
+/// that moved is resynced there too.
 async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarget]) {
     let Some(target) = speakers.iter().find(|s| s.address == addr) else {
         return;
     };
     let plan = audio::combine_sink_plan(speakers);
-
-    // An offset change never moves the target sink, so this does not respawn; it
-    // stays because the target would move if the sink name ever became dynamic.
-    if resync_spotify_sink(state, speakers).await {
-        return;
-    }
-
-    let mut router = state.router.lock().await;
-    if router.combined_sink_exists(&plan.sink_name) {
-        let branch = audio::CombineBranch {
-            sink: audio::bluez_sink_prefix(&target.address),
-            latency_ms: target.offset_ms,
-        };
-        if let Err(e) = router.retune_branch(&plan.sink_name, &branch) {
+    let branch = audio::CombineBranch {
+        sink: audio::bluez_sink_prefix(&target.address),
+        latency_ms: target.offset_ms,
+    };
+    match state.router.retune(&plan.sink_name, &branch).await {
+        Ok(()) => {},
+        Err(RouterError::TimedOut) => state.router.request_routing(),
+        Err(RouterError::Audio(e)) => {
             tracing::warn!("could not retune the speaker offset live: {e}");
-        }
+        },
     }
 }
 
 /// Respawn `librespot` when the selection moves it to a different sink.
 /// `--device` is fixed at spawn, so re-routing alone would leave it feeding the
-/// sink it was started with. Returns whether it was restarted.
-async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bool {
+/// sink it was started with.
+async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) {
     let mut spotify = state.spotify.lock().await;
     if spotify.poll_liveness().status != SpotifyStatus::Running {
-        return false;
+        return;
     }
     let wanted = spotify::spotify_target_sink(speakers);
     if spotify.current_sink() == Some(wanted.as_str()) {
-        return false;
+        return;
     }
     let _ = spotify.stop();
-    if let Err(e) = start_spotify(state, &mut spotify, speakers).await {
+    if let Err(e) = start_spotify_in_background(state, &mut spotify, speakers).await {
         tracing::warn!("could not restart the Spotify backend after a routing change: {e}");
     }
-    true
 }
 
 /// Push a selection change into the live audio graph.
@@ -1965,6 +2035,10 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) -> bo
 /// Selecting or deselecting a speaker used to only update the stored selection:
 /// the PipeWire routing stayed exactly as it was, so a speaker dropped from the
 /// selection kept receiving the stream and playing on.
+///
+/// The routing itself goes to the background applier (#145), which applies
+/// the selection current once it holds the router: a change made while the
+/// graph does not answer is neither lost nor delays the reply.
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
         // Nothing left to play to. Silence both sources, then tear the combined
@@ -1991,23 +2065,11 @@ async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
                 tracing::warn!("could not pause playback after the last speaker was dropped: {e}");
             }
         }
-        if let Err(e) = state
-            .router
-            .lock()
-            .await
-            .teardown(spotify::COMBINED_SINK_NAME)
-        {
-            tracing::warn!("could not tear the combined sink down: {e}");
-        }
-        return;
     }
-    // Still a target: rebuild the routing so it spans exactly the current
-    // selection (this is what stops feeding a speaker that was just dropped).
-    if let Err(e) = state.router.lock().await.route_for_targets(speakers) {
-        tracing::warn!("could not re-route after a selection change: {e}");
-        return;
-    }
-    resync_spotify_sink(state, speakers).await;
+    // The applier tears the combined sink down on an empty selection, and
+    // otherwise rebuilds the routing so it spans exactly the current one
+    // (this is what stops feeding a speaker that was just dropped).
+    state.router.request_routing();
 }
 
 /// `GET /targets` — the current selection, per-speaker offsets and routing mode.
@@ -2081,6 +2143,15 @@ impl AppError {
         }
     }
 
+    /// A 503 error carrying the given message (#145): the backend is up, but
+    /// something it depends on did not answer in time.
+    fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+
     /// A 409 error carrying the given message: the request collided with the
     /// state of something the backend does not own — a speaker refusing the
     /// bond — rather than with a bug on this side.
@@ -2126,6 +2197,17 @@ impl From<AudioError> for AppError {
             // No connected speaker is a precondition failure, not a server bug.
             AudioError::NoSpeakerConnected => AppError::bad_request(err.to_string()),
             AudioError::PipeWire(_) => AppError::internal(err.to_string()),
+        }
+    }
+}
+
+impl From<RouterError> for AppError {
+    fn from(err: RouterError) -> Self {
+        match err {
+            RouterError::TimedOut => {
+                AppError::service_unavailable("the audio graph is not answering")
+            },
+            RouterError::Audio(e) => e.into(),
         }
     }
 }
@@ -2196,7 +2278,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use blue2th_proto::RoutingMode;
+    use blue2th_proto::{AudioGraphStatus, RoutingMode};
     use tower::ServiceExt;
 
     use super::*; // for `oneshot`
@@ -2246,7 +2328,7 @@ mod tests {
             engine: Arc::new(Mutex::new(engine)),
             // A clone of the fake is a handle onto the same state: the router
             // owns one, the test keeps the other.
-            router: Arc::new(Mutex::new(AudioRouter::new(Box::new(fake.clone())))),
+            router: RouterHandle::new(AudioRouter::new(Box::new(fake.clone()))),
             targets: Arc::new(Mutex::new(SpeakerTargets::new())),
             connected: Arc::new(Mutex::new(Vec::new())),
             spotify: Arc::new(Mutex::new(SpotifyBackend::new())),
@@ -3331,10 +3413,10 @@ mod tests {
     /// and the null output playing, over `fake`.
     async fn timed_state(fake: &graph::fake::FakeGraph) -> AppState {
         let mut state = test_state_on(AudioEngine::new(), fake);
-        state.router = Arc::new(Mutex::new(AudioRouter::with_clock(
+        state.router = RouterHandle::new(AudioRouter::with_clock(
             Box::new(fake.clone()),
             Box::new(|| tokio::time::Instant::now().into_std()),
-        )));
+        ));
         state
             .targets
             .lock()
@@ -3893,7 +3975,7 @@ mod tests {
         let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
         let state = timed_state(&fake).await;
         let loaded = load_the_jbl(&state, &fake).await;
-        let due = state.router.lock().await.next_confirmation_due();
+        let due = state.router.lock_unbounded().await.next_confirmation_due();
         assert!(due.is_some(), "the load armed a reload");
         spawn_confirmation_timer(state.clone());
         settle().await;
@@ -3908,7 +3990,7 @@ mod tests {
         settle().await;
         assert_eq!(fake.all_calls(), Vec::<GraphCall>::new(), "nothing plays");
         assert_eq!(
-            state.router.lock().await.next_confirmation_due(),
+            state.router.lock_unbounded().await.next_confirmation_due(),
             due,
             "the reload is still armed"
         );
@@ -3934,6 +4016,704 @@ mod tests {
             vec![GraphCall::UnloadBranch { id: loaded }, jbl_load()],
             "the reload left due runs one gap later"
         );
-        assert_eq!(state.router.lock().await.next_confirmation_due(), None);
+        assert_eq!(
+            state.router.lock_unbounded().await.next_confirmation_due(),
+            None
+        );
+    }
+
+    // ─── #145: bounded router waits, and a stalled graph on `/playback` ─────
+    //
+    // A stuck holder is simulated by the test taking the router itself,
+    // through the handle's unbounded path; the paused clock lets the bound
+    // elapse instantly. A request "answers at once" when it has finished
+    // after `settle()` with the clock not moved.
+
+    /// The WH-1000XM5 whose sink is `SONY_SINK`.
+    const SONY: &str = "80:99:E7:63:50:29";
+
+    /// The level the engine was last told. Distinct from every live sink
+    /// level these tests seed, so a reply tells which one it carries.
+    const COMMANDED: f32 = 0.35;
+
+    /// The message a router timeout answers with, as the spec quotes it.
+    const GRAPH_NOT_ANSWERING: &str = "the audio graph is not answering";
+
+    /// A state over `fake` with `connected` connected and `selected` selected,
+    /// in order, and the engine's commanded level at [`COMMANDED`]. The calls
+    /// made while setting it up are forgotten.
+    async fn selected_state(
+        fake: &graph::fake::FakeGraph,
+        connected: &[&str],
+        selected: &[&str],
+    ) -> AppState {
+        let state = test_state_on(AudioEngine::new(), fake);
+        let connected: Vec<String> = connected.iter().map(|mac| mac.to_string()).collect();
+        // Cloned: the cache owns one copy, the selection is validated against
+        // the other.
+        *state.connected.lock().await = connected.clone();
+        for mac in selected {
+            state
+                .targets
+                .lock()
+                .await
+                .select(mac, &connected)
+                .expect("a connected speaker can be selected");
+        }
+        state
+            .engine
+            .lock()
+            .await
+            .set_volume(COMMANDED)
+            .expect("the null output takes a level");
+        fake.clear_calls();
+        state
+    }
+
+    /// Start the background routing applier on `state` and forget whatever
+    /// it did on its own before any change was asked of it.
+    async fn start_applier(state: &AppState, fake: &graph::fake::FakeGraph) {
+        spawn_routing_applier(state.clone());
+        settle().await;
+        fake.clear_calls();
+    }
+
+    /// The status and message of a handler's failure; `None` for a success.
+    fn failure<T>(answer: &Result<T, AppError>) -> Option<(StatusCode, String)> {
+        answer
+            .as_ref()
+            .err()
+            // Cloned out of the borrowed error, so the test owns what it reads.
+            .map(|e| (e.status, e.message.clone()))
+    }
+
+    /// The selected addresses a `TargetsState` reply carries, in order.
+    fn addresses(targets: &TargetsState) -> Vec<String> {
+        targets.speakers.iter().map(|s| s.address.clone()).collect()
+    }
+
+    /// The offset a `TargetsState` reply carries for `mac`.
+    fn offset_of(targets: &TargetsState, mac: &str) -> Option<u32> {
+        targets
+            .speakers
+            .iter()
+            .find(|s| s.address == mac)
+            .map(|s| s.offset_ms)
+    }
+
+    /// How many times `fake` was asked for its sink list.
+    fn sink_list_reads(fake: &graph::fake::FakeGraph) -> usize {
+        fake.all_calls()
+            .iter()
+            .filter(|call| matches!(call, graph::fake::GraphCall::Sinks))
+            .count()
+    }
+
+    // Criterion (#145): `AppError` has a 503 constructor, carrying its
+    // message as given.
+    #[test]
+    fn test_app_error_service_unavailable_answers_503_with_its_message() {
+        let error = AppError::service_unavailable("the graph is frozen");
+
+        assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error.message, "the graph is frozen");
+    }
+
+    // Criterion (#145): the router timeout maps to 503 naming the audio graph;
+    // a graph failure behind an obtained router keeps mapping as an
+    // `AudioError` does (500, its message kept) — the two must not merge.
+    #[test]
+    fn test_router_timeout_maps_to_503_and_a_graph_failure_stays_500() {
+        let timed_out = AppError::from(RouterError::TimedOut);
+        let failed = AppError::from(RouterError::Audio(AudioError::PipeWire(
+            "sinks unreadable".to_string(),
+        )));
+
+        assert_eq!(timed_out.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            timed_out.message.contains(GRAPH_NOT_ANSWERING),
+            "got {:?}",
+            timed_out.message
+        );
+        assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            failed.message.contains("sinks unreadable"),
+            "got {:?}",
+            failed.message
+        );
+    }
+
+    // Criteria (#145): a request-path wait expires after `ROUTER_WAIT` — not
+    // a millisecond before — and `POST /volume` then answers 503 naming the
+    // audio graph, with nothing sent to the graph and the level not applied.
+    // Guard (sends nothing on a 503): the graph log is read *after* the
+    // router is released. The near miss is a timeout around work that
+    // outlives it — a spawned task awaited under `timeout` — which answers
+    // the same 503 and then writes the level once the router frees.
+    #[tokio::test(start_paused = true)]
+    async fn test_volume_answers_503_when_the_router_is_held_past_router_wait() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(volume(
+            State(state.clone()),
+            Json(VolumeRequest { level: 0.8 }),
+        ));
+        settle().await;
+        tokio::time::advance(router_handle::ROUTER_WAIT - Duration::from_millis(1)).await;
+        settle().await;
+        assert!(!request.is_finished(), "the request waits the whole bound");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        assert!(request.is_finished(), "the request gives up at the bound");
+        let answer = request.await.expect("the handler task ends");
+        drop(held);
+        settle().await;
+
+        let failed = failure(&answer);
+        assert_eq!(
+            failed.as_ref().map(|(status, _)| *status),
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert!(
+            failed
+                .as_ref()
+                .is_some_and(|(_, message)| message.contains(GRAPH_NOT_ANSWERING)),
+            "got {failed:?}"
+        );
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "nothing reached the graph, before or after the release"
+        );
+        assert_eq!(state.engine.lock().await.poll_state().volume, COMMANDED);
+    }
+
+    // Criterion (#145, non-nominal): a router freed just before the bound
+    // expires is obtained, and the request proceeds as today — no 503, the
+    // level written to the speaker's sink.
+    #[tokio::test(start_paused = true)]
+    async fn test_volume_proceeds_when_the_router_frees_just_before_the_bound() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(volume(
+            State(state.clone()),
+            Json(VolumeRequest { level: 0.8 }),
+        ));
+        settle().await;
+        tokio::time::advance(router_handle::ROUTER_WAIT - Duration::from_millis(1)).await;
+        drop(held);
+        settle().await;
+        assert!(request.is_finished(), "the freed router is taken at once");
+        let answer = request.await.expect("the handler task ends");
+
+        assert_eq!(failure(&answer).map(|(status, _)| status), None);
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetSinkVolume {
+                sink: JBL_SINK.to_string(),
+                level: 0.8
+            }]
+        );
+    }
+
+    // Criterion (#145, guard, sends nothing on a 503): `POST /play` behind a
+    // held router answers 503, the graph is never asked anything — read
+    // after the release — and the tone does not start.
+    #[tokio::test(start_paused = true)]
+    async fn test_play_answers_503_when_the_router_is_held_and_leaves_the_engine_not_playing() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(play(State(state.clone())));
+        settle().await;
+        tokio::time::advance(router_handle::ROUTER_WAIT).await;
+        settle().await;
+        assert!(request.is_finished(), "the request gives up at the bound");
+        let answer = request.await.expect("the handler task ends");
+        drop(held);
+        settle().await;
+
+        assert_eq!(
+            failure(&answer).map(|(status, _)| status),
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+        assert_ne!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "a 503 starts no tone"
+        );
+    }
+
+    // Criterion (#145, guard, sends nothing on a 503): `POST /spotify/start`
+    // behind a held router answers 503, routes nothing — `start` routes
+    // before it spawns, so an empty log is also what keeps `librespot` from
+    // being spawned — and the backend stays stopped.
+    #[tokio::test(start_paused = true)]
+    async fn test_spotify_start_answers_503_when_the_router_is_held_and_spawns_nothing() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(spotify_start(State(state.clone())));
+        settle().await;
+        tokio::time::advance(router_handle::ROUTER_WAIT).await;
+        settle().await;
+        assert!(request.is_finished(), "the request gives up at the bound");
+        let answer = request.await.expect("the handler task ends");
+        drop(held);
+        settle().await;
+
+        assert_eq!(
+            failure(&answer).map(|(status, _)| status),
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+        assert_eq!(
+            state.spotify.lock().await.poll_liveness().status,
+            SpotifyStatus::Stopped
+        );
+    }
+
+    // Criterion (#145, non-nominal): with the router obtained and the sink
+    // list unreadable, `POST /volume` fails with the graph's own failure
+    // (500, as today) — never "no PipeWire sink for speaker", which would
+    // blame a speaker for a graph that could not be read.
+    #[tokio::test]
+    async fn test_volume_on_an_unreadable_sink_list_answers_500_with_the_graph_failure() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.fail(graph::fake::GraphOp::Sinks);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let answer = volume(State(state), Json(VolumeRequest { level: 0.8 })).await;
+
+        let failed = failure(&answer);
+        assert_eq!(
+            failed.as_ref().map(|(status, _)| *status),
+            Some(StatusCode::INTERNAL_SERVER_ERROR)
+        );
+        assert!(
+            failed.as_ref().is_some_and(|(_, message)| {
+                message.contains("Sinks told to fail") && !message.contains("no PipeWire sink")
+            }),
+            "got {failed:?}"
+        );
+    }
+
+    // Criterion (#145): `GET /playback` behind a router held past
+    // `ROUTER_WAIT` answers 200 at the bound, says the graph is unresponsive,
+    // and carries the commanded level — not the sinks' live 0.8, which it
+    // could not have read. Nothing reaches the graph.
+    #[tokio::test(start_paused = true)]
+    async fn test_playback_behind_a_held_router_answers_unresponsive_with_the_commanded_volume() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.set_volume(JBL_SINK, 0.8);
+        fake.set_volume(SONY_SINK, 0.8);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(playback(State(state.clone())));
+        settle().await;
+        tokio::time::advance(router_handle::ROUTER_WAIT).await;
+        settle().await;
+        assert!(request.is_finished(), "the poll answers at the bound");
+        let Json(reply) = request.await.expect("the handler task ends");
+        drop(held);
+        settle().await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Unresponsive);
+        assert_eq!(reply.volume, COMMANDED);
+        assert_eq!(reply.status, PlaybackStatus::Stopped);
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion (#145): with the router obtained and the sink list
+    // unreadable, `GET /playback` answers unresponsive with the commanded
+    // level.
+    #[tokio::test]
+    async fn test_playback_on_an_unreadable_sink_list_answers_unresponsive() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.set_volume(JBL_SINK, 0.8);
+        fake.fail(graph::fake::GraphOp::Sinks);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Unresponsive);
+        assert_eq!(reply.volume, COMMANDED);
+    }
+
+    // Criterion (#145, guard, stops at the first failure): two speakers and
+    // an unreadable sink list — after the failed `sinks()` the poll asks the
+    // graph nothing more. The near miss is the second speaker: a loop that
+    // carries on reads the list again, and still answers unresponsive.
+    #[tokio::test]
+    async fn test_playback_stops_at_the_first_graph_failure() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.fail(graph::fake::GraphOp::Sinks);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(fake.all_calls(), vec![graph::fake::GraphCall::Sinks]);
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Unresponsive);
+    }
+
+    // Criterion (#145, guard, exactly once): two selected speakers, one read
+    // of the sink list. The near miss is the second speaker: with one, a
+    // per-speaker read also reads the list once. The levels agree, so the
+    // live level is what the reply carries.
+    #[tokio::test]
+    async fn test_playback_with_two_speakers_reads_the_sink_list_once() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.set_volume(JBL_SINK, 0.6);
+        fake.set_volume(SONY_SINK, 0.6);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(sink_list_reads(&fake), 1, "calls: {:?}", fake.all_calls());
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Responsive);
+        assert_eq!(reply.volume, 0.6);
+    }
+
+    // Criterion (#145, guard, an absent sink is not a stall): the Sony is
+    // selected but its sink is missing from a list that read fine. The poll
+    // stays responsive, and the level is what `reported_volume` makes of
+    // `[Some(0.8), None]` — the commanded one, as today. The near miss is
+    // that `None`: an implementation mapping it to "unresponsive" fails here
+    // only.
+    #[tokio::test]
+    async fn test_playback_with_a_selected_speaker_whose_sink_is_absent_answers_responsive() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.set_volume(JBL_SINK, 0.8);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Responsive);
+        assert_eq!(reply.volume, COMMANDED);
+    }
+
+    // Criterion (#145, guard, the empty selection asks the graph nothing):
+    // with nothing selected the poll takes no router at all — it answers at
+    // once while the router is held, responsive, with the commanded level —
+    // and the graph log stays empty. The near miss is an implementation that
+    // reads `sinks()` anyway: right answer, non-empty log.
+    #[tokio::test(start_paused = true)]
+    async fn test_playback_with_an_empty_selection_makes_no_graph_call() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[]).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(playback(State(state.clone())));
+        settle().await;
+        assert!(request.is_finished(), "no router is waited for");
+        let Json(reply) = request.await.expect("the handler task ends");
+        drop(held);
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Responsive);
+        assert_eq!(reply.volume, COMMANDED);
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+    }
+
+    // Criterion (#145): over a readable graph `GET /playback` answers
+    // responsive with the same level as before this change — the live one.
+    #[tokio::test]
+    async fn test_playback_over_a_readable_graph_answers_responsive_with_the_live_volume() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.set_volume(JBL_SINK, 0.6);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Responsive);
+        assert_eq!(reply.volume, 0.6);
+    }
+
+    // Criterion (#145): `/select` and `/deselect` answer at once while the
+    // router is held, with the stored selection. "At once" rather than
+    // "within `ROUTER_WAIT`": the spec's nominal scenario hands every
+    // selection change to the background applier, so neither waits for
+    // the router at all.
+    #[tokio::test(start_paused = true)]
+    async fn test_select_and_deselect_answer_at_once_while_the_router_is_held() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL]).await;
+        start_applier(&state, &fake).await;
+        let held = state.router.lock_unbounded().await;
+
+        let selected = tokio::spawn(select_target(State(state.clone()), Path(SONY.to_string())));
+        settle().await;
+        assert!(selected.is_finished(), "select waits for no router");
+        let selected = selected.await.expect("the handler task ends");
+        assert_eq!(
+            selected.as_ref().ok().map(|reply| addresses(&reply.0)),
+            Some(vec![JBL.to_string(), SONY.to_string()])
+        );
+
+        let deselected = tokio::spawn(deselect_target(
+            State(state.clone()),
+            Path(SONY.to_string()),
+        ));
+        settle().await;
+        assert!(deselected.is_finished(), "deselect waits for no router");
+        let Json(after) = deselected.await.expect("the handler task ends");
+        assert_eq!(addresses(&after), vec![JBL.to_string()]);
+        drop(held);
+    }
+
+    // Criterion (#145, guard, the latest selection, never a stale snapshot):
+    // the Sony is selected, then deselected, both behind a router held past
+    // `ROUTER_WAIT`. Once it is released, one routing pass runs for the
+    // selection current at that moment — the JBL alone, already routed — so
+    // no branch into the Sony is ever loaded. The near miss is the first
+    // change's snapshot, `[JBL, Sony]`: a pass per change, or one pass on
+    // a snapshot taken before the router was obtained, loads the Sony. The
+    // router is held longer than the bound, so an applier waiting with the
+    // request-path bound drops the pass and fails the count.
+    #[tokio::test(start_paused = true)]
+    async fn test_selection_changes_behind_a_held_router_route_the_latest_selection_once() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL]).await;
+        start_applier(&state, &fake).await;
+        let held = state.router.lock_unbounded().await;
+
+        let _select = tokio::spawn(select_target(State(state.clone()), Path(SONY.to_string())));
+        settle().await;
+        let _deselect = tokio::spawn(deselect_target(
+            State(state.clone()),
+            Path(SONY.to_string()),
+        ));
+        settle().await;
+        tokio::time::advance(router_handle::ROUTER_WAIT * 2).await;
+        settle().await;
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "nothing reaches the graph while the router is held"
+        );
+
+        drop(held);
+        settle().await;
+
+        assert_eq!(passes(&fake), 1, "calls: {:?}", fake.all_calls());
+        assert_eq!(
+            fake.calls(),
+            Vec::<GraphCall>::new(),
+            "the latest selection is the one already routed"
+        );
+        let loaded: Vec<String> = fake
+            .loaded(COMBINED_SINK)
+            .into_iter()
+            .map(|b| b.branch.sink)
+            .collect();
+        assert_eq!(loaded, vec![JBL_SINK.to_string()]);
+    }
+
+    // Criterion (#145): `/offset` answers within `ROUTER_WAIT` while the
+    // router is held, with the stored offset; after two offset changes the
+    // release retunes the Sony's branch once, to the latest offset (240),
+    // never to the intermediate one (120).
+    #[tokio::test(start_paused = true)]
+    async fn test_offset_changes_behind_a_held_router_answer_in_time_and_apply_the_latest_once() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let sony_branch = fake.seed_branch(COMBINED_SINK, SONY_SINK, 0, Some(true));
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+        start_applier(&state, &fake).await;
+        let held = state.router.lock_unbounded().await;
+
+        for offset_ms in [120, 240] {
+            let request = tokio::spawn(set_target_offset(
+                State(state.clone()),
+                Path(SONY.to_string()),
+                Json(OffsetRequest { offset_ms }),
+            ));
+            settle().await;
+            tokio::time::advance(router_handle::ROUTER_WAIT).await;
+            settle().await;
+            assert!(
+                request.is_finished(),
+                "the {offset_ms} ms change answers within the bound"
+            );
+            let Json(reply) = request.await.expect("the handler task ends");
+            assert_eq!(offset_of(&reply, SONY), Some(offset_ms));
+        }
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+
+        drop(held);
+        settle().await;
+
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::SetBranchDelay {
+                id: sony_branch,
+                delay_ms: 240
+            }]
+        );
+    }
+
+    // Criterion (#145): with the router obtained, an offset change retunes
+    // only a combined sink that is loaded — with none, the graph is asked
+    // whether it exists and nothing more. The near miss is the missing sink:
+    // a retune that skips the check goes on to read the branches of a sink
+    // that is not there.
+    #[tokio::test]
+    async fn test_offset_change_with_no_combined_sink_loaded_retunes_nothing() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let Json(reply) = set_target_offset(
+            State(state),
+            Path(JBL.to_string()),
+            Json(OffsetRequest { offset_ms: 120 }),
+        )
+        .await;
+
+        assert_eq!(offset_of(&reply, JBL), Some(120));
+        assert_eq!(fake.all_calls(), vec![GraphCall::Sinks]);
+    }
+
+    // Criterion (#145, #67): deselecting the last speaker behind a held
+    // router answers at once with an empty selection; Spotify is stopped and
+    // the tone paused before it answers, as today — they need no router —
+    // and the combined sink is torn down once the router is released, never
+    // dropped, even after a hold longer than `ROUTER_WAIT`.
+    #[tokio::test(start_paused = true)]
+    async fn test_last_deselect_behind_a_held_router_tears_down_once_released() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+        state
+            .engine
+            .lock()
+            .await
+            .play()
+            .expect("the null output plays");
+        let child =
+            spotify::spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+        state.spotify.lock().await.adopt_child_for_test(child);
+        start_applier(&state, &fake).await;
+        let held = state.router.lock_unbounded().await;
+
+        let request = tokio::spawn(deselect_target(State(state.clone()), Path(JBL.to_string())));
+        settle().await;
+        assert!(request.is_finished(), "deselect waits for no router");
+        let Json(after) = request.await.expect("the handler task ends");
+        assert_eq!(addresses(&after), Vec::<String>::new());
+        assert_eq!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Paused
+        );
+        assert_eq!(
+            state.spotify.lock().await.poll_liveness().status,
+            SpotifyStatus::Stopped
+        );
+
+        tokio::time::advance(router_handle::ROUTER_WAIT * 2).await;
+        settle().await;
+        assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
+
+        drop(held);
+        settle().await;
+
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::Teardown {
+                sink_name: COMBINED_SINK.to_string()
+            }]
+        );
+    }
+
+    // Criterion (#145, non-nominal): the `/devices` last-loss teardown goes
+    // through the same applier — the poll's sync returns at once behind a
+    // held router, and the teardown runs once the router is released.
+    #[tokio::test(start_paused = true)]
+    async fn test_last_loss_on_a_devices_poll_behind_a_held_router_tears_down_once_released() {
+        use graph::fake::{FakeGraph, GraphCall};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, COMBINED_SINK]);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+        // Off: nothing promises the speaker back, so its loss tears down.
+        state.name.lock().await.set_restore_during_playback(false);
+        start_applier(&state, &fake).await;
+        let held = state.router.lock_unbounded().await;
+
+        let polled = state.clone();
+        let sync = tokio::spawn(async move { sync_connected(&polled, &[]).await });
+        settle().await;
+        assert!(sync.is_finished(), "the poll waits for no router");
+        assert!(state.targets.lock().await.speakers().is_empty());
+
+        drop(held);
+        settle().await;
+
+        assert_eq!(
+            fake.calls(),
+            vec![GraphCall::Teardown {
+                sink_name: COMBINED_SINK.to_string()
+            }]
+        );
+    }
+
+    // Criterion (#145, guard, background waits are unbounded): a repair pass
+    // behind a router held 3 s past `ROUTER_WAIT` (5 s) is still waiting,
+    // not given up, and rebuilds once the router is released. The near miss
+    // is the hold's length: a handle applying the bound everywhere drops
+    // this pass at 2 s.
+    #[tokio::test(start_paused = true)]
+    async fn test_repair_pass_behind_a_router_held_past_router_wait_still_routes() {
+        let fake = graph::fake::FakeGraph::new();
+        let state = vanished_state(&fake, true).await;
+        let held = state.router.lock_unbounded().await;
+
+        let repairing = state.clone();
+        let pass = tokio::spawn(async move {
+            branch_repair_pass(&repairing, audio::PassReason::SafetyNet).await
+        });
+        settle().await;
+        // 5 s with the 2 s bound: longer than the bound whatever its value.
+        tokio::time::advance(router_handle::ROUTER_WAIT + Duration::from_secs(3)).await;
+        settle().await;
+        assert!(
+            !pass.is_finished(),
+            "the pass is still waiting past the bound"
+        );
+        assert!(fake.all_calls().is_empty(), "calls: {:?}", fake.all_calls());
+
+        drop(held);
+        settle().await;
+
+        assert!(pass.is_finished(), "the pass ran once the router freed");
+        assert_eq!(rebuilds(&fake), 1, "calls: {:?}", fake.calls());
     }
 }
