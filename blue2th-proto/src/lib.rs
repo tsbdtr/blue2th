@@ -325,6 +325,19 @@ pub enum PlaybackStatus {
     Paused,
 }
 
+/// Whether the backend could read the audio graph when it answered (#145).
+///
+/// RED-phase skeleton: the wire names, the default and the field's
+/// `#[serde(default)]` are what the tests below pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AudioGraphStatus {
+    /// The graph answered.
+    Responsive,
+    /// The graph did not answer, or could not be read.
+    #[default]
+    Unresponsive,
+}
+
 /// Current playback state returned by the transport endpoints.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaybackState {
@@ -332,6 +345,8 @@ pub struct PlaybackState {
     pub status: PlaybackStatus,
     /// Current sink volume in `0.0..=1.0`.
     pub volume: f32,
+    /// Whether the audio graph answered this request.
+    pub audio_graph: AudioGraphStatus,
 }
 
 /// Body of `POST /volume` — the desired sink volume level.
@@ -791,10 +806,99 @@ mod tests {
         let original = PlaybackState {
             status: PlaybackStatus::Playing,
             volume: 0.5,
+            audio_graph: AudioGraphStatus::Responsive,
         };
         let json = serde_json::to_string(&original).expect("serialize PlaybackState");
         let parsed: PlaybackState = serde_json::from_str(&json).expect("deserialize PlaybackState");
         assert_eq!(original, parsed);
+    }
+
+    // ─── #145: `PlaybackState::audio_graph` ──────────────────────────────────
+
+    // Criterion (#145): `AudioGraphStatus` defaults to `Responsive` — a reply
+    // that says nothing about the graph is not a stall.
+    #[test]
+    fn test_audio_graph_status_default_is_responsive() {
+        assert_eq!(AudioGraphStatus::default(), AudioGraphStatus::Responsive);
+    }
+
+    // Criterion (#145): on the wire the two values are `responsive` and
+    // `unresponsive`, lowercase like the crate's other enums.
+    #[test]
+    fn test_audio_graph_status_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&AudioGraphStatus::Responsive).ok(),
+            Some("\"responsive\"".to_string())
+        );
+        assert_eq!(
+            serde_json::to_string(&AudioGraphStatus::Unresponsive).ok(),
+            Some("\"unresponsive\"".to_string())
+        );
+    }
+
+    // Criterion (#145): a body without `audio_graph` — a backend built before
+    // this change — decodes as `Responsive`. The body is the shape such a
+    // backend sends, not one the current DTO produced.
+    #[test]
+    fn test_playback_state_without_audio_graph_decodes_as_responsive() {
+        let body = r#"{"status":"stopped","volume":0.5}"#;
+
+        let parsed = serde_json::from_str::<PlaybackState>(body);
+
+        assert!(
+            matches!(
+                &parsed,
+                Ok(p) if p.audio_graph == AudioGraphStatus::Responsive
+                    && p.status == PlaybackStatus::Stopped
+                    && p.volume == 0.5
+            ),
+            "got {parsed:?}"
+        );
+    }
+
+    // Criterion (#145): a body carrying `audio_graph: unresponsive`
+    // round-trips, and carries the field under that exact name and value.
+    // `Unresponsive` rather than the default, so a field that is dropped on
+    // the way out and defaulted on the way in cannot pass.
+    #[test]
+    fn test_playback_state_with_an_unresponsive_graph_round_trips_through_json() {
+        let original = PlaybackState {
+            status: PlaybackStatus::Paused,
+            volume: 0.35,
+            audio_graph: AudioGraphStatus::Unresponsive,
+        };
+
+        let json = serde_json::to_string(&original).expect("serialize PlaybackState");
+        let parsed = serde_json::from_str::<PlaybackState>(&json);
+
+        assert!(
+            json.contains(r#""audio_graph":"unresponsive""#),
+            "wire shape: {json}"
+        );
+        assert!(matches!(&parsed, Ok(p) if *p == original), "got {parsed:?}");
+    }
+
+    // Criterion (#145): an app built before this change — a DTO without the
+    // field — still decodes a body that carries it, so `PROTOCOL_VERSION`
+    // needs no bump. The mirror is that older DTO, field for field.
+    #[test]
+    fn test_playback_state_without_the_field_decodes_a_body_that_carries_it() {
+        #[derive(Debug, Deserialize)]
+        struct PlaybackStateBeforeAudioGraph {
+            status: PlaybackStatus,
+            volume: f32,
+        }
+        let body = r#"{"status":"playing","volume":0.4,"audio_graph":"unresponsive"}"#;
+
+        let parsed = serde_json::from_str::<PlaybackStateBeforeAudioGraph>(body);
+
+        assert!(
+            matches!(
+                &parsed,
+                Ok(p) if p.status == PlaybackStatus::Playing && p.volume == 0.4
+            ),
+            "got {parsed:?}"
+        );
     }
 
     // Criterion: `POST /volume` body carries the desired level — VolumeRequest

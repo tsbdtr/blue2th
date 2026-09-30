@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use blue2th_proto::{PlaybackState, PlaybackStatus, SpeakerTarget};
+use blue2th_proto::{AudioGraphStatus, PlaybackState, PlaybackStatus, SpeakerTarget};
 
 use crate::graph::{Graph, LoadedBranch};
 use crate::graph_pw::GraphEvent;
@@ -207,6 +207,9 @@ impl AudioEngine {
         PlaybackState {
             status: self.status,
             volume: self.volume,
+            // The engine does not read the graph: `GET /playback` sets the
+            // field from what the router answered.
+            audio_graph: AudioGraphStatus::Responsive,
         }
     }
 
@@ -1081,6 +1084,16 @@ impl AudioRouter {
     pub fn sink_volume(&mut self, mac: &str) -> Option<f32> {
         let sink = self.bluetooth_sink_for(mac).ok()?;
         self.graph.sink_volume(&sink)
+    }
+
+    /// The live volume of each speaker in `macs`, in order, over **one** read
+    /// of the sink list (#145): `Err` when that list cannot be read, `Ok(None)`
+    /// for a speaker whose sink is absent from a list that read fine.
+    ///
+    /// RED-phase skeleton: answers nothing, so the tests pinning it fail.
+    pub fn sink_volumes(&mut self, macs: &[String]) -> Result<Vec<Option<f32>>, AudioError> {
+        let _ = macs;
+        Ok(Vec::new())
     }
 
     /// Find the sink BlueZ created for a speaker, matched by its MAC. The node
@@ -4541,6 +4554,98 @@ mod router_tests {
         assert!(
             message.contains("no PipeWire sink"),
             "unexpected error: {message}"
+        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+    }
+
+    // ─── #145: one sink-list read, and "unreadable" told from "absent" ──────
+
+    // Criterion (#145, guard, exactly once): two speakers' volumes come from
+    // one `sinks()` read. The near miss is the second speaker: with one, a
+    // per-speaker read also makes a single call. The levels differ, so a
+    // result handed back in the wrong order fails too.
+    #[test]
+    fn test_sink_volumes_reads_the_sink_list_once_for_two_speakers() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_volume(SINK_A, 0.25);
+        fake.set_volume(SINK_B, 0.75);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[MAC_A.to_string(), MAC_B.to_string()]);
+
+        assert!(
+            matches!(&levels, Ok(l) if *l == vec![Some(0.25), Some(0.75)]),
+            "got {levels:?}"
+        );
+        let reads = fake
+            .all_calls()
+            .iter()
+            .filter(|call| matches!(call, GraphCall::Sinks))
+            .count();
+        assert_eq!(reads, 1, "calls: {:?}", fake.all_calls());
+    }
+
+    // Criterion (#145, guard, stops at the first failure): an unreadable sink
+    // list is an `Err`, and nothing more is asked of the graph — no second
+    // `sinks()` for the second speaker, no `SinkVolume`. Two speakers, so a
+    // loop that carries on after the failure has somewhere to go.
+    #[test]
+    fn test_sink_volumes_errs_on_an_unreadable_sink_list_and_asks_nothing_more() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.set_volume(SINK_A, 0.25);
+        fake.set_volume(SINK_B, 0.75);
+        fake.fail(GraphOp::Sinks);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[MAC_A.to_string(), MAC_B.to_string()]);
+
+        assert!(
+            matches!(&levels, Err(AudioError::PipeWire(_))),
+            "got {levels:?}"
+        );
+        assert_eq!(fake.all_calls(), vec![GraphCall::Sinks]);
+    }
+
+    // Criterion (#145, guard, absent is not unreadable): a speaker whose sink
+    // is missing from a list that read fine is `Ok(None)` in its own slot —
+    // not an `Err`, and not a reason to drop the other speaker's level.
+    #[test]
+    fn test_sink_volumes_answers_none_for_an_absent_sink_on_a_readable_list() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        fake.set_volume(SINK_A, 0.25);
+        let mut router = router_on(&fake);
+
+        let levels = router.sink_volumes(&[MAC_A.to_string(), MAC_B.to_string()]);
+
+        assert!(
+            matches!(&levels, Ok(l) if *l == vec![Some(0.25), None]),
+            "got {levels:?}"
+        );
+    }
+
+    // Criterion (#145): `set_sink_volume` over an unreadable sink list returns
+    // the graph's failure — the fake's own message — and never claims the
+    // speaker has no sink, which would send the user looking for a speaker
+    // problem. Nothing is written.
+    #[test]
+    fn test_set_sink_volume_on_an_unreadable_sink_list_carries_the_graph_failure() {
+        let fake = FakeGraph::with_sinks(&[SINK_A]);
+        fake.fail(GraphOp::Sinks);
+        let mut router = router_on(&fake);
+
+        let result = router.set_sink_volume(MAC_A, 0.4);
+
+        let message = match result {
+            Err(AudioError::PipeWire(message)) => message,
+            other => format!("not a PipeWire error: {other:?}"),
+        };
+        assert!(
+            message.contains("Sinks told to fail"),
+            "the graph failure is lost: {message}"
+        );
+        assert!(
+            !message.contains("no PipeWire sink"),
+            "an unreadable list is not an absent sink: {message}"
         );
         assert_eq!(fake.calls(), Vec::<GraphCall>::new());
     }
