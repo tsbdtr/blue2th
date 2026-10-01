@@ -2153,6 +2153,14 @@ impl AppError {
         }
     }
 
+    /// The 503 of an audio graph that did nothing for the request: the router
+    /// could not be had in time (#145), or the graph thread took the command
+    /// out of its queue too late to start it (#146). One answer for both — the
+    /// client cannot tell them apart, and has nothing different to do.
+    fn graph_not_answering() -> Self {
+        Self::service_unavailable("the audio graph is not answering")
+    }
+
     /// A 409 error carrying the given message: the request collided with the
     /// state of something the backend does not own — a speaker refusing the
     /// bond — rather than with a bug on this side.
@@ -2198,6 +2206,8 @@ impl From<AudioError> for AppError {
             // No connected speaker is a precondition failure, not a server bug.
             AudioError::NoSpeakerConnected => AppError::bad_request(err.to_string()),
             AudioError::PipeWire(_) => AppError::internal(err.to_string()),
+            // Nothing was done to the graph: unavailable, not a server fault.
+            AudioError::Expired => AppError::graph_not_answering(),
         }
     }
 }
@@ -2205,9 +2215,7 @@ impl From<AudioError> for AppError {
 impl From<RouterError> for AppError {
     fn from(err: RouterError) -> Self {
         match err {
-            RouterError::TimedOut => {
-                AppError::service_unavailable("the audio graph is not answering")
-            },
+            RouterError::TimedOut => AppError::graph_not_answering(),
             RouterError::Audio(e) => e.into(),
         }
     }
@@ -4141,6 +4149,49 @@ mod tests {
             failed.message.contains("sinks unreadable"),
             "got {:?}",
             failed.message
+        );
+    }
+
+    // Criterion (#146): a graph command that expired maps to 503 with the
+    // router timeout's own message, whether it reaches the handler bare or
+    // through `RouterError::Audio` — nothing was done to the graph in either
+    // case. The message is compared whole: the near miss is the 503 carrying
+    // the error's own `Display`, which also opens with "the audio graph".
+    #[test]
+    fn test_an_expired_graph_command_maps_to_503_with_the_router_timeout_s_message() {
+        let bare = AppError::from(AudioError::Expired);
+        let through_router = AppError::from(RouterError::Audio(AudioError::Expired));
+
+        assert_eq!(bare.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(bare.message, "the audio graph is not answering");
+        assert_eq!(through_router.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(through_router.message, "the audio graph is not answering");
+        assert_eq!(
+            bare.message,
+            AppError::from(RouterError::TimedOut).message,
+            "the same answer as a router that could not be had"
+        );
+    }
+
+    // Criterion (#146, guard): only an expiry is a 503 — a graph failure that
+    // reaches the handler bare stays a 500 carrying its own message. The near
+    // miss is this very `PipeWire` error: an `Expired` arm widened to every
+    // `AudioError` the graph raises would answer it 503 too.
+    #[test]
+    fn test_a_bare_graph_failure_stays_500_beside_an_expired_command() {
+        let failed = AppError::from(AudioError::PipeWire("sinks unreadable".to_string()));
+        let expired = AppError::from(AudioError::Expired);
+
+        assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            failed.message.contains("sinks unreadable"),
+            "got {:?}",
+            failed.message
+        );
+        assert_eq!(
+            expired.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "control: the expiry beside it is the 503"
         );
     }
 

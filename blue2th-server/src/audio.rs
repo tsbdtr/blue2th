@@ -253,6 +253,10 @@ pub enum AudioError {
     NoSpeakerConnected,
     /// The PipeWire daemon is unreachable or rejected the request.
     PipeWire(String),
+    /// The graph thread took the command out of its queue too late and did
+    /// not run it (#146). Only that thread says so: it is the one that knows
+    /// the command was never started.
+    Expired,
 }
 
 impl std::fmt::Display for AudioError {
@@ -260,6 +264,9 @@ impl std::fmt::Display for AudioError {
         match self {
             AudioError::NoSpeakerConnected => write!(f, "no speaker connected"),
             AudioError::PipeWire(msg) => write!(f, "PipeWire error: {msg}"),
+            AudioError::Expired => {
+                write!(f, "the audio graph did not start the command in time")
+            },
         }
     }
 }
@@ -4890,5 +4897,17 @@ mod router_tests {
             ]
         );
         assert_eq!(router.graph_changes(), 2, "the two loads, not the unloads");
+    }
+
+    // Criterion (#146): `AudioError::Expired` displays as
+    // `the audio graph did not start the command in time`. The whole line is
+    // compared: it carries no `PipeWire error:` prefix, which a variant folded
+    // into the `PipeWire` arm would add.
+    #[test]
+    fn test_audio_error_expired_displays_as_the_audio_graph_did_not_start_the_command_in_time() {
+        assert_eq!(
+            AudioError::Expired.to_string(),
+            "the audio graph did not start the command in time"
+        );
     }
 }
