@@ -247,7 +247,8 @@ impl Default for AudioEngine {
 }
 
 /// Errors raised by the audio engine.
-#[derive(Debug)]
+// `Clone` (#147): one volume read answers every caller queued for it.
+#[derive(Debug, Clone)]
 pub enum AudioError {
     /// No speaker is connected, so playback cannot be routed anywhere.
     NoSpeakerConnected,
@@ -685,17 +686,18 @@ fn prefix_names_node(prefix: &str, node: &str) -> bool {
 /// The routing logic, driven through a [`Graph`] rather than against PipeWire
 /// directly (#79). It owns the confirmation register the reconciliation carries
 /// from one pass to the next, so two routers never see each other's history.
-pub struct AudioRouter {
+///
+/// Generic over the graph it owns (#147): the loop thread's router owns the
+/// loop's own state, which is not `Send`, while a router that crosses threads
+/// — the default — owns a `dyn Graph + Send`.
+pub struct AudioRouter<G: Graph + ?Sized = dyn Graph + Send> {
     /// The graph every routing decision is read from and applied to.
-    graph: Box<dyn Graph>,
+    graph: Box<G>,
     /// The branches owed a confirming reload, and since when. See
     /// [`CONFIRM_GAP`].
     confirmation: ConfirmationRegister,
     /// What "now" is for the confirmation; a test drives it by hand.
     clock: Box<dyn Fn() -> Instant + Send>,
-    /// Poked whenever a confirming reload is armed, so the confirmation timer
-    /// waiting on an empty register learns of it (#80).
-    armed: std::sync::Arc<tokio::sync::Notify>,
     /// How many changes the graph has accepted from this router — a load, an
     /// unload, a retune, a build — a refused call counting for none. A pass
     /// compares it before and after to tell whether it changed anything.
@@ -707,34 +709,48 @@ pub struct AudioRouter {
 
 impl AudioRouter {
     /// A router over `graph`, with nothing armed.
-    pub fn new(graph: Box<dyn Graph>) -> Self {
-        Self::with_clock(graph, Box::new(Instant::now))
+    pub fn new(graph: Box<dyn Graph + Send>) -> Self {
+        Self::over(graph, Box::new(Instant::now))
     }
 
     /// A router over `graph` whose confirmation reads the time from `clock`.
+    #[cfg(test)]
     pub(crate) fn with_clock(
-        graph: Box<dyn Graph>,
+        graph: Box<dyn Graph + Send>,
         clock: Box<dyn Fn() -> Instant + Send>,
     ) -> Self {
+        Self::over(graph, clock)
+    }
+}
+
+impl<G: Graph + ?Sized> AudioRouter<G> {
+    /// A router owning `graph`, whatever it is, whose confirmation reads the
+    /// time from `clock`.
+    pub(crate) fn over(graph: Box<G>, clock: Box<dyn Fn() -> Instant + Send>) -> Self {
         Self {
             graph,
             confirmation: ConfirmationRegister::default(),
             clock,
-            armed: std::sync::Arc::default(),
             changes: 0,
             retarget_failed: false,
         }
     }
 
+    /// The graph this router owns, for the thread that runs it: the loop
+    /// thread keeps its connection alive through it between two messages.
+    pub(crate) fn graph_mut(&mut self) -> &mut G {
+        &mut self.graph
+    }
+
+    /// Hand the graph the instant past which the calls made from here on stop
+    /// waiting for the daemon (#147).
+    pub(crate) fn set_deadline(&mut self, deadline: Instant) {
+        self.graph.set_deadline(deadline);
+    }
+
     /// When the earliest confirming reload falls due; `None` when none is armed.
     pub fn next_confirmation_due(&self) -> Option<Instant> {
         self.confirmation.next_due()
-    }
-
-    /// Notified each time a confirming reload is armed, so the confirmation
-    /// timer waiting on an empty register learns of it.
-    pub(crate) fn confirmation_armed(&self) -> std::sync::Arc<tokio::sync::Notify> {
-        std::sync::Arc::clone(&self.armed)
     }
 
     /// How many changes the graph has accepted from this router so far.
@@ -762,7 +778,6 @@ impl AudioRouter {
         );
         let now = (self.clock)();
         self.confirmation.arm(loaded, now);
-        self.armed.notify_one();
     }
 
     /// Apply the PipeWire routing a selection calls for: every non-empty selection
@@ -1062,8 +1077,7 @@ impl AudioRouter {
     /// than built from scratch. An `Err` is a sink list that could not be read,
     /// which a caller must not take for an absent sink (#147).
     pub fn combined_sink_exists(&mut self, sink_name: &str) -> Result<bool, AudioError> {
-        // Stub: an unreadable sink list still reads as an absent sink.
-        Ok(matches!(self.find_sink_with_prefix(sink_name), Ok(Some(_))))
+        Ok(self.find_sink_with_prefix(sink_name)?.is_some())
     }
 
     /// Resolve a logical playback target to the live PipeWire node name to hand a
@@ -1145,8 +1159,8 @@ fn branches_for_log(branches: &[CombineBranch]) -> String {
 ///
 /// An empty prefix names no node, so it resolves to nothing without the graph
 /// being asked.
-fn find_sink_with_prefix(
-    graph: &mut dyn Graph,
+fn find_sink_with_prefix<G: Graph + ?Sized>(
+    graph: &mut G,
     prefix: &str,
 ) -> Result<Option<String>, AudioError> {
     if prefix.is_empty() {
@@ -1158,8 +1172,8 @@ fn find_sink_with_prefix(
 
 /// Resolve a branch's `bluez_output.*` prefix to the live node name, erroring
 /// rather than sending audio elsewhere when the speaker's sink has vanished.
-fn resolve_branch_sink(
-    graph: &mut dyn Graph,
+fn resolve_branch_sink<G: Graph + ?Sized>(
+    graph: &mut G,
     branch: &CombineBranch,
 ) -> Result<String, AudioError> {
     find_sink_with_prefix(graph, &branch.sink)

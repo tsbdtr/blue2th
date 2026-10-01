@@ -1,52 +1,45 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The one way into the audio router (#145).
+//! The one way into the audio router (#145, #147).
 //!
-//! A request waits for the router at most [`ROUTER_WAIT`]: while the PipeWire
-//! daemon does not answer, whoever holds the router holds it for as long as
-//! the daemon stays frozen, and a request queued behind it used to wait just
-//! as long, then succeed late with nothing telling the user anything was
-//! wrong. Background tasks keep an unbounded wait — a repair delayed is better
-//! than a repair dropped — and a selection change hands its routing to the
-//! single background applier through [`RouterHandle::request_routing`], so it
-//! is never lost to the bound.
+//! The router lives in the graph thread, which runs it one message at a time
+//! (see [`crate::router_actor`]). A [`RouterHandle`] holds nothing of it: each
+//! operation is one message sent through a [`Transport`], answered on a
+//! `oneshot`, so a call that waits costs a suspended task and no thread.
 //!
-//! The message-sending side of the handle (#147) is declared here and stubbed:
-//! [`RouterHandle::over`] keeps no transport, [`REQUEST_BOUND`] holds a
-//! placeholder, and `route_for_spotify`, `route_for_spotify_in_background`,
-//! `apply_selection` and `repair` send nothing. The tests below pin what each
-//! one owes; the operations that predate them still go through the lock.
+//! A request waits at most [`REQUEST_BOUND`], and its message carries the
+//! instant past which the thread no longer starts it: while the PipeWire
+//! daemon does not answer, a request neither queues for as long as the freeze
+//! lasts nor succeeds late with nothing telling the user anything was wrong.
+//! Background tasks send without a start deadline and wait without a bound —
+//! a repair delayed is better than a repair dropped — and a selection change
+//! hands its routing to the single background applier through
+//! [`RouterHandle::request_routing`], so it is never lost to the bound.
 
 use std::{
     fmt,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
-use blue2th_proto::{SpeakerTarget, SpotifyState};
-use tokio::sync::{watch, Mutex, MutexGuard};
+use blue2th_proto::SpeakerTarget;
+use tokio::sync::{oneshot, watch};
 
-use crate::audio::{AudioError, AudioRouter, CombineBranch};
-use crate::router_actor::{RepairOutcome, Shared, Transport};
-use crate::spotify::{SpotifyBackend, SpotifyError};
-
-/// How long a request waits for the router before giving up.
-///
-/// A healthy holder keeps the router a few milliseconds, even for a full
-/// rebuild of the combined sink, so a wait this long only ever expires behind
-/// a graph that is not answering.
-pub const ROUTER_WAIT: Duration = Duration::from_secs(2);
+use crate::audio::{AudioError, CombineBranch};
+use crate::graph_pw::{PipeWireGraph, COMMAND_TIMEOUT, REPLY_MARGIN, START_BUDGET};
+use crate::router_actor::{Envelope, Message, RepairOutcome, Reply, Shared, Transport};
 
 /// How long a request waits for the answer to its message before giving up
 /// (#147): the time the graph thread has to start it, the time the message's
 /// graph calls may take, and the margin that lets the answer of a message
 /// started at the last instant reach a caller that is still waiting.
-///
-/// Stub: a placeholder, not that sum.
-pub const REQUEST_BOUND: Duration = Duration::from_secs(1);
+pub const REQUEST_BOUND: Duration = START_BUDGET
+    .saturating_add(COMMAND_TIMEOUT)
+    .saturating_add(REPLY_MARGIN);
 
 /// Why a router operation produced no result.
-#[derive(Debug)]
+// `Clone`: one volume read answers every caller queued for it.
+#[derive(Debug, Clone)]
 pub enum RouterError {
     /// No answer in time: nothing reaches the graph for the request
     /// afterwards.
@@ -67,7 +60,7 @@ pub enum RouterError {
 impl fmt::Display for RouterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RouterError::TimedOut => write!(f, "the audio router was not obtained in time"),
+            RouterError::TimedOut => write!(f, "the audio router did not answer in time"),
             RouterError::Audio(err) => write!(f, "{err}"),
             RouterError::Superseded => {
                 write!(f, "the volume set was superseded by a later one")
@@ -87,10 +80,12 @@ impl From<AudioError> for RouterError {
     }
 }
 
-/// A cloneable handle onto the shared [`AudioRouter`].
+/// A cloneable handle onto the audio router the graph thread owns.
 #[derive(Clone)]
 pub struct RouterHandle {
-    router: Arc<Mutex<AudioRouter>>,
+    /// The way to whatever runs the actor. The lock is held for the send
+    /// alone, which never blocks: no caller waits for an answer under it.
+    transport: Arc<Mutex<Box<dyn Transport>>>,
     /// Wakes the background routing applier. A `watch` rather than a queue:
     /// every request made before the applier marks it seen folds into one
     /// pass, which reads the selection current at that moment.
@@ -104,16 +99,12 @@ pub struct RouterHandle {
 }
 
 impl RouterHandle {
-    /// A handle owning `router`.
-    pub fn new(router: AudioRouter) -> Self {
-        Self::around(router, Shared::new())
-    }
-
-    /// A handle owning `router`, sharing `shared`.
-    fn around(router: AudioRouter, shared: Shared) -> Self {
+    /// A handle sending through `transport`, to actors sharing `shared`
+    /// (#147).
+    pub(crate) fn over(transport: Box<dyn Transport>, shared: Shared) -> Self {
         let (routing_requests, _) = watch::channel(());
         Self {
-            router: Arc::new(Mutex::new(router)),
+            transport: Arc::new(Mutex::new(transport)),
             routing_requests: Arc::new(routing_requests),
             shared,
             #[cfg(test)]
@@ -121,34 +112,18 @@ impl RouterHandle {
         }
     }
 
-    /// A handle sending through `transport`, to actors sharing `shared`
-    /// (#147).
-    pub(crate) fn over(transport: Box<dyn Transport>, shared: Shared) -> Self {
-        // Stub: the transport is not kept. Every operation goes through the
-        // lock, over a graph with no thread.
-        drop(transport);
-        Self::around(
-            AudioRouter::new(Box::new(crate::graph_pw::PipeWireGraph::detached())),
-            shared,
-        )
-    }
-
-    /// Take the router with no bound on the wait: for background tasks, where
-    /// a repair delayed is better than a repair dropped.
-    pub async fn lock_unbounded(&self) -> MutexGuard<'_, AudioRouter> {
-        self.router.lock().await
-    }
-
-    /// Take the router, giving up after [`ROUTER_WAIT`].
-    async fn lock_bounded(&self) -> Result<MutexGuard<'_, AudioRouter>, RouterError> {
-        tokio::time::timeout(ROUTER_WAIT, self.router.lock())
-            .await
-            .map_err(|_| RouterError::TimedOut)
+    /// A handle onto the router `graph`'s loop thread owns.
+    pub fn over_graph(graph: PipeWireGraph) -> Self {
+        let shared = graph.shared();
+        Self::over(Box::new(graph), shared)
     }
 
     /// Ask the background applier to route the graph to the current selection.
-    /// Never waits: the applier reads the selection once it holds the router.
+    /// Never waits. The generation moves before the applier is woken, so the
+    /// pass this wake starts stamps its selection with a generation that
+    /// already counts this request.
     pub fn request_routing(&self) {
+        self.shared.advance_generation();
         self.routing_requests.send_replace(());
     }
 
@@ -171,55 +146,103 @@ impl RouterHandle {
         self.shared.confirmation_due()
     }
 
+    /// Send the message `make` builds around a fresh reply, to be started by
+    /// `start_by`, and hand back the end its answer arrives on.
+    fn send<T>(
+        &self,
+        start_by: Option<Instant>,
+        make: impl FnOnce(Reply<T>) -> Message,
+    ) -> Result<oneshot::Receiver<Result<T, RouterError>>, RouterError> {
+        let (reply, answer) = oneshot::channel();
+        let envelope = Envelope {
+            start_by,
+            message: make(reply),
+        };
+        // A poisoned lock only says an earlier send panicked: the transport
+        // starts a new actor when the previous one has died.
+        self.transport
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(envelope)?;
+        Ok(answer)
+    }
+
+    /// Send a request: stamped with the start deadline, and waited for
+    /// [`REQUEST_BOUND`] at most. Both run from the one instant read before
+    /// the send, so a graph thread that was slow to start shortens what is
+    /// left of the wait instead of lengthening it. Giving up drops the reply's
+    /// receiving end, which is what lets the actor skip the message when it
+    /// reaches it.
+    async fn request<T>(&self, make: impl FnOnce(Reply<T>) -> Message) -> Result<T, RouterError> {
+        let sent_at = tokio::time::Instant::now();
+        let answer = self.send(Some(sent_at.into_std() + START_BUDGET), make)?;
+        match tokio::time::timeout_at(sent_at + REQUEST_BOUND, answer).await {
+            Ok(answered) => answered.unwrap_or_else(|_| Err(dropped_reply())),
+            Err(_) => Err(RouterError::TimedOut),
+        }
+    }
+
+    /// Send a background message: no start deadline, and no bound on the
+    /// wait.
+    async fn in_background<T>(
+        &self,
+        make: impl FnOnce(Reply<T>) -> Message,
+    ) -> Result<T, RouterError> {
+        let answer = self.send(None, make)?;
+        answer.await.unwrap_or_else(|_| Err(dropped_reply()))
+    }
+
     /// Route the graph to `speakers`.
     pub async fn route(&self, speakers: &[SpeakerTarget]) -> Result<(), RouterError> {
-        Ok(self.lock_bounded().await?.route_for_targets(speakers)?)
+        // Owned: the message leaves for the graph thread.
+        let speakers = speakers.to_vec();
+        self.request(|reply| Message::Route { speakers, reply })
+            .await
     }
 
     /// The live volume of each speaker in `macs`, over one read of the sink
-    /// list (see [`AudioRouter::sink_volumes`]).
+    /// list (see [`crate::audio::AudioRouter::sink_volumes`]).
     pub async fn sink_volumes(&self, macs: &[String]) -> Result<Vec<Option<f32>>, RouterError> {
-        Ok(self.lock_bounded().await?.sink_volumes(macs)?)
+        // Owned: the message leaves for the graph thread.
+        let macs = macs.to_vec();
+        self.request(|reply| Message::SinkVolumes { macs, reply })
+            .await
     }
 
     /// Set every speaker in `macs` to `level`, stopping at the first failure.
+    /// [`RouterError::Superseded`] when a later set for the same speakers
+    /// replaced this one before it started.
     pub async fn set_sink_volumes(&self, macs: &[String], level: f32) -> Result<(), RouterError> {
-        let mut router = self.lock_bounded().await?;
-        for mac in macs {
-            router.set_sink_volume(mac, level)?;
-        }
-        Ok(())
+        // Owned: the message leaves for the graph thread.
+        let macs = macs.to_vec();
+        self.request(|reply| Message::SetSinkVolumes { macs, level, reply })
+            .await
     }
 
     /// Retune `branch` in place inside the combined sink `sink_name`; nothing
     /// to do while that sink is not loaded.
     pub async fn retune(&self, sink_name: &str, branch: &CombineBranch) -> Result<(), RouterError> {
-        let mut router = self.lock_bounded().await?;
-        if router.combined_sink_exists(sink_name)? {
-            router.retune_branch(sink_name, branch)?;
-        }
-        Ok(())
-    }
-
-    /// Start `spotify` towards `speakers`. The outer `Result` is whether the
-    /// router was obtained; the inner one is the start itself.
-    pub async fn start_spotify(
-        &self,
-        spotify: &mut SpotifyBackend,
-        speakers: &[SpeakerTarget],
-    ) -> Result<Result<SpotifyState, SpotifyError>, RouterError> {
-        let mut router = self.lock_bounded().await?;
-        Ok(spotify.start(&mut router, speakers))
+        let sink_name = sink_name.to_string();
+        // Cloned: the message leaves for the graph thread.
+        let branch = branch.clone();
+        self.request(|reply| Message::Retune {
+            sink_name,
+            branch,
+            reply,
+        })
+        .await
     }
 
     /// Route the graph to `speakers` and answer the node name `librespot` is
     /// to be pointed at (#147). A request: bounded like [`Self::route`].
     pub async fn route_for_spotify(
         &self,
-        _speakers: &[SpeakerTarget],
+        speakers: &[SpeakerTarget],
     ) -> Result<String, RouterError> {
-        // Stub: nothing is sent.
-        Err(RouterError::TimedOut)
+        // Owned: the message leaves for the graph thread.
+        let speakers = speakers.to_vec();
+        self.request(|reply| Message::RouteForSpotify { speakers, reply })
+            .await
     }
 
     /// [`Self::route_for_spotify`] for the background routing applier (#147):
@@ -227,10 +250,12 @@ impl RouterHandle {
     /// `librespot` left stopped.
     pub async fn route_for_spotify_in_background(
         &self,
-        _speakers: &[SpeakerTarget],
+        speakers: &[SpeakerTarget],
     ) -> Result<String, RouterError> {
-        // Stub: nothing is sent.
-        Err(RouterError::TimedOut)
+        // Owned: the message leaves for the graph thread.
+        let speakers = speakers.to_vec();
+        self.in_background(|reply| Message::RouteForSpotify { speakers, reply })
+            .await
     }
 
     /// Apply `speakers`, the selection read at routing generation
@@ -240,19 +265,36 @@ impl RouterHandle {
     /// bound.
     pub async fn apply_selection(
         &self,
-        _speakers: &[SpeakerTarget],
-        _generation: u64,
+        speakers: &[SpeakerTarget],
+        generation: u64,
     ) -> Result<(), RouterError> {
-        // Stub: nothing is sent.
-        Err(RouterError::TimedOut)
+        // Owned: the message leaves for the graph thread.
+        let speakers = speakers.to_vec();
+        self.in_background(|reply| Message::ApplySelection {
+            speakers,
+            generation,
+            reply,
+        })
+        .await
     }
 
     /// One repair pass over `speakers` (#147). A background call: no start
     /// deadline, no bound.
-    pub async fn repair(&self, _speakers: &[SpeakerTarget]) -> Result<RepairOutcome, RouterError> {
-        // Stub: nothing is sent.
-        Err(RouterError::TimedOut)
+    pub async fn repair(&self, speakers: &[SpeakerTarget]) -> Result<RepairOutcome, RouterError> {
+        // Owned: the message leaves for the graph thread.
+        let speakers = speakers.to_vec();
+        self.in_background(|reply| Message::Repair { speakers, reply })
+            .await
     }
+}
+
+/// What a caller is answered when its reply was dropped unanswered: the actor
+/// died with the message in its queue. Not [`AudioError::Expired`]: nothing
+/// says the message did not run.
+fn dropped_reply() -> RouterError {
+    RouterError::Audio(AudioError::PipeWire(
+        "the PipeWire graph thread dropped the message without answering".into(),
+    ))
 }
 
 #[cfg(test)]
@@ -269,19 +311,10 @@ impl RouterHandle {
         clock: crate::router_actor::testing::Clock,
     ) -> Self {
         let shared = Shared::new();
-        // Stub: the fake actor is built for its holder and not kept — no
-        // operation sends through it. The router behind the lock reads the
-        // same graph and the same clock.
         // Cloned: the actor shares what the handle reads.
-        let actor =
-            crate::router_actor::testing::FakeActor::new(fake, Arc::clone(&clock), shared.clone());
+        let actor = crate::router_actor::testing::FakeActor::new(fake, clock, shared.clone());
         let holder = actor.holder();
-        let router = AudioRouter::with_clock(
-            // A clone of the fake is a handle onto the same state.
-            Box::new(fake.clone()),
-            Box::new(move || clock()),
-        );
-        let mut handle = Self::around(router, shared);
+        let mut handle = Self::over(Box::new(actor), shared);
         handle.holder = Some(holder);
         handle
     }

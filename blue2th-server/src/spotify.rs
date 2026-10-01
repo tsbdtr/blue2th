@@ -255,42 +255,26 @@ impl SpotifyBackend {
     /// `Err` for an empty selection, `Ok(false)` while a live child is held. A
     /// child that exited on its own is reconciled first, so it does not make
     /// a respawn be skipped.
-    pub fn needs_spawn(&mut self, _speakers: &[SpeakerTarget]) -> Result<bool, SpotifyError> {
-        // Stub: no start ever needs a spawn.
-        Ok(false)
-    }
-
-    /// Establish routing for the selection and spawn `librespot` (idempotent while
-    /// already running). The real spawn is a manual process seam.
-    pub fn start(
-        &mut self,
-        router: &mut crate::audio::AudioRouter,
-        speakers: &[SpeakerTarget],
-    ) -> Result<SpotifyState, SpotifyError> {
+    pub fn needs_spawn(&mut self, speakers: &[SpeakerTarget]) -> Result<bool, SpotifyError> {
         if speakers.is_empty() {
             return Err(SpotifyError::NoSpeakerSelected);
         }
-        // Reconcile first so a self-exited child does not make us skip a respawn.
-        self.poll_liveness();
-        if !should_spawn(self.status().status) {
-            return Ok(self.status());
-        }
+        Ok(should_spawn(self.poll_liveness().status))
+    }
 
-        // Establish PipeWire routing for the selection (the combined sink).
-        router
-            .route_for_targets(speakers)
-            .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
-
-        let sink = spotify_target_sink(speakers);
-        // `spotify_target_sink` yields a *logical* target. Resolve it here, at the
-        // argv, rather than in that pure function; a failure is reported instead
-        // of letting librespot fall back to the default sink.
-        let resolved = router
-            .resolve_target_sink(&sink)
-            .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
+    /// Spawn `librespot` pointed at `resolved`, the live node the routing
+    /// message answered for `speakers` (#147). The routing is the caller's:
+    /// it runs in the graph thread, and the spawn must not — the child is
+    /// bound to the thread that forks it (#122). The real spawn is a manual
+    /// process seam.
+    pub fn spawn_towards(
+        &mut self,
+        resolved: &str,
+        speakers: &[SpeakerTarget],
+    ) -> Result<SpotifyState, SpotifyError> {
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
-        let args = self.librespot_args(&resolved);
+        let args = self.librespot_args(resolved);
         let child =
             spawn_bound_to_this_thread(LIBRESPOT_PROGRAM, &args).map_err(map_spawn_error)?;
         self.child = Some(child);
@@ -298,7 +282,7 @@ impl SpotifyBackend {
         // compares this against `spotify_target_sink(...)`, and storing the resolved
         // name would make them never compare equal — respawning librespot, hence
         // cutting the audio, on every selection change.
-        self.sink = Some(sink);
+        self.sink = Some(spotify_target_sink(speakers));
         Ok(self.status())
     }
 
@@ -313,7 +297,7 @@ impl SpotifyBackend {
         Ok(self.status())
     }
 
-    /// Hold `child` as if [`Self::start`] had spawned it, so a test can drive
+    /// Hold `child` as if [`Self::spawn_towards`] had spawned it, so a test can drive
     /// the stop paths against a live subprocess without reaching PipeWire.
     #[cfg(test)]
     pub(crate) fn adopt_child_for_test(&mut self, child: Child) {

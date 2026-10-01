@@ -3,8 +3,8 @@
 //! The audio router as an actor (#147).
 //!
 //! The graph thread owns the [`AudioRouter`] and runs it one [`Message`] at a
-//! time: a message is one uninterrupted read–decide–write sequence, which is
-//! what the router's lock guarantees. A
+//! time: a message is one uninterrupted read–decide–write sequence, with
+//! nothing shared left to lock. A
 //! [`crate::router_handle::RouterHandle`] sends each message in an
 //! [`Envelope`] through a [`Transport`] and awaits its `oneshot` reply, so a
 //! waiting request costs a suspended task.
@@ -13,11 +13,6 @@
 //! the others are answered — as functions of a `now` it is handed; it owns no
 //! clock. [`Actor`] runs the message the queue yields against the router. The
 //! PipeWire loop thread and the in-runtime actor of the tests share both.
-//!
-//! The decisions of this module are stubs: [`Message::name`],
-//! [`Queue::take_next`], [`Queue::answer_duplicate_reads`], [`Actor::new`] and
-//! [`Actor::run_next`] answer a fixed value, and the tests below pin what
-//! each one owes.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -29,7 +24,10 @@ use blue2th_proto::SpeakerTarget;
 use tokio::sync::{oneshot, watch};
 
 use crate::audio::{AudioError, AudioRouter, CombineBranch};
+use crate::graph::Graph;
+use crate::graph_pw::COMMAND_TIMEOUT;
 use crate::router_handle::RouterError;
+use crate::spotify::{spotify_target_sink, COMBINED_SINK_NAME};
 
 /// Where the actor sends the answer to one message.
 pub(crate) type Reply<T> = oneshot::Sender<Result<T, RouterError>>;
@@ -95,9 +93,53 @@ impl Message {
     /// The variant's name, which is all the log of an expiry says of a
     /// message: never its arguments.
     pub(crate) fn name(&self) -> &'static str {
-        // Stub: no variant is named.
-        ""
+        match self {
+            Message::Route { .. } => "Route",
+            Message::SinkVolumes { .. } => "SinkVolumes",
+            Message::SetSinkVolumes { .. } => "SetSinkVolumes",
+            Message::Retune { .. } => "Retune",
+            Message::RouteForSpotify { .. } => "RouteForSpotify",
+            Message::ApplySelection { .. } => "ApplySelection",
+            Message::Repair { .. } => "Repair",
+        }
     }
+
+    /// Whether the caller stopped waiting for the answer: it gave up at its
+    /// bound, or its task was cancelled.
+    fn caller_left(&self) -> bool {
+        match self {
+            Message::Route { reply, .. } => reply.is_closed(),
+            Message::SinkVolumes { reply, .. } => reply.is_closed(),
+            Message::SetSinkVolumes { reply, .. } => reply.is_closed(),
+            Message::Retune { reply, .. } => reply.is_closed(),
+            Message::RouteForSpotify { reply, .. } => reply.is_closed(),
+            Message::ApplySelection { reply, .. } => reply.is_closed(),
+            Message::Repair { reply, .. } => reply.is_closed(),
+        }
+    }
+
+    /// Answer `refusal` on the message's own reply instead of running it.
+    ///
+    /// The `match` has no wildcard arm on purpose: a new variant does not
+    /// compile until it answers its refusal, where a wildcard would drop its
+    /// reply and its caller would read an actor that died.
+    fn refuse(self, refusal: RouterError) {
+        match self {
+            Message::Route { reply, .. } => answer(reply, Err(refusal)),
+            Message::SinkVolumes { reply, .. } => answer(reply, Err(refusal)),
+            Message::SetSinkVolumes { reply, .. } => answer(reply, Err(refusal)),
+            Message::Retune { reply, .. } => answer(reply, Err(refusal)),
+            Message::RouteForSpotify { reply, .. } => answer(reply, Err(refusal)),
+            Message::ApplySelection { reply, .. } => answer(reply, Err(refusal)),
+            Message::Repair { reply, .. } => answer(reply, Err(refusal)),
+        }
+    }
+}
+
+/// Send `result` on `reply`. A reply nobody waits for any more — the caller
+/// gave up while the message ran — is dropped.
+fn answer<T, E: Into<RouterError>>(reply: Reply<T>, result: Result<T, E>) {
+    let _ = reply.send(result.map_err(Into::into));
 }
 
 /// A [`Message`] on its way to the actor, with the instant past which the
@@ -158,9 +200,15 @@ impl Shared {
         self.confirmation_due.subscribe()
     }
 
-    /// Publish `due` as the earliest confirmation due time.
+    /// Publish `due` as the earliest confirmation due time. A due time left
+    /// in place wakes nobody: the confirmation timer waits on a change, and
+    /// the same instant published again after an unrelated message is none.
     pub(crate) fn publish_confirmation_due(&self, due: Option<Instant>) {
-        self.confirmation_due.send_replace(due);
+        self.confirmation_due.send_if_modified(|published| {
+            let moved = *published != due;
+            *published = due;
+            moved
+        });
     }
 }
 
@@ -206,9 +254,54 @@ impl Queue {
     /// generation older than `generation` ([`RouterError::Outdated`]).
     ///
     /// This is the one place the next message is chosen.
-    pub(crate) fn take_next(&mut self, _now: Instant, _generation: u64) -> Option<Message> {
-        // Stub: nothing is ever taken out.
+    pub(crate) fn take_next(&mut self, now: Instant, generation: u64) -> Option<Message> {
+        while let Some(Envelope { start_by, message }) = self.waiting.pop_front() {
+            if message.caller_left() {
+                continue;
+            }
+            if let Some(late) = start_by.and_then(|start_by| late_by(now, start_by)) {
+                let name = message.name();
+                message.refuse(RouterError::Audio(AudioError::Expired));
+                tracing::warn!(
+                    "router message {name} expired: taken out of the queue {} ms past its start_by",
+                    late.as_millis()
+                );
+                continue;
+            }
+            if self.is_superseded(&message) {
+                message.refuse(RouterError::Superseded);
+                continue;
+            }
+            if is_outdated(&message, generation) {
+                message.refuse(RouterError::Outdated);
+                continue;
+            }
+            return Some(message);
+        }
         None
+    }
+
+    /// Whether `message` is a volume set that a set still waiting replaces:
+    /// one whose reply is open and which names every sink `message` names.
+    ///
+    /// A set naming no sink is never replaced: "every sink of none" holds of
+    /// any later set, so the empty list is guarded here rather than left to
+    /// the containment test.
+    fn is_superseded(&self, message: &Message) -> bool {
+        let Message::SetSinkVolumes { macs, .. } = message else {
+            return false;
+        };
+        if macs.is_empty() {
+            return false;
+        }
+        self.waiting.iter().any(|later| match &later.message {
+            Message::SetSinkVolumes {
+                macs: later_macs,
+                reply,
+                ..
+            } => !reply.is_closed() && macs.iter().all(|mac| later_macs.contains(mac)),
+            _ => false,
+        })
     }
 
     /// Hand `answer`, the answer of the volume read for `macs` that just ran,
@@ -218,25 +311,65 @@ impl Queue {
     /// Every other message stays where it is.
     pub(crate) fn answer_duplicate_reads(
         &mut self,
-        _macs: &[String],
-        _answer: &Result<Vec<Option<f32>>, RouterError>,
+        macs: &[String],
+        answer: &Result<Vec<Option<f32>>, RouterError>,
     ) {
-        // Stub: no queued read is answered.
+        for envelope in std::mem::take(&mut self.waiting) {
+            match envelope.message {
+                Message::SinkVolumes { macs: asked, reply } if asked.as_slice() == macs => {
+                    // Cloned: the one answer goes to every caller that asked
+                    // for it.
+                    let _ = reply.send(answer.clone());
+                },
+                message => self.waiting.push_back(Envelope {
+                    start_by: envelope.start_by,
+                    message,
+                }),
+            }
+        }
     }
 }
 
+/// How far past `start_by` the instant `now` is; `None` while it is not
+/// strictly past it.
+fn late_by(now: Instant, start_by: Instant) -> Option<std::time::Duration> {
+    (now > start_by).then(|| now.duration_since(start_by))
+}
+
+/// Whether `message` is a selection stamped with a routing generation older
+/// than `generation`: the selection changed after it was read.
+fn is_outdated(message: &Message, generation: u64) -> bool {
+    matches!(message, Message::ApplySelection { generation: stamped, .. } if *stamped < generation)
+}
+
 /// The router and what it shares with its handle: what the graph thread owns.
-pub(crate) struct Actor {
-    router: AudioRouter,
+///
+/// Generic over the router's graph, as [`AudioRouter`] is: the loop thread's
+/// actor owns the loop's own state, and the default is the actor that can be
+/// moved to another thread.
+pub(crate) struct Actor<G: Graph + ?Sized = dyn Graph + Send> {
+    router: AudioRouter<G>,
     shared: Shared,
 }
 
-impl Actor {
+impl<G: Graph + ?Sized> Actor<G> {
     /// An actor over `router`. Publishes the router's confirmation due time
     /// at once, so a due time an earlier actor published is not left behind.
-    pub(crate) fn new(router: AudioRouter, shared: Shared) -> Self {
-        // Stub: nothing is published.
-        Self { router, shared }
+    pub(crate) fn new(router: AudioRouter<G>, shared: Shared) -> Self {
+        let actor = Self { router, shared };
+        actor.publish_confirmation_due();
+        actor
+    }
+
+    /// The graph the router owns, for the thread that runs this actor.
+    pub(crate) fn graph_mut(&mut self) -> &mut G {
+        self.router.graph_mut()
+    }
+
+    /// Publish the router's earliest confirmation due time.
+    fn publish_confirmation_due(&self) {
+        self.shared
+            .publish_confirmation_due(self.router.next_confirmation_due());
     }
 
     /// Take the next message out of `queue` at `now` and run it whole:
@@ -247,9 +380,84 @@ impl Actor {
     /// nothing more to run.
     ///
     /// `queue` is not borrowed while the message runs.
-    pub(crate) fn run_next(&mut self, _queue: &RefCell<Queue>, _now: Instant) -> bool {
-        // Stub: no message is run.
-        false
+    pub(crate) fn run_next(&mut self, queue: &RefCell<Queue>, now: Instant) -> bool {
+        let next = queue.borrow_mut().take_next(now, self.shared.generation());
+        let Some(message) = next else {
+            return false;
+        };
+        self.router.set_deadline(now + COMMAND_TIMEOUT);
+        self.run(message, queue);
+        self.publish_confirmation_due();
+        true
+    }
+
+    /// Run `message` against the router and answer it. `queue` is borrowed
+    /// only once a volume read has run, to answer its duplicates.
+    fn run(&mut self, message: Message, queue: &RefCell<Queue>) {
+        match message {
+            Message::Route { speakers, reply } => {
+                answer(reply, self.router.route_for_targets(&speakers));
+            },
+            Message::SinkVolumes { macs, reply } => {
+                let levels = self.router.sink_volumes(&macs).map_err(RouterError::from);
+                queue.borrow_mut().answer_duplicate_reads(&macs, &levels);
+                answer(reply, levels);
+            },
+            Message::SetSinkVolumes { macs, level, reply } => {
+                let set = macs
+                    .iter()
+                    .try_for_each(|mac| self.router.set_sink_volume(mac, level));
+                answer(reply, set);
+            },
+            Message::Retune {
+                sink_name,
+                branch,
+                reply,
+            } => answer(reply, self.retune(&sink_name, &branch)),
+            Message::RouteForSpotify { speakers, reply } => {
+                answer(reply, self.route_for_spotify(&speakers));
+            },
+            Message::ApplySelection {
+                speakers, reply, ..
+            } => {
+                let applied = if speakers.is_empty() {
+                    self.router.teardown(COMBINED_SINK_NAME)
+                } else {
+                    self.router.route_for_targets(&speakers)
+                };
+                answer(reply, applied);
+            },
+            Message::Repair { speakers, reply } => {
+                let before = self.router.graph_changes();
+                let routed = self.router.route_for_targets(&speakers);
+                let outcome = RepairOutcome {
+                    routed,
+                    changed: self.router.graph_changes() != before,
+                    retarget_failed: self.router.last_retarget_failed(),
+                };
+                // A pass nobody waits for any more has still run.
+                let _ = reply.send(Ok(outcome));
+            },
+        }
+    }
+
+    /// Retune `branch` in place inside `sink_name`; nothing to do while that
+    /// sink is not loaded. A sink list that cannot be read is that error,
+    /// not an absent sink.
+    fn retune(&mut self, sink_name: &str, branch: &CombineBranch) -> Result<(), AudioError> {
+        if self.router.combined_sink_exists(sink_name)? {
+            self.router.retune_branch(sink_name, branch)?;
+        }
+        Ok(())
+    }
+
+    /// Route the graph to `speakers`, then resolve the node `librespot` is to
+    /// be pointed at. The spawn itself stays with the caller, off this thread
+    /// (#122).
+    fn route_for_spotify(&mut self, speakers: &[SpeakerTarget]) -> Result<String, AudioError> {
+        self.router.route_for_targets(speakers)?;
+        self.router
+            .resolve_target_sink(&spotify_target_sink(speakers))
     }
 }
 

@@ -24,8 +24,12 @@ pub struct LoadedBranch {
 
 /// The operations the routing logic needs from the audio graph. Every method
 /// takes `&mut self` and every fallible one returns [`AudioError`], so an
-/// implementation is free to talk to another thread and to lose its connection.
-pub trait Graph: Send {
+/// implementation is free to lose its connection.
+///
+/// Not `Send` (#147): the PipeWire implementation is the loop thread's own
+/// state, whose objects are `Rc`-based and never leave that thread. A router
+/// that has to cross threads asks for `dyn Graph + Send` itself.
+pub trait Graph {
     /// The instant past which the calls of the message being run stop waiting
     /// for the daemon (#147). Handed once per message, before its first call:
     /// every call of that message shares it, and no other method moves it.

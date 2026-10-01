@@ -195,10 +195,52 @@ deselect clears the intent. Routing is rebuilt only when the selection actually
 moved, because the reconciliation runs on every `/devices` poll and tearing the
 PipeWire graph down every couple of seconds would cut the audio.
 
+### The router is the graph thread's actor
+
+The routing logic (`AudioRouter`, `audio.rs`) is owned by the graph thread and
+runs there, against the loop's own state, through the synchronous `Graph`
+trait (#147). Nothing else holds it and nothing is locked. A handler sends one
+message per operation through `RouterHandle` — route to this selection, read
+these speakers' volumes, set them, retune this branch, repair — and awaits the
+answer on a `oneshot`, so a request that waits costs a suspended task, not a
+thread. One message is one uninterrupted read–decide–write sequence, and
+messages run in the order they were sent (`router_actor.rs`).
+
+The wait is bounded for a request and unbounded for a background task:
+
+- A **request** carries the instant past which the thread no longer starts
+  it, 300 ms after it was sent (#146): taken out of the queue later, it is not
+  run. Every graph call of a started message shares one deadline, 1.6 s after
+  its start, and the handler stops waiting after 2 s (#145). In both cases the
+  request answers 503 "the audio graph is not answering" — `GET /playback`
+  answers the commanded level and `audio_graph: unresponsive` — and nothing
+  reaches the graph for it afterwards: a message whose caller left is skipped.
+- A **background** message — the routing applier's, a repair pass's — carries
+  no deadline and is never given up: a repair delayed is better than a repair
+  dropped.
+
+The queue coalesces only what is safe to. Identical volume reads waiting
+together are answered by the one read that ran, and a volume set is superseded
+by a later one naming every one of its sinks: it is not applied, and
+`POST /volume` answers 200 with the current playback state. Routing messages
+are never merged. A selection change is applied by a single background
+applier, which stamps the selection it read with a routing generation; a
+message whose stamp is outdated when it starts is not run, so the graph only
+receives the latest selection.
+
+`librespot` is never spawned from the graph thread: the routing message
+answers the node name to point it at, and the spawn stays on a tokio worker,
+because the child is bound to the life of the thread that forked it (#122). A
+graph thread that dies is replaced on the next message, with a new router: the
+branches the previous one owed a confirming reload were modules of its own
+connection, and died with it.
+
 ### Repair
 
 A repair pass reconciles the combined sink against the selection, and runs
-only while something plays. Four things wake one (#80):
+only while something plays. Its graph work is one message, whose answer says
+whether it routed, whether it changed the graph and whether the re-target
+failed. Four things wake one (#80):
 
 - **Registry events.** The graph thread already receives every registry
   `global` and `global_remove` to keep its mirror; for an `Audio/Sink` named
@@ -209,7 +251,9 @@ only while something plays. Four things wake one (#80):
   from a poll that could come before the bluez5 module had created the sink
   (#75). Events queued together are drained together and run one pass.
 - **The confirmation timer.** It sleeps until the earliest confirming reload
-  falls due, five seconds after the load, and runs one pass for it. A pass
+  falls due, five seconds after the load, and runs one pass for it. The graph
+  thread publishes that instant after every message, so the timer asks for
+  nothing. A pass
   that cannot take the reload (nothing plays, the graph cannot be read) leaves
   it armed, and the timer tries again one gap later or at the next load,
   whichever comes first. The next routing takes it too.
@@ -217,8 +261,8 @@ only while something plays. Four things wake one (#80):
   destroyed by hand, or a branch ruled dead.
 - **A reconnection.** When the connection to the daemon is lost, the graph
   thread reconnects on its own after 1 s, 2 s, 5 s and 10 s, then every 30 s;
-  once back, it re-reads the registry and emits one `Reconnected`. Commands
-  sent during the outage fail, as they did before.
+  once back, it re-reads the registry and emits one `Reconnected`. Messages
+  run during the outage fail.
 
 A pass that changed the graph logs what woke it; one that changed nothing stays
 silent.

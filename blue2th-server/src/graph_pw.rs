@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! [`PipeWireGraph`]: the [`Graph`] that drives PipeWire natively, from a
-//! `pw_main_loop` running on a thread of its own (#79).
+//! The [`Graph`] that drives PipeWire natively, from a `pw_main_loop` running
+//! on a thread of its own (#79), and [`PipeWireGraph`], the way into it.
 //!
-//! The PipeWire objects are `Rc`-based and never leave that thread. The handle
-//! the router owns only holds a [`pipewire::channel`] sender into it: every
-//! [`Graph`] method is one [`Command`], sent in an [`Envelope`] carrying the
-//! instant past which the loop thread no longer starts it (#146), and answered
-//! through a reply channel. The handle waits on that channel until
-//! [`COMMAND_TIMEOUT`] and [`REPLY_MARGIN`] past that instant, so a command the
-//! thread started answers before its caller stops waiting.
+//! The PipeWire objects are `Rc`-based and never leave that thread, which also
+//! owns the audio router and runs it as an actor (#147, see
+//! [`crate::router_actor`]): the router reaches the loop's [`LoopState`]
+//! through [`Graph`], with no channel in between. [`PipeWireGraph`] only holds
+//! a [`pipewire::channel`] sender into the thread: it is the
+//! [`Transport`] a [`crate::router_handle::RouterHandle`] sends its messages
+//! through, each in an [`Envelope`] carrying the instant past which the thread
+//! no longer starts it (#146).
 //!
 //! The decisions are pure functions over a [`Mirror`] of the registry, so the
 //! tests pin them without a daemon; the loop side only applies them.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -40,139 +40,30 @@ use pw::registry::{GlobalObject, RegistryRc};
 use pw::types::ObjectType;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::audio::{AudioError, CombineBranch};
+use crate::audio::{AudioError, AudioRouter, CombineBranch};
 use crate::graph::{Graph, LoadedBranch};
+use crate::router_actor::{Actor, Envelope, Queue, Shared as RouterShared, Transport};
 
-/// How long the loop thread gives the round trips of one command, all of them
-/// together, counted from the instant it starts the command. The handle waits
-/// [`REPLY_MARGIN`] longer than that past the command's `start_by`, so a
-/// command answers with the daemon's error rather than with the handle's
-/// timeout.
+/// How long the loop thread gives the round trips of one router message, all
+/// of them together, counted from the instant it starts the message (#147).
+/// The handle waits [`REPLY_MARGIN`] longer than that past the message's
+/// `start_by`, so a message answers with the daemon's error rather than with
+/// the handle's timeout.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_millis(1600);
 
-/// How long after it was sent the loop thread may still start a command
-/// (#146). Time spent in the queue counts against it.
+/// How long after it was sent the loop thread may still start a request's
+/// message (#146). Time spent in the queue counts against it.
 pub(crate) const START_BUDGET: Duration = Duration::from_millis(300);
 
-/// How much longer than a started command's round trips the handle waits
-/// (#146): what lets the answer of a command started at its `start_by` reach a
+/// How much longer than a started message's round trips the handle waits
+/// (#146): what lets the answer of a message started at its `start_by` reach a
 /// caller that is still waiting.
 pub(crate) const REPLY_MARGIN: Duration = Duration::from_millis(100);
 
 /// The factory the combined sink's node is created from.
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
 
-/// Where the loop thread sends the answer to one command.
-pub(crate) type Reply<T> = mpsc::Sender<Result<T, AudioError>>;
-
-/// One request from the handle to the loop thread, carrying its reply channel.
-pub(crate) enum Command {
-    Sinks {
-        reply: Reply<Vec<String>>,
-    },
-    Branches {
-        sink_name: String,
-        reply: Reply<Vec<LoadedBranch>>,
-    },
-    CreateCombinedSink {
-        sink_name: String,
-        reply: Reply<()>,
-    },
-    LoadBranch {
-        sink_name: String,
-        real_sink: String,
-        latency_ms: u32,
-        reply: Reply<()>,
-    },
-    UnloadBranch {
-        id: u32,
-        reply: Reply<()>,
-    },
-    SetBranchDelay {
-        id: u32,
-        delay_ms: u32,
-        reply: Reply<()>,
-    },
-    Teardown {
-        sink_name: String,
-        reply: Reply<()>,
-    },
-    ClearStaleDefaultSink {
-        sink_name: String,
-        reply: Reply<bool>,
-    },
-    RetargetStreams {
-        sink_name: String,
-        reply: Reply<usize>,
-    },
-    SinkVolume {
-        sink: String,
-        reply: Reply<Option<f32>>,
-    },
-    SetSinkVolume {
-        sink: String,
-        level: f32,
-        reply: Reply<()>,
-    },
-}
-
-impl Command {
-    /// The variant's name, which is all the log of an expiry says of a command:
-    /// never its arguments.
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Sinks { .. } => "Sinks",
-            Command::Branches { .. } => "Branches",
-            Command::CreateCombinedSink { .. } => "CreateCombinedSink",
-            Command::LoadBranch { .. } => "LoadBranch",
-            Command::UnloadBranch { .. } => "UnloadBranch",
-            Command::SetBranchDelay { .. } => "SetBranchDelay",
-            Command::Teardown { .. } => "Teardown",
-            Command::ClearStaleDefaultSink { .. } => "ClearStaleDefaultSink",
-            Command::RetargetStreams { .. } => "RetargetStreams",
-            Command::SinkVolume { .. } => "SinkVolume",
-            Command::SetSinkVolume { .. } => "SetSinkVolume",
-        }
-    }
-
-    /// Answer [`AudioError::Expired`] on the command's own reply instead of
-    /// running it.
-    ///
-    /// The `match` has no wildcard arm on purpose: a new variant does not
-    /// compile until it answers its expiry, where a wildcard would drop its
-    /// reply and its caller would read a thread that died.
-    fn expire(self) {
-        match self {
-            Command::Sinks { reply } => answer_expired(reply),
-            Command::Branches { reply, .. } => answer_expired(reply),
-            Command::CreateCombinedSink { reply, .. } => answer_expired(reply),
-            Command::LoadBranch { reply, .. } => answer_expired(reply),
-            Command::UnloadBranch { reply, .. } => answer_expired(reply),
-            Command::SetBranchDelay { reply, .. } => answer_expired(reply),
-            Command::Teardown { reply, .. } => answer_expired(reply),
-            Command::ClearStaleDefaultSink { reply, .. } => answer_expired(reply),
-            Command::RetargetStreams { reply, .. } => answer_expired(reply),
-            Command::SinkVolume { reply, .. } => answer_expired(reply),
-            Command::SetSinkVolume { reply, .. } => answer_expired(reply),
-        }
-    }
-}
-
-/// Answer [`AudioError::Expired`] on `reply`, whatever it carries. A reply
-/// nobody waits for any more is dropped, as in `handle`.
-fn answer_expired<T>(reply: Reply<T>) {
-    let _ = reply.send(Err(AudioError::Expired));
-}
-
-/// A [`Command`] on its way to the loop thread, with the instant past which
-/// the thread no longer starts it (#146). The deadline travels beside the
-/// command rather than in it, so reading it needs no knowledge of the variants.
-pub(crate) struct Envelope {
-    start_by: Instant,
-    command: Command,
-}
-
-/// The handle's end of the channel into the loop thread.
+/// The graph's end of the channel into the loop thread.
 pub(crate) trait LoopSender: Send {
     /// Hand `envelope` to the loop thread; give it back when the thread is gone.
     fn send(&self, envelope: Envelope) -> Result<(), Envelope>;
@@ -242,26 +133,38 @@ pub(crate) fn reconnect_delay(failures: u32) -> Duration {
     Duration::from_secs(seconds)
 }
 
-/// The handle the router owns: a sender into the loop thread, and the means to
-/// start a new thread when the previous one has died.
+/// The way into the loop thread: a sender into it, and the means to start a
+/// new thread when the previous one has died.
 pub struct PipeWireGraph {
     spawn_loop: SpawnLoop,
     sender: Option<Box<dyn LoopSender>>,
     /// Where every loop thread started for this graph reports its events.
     events: Option<UnboundedSender<GraphEvent>>,
+    /// What every actor started for this graph shares with the router handle
+    /// (#147): the routing generation and the confirmation due time.
+    shared: RouterShared,
 }
 
 impl PipeWireGraph {
     /// A graph over the PipeWire daemon of the current session. Starts nothing:
-    /// the loop thread is spawned, and connects, on the first command.
+    /// the loop thread is spawned, and connects, on the first message.
     pub fn spawn() -> Self {
-        Self::with_loop(Box::new(spawn_loop_thread))
+        let shared = RouterShared::new();
+        // Cloned: every thread started runs an actor sharing the same state.
+        let for_threads = shared.clone();
+        Self {
+            // Cloned: each thread started holds a handle of its own onto it.
+            spawn_loop: Box::new(move |events| spawn_loop_thread(events, for_threads.clone())),
+            sender: None,
+            events: None,
+            shared,
+        }
     }
 
     /// Start the loop thread now, connected at once, reporting its
     /// [`GraphEvent`]s to `events`.
     ///
-    /// Called once, before any command. A thread an earlier command started is
+    /// Called once, before any message. A thread an earlier message started is
     /// not stopped by it: dropping a `pw::channel::Sender` neither closes the
     /// channel nor wakes its loop, so that thread would keep running — and
     /// keep what it created — beside the watched one.
@@ -272,7 +175,7 @@ impl PipeWireGraph {
         self.sender = Some((self.spawn_loop)(self.events.clone()));
     }
 
-    /// A graph with no loop thread at all: every command errs at once, as when
+    /// A graph with no loop thread at all: every message errs at once, as when
     /// the thread cannot be started. It never reaches a daemon, which is what
     /// the store-free routers the integration tests build need: a graph over
     /// the session's daemon would tear down the operator's live combined sink.
@@ -286,11 +189,23 @@ impl PipeWireGraph {
             spawn_loop,
             sender: None,
             events: None,
+            shared: RouterShared::new(),
         }
     }
 
+    /// What the actors started for this graph share with the handle that
+    /// sends through it.
+    pub(crate) fn shared(&self) -> RouterShared {
+        // Cloned: a handle onto the same state.
+        self.shared.clone()
+    }
+}
+
+/// The graph is the router handle's way to the loop thread (#147).
+impl Transport for PipeWireGraph {
     /// Hand `envelope` to the loop thread, starting one when there is none and
-    /// replacing one that has died.
+    /// replacing one that has died. The envelope goes as it came: one resent
+    /// to a replacement thread keeps the `start_by` it was stamped with.
     fn send(&mut self, envelope: Envelope) -> Result<(), AudioError> {
         let spawn_loop = &mut self.spawn_loop;
         let events = &self.events;
@@ -301,156 +216,23 @@ impl PipeWireGraph {
         let Err(envelope) = sender.send(envelope) else {
             return Ok(());
         };
-        // The thread is gone: a new one answers this very command.
+        // The thread is gone: a new one answers this very message. Replacing
+        // the sender drops what the dead thread never took out of its
+        // channel, and each of those replies with it.
         let fresh = spawn_loop(events.clone());
         let sent = fresh.send(envelope);
         self.sender = Some(fresh);
         sent.map_err(|_| AudioError::PipeWire("the PipeWire graph thread is not running".into()))
     }
-
-    /// Send the command `make` builds around a fresh reply channel, and wait for
-    /// the answer.
-    ///
-    /// The envelope is stamped here, once, before any thread is started for
-    /// it: a command resent to a replacement thread keeps its `start_by`. The
-    /// wait is counted from that stamp rather than from the send, so a thread
-    /// that was slow to start does not lengthen it.
-    ///
-    /// The handle's own timeout is not [`AudioError::Expired`]: it cannot tell
-    /// whether the command ran, and `Expired` says it did not.
-    fn ask<R>(&mut self, make: impl FnOnce(mpsc::Sender<R>) -> Command) -> Result<R, AudioError> {
-        let (reply, answer) = mpsc::channel();
-        let start_by = Instant::now() + START_BUDGET;
-        self.send(Envelope {
-            start_by,
-            command: make(reply),
-        })?;
-        let give_up = start_by + COMMAND_TIMEOUT + REPLY_MARGIN;
-        answer
-            .recv_timeout(give_up.saturating_duration_since(Instant::now()))
-            .map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout => AudioError::PipeWire(format!(
-                    "PipeWire graph thread did not answer within {} s",
-                    (START_BUDGET + COMMAND_TIMEOUT + REPLY_MARGIN).as_secs()
-                )),
-                mpsc::RecvTimeoutError::Disconnected => AudioError::PipeWire(
-                    "PipeWire graph thread dropped the command without answering".into(),
-                ),
-            })
-    }
 }
 
-/// The graph is the router handle's way to the loop thread (#147).
-impl crate::router_actor::Transport for PipeWireGraph {
-    fn send(&mut self, envelope: crate::router_actor::Envelope) -> Result<(), AudioError> {
-        // Stub: no loop thread runs the actor. The message is dropped
-        // unanswered, and the send claims it went through.
-        drop(envelope);
-        Ok(())
-    }
-}
-
-/// Refuse an empty name before it reaches the loop: an empty name is a wildcard
-/// to every match below it, never "no node".
+/// Refuse an empty name before the loop acts on it: an empty name is a
+/// wildcard to every match below it, never "no node".
 fn named(what: &str, name: &str) -> Result<(), AudioError> {
     if name.is_empty() {
         return Err(AudioError::PipeWire(format!("empty {what} name refused")));
     }
     Ok(())
-}
-
-impl Graph for PipeWireGraph {
-    /// Nothing to hand on: each command is stamped on its own by `ask`.
-    fn set_deadline(&mut self, _deadline: Instant) {}
-
-    fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
-        self.ask(|reply| Command::Sinks { reply })?
-    }
-
-    fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
-        named("sink", sink_name)?;
-        self.ask(|reply| Command::Branches {
-            sink_name: sink_name.to_string(),
-            reply,
-        })?
-    }
-
-    fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
-        named("sink", sink_name)?;
-        self.ask(|reply| Command::CreateCombinedSink {
-            sink_name: sink_name.to_string(),
-            reply,
-        })?
-    }
-
-    fn load_branch(
-        &mut self,
-        sink_name: &str,
-        real_sink: &str,
-        latency_ms: u32,
-    ) -> Result<(), AudioError> {
-        named("sink", sink_name)?;
-        named("target sink", real_sink)?;
-        self.ask(|reply| Command::LoadBranch {
-            sink_name: sink_name.to_string(),
-            real_sink: real_sink.to_string(),
-            latency_ms,
-            reply,
-        })?
-    }
-
-    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
-        self.ask(|reply| Command::UnloadBranch { id, reply })?
-    }
-
-    fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
-        self.ask(|reply| Command::SetBranchDelay {
-            id,
-            delay_ms,
-            reply,
-        })?
-    }
-
-    fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
-        named("sink", sink_name)?;
-        self.ask(|reply| Command::Teardown {
-            sink_name: sink_name.to_string(),
-            reply,
-        })?
-    }
-
-    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
-        named("sink", sink_name)?;
-        self.ask(|reply| Command::ClearStaleDefaultSink {
-            sink_name: sink_name.to_string(),
-            reply,
-        })?
-    }
-
-    fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
-        named("sink", sink_name)?;
-        self.ask(|reply| Command::RetargetStreams {
-            sink_name: sink_name.to_string(),
-            reply,
-        })?
-    }
-
-    fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
-        named("sink", sink)?;
-        self.ask(|reply| Command::SinkVolume {
-            sink: sink.to_string(),
-            reply,
-        })?
-    }
-
-    fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
-        named("sink", sink)?;
-        self.ask(|reply| Command::SetSinkVolume {
-            sink: sink.to_string(),
-            level,
-            reply,
-        })?
-    }
 }
 
 /// One node of the registry mirror: the properties of its global.
@@ -902,7 +684,7 @@ pub(crate) struct LoopState<C: Connector> {
     context: Option<C::Context>,
     mirror: Mirror,
     next_module_id: u32,
-    /// When the command being handled runs out of time for its round trips.
+    /// When the message being run runs out of time for its round trips.
     deadline: Instant,
     /// The branches whose monitor links wait for their ports, and since when.
     pending_links: BTreeMap<u32, Instant>,
@@ -1078,7 +860,7 @@ impl<C: Connector> LoopState<C> {
     pub(crate) fn on_disconnect(&mut self) {
         // Proxies first, while their core still exists. The modules are only
         // forgotten: a filter-chain unloads itself on its core's error. The
-        // context stays, so the next command reconnects from it.
+        // context stays, so the next message reconnects from it.
         self.null_sinks.clear();
         self.modules.clear();
         self.pending_links.clear();
@@ -1089,7 +871,7 @@ impl<C: Connector> LoopState<C> {
 
 // ─── The production loop thread ─────────────────────────────────────────────
 
-/// A loop that is not there: every command comes back, so the handle knows.
+/// A loop that is not there: every message comes back, so the graph knows.
 struct NoLoop;
 
 impl LoopSender for NoLoop {
@@ -1098,7 +880,7 @@ impl LoopSender for NoLoop {
     }
 }
 
-/// The handle's end into a real loop thread.
+/// The graph's end into a real loop thread.
 struct PwLoopSender {
     sender: pw::channel::Sender<Envelope>,
     thread: JoinHandle<()>,
@@ -1115,12 +897,16 @@ impl LoopSender for PwLoopSender {
     }
 }
 
-/// Start a loop thread; [`NoLoop`] when the thread cannot even be started.
-fn spawn_loop_thread(events: Option<UnboundedSender<GraphEvent>>) -> Box<dyn LoopSender> {
+/// Start a loop thread whose actor shares `shared`; [`NoLoop`] when the
+/// thread cannot even be started.
+fn spawn_loop_thread(
+    events: Option<UnboundedSender<GraphEvent>>,
+    shared: RouterShared,
+) -> Box<dyn LoopSender> {
     let (sender, receiver) = pw::channel::channel::<Envelope>();
     match std::thread::Builder::new()
         .name("pipewire-graph".into())
-        .spawn(move || run_loop_thread(receiver, events))
+        .spawn(move || run_loop_thread(receiver, events, shared))
     {
         Ok(thread) => Box::new(PwLoopSender { sender, thread }),
         Err(e) => {
@@ -1130,16 +916,21 @@ fn spawn_loop_thread(events: Option<UnboundedSender<GraphEvent>>) -> Box<dyn Loo
     }
 }
 
-/// The loop thread: receive commands, answer each against the daemon, and
-/// drop the connection's state when the daemon goes away.
+/// The loop thread: own the audio router, run each message it receives against
+/// the daemon, and drop the connection's state when the daemon goes away.
+///
+/// The router is created here and dies with the thread (#147): the branches it
+/// armed a confirmation for are modules of this thread's own connection, so a
+/// thread replacing a dead one starts from a router that knows of none.
 ///
 /// A watched loop — one handed `events` — connects at once and, once the
 /// connection is lost, reconnects on its own after [`reconnect_delay`], so a
-/// restarted daemon is noticed without waiting for a command (#80). An
-/// unwatched one connects on its first command, as before.
+/// restarted daemon is noticed without waiting for a message (#80). An
+/// unwatched one connects on its first message, as before.
 fn run_loop_thread(
     receiver: pw::channel::Receiver<Envelope>,
     events: Option<UnboundedSender<GraphEvent>>,
+    shared: RouterShared,
 ) {
     pw::init();
     let mainloop = match MainLoopRc::new(None) {
@@ -1149,26 +940,31 @@ fn run_loop_thread(
             return;
         },
     };
-    // Commands are queued by the channel callback and handled outside of it, so
-    // a command can iterate the loop while it waits for the daemon.
-    let inbox: Rc<RefCell<VecDeque<Envelope>>> = Rc::default();
+    // Messages are queued by the channel callback and run outside of it, so a
+    // message can iterate the loop while it waits for the daemon.
+    let inbox = Rc::new(RefCell::new(Queue::new()));
     let _attached = receiver.attach(mainloop.loop_(), {
         let inbox = Rc::clone(&inbox);
-        move |envelope| inbox.borrow_mut().push_back(envelope)
+        move |envelope| inbox.borrow_mut().push(envelope)
     });
     let watched = events.is_some();
-    let mut state = LoopState::new(PwConnector {
+    let state = LoopState::new(PwConnector {
         mainloop: mainloop.clone(),
         events,
     });
+    let mut actor = Actor::new(
+        AudioRouter::over(Box::new(state), Box::new(Instant::now)),
+        shared,
+    );
     let mut reconnect = ReconnectWatch::new(Instant::now());
     loop {
+        let state = actor.graph_mut();
         if watched && reconnect.attempt_due(state.is_connected(), Instant::now()) {
             match state.reconnect() {
                 Ok(()) => reconnect.connected(state.connector.events.as_ref()),
                 // Connected, but the daemon did not answer the re-read in time:
-                // the connection is kept, as a command keeps it, and the next
-                // command reads the registry again.
+                // the connection is kept, as a message keeps it, and the next
+                // message reads the registry again.
                 Err(e) if state.is_connected() => {
                     tracing::warn!("PipeWire reconnected, but the registry re-read failed: {e}");
                 },
@@ -1190,55 +986,18 @@ fn run_loop_thread(
             reconnect.lost(Instant::now());
         }
         state.wire_waiting_branches();
-        // A command that waited behind the reconnect attempt or the wiring above
-        // has spent that time out of its start budget (#146).
-        drain_inbox(&inbox, Instant::now, |command| {
-            handle(&mut state, command);
-            if state.forget_a_lost_connection() {
+        // The clock is read once per message, as it is taken out: one that
+        // waited behind the reconnect attempt, the wiring above or a slow
+        // message has spent that time out of its start budget (#146).
+        while actor.run_next(&inbox, Instant::now()) {
+            if actor.graph_mut().forget_a_lost_connection() {
                 reconnect.lost(Instant::now());
             }
-        });
-        // A command reconnects on its own: that is a reconnection too.
+        }
+        // A message reconnects on its own: that is a reconnection too.
+        let state = actor.graph_mut();
         if state.is_connected() {
             reconnect.connected(state.connector.events.as_ref());
-        }
-    }
-}
-
-/// The command of `envelope` when the loop thread may still start it at `now`.
-/// Past its `start_by` there is none: the command is not run, and its own
-/// reply receives [`AudioError::Expired`].
-fn start_or_expire(envelope: Envelope, now: Instant) -> Option<Command> {
-    let Envelope { start_by, command } = envelope;
-    if now <= start_by {
-        return Some(command);
-    }
-    let late = now.duration_since(start_by);
-    let name = command.name();
-    command.expire();
-    tracing::warn!(
-        "graph command {name} expired: taken out of the queue {} ms past its start_by",
-        late.as_millis()
-    );
-    None
-}
-
-/// Take the envelopes out of `inbox` one at a time until it is empty, reading
-/// `now` once for each as it comes out, and hand `run` the commands
-/// [`start_or_expire`] yields. `inbox` is not borrowed while `run` runs: a
-/// command iterates the main loop, and the channel callback queues into it.
-fn drain_inbox(
-    inbox: &RefCell<VecDeque<Envelope>>,
-    mut now: impl FnMut() -> Instant,
-    mut run: impl FnMut(Command),
-) {
-    loop {
-        let next = inbox.borrow_mut().pop_front();
-        let Some(envelope) = next else {
-            break;
-        };
-        if let Some(command) = start_or_expire(envelope, now()) {
-            run(command);
         }
     }
 }
@@ -1278,7 +1037,7 @@ impl ReconnectWatch {
 
     /// The connection was lost at `now`: the walk starts again, and the first
     /// retry waits `reconnect_delay(0)`. The only place the count is reset —
-    /// the count matters only once a connection is lost, and a command can
+    /// the count matters only once a connection is lost, and a message can
     /// connect and lose one before [`Self::connected`] ever sees it.
     fn lost(&mut self, now: Instant) {
         self.failures = 0;
@@ -1454,7 +1213,7 @@ impl PwConnection {
 
     /// One `core.sync` round trip: every event the daemon emitted before it has
     /// been delivered when this returns `Ok`. It errs once `deadline` — the
-    /// command's, not its own — has passed.
+    /// message's, not its own — has passed.
     fn roundtrip(&self, deadline: Instant) -> Result<(), AudioError> {
         let pending = self
             .core
@@ -2077,7 +1836,7 @@ impl LoopState<PwConnector> {
 
     /// Link every branch whose ports have been announced since it was loaded.
     /// Runs after each turn of the loop, so a branch is linked on the registry
-    /// event that completes it rather than on the next command.
+    /// event that completes it rather than on the next message.
     fn wire_waiting_branches(&mut self) {
         let waiting = self.pending_link_branches();
         if waiting.is_empty() {
@@ -2221,63 +1980,81 @@ impl LoopState<PwConnector> {
     }
 }
 
-/// Answer one command against the daemon.
-fn handle(state: &mut LoopState<PwConnector>, command: Command) {
-    state.deadline = Instant::now() + COMMAND_TIMEOUT;
-    // A reply nobody waits for any more (the handle timed out) is dropped.
-    match command {
-        Command::Sinks { reply } => {
-            let _ = reply.send(state.sinks());
-        },
-        Command::Branches { sink_name, reply } => {
-            let _ = reply.send(state.branches(&sink_name));
-        },
-        Command::CreateCombinedSink { sink_name, reply } => {
-            let _ = reply.send(state.create_combined_sink(&sink_name));
-        },
-        Command::LoadBranch {
-            sink_name,
-            real_sink,
-            latency_ms,
-            reply,
-        } => {
-            let _ = reply.send(state.load_branch(&sink_name, &real_sink, latency_ms));
-        },
-        Command::UnloadBranch { id, reply } => {
-            let _ = reply.send(state.unload_branch(id));
-        },
-        Command::SetBranchDelay {
-            id,
-            delay_ms,
-            reply,
-        } => {
-            let _ = reply.send(state.set_branch_delay(id, delay_ms));
-        },
-        Command::Teardown { sink_name, reply } => {
-            let _ = reply.send(state.teardown(&sink_name));
-        },
-        Command::ClearStaleDefaultSink { sink_name, reply } => {
-            let _ = reply.send(state.clear_stale_default_sink(&sink_name));
-        },
-        Command::RetargetStreams { sink_name, reply } => {
-            let _ = reply.send(state.retarget_streams(&sink_name));
-        },
-        Command::SinkVolume { sink, reply } => {
-            let _ = reply.send(state.sink_volume(&sink));
-        },
-        Command::SetSinkVolume { sink, level, reply } => {
-            let _ = reply.send(state.set_sink_volume(&sink, level));
-        },
+/// The loop's own state is the graph the router runs against (#147): each
+/// method is a direct call on the loop thread, sharing the one deadline the
+/// actor handed over for the message being run.
+impl Graph for LoopState<PwConnector> {
+    fn set_deadline(&mut self, deadline: Instant) {
+        self.deadline = deadline;
+    }
+
+    fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
+        LoopState::sinks(self)
+    }
+
+    fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
+        named("sink", sink_name)?;
+        LoopState::branches(self, sink_name)
+    }
+
+    fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        LoopState::create_combined_sink(self, sink_name)
+    }
+
+    fn load_branch(
+        &mut self,
+        sink_name: &str,
+        real_sink: &str,
+        latency_ms: u32,
+    ) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        named("target sink", real_sink)?;
+        LoopState::load_branch(self, sink_name, real_sink, latency_ms)
+    }
+
+    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
+        LoopState::unload_branch(self, id)
+    }
+
+    fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
+        LoopState::set_branch_delay(self, id, delay_ms)
+    }
+
+    fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        LoopState::teardown(self, sink_name)
+    }
+
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
+        named("sink", sink_name)?;
+        LoopState::clear_stale_default_sink(self, sink_name)
+    }
+
+    fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
+        named("sink", sink_name)?;
+        LoopState::retarget_streams(self, sink_name)
+    }
+
+    fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
+        named("sink", sink)?;
+        LoopState::sink_volume(self, sink)
+    }
+
+    fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
+        named("sink", sink)?;
+        LoopState::set_sink_volume(self, sink, level)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::router_actor::Message;
+    use crate::router_handle::RouterError;
     use crate::targets::MAX_OFFSET_MS;
-    use std::cell::Cell;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::Instant;
 
     const COMBINED: &str = "blue2th_combined";
@@ -4028,7 +3805,7 @@ mod tests {
         assert_eq!(volume_fraction_from_route(&route.channel_volumes), None);
     }
 
-    // ─── The handle: command layer over a fake loop thread ───────────────────
+    // ─── #147: the graph as the router handle's transport, over a fake loop ──
 
     impl LoopSender for mpsc::Sender<Envelope> {
         fn send(&self, envelope: Envelope) -> Result<(), Envelope> {
@@ -4044,282 +3821,55 @@ mod tests {
         Box::new(tx)
     }
 
-    /// A loop thread that takes one command and drops it unanswered, reply
-    /// sender included.
-    fn dropping_loop() -> Box<dyn LoopSender> {
-        let (tx, rx) = mpsc::channel::<Envelope>();
-        std::thread::spawn(move || {
-            let _ = rx.recv();
-        });
-        Box::new(tx)
-    }
-
-    /// A loop thread that answers every command as a healthy graph holding
-    /// `sinks` would, recording each command it received: its name, then its
-    /// arguments in declaration order.
-    fn answering_loop(
-        sinks: Vec<String>,
-        received: Arc<Mutex<Vec<String>>>,
-    ) -> Box<dyn LoopSender> {
+    /// A loop thread that answers every route as a healthy actor would,
+    /// recording each message it received by its variant's name. A message
+    /// of another kind is dropped unanswered: these tests send routes only.
+    fn answering_loop(received: Arc<Mutex<Vec<String>>>) -> Box<dyn LoopSender> {
         let (tx, rx) = mpsc::channel::<Envelope>();
         std::thread::spawn(move || {
             for envelope in rx {
-                let mut log = received.lock().unwrap();
-                match envelope.command {
-                    Command::Sinks { reply } => {
-                        log.push("sinks".to_string());
-                        // Cloned: every `sinks` command is answered with the list.
-                        let _ = reply.send(Ok(sinks.clone()));
-                    },
-                    Command::Branches { sink_name, reply } => {
-                        log.push(format!("branches {sink_name}"));
-                        let _ = reply.send(Ok(Vec::new()));
-                    },
-                    Command::CreateCombinedSink { sink_name, reply } => {
-                        log.push(format!("create_combined_sink {sink_name}"));
-                        let _ = reply.send(Ok(()));
-                    },
-                    Command::LoadBranch {
-                        sink_name,
-                        real_sink,
-                        latency_ms,
-                        reply,
-                    } => {
-                        log.push(format!("load_branch {sink_name} {real_sink} {latency_ms}"));
-                        let _ = reply.send(Ok(()));
-                    },
-                    Command::UnloadBranch { id, reply } => {
-                        log.push(format!("unload_branch {id}"));
-                        let _ = reply.send(Ok(()));
-                    },
-                    Command::SetBranchDelay {
-                        id,
-                        delay_ms,
-                        reply,
-                    } => {
-                        log.push(format!("set_branch_delay {id} {delay_ms}"));
-                        let _ = reply.send(Ok(()));
-                    },
-                    Command::Teardown { sink_name, reply } => {
-                        log.push(format!("teardown {sink_name}"));
-                        let _ = reply.send(Ok(()));
-                    },
-                    Command::ClearStaleDefaultSink { sink_name, reply } => {
-                        log.push(format!("clear_stale_default_sink {sink_name}"));
-                        // `true`, which no stub answers: the handle must hand
-                        // back what the loop said.
-                        let _ = reply.send(Ok(true));
-                    },
-                    Command::RetargetStreams { sink_name, reply } => {
-                        log.push(format!("retarget_streams {sink_name}"));
-                        // 3, which no stub answers: the handle must hand back
-                        // the count the loop said.
-                        let _ = reply.send(Ok(3));
-                    },
-                    Command::SinkVolume { sink, reply } => {
-                        log.push(format!("sink_volume {sink}"));
-                        let _ = reply.send(Ok(Some(0.5)));
-                    },
-                    Command::SetSinkVolume { sink, level, reply } => {
-                        log.push(format!("set_sink_volume {sink} {level}"));
-                        let _ = reply.send(Ok(()));
-                    },
+                received
+                    .lock()
+                    .unwrap()
+                    .push(envelope.message.name().to_string());
+                if let Message::Route { reply, .. } = envelope.message {
+                    let _ = reply.send(Ok(()));
                 }
             }
         });
         Box::new(tx)
     }
 
-    // Criterion: every method is one command answered through the reply
-    // channel — the handle hands back what the loop thread answered.
-    #[test]
-    fn test_a_command_is_answered_by_the_loop_thread() {
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
-        }));
-
-        assert_eq!(graph.sinks().ok(), Some(vec![SPEAKER.to_string()]));
-        assert_eq!(graph.sink_volume(SPEAKER).ok(), Some(Some(0.5)));
-        assert_eq!(
-            *received.lock().unwrap(),
-            vec!["sinks".to_string(), format!("sink_volume {SPEAKER}")]
-        );
+    /// Send one route through `graph`, to be started by `start_by`, and wait
+    /// for its answer as a handle does. `None` for a reply dropped unanswered.
+    fn send_route(
+        graph: &mut PipeWireGraph,
+        start_by: Option<Instant>,
+    ) -> Result<Option<Result<(), RouterError>>, AudioError> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        Transport::send(
+            graph,
+            Envelope {
+                start_by,
+                message: Message::Route {
+                    speakers: Vec::new(),
+                    reply,
+                },
+            },
+        )?;
+        Ok(answer.blocking_recv().ok())
     }
 
-    // Criterion: each method sends its own command, carrying its arguments in
-    // their own fields — `load_branch` takes two sink names side by side, and a
-    // swap would capture the speaker and play into the combined sink;
-    // `set_branch_delay` takes two numbers side by side, given distinct values
-    // here so a swap shows.
-    #[test]
-    fn test_every_method_sends_its_own_command_with_its_arguments() {
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
-        }));
-
-        assert!(graph.sinks().is_ok());
-        assert!(graph.branches(COMBINED).is_ok());
-        assert!(graph.create_combined_sink(COMBINED).is_ok());
-        assert!(graph.load_branch(COMBINED, SPEAKER, 170).is_ok());
-        assert!(graph.unload_branch(7).is_ok());
-        assert!(graph.set_branch_delay(9, 250).is_ok());
-        assert!(graph.teardown(COMBINED).is_ok());
-        assert_eq!(graph.clear_stale_default_sink(COMBINED).ok(), Some(true));
-        assert_eq!(graph.retarget_streams(COMBINED).ok(), Some(3));
-        assert_eq!(graph.sink_volume(SPEAKER).ok(), Some(Some(0.5)));
-        assert!(graph.set_sink_volume(SPEAKER, 0.25).is_ok());
-
-        assert_eq!(
-            *received.lock().unwrap(),
-            vec![
-                "sinks".to_string(),
-                format!("branches {COMBINED}"),
-                format!("create_combined_sink {COMBINED}"),
-                format!("load_branch {COMBINED} {SPEAKER} 170"),
-                "unload_branch 7".to_string(),
-                "set_branch_delay 9 250".to_string(),
-                format!("teardown {COMBINED}"),
-                format!("clear_stale_default_sink {COMBINED}"),
-                format!("retarget_streams {COMBINED}"),
-                format!("sink_volume {SPEAKER}"),
-                format!("set_sink_volume {SPEAKER} 0.25"),
-            ]
-        );
-    }
-
-    // Criterion (#139, guard, the empty value): `retarget_streams` refuses an
-    // empty sink name before the loop thread sees it, as every other named
-    // command does; `streams_targeting` refuses it again on the loop side
-    // (`test_streams_targeting_of_an_empty_sink_name_takes_nothing`). The
-    // control: the combined sink's name reaches the loop, which answers.
-    #[test]
-    fn test_retarget_streams_refuses_an_empty_sink_name_before_the_loop() {
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
-        }));
-
-        assert!(matches!(
-            graph.retarget_streams(""),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(
-            received.lock().unwrap().is_empty(),
-            "an empty name reached the loop: {:?}",
-            received.lock().unwrap()
-        );
-
-        assert_eq!(graph.retarget_streams(COMBINED).ok(), Some(3));
-        assert_eq!(
-            *received.lock().unwrap(),
-            vec![format!("retarget_streams {COMBINED}")],
-            "control: the combined sink's name reaches the loop"
-        );
-    }
-
-    // Criteria (#146): a loop thread that never answers is an
-    // `AudioError::PipeWire` naming the 2 s wait, returned no earlier than 2 s
-    // after the send and not much later; and the handle stops waiting 1.7 s
-    // past the `start_by` it stamped — the 1.6 s a started command may take,
-    // and the margin — which is what lets a command started in time answer
-    // before its caller gives up. Every bound is a literal.
-    //
-    // Guard (the handle's own timeout is never `Expired`): the near miss is
-    // this parked loop, which never answers. The handle cannot tell whether the
-    // command ran, and `Expired` promises it did not: the answer is matched as
-    // the `PipeWire` variant with its whole message, which `Expired` is not.
-    //
-    // The upper bounds leave 250 ms of scheduling slack. They sit under 2.3 s
-    // on purpose: that is a wait counted from `start_by` instead of the send.
-    //
-    // The parked thread also takes 700 ms to start, and the bounds hold all
-    // the same: the wait runs from the stamp, so a thread slow to start
-    // shortens what is left of it instead of lengthening it. The near miss is
-    // a wait counted once the command is sent, which a thread started at once
-    // cannot tell from this one. 700 ms puts each such wait past the upper
-    // bounds: 1.6 s after the send ends at 2.3 s, 1.7 s at 2.4 s, 2 s at 2.7 s.
-    #[test]
-    fn test_a_command_without_an_answer_errs_2_s_after_the_send_and_is_not_expired() {
-        // The receivers are kept alive and never read: the thread is "stuck".
-        let parked: Arc<Mutex<Vec<mpsc::Receiver<Envelope>>>> = Arc::new(Mutex::new(Vec::new()));
-        let keep = Arc::clone(&parked);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            std::thread::sleep(Duration::from_millis(700));
-            let (tx, rx) = mpsc::channel::<Envelope>();
-            keep.lock().unwrap().push(rx);
-            Box::new(tx) as Box<dyn LoopSender>
-        }));
-
-        let started = Instant::now();
-        let answer = graph.sinks();
-        let gave_up = Instant::now();
-        let elapsed = gave_up.duration_since(started);
-
-        assert!(
-            elapsed >= Duration::from_secs(2),
-            "the handle waited the whole 2 s, waited {elapsed:?}"
-        );
-        assert!(
-            elapsed < Duration::from_millis(2250),
-            "and not much more, waited {elapsed:?}"
-        );
-        assert!(
-            matches!(
-                &answer,
-                Err(AudioError::PipeWire(m)) if m == "PipeWire graph thread did not answer within 2 s"
-            ),
-            "the handle's own timeout is an untyped error naming the wait, got {answer:?}"
-        );
-
-        // The command the parked loop never read still carries its stamp.
-        let start_by = parked
-            .lock()
-            .unwrap()
-            .first()
-            .and_then(|rx| rx.try_recv().ok())
-            .map(|envelope| envelope.start_by);
-        assert!(start_by.is_some(), "the command reached the parked loop");
-        let past_start_by = gave_up.duration_since(start_by.unwrap());
-        assert!(
-            past_start_by >= Duration::from_millis(1700),
-            "the wait ends 1.6 s and the margin past start_by, ended {past_start_by:?} past it"
-        );
-        assert!(
-            past_start_by < Duration::from_millis(1950),
-            "and not much later, ended {past_start_by:?} past start_by"
-        );
-    }
-
-    // Criterion: a loop thread that took the command and died without answering
-    // is an error at once — a dropped reply is not a slow one.
-    #[test]
-    fn test_a_dropped_reply_errs_without_waiting_for_the_timeout() {
-        let mut graph = PipeWireGraph::with_loop(Box::new(|_| dropping_loop()));
-
-        let started = Instant::now();
-        let answer = graph.sinks();
-
-        assert!(
-            matches!(answer, Err(AudioError::PipeWire(_))),
-            "got {answer:?}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "a dropped reply is known at once, waited {:?}",
-            started.elapsed()
-        );
+    /// Whether `sent` is a route the loop thread took and answered `Ok(())`.
+    fn routed(sent: &Result<Option<Result<(), RouterError>>, AudioError>) -> bool {
+        matches!(sent, Ok(Some(Ok(()))))
     }
 
     // Criterion: a thread that has died (its receiver dropped) is replaced by the
-    // call that finds it dead, and that very call is answered by the new thread;
-    // the next call reuses the new thread.
+    // send that finds it dead, and that very message is answered by the new
+    // thread; the next send reuses the new thread.
     #[test]
-    fn test_a_dead_loop_thread_is_replaced_by_one_answering_the_same_command() {
+    fn test_a_dead_loop_thread_is_replaced_by_one_answering_the_same_message() {
         let spawned = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&spawned);
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -4328,70 +3878,26 @@ mod tests {
             if count.fetch_add(1, Ordering::SeqCst) == 0 {
                 dead_loop()
             } else {
-                answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
+                answering_loop(Arc::clone(&log))
             }
         }));
 
-        let first = graph.sinks();
-        assert_eq!(first.ok(), Some(vec![SPEAKER.to_string()]));
+        let first = send_route(&mut graph, None);
+        assert!(routed(&first), "got {first:?}");
         assert_eq!(
             spawned.load(Ordering::SeqCst),
             2,
             "the dead thread and its replacement"
         );
 
-        let second = graph.sinks();
-        assert_eq!(second.ok(), Some(vec![SPEAKER.to_string()]));
+        let second = send_route(&mut graph, None);
+        assert!(routed(&second), "got {second:?}");
         assert_eq!(
             spawned.load(Ordering::SeqCst),
             2,
             "a live thread is not replaced"
         );
-        assert_eq!(*received.lock().unwrap(), vec!["sinks", "sinks"]);
-    }
-
-    // Criterion (non-nominal): an empty sink name or target sink is refused
-    // before anything reaches the loop.
-    #[test]
-    fn test_an_empty_name_is_refused_before_reaching_the_loop() {
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&received);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
-        }));
-
-        assert!(matches!(graph.teardown(""), Err(AudioError::PipeWire(_))));
-        assert!(matches!(
-            graph.create_combined_sink(""),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(matches!(
-            graph.load_branch("", SPEAKER, 50),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(matches!(
-            graph.load_branch(COMBINED, "", 50),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(matches!(graph.branches(""), Err(AudioError::PipeWire(_))));
-        assert!(matches!(
-            graph.clear_stale_default_sink(""),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(matches!(
-            graph.set_sink_volume("", 0.5),
-            Err(AudioError::PipeWire(_))
-        ));
-        assert!(matches!(
-            graph.sink_volume(""),
-            Err(AudioError::PipeWire(_))
-        ));
-
-        assert!(
-            received.lock().unwrap().is_empty(),
-            "no command reached the loop, got {:?}",
-            received.lock().unwrap()
-        );
+        assert_eq!(*received.lock().unwrap(), vec!["Route", "Route"]);
     }
 
     // Criterion: `PipeWireGraph::spawn()` starts no loop thread until the first
@@ -4402,45 +3908,6 @@ mod tests {
 
         assert!(graph.sender.is_none(), "no loop thread was started");
     }
-
-    // Criterion: a detached graph reaches no loop and no daemon — every command
-    // errs at once, a volume read included (#148): the graph cannot tell.
-    #[test]
-    fn test_detached_graph_errs_at_once_without_a_loop() {
-        let mut graph = PipeWireGraph::detached();
-        let started = Instant::now();
-
-        let sinks = graph.sinks();
-        let teardown = graph.teardown(COMBINED);
-        let retune = graph.set_branch_delay(1, 120);
-        let clear = graph.clear_stale_default_sink(COMBINED);
-        let volume = graph.sink_volume(SPEAKER);
-
-        assert!(
-            matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
-            "got {sinks:?}"
-        );
-        assert!(matches!(teardown, Err(AudioError::PipeWire(_))));
-        assert!(
-            matches!(retune, Err(AudioError::PipeWire(_))),
-            "a retune goes through the loop like every command, got {retune:?}"
-        );
-        assert!(
-            matches!(clear, Err(AudioError::PipeWire(_))),
-            "a clear goes through the loop like every command, got {clear:?}"
-        );
-        assert!(
-            matches!(&volume, Err(AudioError::PipeWire(m)) if m.contains("not running")),
-            "a volume read goes through the loop like every command, got {volume:?}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "no timeout is waited out, waited {:?}",
-            started.elapsed()
-        );
-    }
-
-    // ─── #147: the graph as the router handle's transport ────────────────────
 
     // Criterion (#147, non-nominal): with no graph thread at all — a detached
     // graph — a message is refused at once with "not running", as every
@@ -4483,138 +3950,7 @@ mod tests {
         );
     }
 
-    // ─── #148: a level read the graph could not answer is an `Err` ─────────
-
-    /// A speaker sink the volume loop answers with a level.
-    const LEVELLED: &str = "bluez_output.AA_BB_CC_DD_EE_0A.1";
-    /// A speaker sink the volume loop answers with no level: no route, or a
-    /// route with no channel volume.
-    const NO_LEVEL: &str = "bluez_output.AA_BB_CC_DD_EE_0B.1";
-    /// A speaker sink the volume loop answers with its own error.
-    const BROKEN: &str = "bluez_output.AA_BB_CC_DD_EE_0C.1";
-    /// The loop's own error for `BROKEN`, which the handle must hand back.
-    const LOOP_ERROR: &str = "the speaker's Route enumeration timed out";
-
-    /// A loop thread that answers `SinkVolume` by sink name and records each
-    /// sink it was asked about. A name it does not know — the empty one
-    /// included — is `Ok(None)`, as the real loop's mirror lookup, matching
-    /// nothing, would answer. Every other command is dropped unanswered.
-    fn volume_loop(received: Arc<Mutex<Vec<String>>>) -> Box<dyn LoopSender> {
-        let (tx, rx) = mpsc::channel::<Envelope>();
-        std::thread::spawn(move || {
-            for envelope in rx {
-                if let Command::SinkVolume { sink, reply } = envelope.command {
-                    let answer = match sink.as_str() {
-                        LEVELLED => Ok(Some(0.42)),
-                        BROKEN => Err(AudioError::PipeWire(LOOP_ERROR.to_string())),
-                        _ => Ok(None),
-                    };
-                    received.lock().unwrap().push(sink);
-                    let _ = reply.send(answer);
-                }
-            }
-        });
-        Box::new(tx)
-    }
-
-    /// A graph whose every loop thread is a [`volume_loop`] recording into
-    /// the returned log.
-    fn volume_graph() -> (PipeWireGraph, Arc<Mutex<Vec<String>>>) {
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&received);
-        let graph = PipeWireGraph::with_loop(Box::new(move |_| volume_loop(Arc::clone(&log))));
-        (graph, received)
-    }
-
-    // Criterion (#148): the handle hands the loop's own answer back as is —
-    // `Ok(Some(_))`, `Ok(None)` and `Err` each, the loop's message included.
-    // The near miss is `BROKEN`: swallowing the loop's `Err` into `Ok(None)`
-    // passes the other two reads.
-    #[test]
-    fn test_sink_volume_hands_back_the_loop_s_answer_as_is() {
-        let (mut graph, received) = volume_graph();
-
-        assert_eq!(graph.sink_volume(LEVELLED).ok(), Some(Some(0.42)));
-        assert_eq!(graph.sink_volume(NO_LEVEL).ok(), Some(None));
-        let broken = graph.sink_volume(BROKEN);
-        assert!(
-            matches!(&broken, Err(AudioError::PipeWire(m)) if m == LOOP_ERROR),
-            "the loop's own error is handed back, got {broken:?}"
-        );
-        assert_eq!(*received.lock().unwrap(), vec![LEVELLED, NO_LEVEL, BROKEN]);
-    }
-
-    // Criterion (#148): a loop thread that does not answer a level read
-    // within the reply timeout is an `Err` naming the timeout — the graph
-    // cannot tell — not a sink without a level.
-    #[test]
-    fn test_sink_volume_without_an_answer_errs_after_the_timeout() {
-        // The receivers are kept alive and never read: the thread is "stuck".
-        let parked: Arc<Mutex<Vec<mpsc::Receiver<Envelope>>>> = Arc::new(Mutex::new(Vec::new()));
-        let keep = Arc::clone(&parked);
-        let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            let (tx, rx) = mpsc::channel::<Envelope>();
-            keep.lock().unwrap().push(rx);
-            Box::new(tx) as Box<dyn LoopSender>
-        }));
-
-        let answer = graph.sink_volume(SPEAKER);
-
-        assert!(
-            matches!(&answer, Err(AudioError::PipeWire(m)) if m.contains("did not answer within 2 s")),
-            "a timed-out read is an Err naming the timeout, got {answer:?}"
-        );
-    }
-
-    // Criterion (#148): a loop thread that took the level read and dropped it
-    // unanswered is an `Err`, at once.
-    #[test]
-    fn test_sink_volume_with_a_dropped_reply_errs_at_once() {
-        let mut graph = PipeWireGraph::with_loop(Box::new(|_| dropping_loop()));
-
-        let started = Instant::now();
-        let answer = graph.sink_volume(SPEAKER);
-
-        assert!(
-            matches!(&answer, Err(AudioError::PipeWire(m)) if m.contains("dropped the command")),
-            "a dropped read is an Err, got {answer:?}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "a dropped reply is known at once, waited {:?}",
-            started.elapsed()
-        );
-    }
-
-    // Criterion (#148, guard, the empty value): an empty sink name is an
-    // `Err` and sends no command. The near miss is the empty name itself:
-    // without the guard it reaches the loop, which matches nothing and
-    // answers `Ok(None)` — a sink with no level, to the caller. The control:
-    // a real sink name reaches the loop, which answers.
-    #[test]
-    fn test_sink_volume_refuses_an_empty_sink_name_before_the_loop() {
-        let (mut graph, received) = volume_graph();
-
-        let refused = graph.sink_volume("");
-        assert!(
-            matches!(&refused, Err(AudioError::PipeWire(m)) if m.contains("empty")),
-            "an empty name is refused, got {refused:?}"
-        );
-        assert!(
-            received.lock().unwrap().is_empty(),
-            "an empty name reached the loop: {:?}",
-            received.lock().unwrap()
-        );
-
-        assert_eq!(graph.sink_volume(LEVELLED).ok(), Some(Some(0.42)));
-        assert_eq!(
-            *received.lock().unwrap(),
-            vec![LEVELLED],
-            "control: a real sink name reaches the loop"
-        );
-    }
-
-    // ─── #146: a command not started by its deadline expires ────────────────
+    // ─── #146: the start deadline's constants, and the stamp across a resend ─
     //
     // Every instant below is one base `Instant` plus a literal offset, and
     // every expected duration is a literal: none is computed from
@@ -4635,7 +3971,8 @@ mod tests {
 
     // Criterion (#146): with `COMMAND_TIMEOUT` the two add up to a wait of
     // exactly 2 s. What the handle really waits is measured in
-    // `test_a_command_without_an_answer_errs_2_s_after_the_send_and_is_not_expired`.
+    // `router_handle`'s
+    // `test_every_request_call_gives_up_2_s_after_it_was_made_and_closes_its_reply`.
     #[test]
     fn test_start_budget_command_timeout_and_reply_margin_add_up_to_2_s() {
         assert_eq!(
@@ -4653,447 +3990,10 @@ mod tests {
         assert!(REPLY_MARGIN > Duration::ZERO);
     }
 
-    /// The eleven variants of [`Command`], in declaration order.
-    const VARIANTS: [&str; 11] = [
-        "Sinks",
-        "Branches",
-        "CreateCombinedSink",
-        "LoadBranch",
-        "UnloadBranch",
-        "SetBranchDelay",
-        "Teardown",
-        "ClearStaleDefaultSink",
-        "RetargetStreams",
-        "SinkVolume",
-        "SetSinkVolume",
-    ];
-
-    /// What a reply channel holds right now.
-    #[derive(Debug, PartialEq)]
-    enum Held {
-        /// Nothing was sent, and the command — its reply sender — is alive.
-        Nothing,
-        /// Nothing was sent, and the command is gone.
-        Dropped,
-        /// `Err(AudioError::Expired)`.
-        Expired,
-        /// Any other answer.
-        Other(String),
-    }
-
-    /// Take what `answer` holds, without waiting.
-    fn held<R: std::fmt::Debug>(answer: &mpsc::Receiver<Result<R, AudioError>>) -> Held {
-        match answer.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => Held::Nothing,
-            Err(mpsc::TryRecvError::Disconnected) => Held::Dropped,
-            Ok(Err(AudioError::Expired)) => Held::Expired,
-            Ok(other) => Held::Other(format!("{other:?}")),
-        }
-    }
-
-    /// An envelope around a `SetSinkVolume` of [`SPEAKER`] to `level`, to start
-    /// by `start_by`, and the receiver of its reply. The level tells the
-    /// commands of one queue apart.
-    fn volume_envelope(
-        start_by: Instant,
-        level: f32,
-    ) -> (Envelope, mpsc::Receiver<Result<(), AudioError>>) {
-        let (reply, answer) = mpsc::channel();
-        let envelope = Envelope {
-            start_by,
-            command: Command::SetSinkVolume {
-                sink: SPEAKER.to_string(),
-                level,
-                reply,
-            },
-        };
-        (envelope, answer)
-    }
-
-    /// The level of each command in `ran`, in order; `None` for one that is
-    /// not a `SetSinkVolume`.
-    fn levels(ran: &[Command]) -> Vec<Option<f32>> {
-        ran.iter()
-            .map(|command| match command {
-                Command::SetSinkVolume { level, .. } => Some(*level),
-                _ => None,
-            })
-            .collect()
-    }
-
-    // Criterion (#146): a command taken out of the queue at `now > start_by`
-    // is not run and its reply receives `Err(AudioError::Expired)` — here one
-    // nanosecond past, the smallest "strictly past" an `Instant` can hold. It
-    // answers once, and the command is gone with it.
-    #[test]
-    fn test_start_or_expire_one_nanosecond_past_start_by_answers_expired_and_yields_nothing() {
-        let base = Instant::now();
-        let (envelope, answer) = volume_envelope(base + Duration::from_millis(300), 0.25);
-
-        let yielded = start_or_expire(envelope, base + Duration::from_nanos(300_000_001));
-
-        assert!(yielded.is_none(), "an expired command is not handed on");
-        assert_eq!(held(&answer), Held::Expired);
-        assert_eq!(
-            held(&answer),
-            Held::Dropped,
-            "one answer, then the command is gone"
-        );
-    }
-
-    // Edge case (#146): the caller of an expired command has stopped waiting
-    // and dropped its end of the reply — the usual state of a command taken
-    // out that late. The check still yields nothing, and the answer into the
-    // closed reply is dropped rather than failing the loop thread.
-    #[test]
-    fn test_start_or_expire_of_an_expired_command_nobody_waits_for_yields_nothing() {
-        let base = Instant::now();
-        let (envelope, answer) = volume_envelope(base + Duration::from_millis(300), 0.25);
-        drop(answer);
-
-        let yielded = start_or_expire(envelope, base + Duration::from_millis(2500));
-
-        assert!(yielded.is_none(), "an expired command is not handed on");
-    }
-
-    /// Hand `start_or_expire` a `LoadBranch` to start by `start_by`, at `now`,
-    /// and require it back as it went in — every field, and the reply channel
-    /// it came with — with nothing sent on that reply.
-    fn assert_handed_on_untouched(start_by: Instant, now: Instant) {
-        let (reply, answer) = mpsc::channel();
-        let envelope = Envelope {
-            start_by,
-            command: Command::LoadBranch {
-                sink_name: COMBINED.to_string(),
-                real_sink: SPEAKER.to_string(),
-                latency_ms: 170,
-                reply,
-            },
-        };
-
-        let yielded = start_or_expire(envelope, now);
-
-        let fields = match yielded {
-            Some(Command::LoadBranch {
-                sink_name,
-                real_sink,
-                latency_ms,
-                reply,
-            }) => Some((sink_name, real_sink, latency_ms, reply)),
-            _ => None,
-        };
-        assert!(
-            fields.is_some(),
-            "a command still in time is handed on, as the variant it went in as"
-        );
-        let (sink_name, real_sink, latency_ms, reply) = fields.unwrap();
-        assert_eq!(
-            held(&answer),
-            Held::Nothing,
-            "the check itself sends nothing on the reply"
-        );
-        assert_eq!(
-            (sink_name.as_str(), real_sink.as_str(), latency_ms),
-            (COMBINED, SPEAKER, 170)
-        );
-        // The reply handed on is the one the command came with.
-        assert!(reply.send(Ok(())).is_ok());
-        assert!(matches!(answer.try_recv(), Ok(Ok(()))));
-    }
-
-    // Criterion (#146, guard): expired means strictly past `start_by`. The
-    // near miss is `now == start_by`, which a `>=` check expires: it is handed
-    // on untouched, and the check sends nothing on its reply.
-    #[test]
-    fn test_start_or_expire_at_start_by_hands_the_command_on_untouched_and_answers_nothing() {
-        let base = Instant::now();
-
-        assert_handed_on_untouched(
-            base + Duration::from_millis(300),
-            base + Duration::from_millis(300),
-        );
-    }
-
-    // Criterion (#146): a command taken out earlier than `start_by` is handed
-    // on untouched — one nanosecond before it.
-    #[test]
-    fn test_start_or_expire_one_nanosecond_before_start_by_hands_the_command_on_untouched() {
-        let base = Instant::now();
-
-        assert_handed_on_untouched(
-            base + Duration::from_millis(300),
-            base + Duration::from_nanos(299_999_999),
-        );
-    }
-
-    // Criterion (#146): a command taken out earlier than `start_by` is handed
-    // on untouched — with its whole budget left, the nominal case.
-    #[test]
-    fn test_start_or_expire_with_its_whole_budget_left_hands_the_command_on_untouched() {
-        let base = Instant::now();
-
-        assert_handed_on_untouched(base + Duration::from_millis(300), base);
-    }
-
-    /// Expire the command `make` builds — taken out one nanosecond past its
-    /// `start_by` — and report the name it gives the log, whether the check
-    /// handed it on, and what its reply holds.
-    fn expire<R: std::fmt::Debug>(
-        make: impl FnOnce(Reply<R>) -> Command,
-    ) -> (&'static str, bool, Held) {
-        let base = Instant::now();
-        let (reply, answer) = mpsc::channel();
-        let command = make(reply);
-        let name = command.name();
-        let yielded = start_or_expire(
-            Envelope {
-                start_by: base + Duration::from_millis(300),
-                command,
-            },
-            base + Duration::from_nanos(300_000_001),
-        );
-        // Read while `yielded` is alive: a command handed on anyway still
-        // holds its reply sender, and reads as `Nothing`, not as `Dropped`.
-        let reply_holds = held(&answer);
-        (name, yielded.is_some(), reply_holds)
-    }
-
-    /// One command of each variant, expired, in declaration order: what
-    /// [`expire`] reports for each. The replies carry six different types, so
-    /// each row is its own channel.
-    fn expire_one_of_each() -> [(&'static str, bool, Held); 11] {
-        [
-            expire(|reply| Command::Sinks { reply }),
-            expire(|reply| Command::Branches {
-                sink_name: COMBINED.to_string(),
-                reply,
-            }),
-            expire(|reply| Command::CreateCombinedSink {
-                sink_name: COMBINED.to_string(),
-                reply,
-            }),
-            expire(|reply| Command::LoadBranch {
-                sink_name: COMBINED.to_string(),
-                real_sink: SPEAKER.to_string(),
-                latency_ms: 170,
-                reply,
-            }),
-            expire(|reply| Command::UnloadBranch { id: 7, reply }),
-            expire(|reply| Command::SetBranchDelay {
-                id: 9,
-                delay_ms: 250,
-                reply,
-            }),
-            expire(|reply| Command::Teardown {
-                sink_name: COMBINED.to_string(),
-                reply,
-            }),
-            expire(|reply| Command::ClearStaleDefaultSink {
-                sink_name: COMBINED.to_string(),
-                reply,
-            }),
-            expire(|reply| Command::RetargetStreams {
-                sink_name: COMBINED.to_string(),
-                reply,
-            }),
-            expire(|reply| Command::SinkVolume {
-                sink: SPEAKER.to_string(),
-                reply,
-            }),
-            expire(|reply| Command::SetSinkVolume {
-                sink: SPEAKER.to_string(),
-                level: 0.25,
-                reply,
-            }),
-        ]
-    }
-
-    // Criterion (#146, guard): every `Command` variant, all eleven, answers
-    // `Err(AudioError::Expired)` on its own reply channel when expired. The
-    // near miss is a variant reaching an arm that drops its reply: its caller
-    // would read "dropped the command without answering", a `PipeWire` error
-    // — `Held::Dropped` here, where `Held::Expired` is wanted, per variant.
-    #[test]
-    fn test_start_or_expire_answers_expired_on_the_reply_of_each_of_the_eleven_commands() {
-        let expired = expire_one_of_each();
-
-        let names = expired.each_ref().map(|(name, _, _)| *name);
-        assert_eq!(names, VARIANTS, "the table names every variant, once");
-        for (name, handed_on, reply) in &expired {
-            assert!(!handed_on, "{name} was handed on although expired");
-            assert_eq!(*reply, Held::Expired, "{name} did not answer its expiry");
-        }
-    }
-
-    // The log of an expiry names the command by its variant (#146), and
-    // nothing else tells one expired command from another. Each row is built
-    // as one variant and must give that variant's name, stated in `VARIANTS`:
-    // a name that is empty, or another variant's, differs from it.
-    #[test]
-    fn test_each_of_the_eleven_commands_names_its_own_variant_for_the_log() {
-        let names = expire_one_of_each().map(|(name, _, _)| name);
-
-        assert_eq!(names, VARIANTS);
-    }
-
-    // Criterion (#146, guard): an expired command is never run — the runner
-    // is never called for it. The near miss is a check that answers `Expired`
-    // and then hands the command on anyway: the two replies alone would look
-    // right, so the runner's own log is read, and holds only the command that
-    // was still in time. That third command is the control: the drain goes on
-    // past an expiry, and answers nothing for a command it handed to the
-    // runner.
-    #[test]
-    fn test_drain_inbox_never_runs_an_expired_command_and_goes_on_to_the_next() {
-        let base = Instant::now();
-        let (late, late_answer) = volume_envelope(base + Duration::from_millis(300), 0.25);
-        let (later, later_answer) = volume_envelope(base + Duration::from_millis(400), 0.5);
-        let (in_time, in_time_answer) = volume_envelope(base + Duration::from_millis(900), 0.75);
-        let inbox = RefCell::new(VecDeque::from([late, later, in_time]));
-        let mut ran = Vec::new();
-
-        drain_inbox(
-            &inbox,
-            || base + Duration::from_millis(500),
-            |command| ran.push(command),
-        );
-
-        assert_eq!(
-            levels(&ran),
-            vec![Some(0.75)],
-            "only the command still in time reaches the runner"
-        );
-        assert_eq!(held(&late_answer), Held::Expired);
-        assert_eq!(held(&later_answer), Held::Expired);
-        assert_eq!(
-            held(&in_time_answer),
-            Held::Nothing,
-            "the drain answers nothing for a command it ran"
-        );
-        assert!(inbox.borrow().is_empty(), "every command was taken out");
-    }
-
-    // Criterion (#146, guard): the clock is read once per command, when that
-    // command is taken out — not once for the whole drain. The clock stands
-    // before both deadlines until a command runs, and running the first takes
-    // it past the second one's `start_by`, as a slow command does. The near
-    // miss is one `now` read before the drain, or one read per command made
-    // up front: under either, both commands run.
-    //
-    // Pinned: exactly one read per command taken out. A drain that reads the
-    // clock before finding the queue empty makes a third read.
-    #[test]
-    fn test_drain_inbox_reads_the_clock_once_per_command_so_one_overtaken_by_a_slow_one_expires() {
-        let base = Instant::now();
-        let (first, first_answer) = volume_envelope(base + Duration::from_millis(300), 0.25);
-        let (second, second_answer) = volume_envelope(base + Duration::from_millis(310), 0.75);
-        let inbox = RefCell::new(VecDeque::from([first, second]));
-        let time = Cell::new(base + Duration::from_millis(100));
-        let reads = Cell::new(0_u32);
-        let mut ran = Vec::new();
-
-        drain_inbox(
-            &inbox,
-            || {
-                reads.set(reads.get() + 1);
-                time.get()
-            },
-            |command| {
-                ran.push(command);
-                time.set(base + Duration::from_secs(2));
-            },
-        );
-
-        assert_eq!(
-            levels(&ran),
-            vec![Some(0.25)],
-            "the first ran, the second did not"
-        );
-        assert_eq!(held(&first_answer), Held::Nothing);
-        assert_eq!(
-            held(&second_answer),
-            Held::Expired,
-            "the second's start_by passed while the first ran"
-        );
-        assert_eq!(reads.get(), 2, "one clock read per command taken out");
-        assert!(inbox.borrow().is_empty(), "every command was taken out");
-    }
-
-    // Criterion (#146): a command taken out at `now == start_by`, or earlier,
-    // is handed to the runner untouched, in queue order, and the drain sends
-    // nothing on its reply. The first command is the near miss of the strict
-    // comparison, seen through the drain: its `start_by` is the very instant
-    // the clock reads.
-    #[test]
-    fn test_drain_inbox_runs_every_command_in_time_in_queue_order_start_by_itself_included() {
-        let base = Instant::now();
-        let (at, at_answer) = volume_envelope(base + Duration::from_millis(500), 0.25);
-        let (just, just_answer) = volume_envelope(base + Duration::from_nanos(500_000_001), 0.5);
-        let (ample, ample_answer) = volume_envelope(base + Duration::from_secs(2), 0.75);
-        let inbox = RefCell::new(VecDeque::from([at, just, ample]));
-        let reads = Cell::new(0_u32);
-        let mut ran = Vec::new();
-
-        drain_inbox(
-            &inbox,
-            || {
-                reads.set(reads.get() + 1);
-                base + Duration::from_millis(500)
-            },
-            |command| ran.push(command),
-        );
-
-        assert_eq!(levels(&ran), vec![Some(0.25), Some(0.5), Some(0.75)]);
-        assert_eq!(held(&at_answer), Held::Nothing);
-        assert_eq!(held(&just_answer), Held::Nothing);
-        assert_eq!(held(&ample_answer), Held::Nothing);
-        assert_eq!(reads.get(), 3, "one clock read per command taken out");
-        assert!(inbox.borrow().is_empty(), "every command was taken out");
-    }
-
-    // Constraint (#146, where the check sits): a command enters the inbox
-    // while the loop iterates, and a running command iterates it. One queued
-    // while an earlier command runs is taken out by the same drain, with a
-    // clock read of its own — left behind, it would wait for the next event
-    // of a loop that blocks without a timeout. The near misses: a drain over
-    // a snapshot of the queue, which never sees it, and a drain that keeps
-    // the queue borrowed while the runner runs, which the push below trips.
-    #[test]
-    fn test_drain_inbox_takes_out_a_command_queued_while_an_earlier_one_runs() {
-        let base = Instant::now();
-        let (first, first_answer) = volume_envelope(base + Duration::from_millis(300), 0.25);
-        let (arriving, arriving_answer) = volume_envelope(base + Duration::from_millis(600), 0.75);
-        let inbox = RefCell::new(VecDeque::from([first]));
-        let mut arriving = Some(arriving);
-        let reads = Cell::new(0_u32);
-        let mut ran = Vec::new();
-
-        drain_inbox(
-            &inbox,
-            || {
-                reads.set(reads.get() + 1);
-                base + Duration::from_millis(100)
-            },
-            |command| {
-                ran.push(command);
-                // As the channel callback does while a command iterates the loop.
-                if let Some(envelope) = arriving.take() {
-                    inbox.borrow_mut().push_back(envelope);
-                }
-            },
-        );
-
-        assert_eq!(levels(&ran), vec![Some(0.25), Some(0.75)]);
-        assert_eq!(held(&first_answer), Held::Nothing);
-        assert_eq!(held(&arriving_answer), Held::Nothing);
-        assert_eq!(reads.get(), 2, "one clock read per command taken out");
-        assert!(inbox.borrow().is_empty(), "every command was taken out");
-    }
-
     /// A sender that records the `start_by` of every envelope it is handed,
     /// then passes the envelope on to `inner`.
     struct StampRecorder {
-        stamps: Arc<Mutex<Vec<Instant>>>,
+        stamps: Arc<Mutex<Vec<Option<Instant>>>>,
         inner: Box<dyn LoopSender>,
     }
 
@@ -5105,179 +4005,51 @@ mod tests {
     }
 
     /// A healthy loop thread behind a [`StampRecorder`] writing into `stamps`.
-    fn stamp_recording_loop(stamps: Arc<Mutex<Vec<Instant>>>) -> Box<dyn LoopSender> {
+    fn stamp_recording_loop(stamps: Arc<Mutex<Vec<Option<Instant>>>>) -> Box<dyn LoopSender> {
         Box::new(StampRecorder {
             stamps,
-            inner: answering_loop(vec![SPEAKER.to_string()], Arc::new(Mutex::new(Vec::new()))),
+            inner: answering_loop(Arc::new(Mutex::new(Vec::new()))),
         })
     }
 
-    /// Call one method of `graph`, which the loop must answer, and return the
-    /// instants read just before and just after the call.
-    fn timed<T>(
-        graph: &mut PipeWireGraph,
-        call: impl FnOnce(&mut PipeWireGraph) -> Result<T, AudioError>,
-    ) -> (Instant, Instant) {
-        let before = Instant::now();
-        let answered = call(graph).is_ok();
-        let after = Instant::now();
-        assert!(answered, "the healthy loop answers every command");
-        (before, after)
-    }
-
-    // Criterion (#146): every command the handle sends reaches the loop in an
-    // envelope whose `start_by` is the send instant plus 300 ms — each of the
-    // eleven methods, bounded by the instants read around its own call. Both
-    // bounds are literal: a budget of zero falls under the lower one, a
-    // budget as long as the whole wait goes over the upper one.
+    // Criterion (#146, guard): a message resent to a replacement thread
+    // carries the `start_by` it was stamped with — the handle stamps it once,
+    // and the graph hands the envelope on as it came. The near miss is a
+    // replacement thread that takes 50 ms to start: a stamp made again once
+    // it is there lands 50 ms past the one sent, where the very instant is
+    // wanted. A background message keeps its absence of one just the same.
     #[test]
-    fn test_every_method_s_command_reaches_the_loop_stamped_300_ms_after_its_send() {
+    fn test_a_message_resent_to_a_replacement_thread_keeps_the_start_by_it_was_stamped_with() {
         let stamps = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&stamps);
-        let mut graph =
-            PipeWireGraph::with_loop(Box::new(move |_| stamp_recording_loop(Arc::clone(&log))));
-
-        let sent = [
-            ("sinks", timed(&mut graph, |g| g.sinks())),
-            ("branches", timed(&mut graph, |g| g.branches(COMBINED))),
-            (
-                "create_combined_sink",
-                timed(&mut graph, |g| g.create_combined_sink(COMBINED)),
-            ),
-            (
-                "load_branch",
-                timed(&mut graph, |g| g.load_branch(COMBINED, SPEAKER, 170)),
-            ),
-            ("unload_branch", timed(&mut graph, |g| g.unload_branch(7))),
-            (
-                "set_branch_delay",
-                timed(&mut graph, |g| g.set_branch_delay(9, 250)),
-            ),
-            ("teardown", timed(&mut graph, |g| g.teardown(COMBINED))),
-            (
-                "clear_stale_default_sink",
-                timed(&mut graph, |g| g.clear_stale_default_sink(COMBINED)),
-            ),
-            (
-                "retarget_streams",
-                timed(&mut graph, |g| g.retarget_streams(COMBINED)),
-            ),
-            ("sink_volume", timed(&mut graph, |g| g.sink_volume(SPEAKER))),
-            (
-                "set_sink_volume",
-                timed(&mut graph, |g| g.set_sink_volume(SPEAKER, 0.25)),
-            ),
-        ];
-
-        let stamps = stamps.lock().unwrap();
-        assert_eq!(stamps.len(), 11, "one envelope per method called");
-        for ((method, (before, after)), start_by) in sent.iter().zip(stamps.iter()) {
-            assert!(
-                *start_by >= *before + Duration::from_millis(300),
-                "{method}: start_by is under 300 ms after the send, {:?} after the call began",
-                start_by.saturating_duration_since(*before)
-            );
-            assert!(
-                *start_by <= *after + Duration::from_millis(300),
-                "{method}: start_by is over 300 ms after the send, {:?} after the call ended",
-                start_by.saturating_duration_since(*after)
-            );
-        }
-    }
-
-    // Criterion (#146, guard): a command resent to a replacement thread
-    // carries the `start_by` it was first stamped with — it is stamped once.
-    // The near miss is a replacement thread that takes 50 ms to start: a
-    // stamp made again once it is there lands, budget included, at least
-    // 50 ms past the bound below.
-    //
-    // That bound is the instant the first thread was asked for, plus 300 ms:
-    // `ask` stamps the envelope before it sends it, so before any thread is
-    // started, and the stamp the replacement receives can only be at or under
-    // it. The instant is read inside the spawner, so neither bound depends on
-    // how the test thread is scheduled.
-    #[test]
-    fn test_a_command_resent_to_a_replacement_thread_keeps_the_start_by_it_was_stamped_with() {
-        let stamps = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&stamps);
-        // When each loop thread was asked for: the dead one, then its replacement.
-        let asked: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&asked);
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&asked);
         let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
-            let mut asked = record.lock().unwrap();
-            asked.push(Instant::now());
-            if asked.len() == 1 {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
                 return dead_loop();
             }
             std::thread::sleep(Duration::from_millis(50));
             stamp_recording_loop(Arc::clone(&log))
         }));
+        let start_by = Instant::now() + Duration::from_millis(300);
 
-        let before = Instant::now();
-        let answer = graph.sinks();
+        let answer = send_route(&mut graph, Some(start_by));
 
-        assert_eq!(answer.ok(), Some(vec![SPEAKER.to_string()]));
-        let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), 2, "the dead thread and its replacement");
-        let first_asked = asked.first().copied().unwrap();
-        let stamps = stamps.lock().unwrap();
-        assert_eq!(stamps.len(), 1, "the replacement received the command once");
-        let start_by = stamps.first().copied().unwrap();
-        assert!(
-            start_by >= before + Duration::from_millis(300),
-            "the command was stamped 300 ms after its send, {:?} after the call began",
-            start_by.saturating_duration_since(before)
+        assert!(routed(&answer), "got {answer:?}");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            2,
+            "the dead thread and its replacement"
         );
-        assert!(
-            start_by <= first_asked + Duration::from_millis(300),
-            "start_by moved after the first thread was asked for: it is {:?} past that instant",
-            start_by.saturating_duration_since(first_asked)
+        assert_eq!(
+            *stamps.lock().unwrap(),
+            vec![Some(start_by)],
+            "the replacement received the message once, with the stamp it was sent with"
         );
-    }
 
-    /// A loop thread that expires every command it receives, whatever its
-    /// `start_by`: what a loop that took each one out too late answers.
-    fn expiring_loop() -> Box<dyn LoopSender> {
-        let (tx, rx) = mpsc::channel::<Envelope>();
-        std::thread::spawn(move || {
-            for envelope in rx {
-                envelope.command.expire();
-            }
-        });
-        Box::new(tx)
-    }
-
-    /// Require `answer` to be the typed expiry, naming `method` when it is not.
-    fn assert_expired<T: std::fmt::Debug>(method: &str, answer: Result<T, AudioError>) {
-        assert!(
-            matches!(answer, Err(AudioError::Expired)),
-            "{method} handed back {answer:?}"
-        );
-    }
-
-    // Criterion (#146, guard): the handle hands an `Err(AudioError::Expired)`
-    // answered by the loop back as is — still the typed variant, which is what
-    // maps to a 503. The near miss is an answer passed through a catch-all
-    // into `AudioError::PipeWire`: an `Err` all the same, so the variant is
-    // matched, on each of the eleven methods.
-    #[test]
-    fn test_every_method_hands_back_an_expired_answer_as_the_typed_variant() {
-        let mut graph = PipeWireGraph::with_loop(Box::new(|_| expiring_loop()));
-
-        assert_expired("sinks", graph.sinks());
-        assert_expired("branches", graph.branches(COMBINED));
-        assert_expired("create_combined_sink", graph.create_combined_sink(COMBINED));
-        assert_expired("load_branch", graph.load_branch(COMBINED, SPEAKER, 170));
-        assert_expired("unload_branch", graph.unload_branch(7));
-        assert_expired("set_branch_delay", graph.set_branch_delay(9, 250));
-        assert_expired("teardown", graph.teardown(COMBINED));
-        assert_expired(
-            "clear_stale_default_sink",
-            graph.clear_stale_default_sink(COMBINED),
-        );
-        assert_expired("retarget_streams", graph.retarget_streams(COMBINED));
-        assert_expired("sink_volume", graph.sink_volume(SPEAKER));
-        assert_expired("set_sink_volume", graph.set_sink_volume(SPEAKER, 0.25));
+        let background = send_route(&mut graph, None);
+        assert!(routed(&background), "got {background:?}");
+        assert_eq!(*stamps.lock().unwrap(), vec![Some(start_by), None]);
     }
 
     // ─── The loop side: connection lifecycle over a fake connector ───────────
@@ -6219,7 +4991,7 @@ mod tests {
                 if let Some(events) = events {
                     let _ = events.send(GraphEvent::Reconnected);
                 }
-                answering_loop(vec![SPEAKER.to_string()], Arc::new(Mutex::new(Vec::new())))
+                answering_loop(Arc::new(Mutex::new(Vec::new())))
             },
         ))
     }
@@ -6246,8 +5018,8 @@ mod tests {
         );
         assert_eq!(receiver.try_recv().ok(), Some(GraphEvent::Reconnected));
 
-        // A command reuses the thread `watch` started.
-        assert!(graph.sinks().is_ok());
+        // A message reuses the thread `watch` started.
+        assert!(routed(&send_route(&mut graph, None)));
         assert_eq!(handed.lock().unwrap().len(), 1, "no second thread");
     }
 
@@ -6268,15 +5040,15 @@ mod tests {
                 if let Some(events) = events {
                     let _ = events.send(GraphEvent::Reconnected);
                 }
-                answering_loop(vec![SPEAKER.to_string()], Arc::new(Mutex::new(Vec::new())))
+                answering_loop(Arc::new(Mutex::new(Vec::new())))
             },
         ));
         let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
         graph.watch(events);
-        let answer = graph.sinks();
+        let answer = send_route(&mut graph, None);
 
-        assert_eq!(answer.ok(), Some(vec![SPEAKER.to_string()]));
+        assert!(routed(&answer), "got {answer:?}");
         assert_eq!(
             *handed.lock().unwrap(),
             vec![true, true],
@@ -6293,13 +5065,13 @@ mod tests {
         let mut graph = recording_graph(Arc::clone(&handed));
         assert!(graph.sender.is_none(), "nothing started before a command");
 
-        assert!(graph.sinks().is_ok());
+        assert!(routed(&send_route(&mut graph, None)));
 
         assert_eq!(*handed.lock().unwrap(), vec![false]);
     }
 
     // Criterion: `detached()` emits nothing, even watched, and reaches no
-    // daemon: its commands still err at once. The control that the channel
+    // daemon: its messages still err at once. The control that the channel
     // works at all is the watch test above.
     #[test]
     fn test_detached_graph_watched_emits_nothing() {
@@ -6307,11 +5079,11 @@ mod tests {
         let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
         graph.watch(events);
-        let sinks = graph.sinks();
+        let sent = send_route(&mut graph, None);
 
         assert!(
-            matches!(&sinks, Err(AudioError::PipeWire(m)) if m.contains("not running")),
-            "got {sinks:?}"
+            matches!(&sent, Err(AudioError::PipeWire(m)) if m.contains("not running")),
+            "got {sent:?}"
         );
         assert!(
             receiver.try_recv().is_err(),

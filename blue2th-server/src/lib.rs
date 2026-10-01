@@ -54,7 +54,7 @@ pub mod targets;
 pub mod tone;
 pub mod watchdog;
 
-use audio::{AudioEngine, AudioError, AudioRouter};
+use audio::{AudioEngine, AudioError};
 use auth::AuthStore;
 use router_handle::{RouterError, RouterHandle};
 use spotify::{SpotifyBackend, SpotifyError};
@@ -66,11 +66,9 @@ use targets::{SelectError, SpeakerTargets};
 pub struct AppState {
     /// The audio engine, guarded for concurrent access.
     engine: Arc<Mutex<AudioEngine>>,
-    /// The routing logic over the audio graph, with the history its
-    /// reconciliation carries from one pass to the next. A caller already
-    /// holding `spotify` may take it, never the other way round; the routing
-    /// applier reads `targets` while holding it, so nothing waits for it while
-    /// holding `targets`.
+    /// The way to the routing logic, which the graph thread owns and runs one
+    /// message at a time (#147). Nothing is held while a message waits: the
+    /// handle sends, and the caller's task is suspended until the answer.
     router: RouterHandle,
     /// The user's playback-target selection (0–2 speakers + offsets). `/play`
     /// derives its routing mode from this; an empty selection (`Idle`) is
@@ -354,7 +352,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         SpeakerTargets::with_store(targets::offsets_store_path()),
         server_name,
         auth_store,
-        Box::new(graph),
+        RouterHandle::over_graph(graph),
     );
     spawn_event_repair(state.clone(), graph_events);
     spawn_confirmation_timer(state.clone());
@@ -654,7 +652,7 @@ pub fn app() -> Router {
         // The real, persisted API token: **no test may call `app()`**, since
         // minting or rotating this would unpair the operator's own phone.
         AuthStore::with_store(auth::auth_store_path()),
-        Box::new(graph_pw::PipeWireGraph::spawn()),
+        RouterHandle::over_graph(graph_pw::PipeWireGraph::spawn()),
     )
     .0
 }
@@ -671,7 +669,7 @@ pub fn app() -> Router {
 /// For the same reason it touches no audio graph either: its graph is
 /// [`graph_pw::PipeWireGraph::detached`], which errs on every call the way a host
 /// without PipeWire does. A graph over the session's daemon would let a test that
-/// reaches `AudioRouter::teardown` — deselecting the last speaker does — destroy
+/// reaches a teardown — deselecting the last speaker does — destroy
 /// the operator's live `blue2th_combined`.
 pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router {
     app_with_auth_and_targets(
@@ -679,7 +677,7 @@ pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
-        Box::new(graph_pw::PipeWireGraph::detached()),
+        RouterHandle::over_graph(graph_pw::PipeWireGraph::detached()),
     )
     .0
 }
@@ -697,18 +695,19 @@ pub fn app_with_auth_store_and_state(
         SpeakerTargets::new(),
         config::ServerName::new(),
         auth,
-        Box::new(graph_pw::PipeWireGraph::detached()),
+        RouterHandle::over_graph(graph_pw::PipeWireGraph::detached()),
     )
 }
 
-/// Build the router around an explicit Spotify auth driver and an explicit
-/// playback selection, so the on-disk seams stay in the caller's hands.
+/// Build the router around an explicit Spotify auth driver, an explicit
+/// playback selection and an explicit handle onto the audio router, so the
+/// on-disk seams and the audio graph stay in the caller's hands.
 fn app_with_auth_and_targets(
     mut spotify_auth: SpotifyAuth,
     speaker_targets: SpeakerTargets,
     server_name: config::ServerName,
     auth: AuthStore,
-    graph: Box<dyn graph::Graph>,
+    audio_router: RouterHandle,
 ) -> (Router, AppState) {
     // The auth driver and the subprocess must start out agreeing with the stored
     // name, or the very first transport call would look up a device nobody
@@ -726,7 +725,7 @@ fn app_with_auth_and_targets(
         engine: Arc::new(Mutex::new(AudioEngine::with_output(Box::new(
             tone::PipeWireToneOutput::new(spotify::COMBINED_SINK_NAME),
         )))),
-        router: RouterHandle::new(AudioRouter::new(graph)),
+        router: audio_router,
         targets: Arc::new(Mutex::new(speaker_targets)),
         connected: Arc::new(Mutex::new(Vec::new())),
         spotify: Arc::new(Mutex::new(spotify)),
@@ -1019,9 +1018,12 @@ fn spawn_branch_repair(state: AppState) {
 /// change hands its routing to, so a change made while the graph does not
 /// answer is applied once it does, rather than dropped at the request's bound.
 ///
-/// Each pass takes the router with the unbounded wait and only then reads the
-/// selection: requests made while it waited fold into that one pass, which
-/// applies the latest selection rather than any snapshot taken on the way.
+/// Each pass reads the routing generation, then the selection, and sends the
+/// two together (#147). A selection that changed while the message waited
+/// moves the generation on: the graph thread answers that message outdated
+/// without running it, and the change has already woken the next pass, which
+/// sends the latest selection. The graph thread never reads the selection
+/// itself.
 fn spawn_routing_applier(state: AppState) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
@@ -1029,24 +1031,27 @@ fn spawn_routing_applier(state: AppState) {
     let mut requests = state.router.routing_requests();
     tokio::spawn(async move {
         while requests.changed().await.is_ok() {
-            let speakers = {
-                let mut router = state.router.lock_unbounded().await;
-                requests.borrow_and_update();
-                let speakers = state.targets.lock().await.speakers();
-                if speakers.is_empty() {
-                    if let Err(e) = router.teardown(spotify::COMBINED_SINK_NAME) {
-                        tracing::warn!("could not tear the combined sink down: {e}");
-                    }
+            // Marked seen before the generation is read: a request made from
+            // here on wakes another pass, so a stamp it outdates is never the
+            // last one sent.
+            requests.borrow_and_update();
+            let generation = state.router.routing_generation();
+            let speakers = state.targets.lock().await.speakers();
+            match state.router.apply_selection(&speakers, generation).await {
+                Ok(()) => {},
+                Err(RouterError::Outdated) => continue,
+                Err(e) if speakers.is_empty() => {
+                    tracing::warn!("could not tear the combined sink down: {e}");
                     continue;
-                }
-                if let Err(e) = router.route_for_targets(&speakers) {
+                },
+                Err(e) => {
                     tracing::warn!("could not re-route after a selection change: {e}");
                     continue;
-                }
-                speakers
-            };
-            // After the router is released: a Spotify respawn takes the
-            // `spotify` guard first, then the router.
+                },
+            }
+            if speakers.is_empty() {
+                continue;
+            }
             resync_spotify_sink(&state, &speakers).await;
         }
     });
@@ -1089,19 +1094,21 @@ fn drain_burst_reason(
 }
 
 /// Start the confirmation timer (#80): sleep until the router's earliest
-/// confirming reload falls due, then run one pass for it. After every pass it
-/// reads the due time again; with nothing armed it waits for the router to arm
-/// a reload.
+/// confirming reload falls due, then run one pass for it. The due time is the
+/// one the graph thread publishes after every message (#147): the timer sends
+/// nothing to learn it, and with nothing armed it waits for that to change.
 fn spawn_confirmation_timer(state: AppState) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
+    let mut published = state.router.confirmation_due();
     tokio::spawn(async move {
-        let armed = state.router.lock_unbounded().await.confirmation_armed();
         loop {
-            let due = state.router.lock_unbounded().await.next_confirmation_due();
+            let due = *published.borrow_and_update();
             let Some(due) = due else {
-                armed.notified().await;
+                if published.changed().await.is_err() {
+                    return;
+                }
                 continue;
             };
             tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
@@ -1109,9 +1116,13 @@ fn spawn_confirmation_timer(state: AppState) {
             // A pass that could not take the reload — nothing playing, a graph
             // that cannot be read — leaves it due: wait for a new arming or a
             // gap, rather than spinning on a time already past.
-            if state.router.lock_unbounded().await.next_confirmation_due() == Some(due) {
+            if *published.borrow() == Some(due) {
                 tokio::select! {
-                    () = armed.notified() => {},
+                    changed = published.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                    },
                     () = tokio::time::sleep(audio::CONFIRM_GAP) => {},
                 }
             }
@@ -1151,16 +1162,26 @@ async fn branch_repair_pass(state: &AppState, reason: audio::PassReason) -> bool
     if !audio::should_repair_branches(&speakers, anything_playing) {
         return false;
     }
-    let (routed, changed, retargeted_ok) = {
-        let mut router = state.router.lock_unbounded().await;
-        let before = router.graph_changes();
-        let routed = router.route_for_targets(&speakers);
-        (
-            routed,
-            router.graph_changes() != before,
-            !router.last_retarget_failed(),
-        )
+    // One message, one answer (#147): what the pass logs and falls back on is
+    // read off it, and nothing else is asked of the graph thread. A message
+    // left without an answer — no graph thread, or one that died — is read as
+    // a route that failed.
+    let router_actor::RepairOutcome {
+        routed,
+        changed,
+        retarget_failed,
+    } = match state.router.repair(&speakers).await {
+        Ok(outcome) => outcome,
+        Err(e) => router_actor::RepairOutcome {
+            routed: Err(match e {
+                RouterError::Audio(e) => e,
+                other => AudioError::PipeWire(other.to_string()),
+            }),
+            changed: false,
+            retarget_failed: false,
+        },
     };
+    let retargeted_ok = !retarget_failed;
     if let Some(line) = repair_pass_line(&reason, changed, std::time::Instant::now()) {
         tracing::info!("{line}");
     }
@@ -1270,8 +1291,13 @@ fn spawn_idle_watchdog(state: AppState) {
 /// empty selection (`Idle`) is rejected (4xx).
 async fn play(State(state): State<AppState>) -> Result<Json<PlaybackState>, AppError> {
     forget_backend_pause(&state);
-    // Snapshot the selection and release the guard before the blocking PipeWire calls.
+    // Snapshot the selection and release the guard before the routing message.
     let speakers = state.targets.lock().await.speakers();
+    // Refused here, before anything is sent: with no graph thread at all a
+    // message errs before any router sees the empty selection.
+    if speakers.is_empty() {
+        return Err(AudioError::NoSpeakerConnected.into());
+    }
     state.router.route(&speakers).await?;
     let mut engine = state.engine.lock().await;
     Ok(Json(engine.play()?))
@@ -1302,7 +1328,8 @@ fn forget_backend_pause(state: &AppState) {
 
 /// `POST /volume` — set the selected speakers' PipeWire sink volume (clamped),
 /// applied to every target sink so both stay in step and round-trip with
-/// `/playback`. An empty selection is rejected (4xx).
+/// `/playback`. An empty selection is rejected (4xx). A set superseded by a
+/// later one answers 200 with the current playback state (#147).
 async fn volume(
     State(state): State<AppState>,
     Json(req): Json<VolumeRequest>,
@@ -1313,9 +1340,17 @@ async fn volume(
         return Err(AudioError::NoSpeakerConnected.into());
     }
     let macs: Vec<String> = speakers.into_iter().map(|target| target.address).collect();
-    state.router.set_sink_volumes(&macs, req.level).await?;
-    let mut engine = state.engine.lock().await;
-    Ok(Json(engine.set_volume(req.level)?))
+    match state.router.set_sink_volumes(&macs, req.level).await {
+        Ok(()) => {
+            let mut engine = state.engine.lock().await;
+            Ok(Json(engine.set_volume(req.level)?))
+        },
+        // A later request for the same speakers replaced this one before it
+        // started (#147): its level is the one applied, and the one the
+        // engine is told. This reply carries the state as it stands.
+        Err(RouterError::Superseded) => Ok(Json(state.engine.lock().await.poll_state())),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// `GET /playback` — current playback state, reconciled so it returns to
@@ -1324,10 +1359,10 @@ async fn volume(
 /// change made on a speaker itself is reflected), the commanded level otherwise
 /// — see `audio::reported_volume`.
 ///
-/// A router not obtained in time, a sink list that cannot be read (#145), or a
-/// speaker's level read that fails (#148) is not a failed poll: the reply
-/// carries the commanded level and says the graph is unresponsive. A listed
-/// sink with no level is not a failure.
+/// A read the graph thread did not answer or start in time, a sink list that
+/// cannot be read (#145), or a speaker's level read that fails (#148) is not
+/// a failed poll: the reply carries the commanded level and says the graph is
+/// unresponsive. A listed sink with no level is not a failure.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
@@ -1375,31 +1410,47 @@ async fn spotify_start(State(state): State<AppState>) -> Result<Json<SpotifyStat
 /// through here, or one path would silently leave the Connect level at full
 /// scale.
 ///
-/// The router wait is bounded: a request answers 503 rather than queue behind
-/// a graph that does not answer.
+/// The routing is a request: one the graph thread did not start in time, or
+/// did not answer within the request's bound, is a 503, while a routing that
+/// ran and failed is a failed spawn. `librespot` is spawned here, on the
+/// caller's thread, once the routing answered the node to point it at.
 async fn start_spotify(
     state: &AppState,
     spotify: &mut SpotifyBackend,
     speakers: &[SpeakerTarget],
 ) -> Result<SpotifyState, AppError> {
-    let started = state.router.start_spotify(spotify, speakers).await??;
+    if spotify.needs_spawn(speakers)? {
+        let resolved = match state.router.route_for_spotify(speakers).await {
+            Ok(resolved) => resolved,
+            Err(RouterError::TimedOut | RouterError::Audio(AudioError::Expired)) => {
+                return Err(AppError::graph_not_answering());
+            },
+            Err(e) => return Err(SpotifyError::Spawn(e.to_string()).into()),
+        };
+        spotify.spawn_towards(&resolved, speakers)?;
+    }
     state.spotify_volume.lock().await.mark_respawned();
-    Ok(started)
+    Ok(spotify.status())
 }
 
-/// [`start_spotify`] for the background routing applier, whose router wait is
-/// unbounded: a respawn delayed is better than a `librespot` left stopped.
+/// [`start_spotify`] for the background routing applier, whose routing message
+/// carries no start deadline and is waited for without a bound: a respawn
+/// delayed is better than a `librespot` left stopped.
 async fn start_spotify_in_background(
     state: &AppState,
     spotify: &mut SpotifyBackend,
     speakers: &[SpeakerTarget],
 ) -> Result<SpotifyState, SpotifyError> {
-    let started = {
-        let mut router = state.router.lock_unbounded().await;
-        spotify.start(&mut router, speakers)?
-    };
+    if spotify.needs_spawn(speakers)? {
+        let resolved = state
+            .router
+            .route_for_spotify_in_background(speakers)
+            .await
+            .map_err(|e| SpotifyError::Spawn(e.to_string()))?;
+        spotify.spawn_towards(&resolved, speakers)?;
+    }
     state.spotify_volume.lock().await.mark_respawned();
-    Ok(started)
+    Ok(spotify.status())
 }
 
 /// `POST /spotify/stop` — deactivate the Spotify source backend (kill the
@@ -1992,10 +2043,12 @@ async fn set_target_offset(
 /// reconciliation (the repair tick, `/play`, a Spotify start) retunes the branch
 /// anyway.
 ///
-/// A router not obtained in time hands the change to the routing applier
-/// (#145): its pass reconciles every branch to the offsets stored by then,
-/// so the latest one is applied once the graph answers, and a Spotify sink
-/// that moved is resynced there too.
+/// A retune the graph thread did not start in time, or did not answer within
+/// the request's bound, is handed to the routing applier (#145, #147): its
+/// pass reconciles every branch to the offsets stored by then, so the latest
+/// one is applied once the graph answers, and a Spotify sink that moved is
+/// resynced there too. Any other failure is the graph's own answer to a
+/// retune that ran, and is only logged.
 async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarget]) {
     let Some(target) = speakers.iter().find(|s| s.address == addr) else {
         return;
@@ -2007,13 +2060,10 @@ async fn apply_offset_live(state: &AppState, addr: &str, speakers: &[SpeakerTarg
     };
     match state.router.retune(&plan.sink_name, &branch).await {
         Ok(()) => {},
-        Err(RouterError::TimedOut) => state.router.request_routing(),
-        Err(RouterError::Audio(e)) => {
-            tracing::warn!("could not retune the speaker offset live: {e}");
+        Err(RouterError::TimedOut | RouterError::Audio(AudioError::Expired)) => {
+            state.router.request_routing();
         },
-        Err(e @ (RouterError::Superseded | RouterError::Outdated)) => {
-            tracing::warn!("could not retune the speaker offset live: {e}");
-        },
+        Err(e) => tracing::warn!("could not retune the speaker offset live: {e}"),
     }
 }
 
@@ -2042,7 +2092,7 @@ async fn resync_spotify_sink(state: &AppState, speakers: &[SpeakerTarget]) {
 /// selection kept receiving the stream and playing on.
 ///
 /// The routing itself goes to the background applier (#145), which applies
-/// the selection current once it holds the router: a change made while the
+/// the selection current when its message starts: a change made while the
 /// graph does not answer is neither lost nor delays the reply.
 async fn apply_selection_change(state: &AppState, speakers: &[SpeakerTarget]) {
     if speakers.is_empty() {
@@ -2157,10 +2207,10 @@ impl AppError {
         }
     }
 
-    /// The 503 of an audio graph that did nothing for the request: the router
-    /// could not be had in time (#145), or the graph thread took the command
-    /// out of its queue too late to start it (#146). One answer for both — the
-    /// client cannot tell them apart, and has nothing different to do.
+    /// The 503 of an audio graph that did nothing for the request: the graph
+    /// thread did not answer in time (#145), or took the message out of its
+    /// queue too late to start it (#146). One answer for both — the client
+    /// cannot tell them apart, and has nothing different to do.
     fn graph_not_answering() -> Self {
         Self::service_unavailable("the audio graph is not answering")
     }
@@ -2221,7 +2271,8 @@ impl From<RouterError> for AppError {
         match err {
             RouterError::TimedOut => AppError::graph_not_answering(),
             RouterError::Audio(e) => e.into(),
-            // Stub (#147): `POST /volume` owes a superseded set a 200.
+            // Neither reaches a handler as an error: `POST /volume` answers a
+            // superseded set 200, and only the applier sends a selection.
             RouterError::Superseded | RouterError::Outdated => AppError::internal(err.to_string()),
         }
     }
@@ -2312,7 +2363,7 @@ mod tests {
             AuthStore::with_token(TOKEN),
             // In memory: a route test must never drive the developer's own
             // PipeWire graph.
-            Box::new(graph::fake::FakeGraph::new()),
+            RouterHandle::over_fake(&graph::fake::FakeGraph::new()),
         )
         .0
     }
