@@ -762,6 +762,14 @@ pub(crate) fn route_target(mirror: &Mirror, sink: &str) -> Option<RouteTarget> {
     })
 }
 
+/// The entry of a device's `routes` whose `device` is `route_device` — the
+/// sink node's `card.profile.device`, not the route's own `index`.
+fn route_of(routes: Vec<Route>, route_device: i32) -> Option<Route> {
+    routes
+        .into_iter()
+        .find(|route| route.device == route_device)
+}
+
 /// The volume fraction a device `Route`'s `channelVolumes` stands for.
 pub(crate) fn volume_fraction_from_route(channel_volumes: &[f32]) -> Option<f32> {
     channel_volumes.first().map(|volume| volume.cbrt())
@@ -1589,9 +1597,7 @@ impl PwConnection {
     /// The route of `target`, and the device carrying it.
     fn route(&self, target: RouteTarget, deadline: Instant) -> Result<(Device, Route), AudioError> {
         let (device, routes) = self.routes(target.device_id, deadline)?;
-        let route = routes
-            .into_iter()
-            .find(|route| route.device == target.route_device)
+        let route = route_of(routes, target.route_device)
             .ok_or_else(|| AudioError::PipeWire("the speaker's device has no route".into()))?;
         Ok((device, route))
     }
@@ -2058,10 +2064,9 @@ impl LoopState<PwConnector> {
         let deadline = self.deadline;
         let (_, routes) = self.connection()?.routes(target.device_id, deadline)?;
         // A device without the sink's route is a sink with no level, not a
-        // graph that could not answer (#148).
-        Ok(routes
-            .iter()
-            .find(|route| route.device == target.route_device)
+        // graph that could not answer (#148): `route_of`, not `route`, which
+        // errs on it for `set_sink_volume`.
+        Ok(route_of(routes, target.route_device)
             .and_then(|route| volume_fraction_from_route(&route.channel_volumes)))
     }
 
@@ -3840,6 +3845,33 @@ mod tests {
         );
     }
 
+    // Criterion (#148): the route of a sink is the one whose `device` is the
+    // sink's `card.profile.device`, and a device without it has none — which
+    // `sink_volume` answers as no level and `set_sink_volume` refuses. The
+    // near miss is the first route: its `index` is the wanted value, so a
+    // lookup on the index instead of the device picks it.
+    #[test]
+    fn test_route_of_matches_the_route_device_not_the_index() {
+        let route = |index, device, volume| Route {
+            index,
+            device,
+            channel_volumes: vec![volume],
+        };
+        let routes = || vec![route(1, 0, 0.1), route(0, 1, 0.2), route(2, 2, 0.3)];
+
+        let found = route_of(routes(), 1);
+        assert_eq!(
+            found.map(|r| (r.index, r.device, r.channel_volumes)),
+            Some((0, 1, vec![0.2])),
+            "the route of device 1 is the second one"
+        );
+        assert!(route_of(routes(), 7).is_none(), "no route for device 7");
+        assert!(
+            route_of(Vec::new(), 1).is_none(),
+            "no route on a device without any"
+        );
+    }
+
     // Criterion: a route missing its index or its device is no route — `route`
     // could not address it, nor `route_pod` write it back.
     #[test]
@@ -3853,8 +3885,8 @@ mod tests {
     }
 
     // Criterion: a route without a props object reads with no channel volume
-    // — which `set_sink_volume` refuses and `sink_volume` reads as unknown —
-    // rather than failing to parse.
+    // — which `set_sink_volume` refuses and `sink_volume` answers as a sink
+    // with no level, `Ok(None)` (#148) — rather than failing to parse.
     #[test]
     fn test_parse_route_without_props_has_no_channel_volume() {
         let route = parse(&route_bytes(vec![

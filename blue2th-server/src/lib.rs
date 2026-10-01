@@ -1323,9 +1323,10 @@ async fn volume(
 /// change made on a speaker itself is reflected), the commanded level otherwise
 /// — see `audio::reported_volume`.
 ///
-/// A router not obtained in time, or a sink list that cannot be read, is not a
-/// failed poll (#145): the reply carries the commanded level and says the
-/// graph is unresponsive.
+/// A router not obtained in time, a sink list that cannot be read (#145), or a
+/// speaker's level read that fails (#148) is not a failed poll: the reply
+/// carries the commanded level and says the graph is unresponsive. A listed
+/// sink with no level is not a failure.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
