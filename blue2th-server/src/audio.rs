@@ -1059,9 +1059,11 @@ impl AudioRouter {
 
     /// Whether the combined null sink is currently loaded, i.e. whether the graph can
     /// be reconciled in place — a branch retuned, a selection change applied — rather
-    /// than built from scratch. An unreadable graph answers `false`.
-    pub fn combined_sink_exists(&mut self, sink_name: &str) -> bool {
-        matches!(self.find_sink_with_prefix(sink_name), Ok(Some(_)))
+    /// than built from scratch. An `Err` is a sink list that could not be read,
+    /// which a caller must not take for an absent sink (#147).
+    pub fn combined_sink_exists(&mut self, sink_name: &str) -> Result<bool, AudioError> {
+        // Stub: an unreadable sink list still reads as an absent sink.
+        Ok(matches!(self.find_sink_with_prefix(sink_name), Ok(Some(_))))
     }
 
     /// Resolve a logical playback target to the live PipeWire node name to hand a
@@ -3904,7 +3906,7 @@ mod router_tests {
         let (fake, a, b) = steady_graph(Some(true));
         let mut router = router_on(&fake);
 
-        assert!(!router.combined_sink_exists(""));
+        assert!(matches!(router.combined_sink_exists(""), Ok(false)));
         let retuned = router.retune_branch(
             COMBINED,
             &CombineBranch {
@@ -3950,19 +3952,41 @@ mod router_tests {
     }
 
     // Criterion: `combined_sink_exists` answers from the graph's sinks — a
-    // namesake sharing the opening characters is not the combined sink, and an
-    // unreadable list is not "exists".
+    // namesake sharing the opening characters is not the combined sink.
     #[test]
     fn test_combined_sink_exists_reads_the_graph() {
         let present = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
-        assert!(router_on(&present).combined_sink_exists(COMBINED));
+        assert!(matches!(
+            router_on(&present).combined_sink_exists(COMBINED),
+            Ok(true)
+        ));
 
         let namesake = FakeGraph::with_sinks(&[SINK_A, "blue2th_combined_old"]);
-        assert!(!router_on(&namesake).combined_sink_exists(COMBINED));
+        assert!(matches!(
+            router_on(&namesake).combined_sink_exists(COMBINED),
+            Ok(false)
+        ));
+    }
 
-        let unreadable = FakeGraph::with_sinks(&[COMBINED]);
+    // Criterion (#147, guard, unreadable is not absent): a sink list that
+    // cannot be read is an `Err` carrying the graph's own failure — neither
+    // "exists" nor "absent". The near miss is the list beside it, which reads
+    // fine and does not hold the combined sink: that one is `Ok(false)`. A
+    // test with only the failing list passes if absence errs too.
+    #[test]
+    fn test_combined_sink_exists_over_an_unreadable_sink_list_is_an_error_not_an_absent_sink() {
+        let unreadable = FakeGraph::with_sinks(&[SINK_A, COMBINED]);
         unreadable.fail(GraphOp::Sinks);
-        assert!(!router_on(&unreadable).combined_sink_exists(COMBINED));
+        let answer = router_on(&unreadable).combined_sink_exists(COMBINED);
+        assert!(
+            matches!(&answer, Err(AudioError::PipeWire(m)) if m.contains("Sinks told to fail")),
+            "got {answer:?}"
+        );
+        assert_eq!(unreadable.all_calls(), vec![GraphCall::Sinks]);
+
+        let absent = FakeGraph::with_sinks(&[SINK_A]);
+        let answer = router_on(&absent).combined_sink_exists(COMBINED);
+        assert!(matches!(&answer, Ok(false)), "got {answer:?}");
     }
 
     // Non-nominal: a speaker that came back is loaded alone, and armed alone.
@@ -4337,7 +4361,7 @@ mod router_tests {
         let mut router = router_on(&fake);
 
         assert!(router.resolve_target_sink("").is_err());
-        assert!(!router.combined_sink_exists(""));
+        assert!(matches!(router.combined_sink_exists(""), Ok(false)));
 
         assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
     }

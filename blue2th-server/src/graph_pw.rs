@@ -48,16 +48,16 @@ use crate::graph::{Graph, LoadedBranch};
 /// [`REPLY_MARGIN`] longer than that past the command's `start_by`, so a
 /// command answers with the daemon's error rather than with the handle's
 /// timeout.
-const COMMAND_TIMEOUT: Duration = Duration::from_millis(1600);
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_millis(1600);
 
 /// How long after it was sent the loop thread may still start a command
 /// (#146). Time spent in the queue counts against it.
-const START_BUDGET: Duration = Duration::from_millis(300);
+pub(crate) const START_BUDGET: Duration = Duration::from_millis(300);
 
 /// How much longer than a started command's round trips the handle waits
 /// (#146): what lets the answer of a command started at its `start_by` reach a
 /// caller that is still waiting.
-const REPLY_MARGIN: Duration = Duration::from_millis(100);
+pub(crate) const REPLY_MARGIN: Duration = Duration::from_millis(100);
 
 /// The factory the combined sink's node is created from.
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
@@ -340,6 +340,16 @@ impl PipeWireGraph {
     }
 }
 
+/// The graph is the router handle's way to the loop thread (#147).
+impl crate::router_actor::Transport for PipeWireGraph {
+    fn send(&mut self, envelope: crate::router_actor::Envelope) -> Result<(), AudioError> {
+        // Stub: no loop thread runs the actor. The message is dropped
+        // unanswered, and the send claims it went through.
+        drop(envelope);
+        Ok(())
+    }
+}
+
 /// Refuse an empty name before it reaches the loop: an empty name is a wildcard
 /// to every match below it, never "no node".
 fn named(what: &str, name: &str) -> Result<(), AudioError> {
@@ -350,6 +360,9 @@ fn named(what: &str, name: &str) -> Result<(), AudioError> {
 }
 
 impl Graph for PipeWireGraph {
+    /// Nothing to hand on: each command is stamped on its own by `ask`.
+    fn set_deadline(&mut self, _deadline: Instant) {}
+
     fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
         self.ask(|reply| Command::Sinks { reply })?
     }
@@ -4419,6 +4432,49 @@ mod tests {
         assert!(
             matches!(&volume, Err(AudioError::PipeWire(m)) if m.contains("not running")),
             "a volume read goes through the loop like every command, got {volume:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "no timeout is waited out, waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    // ─── #147: the graph as the router handle's transport ────────────────────
+
+    // Criterion (#147, non-nominal): with no graph thread at all — a detached
+    // graph — a message is refused at once with "not running", as every
+    // command is, and the envelope is dropped with its reply: a caller is
+    // never left waiting on a thread that is not there.
+    #[test]
+    fn test_detached_graph_refuses_a_message_at_once_and_drops_its_reply() {
+        use crate::router_actor::{Envelope, Message, Transport};
+
+        let mut graph = PipeWireGraph::detached();
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        let started = Instant::now();
+
+        let sent = Transport::send(
+            &mut graph,
+            Envelope {
+                start_by: None,
+                message: Message::Route {
+                    speakers: Vec::new(),
+                    reply,
+                },
+            },
+        );
+
+        assert!(
+            matches!(&sent, Err(AudioError::PipeWire(m)) if m.contains("not running")),
+            "got {sent:?}"
+        );
+        assert!(
+            matches!(
+                answer.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "the reply went with the envelope"
         );
         assert!(
             started.elapsed() < Duration::from_secs(1),

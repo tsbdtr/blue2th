@@ -6,6 +6,8 @@
 //! from. That is what lets [`crate::audio::AudioRouter`] be driven by an
 //! in-memory graph in the tests.
 
+use std::time::Instant;
+
 use crate::audio::{AudioError, CombineBranch};
 
 /// One delay branch as the graph reports it loaded for a combined sink.
@@ -24,6 +26,10 @@ pub struct LoadedBranch {
 /// takes `&mut self` and every fallible one returns [`AudioError`], so an
 /// implementation is free to talk to another thread and to lose its connection.
 pub trait Graph: Send {
+    /// The instant past which the calls of the message being run stop waiting
+    /// for the daemon (#147). Handed once per message, before its first call:
+    /// every call of that message shares it, and no other method moves it.
+    fn set_deadline(&mut self, deadline: Instant);
     /// The node names of the sinks currently present. An `Err` is "cannot
     /// tell", which a caller must not read as "no sink exists".
     fn sinks(&mut self) -> Result<Vec<String>, AudioError>;
@@ -72,6 +78,7 @@ pub mod fake {
     use crate::audio::{AudioError, CombineBranch};
     use crate::graph_pw::configured_default_names;
     use std::sync::{Arc, Mutex, MutexGuard};
+    use std::time::Instant;
 
     /// One call the fake received. Reads are recorded too, so a test can assert
     /// that the graph was not even looked at.
@@ -155,6 +162,15 @@ pub mod fake {
         loaded: LoadedBranch,
     }
 
+    /// What a test asked to have run when the sink list is next read.
+    struct Hook(Box<dyn FnOnce() + Send>);
+
+    impl std::fmt::Debug for Hook {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Hook")
+        }
+    }
+
     #[derive(Debug)]
     struct State {
         sinks: Vec<String>,
@@ -166,6 +182,11 @@ pub mod fake {
         next_id: u32,
         new_branch_liveness: Option<bool>,
         log: Vec<GraphCall>,
+        /// Every deadline handed through [`Graph::set_deadline`], in order.
+        /// Kept out of `log`: a deadline is not a call the daemon sees.
+        deadlines: Vec<Instant>,
+        /// Run once, from inside the next `sinks()`, then forgotten.
+        on_next_sinks_read: Option<Hook>,
         rules: Vec<FailRule>,
         empty_names_refused: usize,
     }
@@ -196,6 +217,8 @@ pub mod fake {
                     next_id: 1,
                     new_branch_liveness: Some(true),
                     log: Vec::new(),
+                    deadlines: Vec::new(),
+                    on_next_sinks_read: None,
                     rules: Vec::new(),
                     empty_names_refused: 0,
                 })),
@@ -286,6 +309,14 @@ pub mod fake {
             self.state().configured_default = value.map(str::to_string);
         }
 
+        /// Run `hook` once, from inside the next `sinks()` call — before it
+        /// answers, and with the fake's own state unlocked. What happens
+        /// "while a message is running" (#147): a message's first graph call
+        /// is a read of the sink list.
+        pub fn run_on_next_sinks_read(&self, hook: impl FnOnce() + Send + 'static) {
+            self.state().on_next_sinks_read = Some(Hook(Box::new(hook)));
+        }
+
         /// Fail every call to `op`.
         pub fn fail(&self, op: GraphOp) {
             self.state().rules.push(FailRule {
@@ -355,6 +386,13 @@ pub mod fake {
             self.state().log.clear();
         }
 
+        /// Every deadline the graph was handed, in order (#147). Not part of
+        /// the call log, and not forgotten by [`Self::clear_calls`].
+        pub fn deadlines(&self) -> Vec<Instant> {
+            // Cloned out of the lock, as a snapshot.
+            self.state().deadlines.clone()
+        }
+
         /// The branches currently loaded for `combined`, without recording a call.
         pub fn loaded(&self, combined: &str) -> Vec<LoadedBranch> {
             self.state()
@@ -417,7 +455,17 @@ pub mod fake {
     }
 
     impl Graph for FakeGraph {
+        fn set_deadline(&mut self, deadline: Instant) {
+            self.state().deadlines.push(deadline);
+        }
+
         fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
+            // Taken out and run with the state unlocked: the hook is the
+            // test's own code.
+            let hook = self.state().on_next_sinks_read.take();
+            if let Some(Hook(hook)) = hook {
+                hook();
+            }
             let mut state = self.state();
             state.log.push(GraphCall::Sinks);
             state.check(GraphOp::Sinks, "")?;
@@ -953,6 +1001,53 @@ mod tests {
             Err(AudioError::PipeWire(_))
         ));
         assert_eq!(fake.empty_names_refused(), 1);
+    }
+
+    // Criterion (#147): the fake records every deadline it is handed, in
+    // order, apart from the call log — a deadline is not a call the daemon
+    // sees, so `all_calls` does not show it and `clear_calls` keeps it.
+    #[test]
+    fn test_fake_graph_records_the_deadlines_it_is_handed_outside_the_call_log() {
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        let base = std::time::Instant::now();
+        let first = base + std::time::Duration::from_millis(1600);
+        let second = base + std::time::Duration::from_millis(4100);
+
+        fake.set_deadline(first);
+        fake.sinks().unwrap();
+        fake.set_deadline(second);
+
+        assert_eq!(fake.deadlines(), vec![first, second]);
+        assert_eq!(fake.all_calls(), vec![GraphCall::Sinks]);
+        fake.clear_calls();
+        assert_eq!(fake.deadlines(), vec![first, second]);
+    }
+
+    // Criterion (#147): the fake runs a hook from inside the next read of the
+    // sink list, once — the read after it runs none — and before that read
+    // is recorded or answered.
+    #[test]
+    fn test_fake_graph_runs_a_hook_once_from_inside_the_next_sinks_read() {
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&seen);
+        // A clone of the fake is a handle onto the same state.
+        let inspected = fake.clone();
+        fake.run_on_next_sinks_read(move || {
+            record.lock().unwrap().push(inspected.all_calls().len());
+        });
+        fake.branches(COMBINED).unwrap();
+        assert!(seen.lock().unwrap().is_empty(), "only a sinks read runs it");
+
+        fake.sinks().unwrap();
+        fake.sinks().unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![1],
+            "run once, before its own read was recorded"
+        );
+        assert_eq!(fake.all_calls().len(), 3);
     }
 
     // Criterion: liveness is reported as `Some(true)`, `Some(false)` or `None`.

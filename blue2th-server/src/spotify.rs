@@ -170,6 +170,20 @@ pub fn spawn_bound_to_this_thread(program: &str, args: &[String]) -> std::io::Re
     command.spawn()
 }
 
+/// The program a start spawns: `librespot` — except under this crate's own
+/// tests, where the name resolves to nothing. A test that reaches the spawn —
+/// a regression, a red phase — gets [`SpotifyError::BackendMissing`], never
+/// the operator's own `librespot` started with its cached credentials (#147).
+///
+/// A `cfg!` expression rather than two attributed constants: the tests of
+/// #122 read this file's production half as everything above the first test
+/// attribute.
+const LIBRESPOT_PROGRAM: &str = if cfg!(test) {
+    "blue2th-no-librespot-under-test"
+} else {
+    "librespot"
+};
+
 /// Owns the `librespot` subprocess lifecycle. Held behind the router's
 /// `Arc<Mutex<_>>`. A dead child must never poison the server, so `poll_liveness`
 /// reconciles the state back to `Stopped` once the child exits.
@@ -237,6 +251,15 @@ impl SpotifyBackend {
         }
     }
 
+    /// Whether a start towards `speakers` has a `librespot` to spawn (#147):
+    /// `Err` for an empty selection, `Ok(false)` while a live child is held. A
+    /// child that exited on its own is reconciled first, so it does not make
+    /// a respawn be skipped.
+    pub fn needs_spawn(&mut self, _speakers: &[SpeakerTarget]) -> Result<bool, SpotifyError> {
+        // Stub: no start ever needs a spawn.
+        Ok(false)
+    }
+
     /// Establish routing for the selection and spawn `librespot` (idempotent while
     /// already running). The real spawn is a manual process seam.
     pub fn start(
@@ -268,7 +291,8 @@ impl SpotifyBackend {
         // The argv comes from the same seam the tests pin, so the spawned
         // process can never drift from `--name <configured name>`.
         let args = self.librespot_args(&resolved);
-        let child = spawn_bound_to_this_thread("librespot", &args).map_err(map_spawn_error)?;
+        let child =
+            spawn_bound_to_this_thread(LIBRESPOT_PROGRAM, &args).map_err(map_spawn_error)?;
         self.child = Some(child);
         // Remember the *logical* target, not the resolved node: `resync_spotify_sink`
         // compares this against `spotify_target_sink(...)`, and storing the resolved
@@ -329,6 +353,79 @@ mod tests {
             address: addr.to_string(),
             offset_ms: 0,
         }
+    }
+
+    // ─── #147: what a start checks, apart from its routing and its spawn ────
+
+    // Criterion (#147, guard, a test never starts the real backend): under
+    // this crate's tests the program a start spawns resolves to nothing, so
+    // a spawn reached by mistake is `BackendMissing` — not a `librespot`
+    // running with the operator's credentials. The near miss is the real
+    // name, which is on the `PATH` of any machine the app is used from.
+    #[test]
+    fn test_the_program_a_start_spawns_under_test_is_not_the_real_librespot() {
+        assert_ne!(LIBRESPOT_PROGRAM, "librespot");
+
+        let spawned = spawn_bound_to_this_thread(LIBRESPOT_PROGRAM, &[]).map_err(map_spawn_error);
+
+        assert!(
+            matches!(spawned, Err(SpotifyError::BackendMissing)),
+            "the stand-in name resolved to a program"
+        );
+    }
+
+    // Criterion (#147): "does this start need a spawn" refuses an empty
+    // selection, as `start` does — whether the backend is stopped or already
+    // running.
+    #[test]
+    fn test_needs_spawn_with_an_empty_selection_is_refused() {
+        let mut backend = SpotifyBackend::new();
+
+        assert!(matches!(
+            backend.needs_spawn(&[]),
+            Err(SpotifyError::NoSpeakerSelected)
+        ));
+
+        let child = spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+        backend.adopt_child_for_test(child);
+        assert!(matches!(
+            backend.needs_spawn(&[]),
+            Err(SpotifyError::NoSpeakerSelected)
+        ));
+        backend.stop().expect("the backend stops");
+    }
+
+    // Criterion (#147): a stopped backend with a selection needs a spawn; one
+    // holding a live child does not — a start is idempotent while running.
+    #[test]
+    fn test_needs_spawn_of_a_stopped_backend_is_true_and_of_a_running_one_is_false() {
+        let mut backend = SpotifyBackend::new();
+
+        assert!(matches!(backend.needs_spawn(&[target(A)]), Ok(true)));
+
+        let child = spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+        backend.adopt_child_for_test(child);
+        assert!(matches!(
+            backend.needs_spawn(&[target(A), target(B)]),
+            Ok(false)
+        ));
+        assert_eq!(backend.status().status, SpotifyStatus::Running);
+        backend.stop().expect("the backend stops");
+    }
+
+    // Criterion (#147): liveness is reconciled before the answer — a child
+    // that exited on its own does not make a respawn be skipped. The child
+    // here has exited before the backend is asked, and the backend is left
+    // `Stopped`.
+    #[test]
+    fn test_needs_spawn_reconciles_a_child_that_exited_on_its_own() {
+        let mut child = spawn_bound_to_this_thread("true", &[]).expect("spawn true");
+        child.wait().expect("the child exits");
+        let mut backend = SpotifyBackend::new();
+        backend.adopt_child_for_test(child);
+
+        assert!(matches!(backend.needs_spawn(&[target(A)]), Ok(true)));
+        assert_eq!(backend.status().status, SpotifyStatus::Stopped);
     }
 
     // Criterion: `build_librespot_args(device_name, sink_name)` yields the expected
