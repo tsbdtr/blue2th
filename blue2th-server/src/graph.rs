@@ -53,8 +53,11 @@ pub trait Graph: Send {
     /// `sink_name` back onto it (#139), and answer how many were asked. No
     /// such stream is `Ok(0)`, not an error.
     fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError>;
-    /// The volume of `sink` as a fraction, `None` when it cannot be read.
-    fn sink_volume(&mut self, sink: &str) -> Option<f32>;
+    /// The volume of `sink` as a fraction. An `Err` is "cannot tell" — the
+    /// graph did not answer, or lost its connection — which a caller must not
+    /// read as a sink without a level; `Ok(None)` is a sink that has no
+    /// readable level.
+    fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError>;
     /// Set the volume of `sink` to `level`, a fraction.
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError>;
 }
@@ -551,17 +554,18 @@ pub mod fake {
             Ok(0)
         }
 
-        fn sink_volume(&mut self, sink: &str) -> Option<f32> {
+        fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
             let mut state = self.state();
             state.log.push(GraphCall::SinkVolume {
                 sink: sink.to_string(),
             });
-            state.refuse_empty(GraphOp::SinkVolume, &[sink]).ok()?;
-            state
+            state.refuse_empty(GraphOp::SinkVolume, &[sink])?;
+            state.check(GraphOp::SinkVolume, sink)?;
+            Ok(state
                 .volumes
                 .iter()
                 .find(|(name, _)| name == sink)
-                .map(|(_, level)| *level)
+                .map(|(_, level)| *level))
         }
 
         fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
@@ -621,12 +625,61 @@ mod tests {
             fake.set_sink_volume("", 0.5),
             Err(AudioError::PipeWire(_))
         ));
-        assert!(fake.sink_volume("").is_none());
+        assert!(matches!(fake.sink_volume(""), Err(AudioError::PipeWire(_))));
 
         assert_eq!(fake.empty_names_refused(), 8);
         // Nothing was changed by the refused calls.
         assert_eq!(fake.sink_names(), vec![COMBINED, SPEAKER]);
         assert!(fake.loaded(COMBINED).is_empty());
+    }
+
+    // Criterion (#148): the fake's `sink_volume` honours `fail_for` — an `Err`
+    // for the sink named, and only for it — and `fail` — an `Err` for every
+    // sink — while a listed sink with no level set is `Ok(None)`, not an
+    // `Err`. The near miss of `fail_for` is `OTHER`, readable beside the
+    // failing sink; the near miss of "no level is not a failure" is `SILENT`,
+    // listed but never given a level.
+    #[test]
+    fn test_fake_graph_sink_volume_fails_when_told_and_reads_no_level_as_none() {
+        const OTHER: &str = "bluez_output.AA_BB_CC_DD_EE_02.1";
+        const SILENT: &str = "bluez_output.AA_BB_CC_DD_EE_03.1";
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER, OTHER, SILENT]);
+        fake.set_volume(SPEAKER, 0.5);
+        fake.set_volume(OTHER, 0.25);
+
+        fake.fail_for(GraphOp::SinkVolume, SPEAKER);
+        let failed = fake.sink_volume(SPEAKER);
+        assert!(
+            matches!(&failed, Err(AudioError::PipeWire(m)) if m.contains("SinkVolume told to fail")),
+            "fail_for makes the read an Err, got {failed:?}"
+        );
+        assert_eq!(
+            fake.sink_volume(OTHER).ok(),
+            Some(Some(0.25)),
+            "fail_for fails only the sink it names"
+        );
+        assert_eq!(
+            fake.sink_volume(SILENT).ok(),
+            Some(None),
+            "a listed sink with no level is Ok(None)"
+        );
+
+        fake.clear_failures();
+        fake.fail(GraphOp::SinkVolume);
+        let failed = fake.sink_volume(OTHER);
+        assert!(
+            matches!(&failed, Err(AudioError::PipeWire(_))),
+            "fail makes every read an Err, got {failed:?}"
+        );
+
+        fake.clear_failures();
+        assert_eq!(fake.sink_volume(SPEAKER).ok(), Some(Some(0.5)));
+        assert_eq!(fake.empty_names_refused(), 0);
+        assert_eq!(
+            fake.all_calls().len(),
+            5,
+            "every read is recorded, the failed ones included"
+        );
     }
 
     // Criterion: `FakeGraph` state stays coherent across calls — a load shows up

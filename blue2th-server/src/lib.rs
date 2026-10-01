@@ -1323,9 +1323,10 @@ async fn volume(
 /// change made on a speaker itself is reflected), the commanded level otherwise
 /// — see `audio::reported_volume`.
 ///
-/// A router not obtained in time, or a sink list that cannot be read, is not a
-/// failed poll (#145): the reply carries the commanded level and says the
-/// graph is unresponsive.
+/// A router not obtained in time, a sink list that cannot be read (#145), or a
+/// speaker's level read that fails (#148) is not a failed poll: the reply
+/// carries the commanded level and says the graph is unresponsive. A listed
+/// sink with no level is not a failure.
 async fn playback(State(state): State<AppState>) -> Json<PlaybackState> {
     let mut snapshot = {
         let mut engine = state.engine.lock().await;
@@ -4401,6 +4402,73 @@ mod tests {
     #[tokio::test]
     async fn test_playback_with_a_selected_speaker_whose_sink_is_absent_answers_responsive() {
         let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.set_volume(JBL_SINK, 0.8);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Responsive);
+        assert_eq!(reply.volume, COMMANDED);
+    }
+
+    // Criterion (#148, guard, stops at the first failure): the sink list
+    // reads fine, then the JBL's level read fails — the graph stopped
+    // answering after `sinks()`. The poll answers unresponsive with the
+    // commanded level, and the Sony's level is never asked. The near miss is
+    // the Sony, listed and readable: a read that collects every result and
+    // then looks for an `Err` still answers unresponsive, but asks for it.
+    #[tokio::test]
+    async fn test_playback_on_a_failed_level_read_answers_unresponsive_and_asks_nothing_more() {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.set_volume(JBL_SINK, 0.8);
+        fake.set_volume(SONY_SINK, 0.8);
+        fake.fail_for(GraphOp::SinkVolume, JBL_SINK);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Unresponsive);
+        assert_eq!(reply.volume, COMMANDED);
+        assert!(
+            !fake.all_calls().contains(&GraphCall::SinkVolume {
+                sink: SONY_SINK.to_string()
+            }),
+            "the Sony is not asked after the JBL's read failed: {:?}",
+            fake.all_calls()
+        );
+    }
+
+    // Criterion (#148, guard, a failure is never "no level"): the *last*
+    // speaker's level read fails. Swallowed into `None`, `reported_volume`
+    // of `[Some(0.6), None]` gives the commanded level — which the
+    // unresponsive path reports too — so `audio_graph` is what tells them
+    // apart, and it is what this test asserts.
+    #[tokio::test]
+    async fn test_playback_on_a_failed_last_level_read_answers_unresponsive() {
+        use graph::fake::{FakeGraph, GraphOp};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.set_volume(JBL_SINK, 0.6);
+        fake.set_volume(SONY_SINK, 0.6);
+        fake.fail_for(GraphOp::SinkVolume, SONY_SINK);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let Json(reply) = playback(State(state)).await;
+
+        assert_eq!(reply.audio_graph, AudioGraphStatus::Unresponsive);
+        assert_eq!(reply.volume, COMMANDED);
+    }
+
+    // Criterion (#148, guard, no level is not a stall): the Sony's sink is
+    // listed but has no level. The poll stays responsive, and the level is
+    // what `reported_volume` makes of `[Some(0.8), None]` — the commanded
+    // one. The near miss is the *listed* sink without a level, not an absent
+    // one: an implementation mapping every `None` to a failure fails here.
+    #[tokio::test]
+    async fn test_playback_with_a_listed_sink_without_a_level_answers_responsive() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
         fake.set_volume(JBL_SINK, 0.8);
         let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
 
