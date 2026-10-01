@@ -117,61 +117,51 @@ pub(crate) enum Command {
 }
 
 impl Command {
+    /// The variant's name, which is all the log of an expiry says of a command:
+    /// never its arguments.
+    fn name(&self) -> &'static str {
+        match self {
+            Command::Sinks { .. } => "Sinks",
+            Command::Branches { .. } => "Branches",
+            Command::CreateCombinedSink { .. } => "CreateCombinedSink",
+            Command::LoadBranch { .. } => "LoadBranch",
+            Command::UnloadBranch { .. } => "UnloadBranch",
+            Command::SetBranchDelay { .. } => "SetBranchDelay",
+            Command::Teardown { .. } => "Teardown",
+            Command::ClearStaleDefaultSink { .. } => "ClearStaleDefaultSink",
+            Command::RetargetStreams { .. } => "RetargetStreams",
+            Command::SinkVolume { .. } => "SinkVolume",
+            Command::SetSinkVolume { .. } => "SetSinkVolume",
+        }
+    }
+
     /// Answer [`AudioError::Expired`] on the command's own reply instead of
-    /// running it, and name its variant for the log.
+    /// running it.
     ///
     /// The `match` has no wildcard arm on purpose: a new variant does not
     /// compile until it answers its expiry, where a wildcard would drop its
     /// reply and its caller would read a thread that died.
-    fn expire(self) -> &'static str {
-        // A reply nobody waits for any more is dropped, as in `handle`.
+    fn expire(self) {
         match self {
-            Command::Sinks { reply } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "Sinks"
-            },
-            Command::Branches { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "Branches"
-            },
-            Command::CreateCombinedSink { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "CreateCombinedSink"
-            },
-            Command::LoadBranch { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "LoadBranch"
-            },
-            Command::UnloadBranch { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "UnloadBranch"
-            },
-            Command::SetBranchDelay { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "SetBranchDelay"
-            },
-            Command::Teardown { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "Teardown"
-            },
-            Command::ClearStaleDefaultSink { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "ClearStaleDefaultSink"
-            },
-            Command::RetargetStreams { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "RetargetStreams"
-            },
-            Command::SinkVolume { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "SinkVolume"
-            },
-            Command::SetSinkVolume { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-                "SetSinkVolume"
-            },
+            Command::Sinks { reply } => answer_expired(reply),
+            Command::Branches { reply, .. } => answer_expired(reply),
+            Command::CreateCombinedSink { reply, .. } => answer_expired(reply),
+            Command::LoadBranch { reply, .. } => answer_expired(reply),
+            Command::UnloadBranch { reply, .. } => answer_expired(reply),
+            Command::SetBranchDelay { reply, .. } => answer_expired(reply),
+            Command::Teardown { reply, .. } => answer_expired(reply),
+            Command::ClearStaleDefaultSink { reply, .. } => answer_expired(reply),
+            Command::RetargetStreams { reply, .. } => answer_expired(reply),
+            Command::SinkVolume { reply, .. } => answer_expired(reply),
+            Command::SetSinkVolume { reply, .. } => answer_expired(reply),
         }
     }
+}
+
+/// Answer [`AudioError::Expired`] on `reply`, whatever it carries. A reply
+/// nobody waits for any more is dropped, as in `handle`.
+fn answer_expired<T>(reply: Reply<T>) {
+    let _ = reply.send(Err(AudioError::Expired));
 }
 
 /// A [`Command`] on its way to the loop thread, with the instant past which
@@ -1211,7 +1201,8 @@ fn start_or_expire(envelope: Envelope, now: Instant) -> Option<Command> {
         return Some(command);
     }
     let late = now.duration_since(start_by);
-    let name = command.expire();
+    let name = command.name();
+    command.expire();
     tracing::warn!(
         "graph command {name} expired: taken out of the queue {} ms past its start_by",
         late.as_millis()
@@ -4032,6 +4023,24 @@ mod tests {
         }
     }
 
+    /// A loop thread that is already dead: its receiver is gone, so a send
+    /// gives the envelope back.
+    fn dead_loop() -> Box<dyn LoopSender> {
+        let (tx, rx) = mpsc::channel::<Envelope>();
+        drop(rx);
+        Box::new(tx)
+    }
+
+    /// A loop thread that takes one command and drops it unanswered, reply
+    /// sender included.
+    fn dropping_loop() -> Box<dyn LoopSender> {
+        let (tx, rx) = mpsc::channel::<Envelope>();
+        std::thread::spawn(move || {
+            let _ = rx.recv();
+        });
+        Box::new(tx)
+    }
+
     /// A loop thread that answers every command as a healthy graph holding
     /// `sinks` would, recording each command it received: its name, then its
     /// arguments in declaration order.
@@ -4214,12 +4223,20 @@ mod tests {
     //
     // The upper bounds leave 250 ms of scheduling slack. They sit under 2.3 s
     // on purpose: that is a wait counted from `start_by` instead of the send.
+    //
+    // The parked thread also takes 700 ms to start, and the bounds hold all
+    // the same: the wait runs from the stamp, so a thread slow to start
+    // shortens what is left of it instead of lengthening it. The near miss is
+    // a wait counted once the command is sent, which a thread started at once
+    // cannot tell from this one. 700 ms puts each such wait past the upper
+    // bounds: 1.6 s after the send ends at 2.3 s, 1.7 s at 2.4 s, 2 s at 2.7 s.
     #[test]
     fn test_a_command_without_an_answer_errs_2_s_after_the_send_and_is_not_expired() {
         // The receivers are kept alive and never read: the thread is "stuck".
         let parked: Arc<Mutex<Vec<mpsc::Receiver<Envelope>>>> = Arc::new(Mutex::new(Vec::new()));
         let keep = Arc::clone(&parked);
         let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
+            std::thread::sleep(Duration::from_millis(700));
             let (tx, rx) = mpsc::channel::<Envelope>();
             keep.lock().unwrap().push(rx);
             Box::new(tx) as Box<dyn LoopSender>
@@ -4269,14 +4286,7 @@ mod tests {
     // is an error at once — a dropped reply is not a slow one.
     #[test]
     fn test_a_dropped_reply_errs_without_waiting_for_the_timeout() {
-        let mut graph = PipeWireGraph::with_loop(Box::new(|_| {
-            let (tx, rx) = mpsc::channel::<Envelope>();
-            std::thread::spawn(move || {
-                // Take one command and drop it, reply sender included.
-                let _ = rx.recv();
-            });
-            Box::new(tx) as Box<dyn LoopSender>
-        }));
+        let mut graph = PipeWireGraph::with_loop(Box::new(|_| dropping_loop()));
 
         let started = Instant::now();
         let answer = graph.sinks();
@@ -4303,10 +4313,7 @@ mod tests {
         let log = Arc::clone(&received);
         let mut graph = PipeWireGraph::with_loop(Box::new(move |_| {
             if count.fetch_add(1, Ordering::SeqCst) == 0 {
-                // The first thread is already dead: its receiver is gone.
-                let (tx, rx) = mpsc::channel::<Envelope>();
-                drop(rx);
-                Box::new(tx) as Box<dyn LoopSender>
+                dead_loop()
             } else {
                 answering_loop(vec![SPEAKER.to_string()], Arc::clone(&log))
             }
@@ -4507,14 +4514,7 @@ mod tests {
     // unanswered is an `Err`, at once.
     #[test]
     fn test_sink_volume_with_a_dropped_reply_errs_at_once() {
-        let mut graph = PipeWireGraph::with_loop(Box::new(|_| {
-            let (tx, rx) = mpsc::channel::<Envelope>();
-            std::thread::spawn(move || {
-                // Take one command and drop it, reply sender included.
-                let _ = rx.recv();
-            });
-            Box::new(tx) as Box<dyn LoopSender>
-        }));
+        let mut graph = PipeWireGraph::with_loop(Box::new(|_| dropping_loop()));
 
         let started = Instant::now();
         let answer = graph.sink_volume(SPEAKER);
@@ -4612,25 +4612,6 @@ mod tests {
         "SetSinkVolume",
     ];
 
-    /// The name of `command`'s variant. Exhaustive on purpose, with no
-    /// wildcard arm: a twelfth variant does not compile here until
-    /// [`VARIANTS`] and the tables reading it name that variant too.
-    fn variant(command: &Command) -> &'static str {
-        match command {
-            Command::Sinks { .. } => "Sinks",
-            Command::Branches { .. } => "Branches",
-            Command::CreateCombinedSink { .. } => "CreateCombinedSink",
-            Command::LoadBranch { .. } => "LoadBranch",
-            Command::UnloadBranch { .. } => "UnloadBranch",
-            Command::SetBranchDelay { .. } => "SetBranchDelay",
-            Command::Teardown { .. } => "Teardown",
-            Command::ClearStaleDefaultSink { .. } => "ClearStaleDefaultSink",
-            Command::RetargetStreams { .. } => "RetargetStreams",
-            Command::SinkVolume { .. } => "SinkVolume",
-            Command::SetSinkVolume { .. } => "SetSinkVolume",
-        }
-    }
-
     /// What a reply channel holds right now.
     #[derive(Debug, PartialEq)]
     enum Held {
@@ -4702,6 +4683,21 @@ mod tests {
             Held::Dropped,
             "one answer, then the command is gone"
         );
+    }
+
+    // Edge case (#146): the caller of an expired command has stopped waiting
+    // and dropped its end of the reply — the usual state of a command taken
+    // out that late. The check still yields nothing, and the answer into the
+    // closed reply is dropped rather than failing the loop thread.
+    #[test]
+    fn test_start_or_expire_of_an_expired_command_nobody_waits_for_yields_nothing() {
+        let base = Instant::now();
+        let (envelope, answer) = volume_envelope(base + Duration::from_millis(300), 0.25);
+        drop(answer);
+
+        let yielded = start_or_expire(envelope, base + Duration::from_millis(2500));
+
+        assert!(yielded.is_none(), "an expired command is not handed on");
     }
 
     /// Hand `start_or_expire` a `LoadBranch` to start by `start_by`, at `now`,
@@ -4784,15 +4780,15 @@ mod tests {
     }
 
     /// Expire the command `make` builds — taken out one nanosecond past its
-    /// `start_by` — and report its variant, whether the check handed it on,
-    /// and what its reply holds.
+    /// `start_by` — and report the name it gives the log, whether the check
+    /// handed it on, and what its reply holds.
     fn expire<R: std::fmt::Debug>(
         make: impl FnOnce(Reply<R>) -> Command,
     ) -> (&'static str, bool, Held) {
         let base = Instant::now();
         let (reply, answer) = mpsc::channel();
         let command = make(reply);
-        let name = variant(&command);
+        let name = command.name();
         let yielded = start_or_expire(
             Envelope {
                 start_by: base + Duration::from_millis(300),
@@ -4806,15 +4802,11 @@ mod tests {
         (name, yielded.is_some(), reply_holds)
     }
 
-    // Criterion (#146, guard): every `Command` variant, all eleven, answers
-    // `Err(AudioError::Expired)` on its own reply channel when expired. The
-    // near miss is a variant reaching an arm that drops its reply: its caller
-    // would read "dropped the command without answering", a `PipeWire` error
-    // — `Held::Dropped` here, where `Held::Expired` is wanted, per variant.
-    // The replies carry six different types, so each row is its own channel.
-    #[test]
-    fn test_start_or_expire_answers_expired_on_the_reply_of_each_of_the_eleven_commands() {
-        let expired = [
+    /// One command of each variant, expired, in declaration order: what
+    /// [`expire`] reports for each. The replies carry six different types, so
+    /// each row is its own channel.
+    fn expire_one_of_each() -> [(&'static str, bool, Held); 11] {
+        [
             expire(|reply| Command::Sinks { reply }),
             expire(|reply| Command::Branches {
                 sink_name: COMBINED.to_string(),
@@ -4857,14 +4849,35 @@ mod tests {
                 level: 0.25,
                 reply,
             }),
-        ];
+        ]
+    }
 
-        let names: Vec<&str> = expired.iter().map(|(name, _, _)| *name).collect();
+    // Criterion (#146, guard): every `Command` variant, all eleven, answers
+    // `Err(AudioError::Expired)` on its own reply channel when expired. The
+    // near miss is a variant reaching an arm that drops its reply: its caller
+    // would read "dropped the command without answering", a `PipeWire` error
+    // — `Held::Dropped` here, where `Held::Expired` is wanted, per variant.
+    #[test]
+    fn test_start_or_expire_answers_expired_on_the_reply_of_each_of_the_eleven_commands() {
+        let expired = expire_one_of_each();
+
+        let names = expired.each_ref().map(|(name, _, _)| *name);
         assert_eq!(names, VARIANTS, "the table names every variant, once");
         for (name, handed_on, reply) in &expired {
             assert!(!handed_on, "{name} was handed on although expired");
             assert_eq!(*reply, Held::Expired, "{name} did not answer its expiry");
         }
+    }
+
+    // The log of an expiry names the command by its variant (#146), and
+    // nothing else tells one expired command from another. Each row is built
+    // as one variant and must give that variant's name, stated in `VARIANTS`:
+    // a name that is empty, or another variant's, differs from it.
+    #[test]
+    fn test_each_of_the_eleven_commands_names_its_own_variant_for_the_log() {
+        let names = expire_one_of_each().map(|(name, _, _)| name);
+
+        assert_eq!(names, VARIANTS);
     }
 
     // Criterion (#146, guard): an expired command is never run — the runner
@@ -5138,10 +5151,7 @@ mod tests {
             let mut asked = record.lock().unwrap();
             asked.push(Instant::now());
             if asked.len() == 1 {
-                // The first thread is already dead: its receiver is gone.
-                let (tx, rx) = mpsc::channel::<Envelope>();
-                drop(rx);
-                return Box::new(tx) as Box<dyn LoopSender>;
+                return dead_loop();
             }
             std::thread::sleep(Duration::from_millis(50));
             stamp_recording_loop(Arc::clone(&log))
@@ -5169,53 +5179,13 @@ mod tests {
         );
     }
 
-    /// Answer `command` as the loop does one it took out of its queue too
-    /// late: `Err(AudioError::Expired)` on its own reply, without running it.
-    fn answer_expired(command: Command) {
-        match command {
-            Command::Sinks { reply } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::Branches { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::CreateCombinedSink { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::LoadBranch { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::UnloadBranch { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::SetBranchDelay { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::Teardown { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::ClearStaleDefaultSink { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::RetargetStreams { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::SinkVolume { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-            Command::SetSinkVolume { reply, .. } => {
-                let _ = reply.send(Err(AudioError::Expired));
-            },
-        }
-    }
-
-    /// A loop thread that expires every command it receives. It answers by
-    /// its own `match`, not through the check under test.
+    /// A loop thread that expires every command it receives, whatever its
+    /// `start_by`: what a loop that took each one out too late answers.
     fn expiring_loop() -> Box<dyn LoopSender> {
         let (tx, rx) = mpsc::channel::<Envelope>();
         std::thread::spawn(move || {
             for envelope in rx {
-                answer_expired(envelope.command);
+                envelope.command.expire();
             }
         });
         Box::new(tx)
@@ -6237,10 +6207,7 @@ mod tests {
             move |events: Option<UnboundedSender<GraphEvent>>| {
                 record.lock().unwrap().push(events.is_some());
                 if starts.fetch_add(1, Ordering::SeqCst) == 0 {
-                    // The first thread dies at once: its receiver is gone.
-                    let (tx, rx) = mpsc::channel::<Envelope>();
-                    drop(rx);
-                    return Box::new(tx) as Box<dyn LoopSender>;
+                    return dead_loop();
                 }
                 if let Some(events) = events {
                     let _ = events.send(GraphEvent::Reconnected);
