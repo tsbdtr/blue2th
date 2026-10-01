@@ -264,8 +264,9 @@ impl std::fmt::Display for AudioError {
         match self {
             AudioError::NoSpeakerConnected => write!(f, "no speaker connected"),
             AudioError::PipeWire(msg) => write!(f, "PipeWire error: {msg}"),
-            // Skeleton of #146: writes nothing.
-            AudioError::Expired => Ok(()),
+            AudioError::Expired => {
+                write!(f, "the audio graph did not start the command in time")
+            },
         }
     }
 }

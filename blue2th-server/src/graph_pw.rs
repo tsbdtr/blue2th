@@ -4,8 +4,11 @@
 //!
 //! The PipeWire objects are `Rc`-based and never leave that thread. The handle
 //! the router owns only holds a [`pipewire::channel`] sender into it: every
-//! [`Graph`] method is one [`Command`], answered through a reply channel the
-//! handle waits on for at most [`GRAPH_REPLY_TIMEOUT`].
+//! [`Graph`] method is one [`Command`], sent in an [`Envelope`] carrying the
+//! instant past which the loop thread no longer starts it (#146), and answered
+//! through a reply channel. The handle waits on that channel until
+//! [`COMMAND_TIMEOUT`] and [`REPLY_MARGIN`] past that instant, so a command the
+//! thread started answers before its caller stops waiting.
 //!
 //! The decisions are pure functions over a [`Mirror`] of the registry, so the
 //! tests pin them without a daemon; the loop side only applies them.
@@ -40,22 +43,21 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::audio::{AudioError, CombineBranch};
 use crate::graph::{Graph, LoadedBranch};
 
-/// How long the handle waits for the loop thread to answer one command.
-pub(crate) const GRAPH_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// How long the loop thread gives the round trips of one command, all of them
-/// together. It is shorter than [`GRAPH_REPLY_TIMEOUT`] whatever the number of
-/// round trips, so a command answers with the daemon's error rather than with
-/// the handle's timeout.
+/// together, counted from the instant it starts the command. The handle waits
+/// [`REPLY_MARGIN`] longer than that past the command's `start_by`, so a
+/// command answers with the daemon's error rather than with the handle's
+/// timeout.
 const COMMAND_TIMEOUT: Duration = Duration::from_millis(1600);
 
-/// How long after it was sent the loop thread may still start a command.
-/// Skeleton of #146: no budget at all.
-const START_BUDGET: Duration = Duration::ZERO;
+/// How long after it was sent the loop thread may still start a command
+/// (#146). Time spent in the queue counts against it.
+const START_BUDGET: Duration = Duration::from_millis(300);
 
-/// How much longer than a started command's round trips the handle waits.
-/// Skeleton of #146: no margin at all.
-const REPLY_MARGIN: Duration = Duration::ZERO;
+/// How much longer than a started command's round trips the handle waits
+/// (#146): what lets the answer of a command started at its `start_by` reach a
+/// caller that is still waiting.
+const REPLY_MARGIN: Duration = Duration::from_millis(100);
 
 /// The factory the combined sink's node is created from.
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
@@ -112,6 +114,64 @@ pub(crate) enum Command {
         level: f32,
         reply: Reply<()>,
     },
+}
+
+impl Command {
+    /// Answer [`AudioError::Expired`] on the command's own reply instead of
+    /// running it, and name its variant for the log.
+    ///
+    /// The `match` has no wildcard arm on purpose: a new variant does not
+    /// compile until it answers its expiry, where a wildcard would drop its
+    /// reply and its caller would read a thread that died.
+    fn expire(self) -> &'static str {
+        // A reply nobody waits for any more is dropped, as in `handle`.
+        match self {
+            Command::Sinks { reply } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "Sinks"
+            },
+            Command::Branches { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "Branches"
+            },
+            Command::CreateCombinedSink { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "CreateCombinedSink"
+            },
+            Command::LoadBranch { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "LoadBranch"
+            },
+            Command::UnloadBranch { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "UnloadBranch"
+            },
+            Command::SetBranchDelay { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "SetBranchDelay"
+            },
+            Command::Teardown { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "Teardown"
+            },
+            Command::ClearStaleDefaultSink { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "ClearStaleDefaultSink"
+            },
+            Command::RetargetStreams { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "RetargetStreams"
+            },
+            Command::SinkVolume { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "SinkVolume"
+            },
+            Command::SetSinkVolume { reply, .. } => {
+                let _ = reply.send(Err(AudioError::Expired));
+                "SetSinkVolume"
+            },
+        }
+    }
 }
 
 /// A [`Command`] on its way to the loop thread, with the instant past which
@@ -260,19 +320,28 @@ impl PipeWireGraph {
 
     /// Send the command `make` builds around a fresh reply channel, and wait for
     /// the answer.
+    ///
+    /// The envelope is stamped here, once, before any thread is started for
+    /// it: a command resent to a replacement thread keeps its `start_by`. The
+    /// wait is counted from that stamp rather than from the send, so a thread
+    /// that was slow to start does not lengthen it.
+    ///
+    /// The handle's own timeout is not [`AudioError::Expired`]: it cannot tell
+    /// whether the command ran, and `Expired` says it did not.
     fn ask<R>(&mut self, make: impl FnOnce(mpsc::Sender<R>) -> Command) -> Result<R, AudioError> {
         let (reply, answer) = mpsc::channel();
-        // Skeleton of #146: the envelope is stamped with the send instant itself.
+        let start_by = Instant::now() + START_BUDGET;
         self.send(Envelope {
-            start_by: Instant::now(),
+            start_by,
             command: make(reply),
         })?;
+        let give_up = start_by + COMMAND_TIMEOUT + REPLY_MARGIN;
         answer
-            .recv_timeout(GRAPH_REPLY_TIMEOUT)
+            .recv_timeout(give_up.saturating_duration_since(Instant::now()))
             .map_err(|e| match e {
                 mpsc::RecvTimeoutError::Timeout => AudioError::PipeWire(format!(
                     "PipeWire graph thread did not answer within {} s",
-                    GRAPH_REPLY_TIMEOUT.as_secs()
+                    (START_BUDGET + COMMAND_TIMEOUT + REPLY_MARGIN).as_secs()
                 )),
                 mpsc::RecvTimeoutError::Disconnected => AudioError::PipeWire(
                     "PipeWire graph thread dropped the command without answering".into(),
@@ -1118,17 +1187,14 @@ fn run_loop_thread(
             reconnect.lost(Instant::now());
         }
         state.wire_waiting_branches();
-        loop {
-            let next = inbox.borrow_mut().pop_front();
-            let Some(envelope) = next else {
-                break;
-            };
-            // Skeleton of #146: every command is run, whatever its `start_by`.
-            handle(&mut state, envelope.command);
+        // A command that waited behind the reconnect attempt or the wiring above
+        // has spent that time out of its start budget (#146).
+        drain_inbox(&inbox, Instant::now, |command| {
+            handle(&mut state, command);
             if state.forget_a_lost_connection() {
                 reconnect.lost(Instant::now());
             }
-        }
+        });
         // A command reconnects on its own: that is a reconnection too.
         if state.is_connected() {
             reconnect.connected(state.connector.events.as_ref());
@@ -1139,10 +1205,17 @@ fn run_loop_thread(
 /// The command of `envelope` when the loop thread may still start it at `now`.
 /// Past its `start_by` there is none: the command is not run, and its own
 /// reply receives [`AudioError::Expired`].
-///
-/// Skeleton of #146: yields nothing and answers nothing.
 fn start_or_expire(envelope: Envelope, now: Instant) -> Option<Command> {
-    let _ = (envelope, now);
+    let Envelope { start_by, command } = envelope;
+    if now <= start_by {
+        return Some(command);
+    }
+    let late = now.duration_since(start_by);
+    let name = command.expire();
+    tracing::warn!(
+        "graph command {name} expired: taken out of the queue {} ms past its start_by",
+        late.as_millis()
+    );
     None
 }
 
@@ -1150,14 +1223,20 @@ fn start_or_expire(envelope: Envelope, now: Instant) -> Option<Command> {
 /// `now` once for each as it comes out, and hand `run` the commands
 /// [`start_or_expire`] yields. `inbox` is not borrowed while `run` runs: a
 /// command iterates the main loop, and the channel callback queues into it.
-///
-/// Skeleton of #146: takes nothing out.
 fn drain_inbox(
     inbox: &RefCell<VecDeque<Envelope>>,
-    now: impl FnMut() -> Instant,
-    run: impl FnMut(Command),
+    mut now: impl FnMut() -> Instant,
+    mut run: impl FnMut(Command),
 ) {
-    let _ = (inbox, now, run);
+    loop {
+        let next = inbox.borrow_mut().pop_front();
+        let Some(envelope) = next else {
+            break;
+        };
+        if let Some(command) = start_or_expire(envelope, now()) {
+            run(command);
+        }
+    }
 }
 
 /// When a watched loop next tries to reconnect, and whether it owes a

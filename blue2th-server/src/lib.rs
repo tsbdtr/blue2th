@@ -2153,6 +2153,14 @@ impl AppError {
         }
     }
 
+    /// The 503 of an audio graph that did nothing for the request: the router
+    /// could not be had in time (#145), or the graph thread took the command
+    /// out of its queue too late to start it (#146). One answer for both — the
+    /// client cannot tell them apart, and has nothing different to do.
+    fn graph_not_answering() -> Self {
+        Self::service_unavailable("the audio graph is not answering")
+    }
+
     /// A 409 error carrying the given message: the request collided with the
     /// state of something the backend does not own — a speaker refusing the
     /// bond — rather than with a bug on this side.
@@ -2198,8 +2206,8 @@ impl From<AudioError> for AppError {
             // No connected speaker is a precondition failure, not a server bug.
             AudioError::NoSpeakerConnected => AppError::bad_request(err.to_string()),
             AudioError::PipeWire(_) => AppError::internal(err.to_string()),
-            // Skeleton of #146: answers as a graph failure does.
-            AudioError::Expired => AppError::internal(err.to_string()),
+            // Nothing was done to the graph: unavailable, not a server fault.
+            AudioError::Expired => AppError::graph_not_answering(),
         }
     }
 }
@@ -2207,9 +2215,7 @@ impl From<AudioError> for AppError {
 impl From<RouterError> for AppError {
     fn from(err: RouterError) -> Self {
         match err {
-            RouterError::TimedOut => {
-                AppError::service_unavailable("the audio graph is not answering")
-            },
+            RouterError::TimedOut => AppError::graph_not_answering(),
             RouterError::Audio(e) => e.into(),
         }
     }
