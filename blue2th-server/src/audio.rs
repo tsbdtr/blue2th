@@ -258,6 +258,9 @@ pub enum AudioError {
     /// not run it (#146). Only that thread says so: it is the one that knows
     /// the command was never started.
     Expired,
+    /// The graph thread started the command and PipeWire did not answer
+    /// before its deadline.
+    Unanswered,
 }
 
 impl std::fmt::Display for AudioError {
@@ -267,6 +270,9 @@ impl std::fmt::Display for AudioError {
             AudioError::PipeWire(msg) => write!(f, "PipeWire error: {msg}"),
             AudioError::Expired => {
                 write!(f, "the audio graph did not start the command in time")
+            },
+            AudioError::Unanswered => {
+                write!(f, "PipeWire did not answer the command before its deadline")
             },
         }
     }

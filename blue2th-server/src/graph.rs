@@ -340,6 +340,14 @@ pub mod fake {
             });
         }
 
+        /// Fail every call to `op` with [`AudioError::Unanswered`], as a
+        /// daemon that stalls past the message's deadline does, rather than
+        /// with the usual `PipeWire("… told to fail")`.
+        // RED-phase stub (#147): sets no rule yet.
+        pub fn fail_unanswered(&self, op: GraphOp) {
+            let _ = op;
+        }
+
         /// Drop every failure rule: the graph answers normally from now on.
         pub fn clear_failures(&self) {
             self.state().rules.clear();
@@ -731,6 +739,62 @@ mod tests {
             fake.all_calls().len(),
             5,
             "every read is recorded, the failed ones included"
+        );
+    }
+
+    // Criterion (#147, 2026-10-03): `FakeGraph` can be told to fail a call
+    // with `AudioError::Unanswered` rather than its usual
+    // `PipeWire("… told to fail")`, and the attempt is recorded like any
+    // other. Every call to the op answers so, whatever sink it names, and a
+    // failed set changes nothing in the fake, as every failure rule does.
+    // Near misses: `Teardown` told to `fail` beside it, which must still
+    // answer `PipeWire` (the two rules do not merge), and `SinkVolume`, an op
+    // told nothing, which must still answer.
+    #[test]
+    fn test_fake_graph_fails_a_call_unanswered_when_told_and_records_the_attempt() {
+        const OTHER: &str = "bluez_output.AA_BB_CC_DD_EE_02.1";
+        let mut fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER, OTHER]);
+        fake.set_volume(SPEAKER, 0.25);
+        fake.fail_unanswered(GraphOp::SetSinkVolume);
+        fake.fail(GraphOp::Teardown);
+
+        let first = fake.set_sink_volume(SPEAKER, 0.5);
+        let second = fake.set_sink_volume(OTHER, 0.75);
+        let refused = fake.teardown(COMBINED);
+
+        assert!(
+            matches!(first, Err(AudioError::Unanswered)),
+            "got {first:?}"
+        );
+        assert!(
+            matches!(second, Err(AudioError::Unanswered)),
+            "every call to the op, whatever it names: got {second:?}"
+        );
+        assert!(
+            matches!(&refused, Err(AudioError::PipeWire(m)) if m.contains("Teardown told to fail")),
+            "`fail` keeps its own answer beside it: got {refused:?}"
+        );
+        assert_eq!(
+            fake.sink_volume(SPEAKER).ok(),
+            Some(Some(0.25)),
+            "an op told nothing answers, and the unanswered set wrote nothing"
+        );
+        assert_eq!(
+            fake.calls(),
+            vec![
+                GraphCall::SetSinkVolume {
+                    sink: SPEAKER.to_string(),
+                    level: 0.5
+                },
+                GraphCall::SetSinkVolume {
+                    sink: OTHER.to_string(),
+                    level: 0.75
+                },
+                GraphCall::Teardown {
+                    sink_name: COMBINED.to_string()
+                },
+            ],
+            "the unanswered attempts are recorded like any other"
         );
     }
 

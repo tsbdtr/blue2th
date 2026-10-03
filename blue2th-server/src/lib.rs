@@ -2262,6 +2262,8 @@ impl From<AudioError> for AppError {
             AudioError::PipeWire(_) => AppError::internal(err.to_string()),
             // Nothing was done to the graph: unavailable, not a server fault.
             AudioError::Expired => AppError::graph_not_answering(),
+            // RED-phase stub (#147): mapped as it reached the handler before.
+            AudioError::Unanswered => AppError::internal(err.to_string()),
         }
     }
 }
@@ -4309,6 +4311,46 @@ mod tests {
         );
     }
 
+    // Criterion (#147, 2026-10-03): a started message the daemon did not
+    // answer maps to 503 "the audio graph is not answering", bare or through
+    // `RouterError::Audio` — the router timeout's own answer, compared whole.
+    // Guard (only the deadline is 503): the near miss is a `PipeWire` error
+    // carrying the very text the deadline exit produced before `Unanswered`
+    // existed. A mapping that matches "did not answer" in the message, or
+    // that answers every `PipeWire` 503, passes on `Unanswered` alone; this
+    // one must stay 500 with its own message.
+    #[test]
+    fn test_an_unanswered_message_maps_to_503_and_a_graph_failure_saying_so_stays_500() {
+        let bare = AppError::from(AudioError::Unanswered);
+        let through_router = AppError::from(RouterError::Audio(AudioError::Unanswered));
+        let answered = AppError::from(AudioError::PipeWire(
+            "PipeWire did not answer a sync round trip".to_string(),
+        ));
+        let answered_through_router = AppError::from(RouterError::Audio(AudioError::PipeWire(
+            "PipeWire did not answer a sync round trip".to_string(),
+        )));
+
+        assert_eq!(bare.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(bare.message, GRAPH_NOT_ANSWERING);
+        assert_eq!(through_router.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(through_router.message, GRAPH_NOT_ANSWERING);
+        assert_eq!(
+            bare.message,
+            AppError::from(RouterError::TimedOut).message,
+            "the same answer as a router that did not answer in time"
+        );
+        for failed in [&answered, &answered_through_router] {
+            assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(
+                failed
+                    .message
+                    .contains("PipeWire did not answer a sync round trip"),
+                "got {:?}",
+                failed.message
+            );
+        }
+    }
+
     // Criteria (#145, #147): a request-path wait expires after
     // `REQUEST_BOUND` — not a millisecond before — and `POST /volume` then
     // answers 503 naming the audio graph, with nothing sent to the graph and
@@ -4862,6 +4904,286 @@ mod tests {
             }),
             "got {failed:?}"
         );
+    }
+
+    // ─── #147 (2026-10-03): a started message the daemon did not answer ────
+    //
+    // The actor is free and starts the message at once; the graph call it
+    // reaches answers `AudioError::Unanswered`, as the sync round trip past
+    // the message's deadline does in production. Unlike an expiry, the
+    // message ran: the graph log shows what it sent before the stall.
+
+    // Criterion (#147, 2026-10-03): `POST /volume` whose set reaches the
+    // graph and answers `Unanswered` answers 503 "the audio graph is not
+    // answering", and the engine's commanded level is left unchanged.
+    // Guard (only the deadline is 503): the near miss is the same set failed
+    // with the fake's usual `PipeWire("… told to fail")`, a graph that
+    // answered an error: it stays 500 with its own message. Each half runs
+    // on its own graph, with its own level, so the two attempts are told
+    // apart in the logs.
+    #[tokio::test]
+    async fn test_volume_whose_set_went_unanswered_answers_503_and_a_refused_set_stays_500() {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        let stalled = FakeGraph::with_sinks(&[JBL_SINK]);
+        stalled.fail_unanswered(GraphOp::SetSinkVolume);
+        let stalled_state = selected_state(&stalled, &[JBL], &[JBL]).await;
+        let refused = FakeGraph::with_sinks(&[JBL_SINK]);
+        refused.fail(GraphOp::SetSinkVolume);
+        let refused_state = selected_state(&refused, &[JBL], &[JBL]).await;
+
+        let unanswered = volume(
+            State(stalled_state.clone()),
+            Json(VolumeRequest { level: 0.8 }),
+        )
+        .await;
+        let failed = volume(
+            State(refused_state.clone()),
+            Json(VolumeRequest { level: 0.6 }),
+        )
+        .await;
+
+        assert_eq!(
+            failure(&unanswered),
+            Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                GRAPH_NOT_ANSWERING.to_string()
+            ))
+        );
+        assert_eq!(
+            stalled.calls(),
+            vec![GraphCall::SetSinkVolume {
+                sink: JBL_SINK.to_string(),
+                level: 0.8
+            }],
+            "the set reached the graph before it stalled"
+        );
+        assert_eq!(
+            stalled_state.engine.lock().await.poll_state().volume,
+            COMMANDED
+        );
+
+        let failed = failure(&failed);
+        assert_eq!(
+            failed.as_ref().map(|(status, _)| *status),
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "a graph that answered an error is not a graph that did not answer"
+        );
+        assert!(
+            failed
+                .as_ref()
+                .is_some_and(|(_, message)| message.contains("SetSinkVolume told to fail")),
+            "got {failed:?}"
+        );
+        assert_eq!(
+            refused.calls(),
+            vec![GraphCall::SetSinkVolume {
+                sink: JBL_SINK.to_string(),
+                level: 0.6
+            }]
+        );
+        assert_eq!(
+            refused_state.engine.lock().await.poll_state().volume,
+            COMMANDED
+        );
+    }
+
+    // Criterion (#147, 2026-10-03): `POST /play` whose route answers
+    // `Unanswered` answers 503 "the audio graph is not answering", and the
+    // engine does not start. The stall is the combined sink's creation, a
+    // step whose error the route propagates as it is: the route ran up to
+    // it — the stale default checked, the old sink torn down — and stopped
+    // there, so this 503 does not mean "nothing was sent".
+    #[tokio::test]
+    async fn test_play_whose_route_went_unanswered_answers_503_and_leaves_the_engine_not_playing() {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.fail_unanswered(GraphOp::CreateCombinedSink);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let answer = play(State(state.clone())).await;
+
+        assert_eq!(
+            failure(&answer),
+            Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                GRAPH_NOT_ANSWERING.to_string()
+            ))
+        );
+        assert_eq!(
+            fake.routing_calls(),
+            vec![
+                GraphCall::ClearStaleDefaultSink {
+                    sink_name: COMBINED_SINK.to_string()
+                },
+                GraphCall::Teardown {
+                    sink_name: COMBINED_SINK.to_string()
+                },
+                GraphCall::CreateCombinedSink {
+                    sink_name: COMBINED_SINK.to_string()
+                },
+            ],
+            "the route ran until the stall, and no further"
+        );
+        assert_ne!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "a 503 starts no tone"
+        );
+    }
+
+    // Criterion (#147, 2026-10-03): `POST /devices/{addr}/offset` whose
+    // retune answers `Unanswered` logs it and does not call
+    // `request_routing`: the delay may have been set, so it is not "nothing
+    // was done". The handler still answers 200 with the stored offset.
+    // Guard (`Unanswered` is not "nothing was done"): the near miss is a
+    // retune that answers `Expired` — held past the start budget — which
+    // must call `request_routing`, beside the unanswered one that must not.
+    // An arm widened to the new variant re-routes after the stall: the
+    // routing generation moves and the applier runs a second pass.
+    #[tokio::test(start_paused = true)]
+    async fn test_an_offset_change_whose_retune_went_unanswered_is_not_handed_to_the_applier_unlike_an_expired_one(
+    ) {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        // The unanswered retune.
+        let stalled = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        stalled.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let stalled_branch = stalled.seed_branch(COMBINED_SINK, SONY_SINK, 0, Some(true));
+        stalled.fail_unanswered(GraphOp::SetBranchDelay);
+        let stalled_state = selected_state(&stalled, &[JBL, SONY], &[JBL, SONY]).await;
+        start_applier(&stalled_state, &stalled).await;
+        let generation = stalled_state.router.routing_generation();
+
+        let Json(reply) = set_target_offset(
+            State(stalled_state.clone()),
+            Path(SONY.to_string()),
+            Json(OffsetRequest { offset_ms: 120 }),
+        )
+        .await;
+        settle().await;
+
+        assert_eq!(offset_of(&reply, SONY), Some(120));
+        assert_eq!(
+            stalled.calls(),
+            vec![GraphCall::SetBranchDelay {
+                id: stalled_branch,
+                delay_ms: 120
+            }],
+            "the retune's one unanswered attempt, and no applier pass after it"
+        );
+        assert_eq!(
+            stalled
+                .loaded(COMBINED_SINK)
+                .iter()
+                .find(|b| b.id == stalled_branch)
+                .map(|b| b.branch.latency_ms),
+            Some(0),
+            "the fake did answer `Unanswered`: it applied nothing"
+        );
+        assert_eq!(passes(&stalled), 1, "calls: {:?}", stalled.all_calls());
+        assert_eq!(stalled_state.router.routing_generation(), generation);
+
+        // The near miss: the expired retune, on a graph of its own.
+        let expired = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        expired.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        let expired_branch = expired.seed_branch(COMBINED_SINK, SONY_SINK, 0, Some(true));
+        let expired_state = selected_state(&expired, &[JBL, SONY], &[JBL, SONY]).await;
+        start_applier(&expired_state, &expired).await;
+        let generation = expired_state.router.routing_generation();
+        let held = expired_state.router.hold_actor();
+
+        let request = tokio::spawn(set_target_offset(
+            State(expired_state.clone()),
+            Path(SONY.to_string()),
+            Json(OffsetRequest { offset_ms: 120 }),
+        ));
+        settle().await;
+        tokio::time::advance(Duration::from_millis(301)).await;
+        settle().await;
+        drop(held);
+        settle().await;
+
+        assert!(request.is_finished(), "the expiry is answered at once");
+        let Json(reply) = request.await.expect("the handler task ends");
+        assert_eq!(offset_of(&reply, SONY), Some(120));
+        assert_ne!(
+            expired_state.router.routing_generation(),
+            generation,
+            "control: an expired retune is handed to the applier"
+        );
+        assert_eq!(
+            expired.calls(),
+            vec![GraphCall::SetBranchDelay {
+                id: expired_branch,
+                delay_ms: 120
+            }],
+            "control: the applier applied the stored offset, once"
+        );
+    }
+
+    // Criterion (#147, 2026-10-03): `POST /spotify/start` whose routing
+    // answers `Unanswered` keeps `SpotifyError::Spawn`'s 500 — the explicit
+    // `match` in `start_spotify` is left as it is — and `librespot` is not
+    // spawned: the route stopped at the stall, before any node name was
+    // resolved. Guard (`Unanswered` is not "nothing was done"): the near
+    // miss is a routing that expired behind a held actor, which answers 503;
+    // an arm widened to the new variant answers the unanswered one 503 too.
+    // The message is compared whole, built from the same errors, so the
+    // spawn's own "librespot not found" — what a start whose routing
+    // succeeded reaches under test — cannot pass for it.
+    #[tokio::test(start_paused = true)]
+    async fn test_spotify_start_whose_routing_went_unanswered_keeps_the_spawn_failure_unlike_an_expired_one(
+    ) {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        // The near miss: the expired routing.
+        let expired = FakeGraph::with_sinks(&[JBL_SINK]);
+        let expired_state = selected_state(&expired, &[JBL], &[JBL]).await;
+        let held = expired_state.router.hold_actor();
+        let request = tokio::spawn(spotify_start(State(expired_state.clone())));
+        settle().await;
+        tokio::time::advance(Duration::from_millis(301)).await;
+        settle().await;
+        drop(held);
+        settle().await;
+        assert!(request.is_finished(), "the expiry is answered at once");
+        let answer = request.await.expect("the handler task ends");
+        assert_eq!(
+            failure(&answer),
+            Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                GRAPH_NOT_ANSWERING.to_string()
+            )),
+            "control: an expired routing is the 503"
+        );
+
+        // The unanswered routing.
+        let stalled = FakeGraph::with_sinks(&[JBL_SINK]);
+        stalled.fail_unanswered(GraphOp::CreateCombinedSink);
+        let stalled_state = selected_state(&stalled, &[JBL], &[JBL]).await;
+
+        let answer = spotify_start(State(stalled_state.clone())).await;
+
+        let spawn_failure = AppError::from(SpotifyError::Spawn(
+            RouterError::Audio(AudioError::Unanswered).to_string(),
+        ));
+        assert_eq!(
+            failure(&answer),
+            Some((StatusCode::INTERNAL_SERVER_ERROR, spawn_failure.message))
+        );
+        assert_eq!(
+            stalled.all_calls().last(),
+            Some(&GraphCall::CreateCombinedSink {
+                sink_name: COMBINED_SINK.to_string()
+            }),
+            "the route stopped at the stall, and the target was never resolved: {:?}",
+            stalled.all_calls()
+        );
+        let mut spotify = stalled_state.spotify.lock().await;
+        assert_eq!(spotify.poll_liveness().status, SpotifyStatus::Stopped);
+        assert_eq!(spotify.current_sink(), None);
     }
 
     // Criterion (#145): `GET /playback` behind an actor held past
