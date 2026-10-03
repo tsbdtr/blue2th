@@ -44,8 +44,10 @@ pub enum RouterError {
     /// No answer in time: nothing reaches the graph for the request
     /// afterwards.
     TimedOut,
-    /// The operation ran and the graph call failed, or the graph thread did
-    /// not start it in time ([`AudioError::Expired`]).
+    /// The operation ran and the graph call failed — refused, or left
+    /// unanswered by the daemon until its deadline ([`AudioError::Unanswered`],
+    /// #147) — or the graph thread did not start it in time
+    /// ([`AudioError::Expired`]).
     Audio(AudioError),
     /// A volume set that a later one, queued behind it for the same sinks,
     /// replaced before it started (#147): nothing was sent to the graph for

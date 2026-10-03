@@ -152,12 +152,14 @@ pub mod fake {
     }
 
     /// Fail calls to `op`: every one, only those naming `node`, and only once
-    /// `skip` matching calls have been let through.
+    /// `skip` matching calls have been let through — with
+    /// [`AudioError::Unanswered`] when `unanswered`, `PipeWire` otherwise.
     #[derive(Debug)]
     struct FailRule {
         op: GraphOp,
         node: Option<String>,
         skip: usize,
+        unanswered: bool,
     }
 
     #[derive(Debug)]
@@ -327,6 +329,7 @@ pub mod fake {
                 op,
                 node: None,
                 skip: 0,
+                unanswered: false,
             });
         }
 
@@ -337,24 +340,33 @@ pub mod fake {
                 op,
                 node: Some(node.to_string()),
                 skip: 0,
+                unanswered: false,
             });
         }
 
         /// Fail every call to `op` with [`AudioError::Unanswered`], as a
         /// daemon that stalls past the message's deadline does, rather than
         /// with the usual `PipeWire("… told to fail")`.
-        // RED-phase stub (#147): sets no rule yet.
         pub fn fail_unanswered(&self, op: GraphOp) {
-            let _ = op;
+            self.state().rules.push(FailRule {
+                op,
+                node: None,
+                skip: 0,
+                unanswered: true,
+            });
         }
 
         /// Fail the calls to `op` that name `node` with
         /// [`AudioError::Unanswered`], as [`Self::fail_for`] does with the
         /// usual `PipeWire("… told to fail")`: a daemon that stalls on one
         /// speaker's call after answering the others'.
-        // RED-phase stub (#147): sets no rule yet.
         pub fn fail_unanswered_for(&self, op: GraphOp, node: &str) {
-            let _ = (op, node);
+            self.state().rules.push(FailRule {
+                op,
+                node: Some(node.to_string()),
+                skip: 0,
+                unanswered: true,
+            });
         }
 
         /// Drop every failure rule: the graph answers normally from now on.
@@ -368,6 +380,7 @@ pub mod fake {
                 op,
                 node: None,
                 skip: successes,
+                unanswered: false,
             });
         }
 
@@ -466,6 +479,9 @@ pub mod fake {
                 if rule.skip > 0 {
                     rule.skip -= 1;
                     continue;
+                }
+                if rule.unanswered {
+                    return Err(AudioError::Unanswered);
                 }
                 return Err(AudioError::PipeWire(format!(
                     "fake graph: {op:?} told to fail for {node}"

@@ -2207,9 +2207,10 @@ impl AppError {
         }
     }
 
-    /// The 503 of an audio graph that did nothing for the request: the graph
-    /// thread did not answer in time (#145), or took the message out of its
-    /// queue too late to start it (#146). One answer for both — the client
+    /// The 503 of an audio graph that did not answer the request: the graph
+    /// thread did not answer in time (#145), took the message out of its
+    /// queue too late to start it (#146), or started it and the daemon did not
+    /// answer before its deadline (#147). One answer for all three — the client
     /// cannot tell them apart, and has nothing different to do.
     fn graph_not_answering() -> Self {
         Self::service_unavailable("the audio graph is not answering")
@@ -2260,10 +2261,9 @@ impl From<AudioError> for AppError {
             // No connected speaker is a precondition failure, not a server bug.
             AudioError::NoSpeakerConnected => AppError::bad_request(err.to_string()),
             AudioError::PipeWire(_) => AppError::internal(err.to_string()),
-            // Nothing was done to the graph: unavailable, not a server fault.
-            AudioError::Expired => AppError::graph_not_answering(),
-            // RED-phase stub (#147): mapped as it reached the handler before.
-            AudioError::Unanswered => AppError::internal(err.to_string()),
+            // The graph did not answer — the message expired unstarted, or the
+            // daemon stalled on it (#147): unavailable, not a server fault.
+            AudioError::Expired | AudioError::Unanswered => AppError::graph_not_answering(),
         }
     }
 }

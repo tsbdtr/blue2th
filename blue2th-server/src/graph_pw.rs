@@ -1232,9 +1232,7 @@ impl PwConnection {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(AudioError::PipeWire(
-                    "PipeWire did not answer a sync round trip".into(),
-                ));
+                return Err(AudioError::Unanswered);
             }
             self.mainloop.loop_().iterate(Timeout::Finite(left));
         }

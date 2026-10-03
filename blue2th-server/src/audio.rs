@@ -382,8 +382,19 @@ impl BranchLoadReport {
         if self.failures.is_empty() {
             return Ok(());
         }
-        // RED-phase stub (#147): every failure is still flattened into one
-        // `PipeWire`, an `Unanswered` one included.
+        // A daemon that stalled on one branch is not answering, whatever the
+        // others said (#147): the stall decides the status, and the refusals
+        // beside it stay in the log.
+        if self.failures.contains(&AudioError::Unanswered) {
+            for failure in self
+                .failures
+                .iter()
+                .filter(|f| **f != AudioError::Unanswered)
+            {
+                tracing::warn!("branch pass: {failure}");
+            }
+            return Err(AudioError::Unanswered);
+        }
         let messages: Vec<String> = self.failures.iter().map(ToString::to_string).collect();
         Err(AudioError::PipeWire(messages.join("; ")))
     }

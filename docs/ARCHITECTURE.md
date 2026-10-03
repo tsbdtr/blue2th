@@ -215,6 +215,9 @@ The wait is bounded for a request and unbounded for a background task:
   request answers 503 "the audio graph is not answering" — `GET /playback`
   answers the commanded level and `audio_graph: unresponsive` — and nothing
   reaches the graph for it afterwards: a message whose caller left is skipped.
+  A started message whose graph call the daemon leaves unanswered until that
+  shared deadline answers the same 503 (#147); what it did before the stall
+  stays done.
 - A **background** message — the routing applier's, a repair pass's — carries
   no deadline and is never given up: a repair delayed is better than a repair
   dropped.
