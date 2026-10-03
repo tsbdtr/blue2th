@@ -32,7 +32,8 @@ pub struct LoadedBranch {
 pub trait Graph {
     /// The instant past which the calls of the message being run stop waiting
     /// for the daemon (#147). Handed once per message, before its first call:
-    /// every call of that message shares it, and no other method moves it.
+    /// every call of that message shares it, and no other method of this
+    /// trait moves it.
     fn set_deadline(&mut self, deadline: Instant);
     /// The node names of the sinks currently present. An `Err` is "cannot
     /// tell", which a caller must not read as "no sink exists".

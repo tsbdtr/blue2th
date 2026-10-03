@@ -260,12 +260,9 @@ impl Queue {
                 continue;
             }
             if let Some(late) = start_by.and_then(|start_by| late_by(now, start_by)) {
-                let name = message.name();
+                let line = expiry_line(&message, late);
                 message.refuse(RouterError::Audio(AudioError::Expired));
-                tracing::warn!(
-                    "router message {name} expired: taken out of the queue {} ms past its start_by",
-                    late.as_millis()
-                );
+                tracing::warn!("{line}");
                 continue;
             }
             if self.is_superseded(&message) {
@@ -328,6 +325,17 @@ impl Queue {
             }
         }
     }
+}
+
+/// The line logged for `message`, taken out of the queue `late` past its
+/// `start_by`: the message is named by its variant alone, as #146 names a
+/// command — its arguments are not logged.
+fn expiry_line(message: &Message, late: std::time::Duration) -> String {
+    format!(
+        "router message {} expired: taken out of the queue {} ms past its start_by",
+        message.name(),
+        late.as_millis()
+    )
 }
 
 /// How far past `start_by` the instant `now` is; `None` while it is not
@@ -516,17 +524,10 @@ pub(crate) mod testing {
         }
     }
 
-    /// Whether the caller of `message` stopped waiting for its answer.
+    /// Whether the caller of `message` stopped waiting for its answer: the
+    /// queue's own reading, so a test and the queue cannot disagree on it.
     pub(crate) fn reply_is_closed(message: &Message) -> bool {
-        match message {
-            Message::Route { reply, .. } => reply.is_closed(),
-            Message::SinkVolumes { reply, .. } => reply.is_closed(),
-            Message::SetSinkVolumes { reply, .. } => reply.is_closed(),
-            Message::Retune { reply, .. } => reply.is_closed(),
-            Message::RouteForSpotify { reply, .. } => reply.is_closed(),
-            Message::ApplySelection { reply, .. } => reply.is_closed(),
-            Message::Repair { reply, .. } => reply.is_closed(),
-        }
+        message.caller_left()
     }
 
     /// The clock a fake actor's router reads.
@@ -1029,14 +1030,34 @@ mod tests {
     }
 
     // Criterion: the log of an expiry names the message by its variant, and
-    // nothing else — as #146 logs a command's. Each row is built as one
-    // variant and must give that variant's name, stated in `VARIANTS`: a name
-    // that is empty, or another variant's, differs from it.
+    // nothing else — as #146 logs a command's. The line is compared whole,
+    // one message of each kind, each naming the JBL: a line built from an
+    // empty name, from another variant's, or carrying the message's
+    // arguments differs from it.
     #[test]
-    fn test_each_of_the_seven_messages_names_its_own_variant_for_the_log() {
-        let names = expire_one_of_each().map(|(name, _, _)| name);
+    fn test_the_expiry_line_names_the_message_by_its_variant_and_nothing_else() {
+        let jbl = [target(JBL, 40)];
+        let messages = [
+            route(&jbl, None).0,
+            read(&[JBL], None).0,
+            set(&[JBL], 0.25, None).0,
+            retune(JBL, 120, None).0,
+            spotify(&jbl, None).0,
+            apply(&jbl, 3).0,
+            repair(&jbl, None).0,
+        ]
+        .map(|envelope| envelope.message);
 
-        assert_eq!(names, VARIANTS);
+        let lines = messages
+            .each_ref()
+            .map(|message| expiry_line(message, Duration::from_millis(7)));
+
+        assert_eq!(
+            lines,
+            VARIANTS.map(|variant| format!(
+                "router message {variant} expired: taken out of the queue 7 ms past its start_by"
+            ))
+        );
     }
 
     // Criterion (guard, a background message never expires): a background

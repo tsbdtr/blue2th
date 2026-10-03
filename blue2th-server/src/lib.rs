@@ -6106,6 +6106,128 @@ mod tests {
         }
     }
 
+    // Criterion (#147): a repair message left without an answer — no graph
+    // thread at all, or one that dropped the message — is read as a route
+    // that failed, as a router that could not reach the daemon answered
+    // before: woken by the combined sink's removal, the pass falls back to
+    // the pause. The near miss is the scripted answer of a route that went
+    // through, which `test_repair_pass_sends_one_repair_message_and_falls_back_from_its_one_answer`
+    // shows does not fall back; a fallback outcome read as `Ok` makes both
+    // routers here answer `false`.
+    #[tokio::test]
+    async fn test_repair_pass_whose_message_got_no_answer_falls_back_as_a_failed_route() {
+        let routers = [
+            (
+                "no graph thread",
+                RouterHandle::over(
+                    Box::new(|_envelope: router_actor::Envelope| {
+                        Err(AudioError::PipeWire(
+                            "the PipeWire graph thread is not running".to_string(),
+                        ))
+                    }),
+                    router_actor::Shared::new(),
+                ),
+            ),
+            (
+                "a dropped message",
+                RouterHandle::over(
+                    Box::new(|envelope: router_actor::Envelope| {
+                        drop(envelope);
+                        Ok(())
+                    }),
+                    router_actor::Shared::new(),
+                ),
+            ),
+        ];
+        for (label, router) in routers {
+            let fake = graph::fake::FakeGraph::new();
+            let mut state = vanished_state(&fake, true).await;
+            state.router = router;
+
+            let fell_back = branch_repair_pass(&state, combined_reason()).await;
+
+            assert!(fell_back, "{label}: an unanswered repair falls back");
+            assert_tone_untouched_and_nothing_claimed(&state).await;
+        }
+    }
+
+    // Guard (#147): the applier hands Spotify nothing after it tore the
+    // combined sink down for an empty selection — the lock-holding applier
+    // ended its pass on the teardown. Here `librespot` runs (a `sleep`
+    // stands for it) while nothing is selected: the applier sends the empty
+    // selection and nothing else, and the backend keeps running. The near
+    // miss is a resync run on the empty selection, which finds a backend
+    // feeding no sink it wants, stops it, and cannot start it again.
+    #[tokio::test(start_paused = true)]
+    async fn test_the_applier_on_an_empty_selection_tears_down_and_leaves_spotify_alone() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = test_state_on(AudioEngine::new(), &fake);
+
+        let (sent, spotify_status) =
+            one_applier_pass_beside_a_running_spotify(state, || Ok(())).await;
+
+        assert_eq!(sent, vec![("ApplySelection [] 1".to_string(), None)]);
+        assert_eq!(spotify_status, SpotifyStatus::Running);
+    }
+
+    // Guard (#147): a selection the graph thread answered outdated hands
+    // Spotify nothing — the snapshot it carried is no longer the
+    // selection, and the request that outdated it has already woken the
+    // pass that resyncs from the latest one. Here `librespot` runs, fed no
+    // sink of this selection: the near miss is a resync run on the outdated
+    // snapshot, which stops it and sends a Spotify route for that snapshot.
+    #[tokio::test(start_paused = true)]
+    async fn test_the_applier_answered_outdated_leaves_spotify_to_the_next_pass() {
+        let fake = graph::fake::FakeGraph::with_sinks(&[JBL_SINK]);
+        let state = selected_state(&fake, &[JBL], &[JBL]).await;
+
+        let (sent, spotify_status) =
+            one_applier_pass_beside_a_running_spotify(state, || Err(RouterError::Outdated)).await;
+
+        assert_eq!(sent, vec![(format!("ApplySelection [{JBL}@0] 1"), None)]);
+        assert_eq!(spotify_status, SpotifyStatus::Running);
+    }
+
+    /// Run one routing-applier pass on `state`, beside a running `librespot`
+    /// (a `sleep` stands for it), over a router that answers the selection
+    /// with `answer` and nothing else. Returns what the router was sent and
+    /// the backend's status once the pass is done; the backend is stopped
+    /// before returning.
+    async fn one_applier_pass_beside_a_running_spotify(
+        mut state: AppState,
+        answer: fn() -> Result<(), RouterError>,
+    ) -> (Vec<(String, Option<std::time::Instant>)>, SpotifyStatus) {
+        let received: Received = Arc::default();
+        let log = Arc::clone(&received);
+        state.router = RouterHandle::over(
+            Box::new(move |envelope: router_actor::Envelope| {
+                log.lock().unwrap().push((
+                    router_actor::testing::describe(&envelope.message),
+                    envelope.start_by,
+                ));
+                if let router_actor::Message::ApplySelection { reply, .. } = envelope.message {
+                    let _ = reply.send(answer());
+                }
+                Ok(())
+            }),
+            router_actor::Shared::new(),
+        );
+        let child =
+            spotify::spawn_bound_to_this_thread("sleep", &["30".to_string()]).expect("spawn sleep");
+        state.spotify.lock().await.adopt_child_for_test(child);
+        spawn_routing_applier(state.clone());
+        settle().await;
+
+        state.router.request_routing();
+        settle().await;
+
+        let status = state.spotify.lock().await.poll_liveness().status;
+        let _ = state.spotify.lock().await.stop();
+        // Cloned out of the lock, as a snapshot.
+        let sent = received.lock().unwrap().clone();
+        (sent, status)
+    }
+
     // Criterion (#147, guard): the repair pass's guard runs before anything
     // is sent — with nothing playing, the pass sends the actor no message.
     // The control is the same state once the tone plays: one repair.
