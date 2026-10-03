@@ -60,3 +60,7 @@ tdd/REVIEW.md
 #     regenerates it *after* the merge, in its own commit on develop — so that
 #     diff never reaches a reviewer and the justification did not hold.
 graphify-out/
+# Serena's per-project state (config, symbol cache, memories). Ignored whole, as
+# graphify-out/ is: it is one developer's tooling, and its memories only point
+# at CLAUDE.md and docs/, which stay the single versioned source.
+.serena/
