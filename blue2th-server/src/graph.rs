@@ -348,6 +348,15 @@ pub mod fake {
             let _ = op;
         }
 
+        /// Fail the calls to `op` that name `node` with
+        /// [`AudioError::Unanswered`], as [`Self::fail_for`] does with the
+        /// usual `PipeWire("… told to fail")`: a daemon that stalls on one
+        /// speaker's call after answering the others'.
+        // RED-phase stub (#147): sets no rule yet.
+        pub fn fail_unanswered_for(&self, op: GraphOp, node: &str) {
+            let _ = (op, node);
+        }
+
         /// Drop every failure rule: the graph answers normally from now on.
         pub fn clear_failures(&self) {
             self.state().rules.clear();
@@ -877,6 +886,45 @@ mod tests {
         let loaded = fake.loaded(COMBINED);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].branch.sink, other);
+    }
+
+    // Criterion (#147, 2026-10-03): `FakeGraph` can be told to fail with
+    // `AudioError::Unanswered` the calls to an op that name one node, and
+    // the attempt is recorded like any other. The near miss is the same op
+    // naming another node, which must still load: a rule ignoring the node
+    // would stall it too, and a route could not stall after a load.
+    #[test]
+    fn test_fake_graph_fails_unanswered_only_the_call_naming_its_node() {
+        let other = "bluez_output.AA_BB_CC_DD_EE_02.1";
+        let mut fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER, other]);
+        fake.fail_unanswered_for(GraphOp::LoadBranch, SPEAKER);
+
+        let stalled = fake.load_branch(COMBINED, SPEAKER, 50);
+        let answered = fake.load_branch(COMBINED, other, 70);
+
+        assert_eq!(stalled, Err(AudioError::Unanswered));
+        assert_eq!(answered, Ok(()));
+        assert_eq!(
+            fake.calls(),
+            vec![
+                GraphCall::LoadBranch {
+                    sink_name: COMBINED.to_string(),
+                    real_sink: SPEAKER.to_string(),
+                    latency_ms: 50
+                },
+                GraphCall::LoadBranch {
+                    sink_name: COMBINED.to_string(),
+                    real_sink: other.to_string(),
+                    latency_ms: 70
+                },
+            ]
+        );
+        let sinks: Vec<String> = fake
+            .loaded(COMBINED)
+            .into_iter()
+            .map(|l| l.branch.sink)
+            .collect();
+        assert_eq!(sinks, vec![other.to_string()]);
     }
 
     // Criterion: `FakeGraph` can report "cannot tell" — `sinks()` errs — from a

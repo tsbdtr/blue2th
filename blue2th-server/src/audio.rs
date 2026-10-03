@@ -248,7 +248,8 @@ impl Default for AudioEngine {
 
 /// Errors raised by the audio engine.
 // `Clone` (#147): one volume read answers every caller queued for it.
-#[derive(Debug, Clone)]
+// `PartialEq, Eq` (#147): a `BranchLoadReport` holding them keeps its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioError {
     /// No speaker is connected, so playback cannot be routed anywhere.
     NoSpeakerConnected,
@@ -328,13 +329,13 @@ pub fn bluez_sink_prefix(mac: &str) -> String {
 }
 
 /// What attempting a plan's branches produced: the branches that were loaded, and
-/// a message for each one that was not.
+/// the error of each one that was not.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BranchLoadReport {
     /// The `sink` prefix of each branch that was loaded, in plan order.
     pub loaded: Vec<String>,
-    /// One message per branch that could not be resolved or loaded.
-    pub failures: Vec<String>,
+    /// One error per branch that could not be resolved or loaded.
+    pub failures: Vec<AudioError>,
 }
 
 /// Attempt every branch of a plan, independently: resolve it, load it, and record
@@ -360,14 +361,14 @@ where
         let resolved = match resolve(branch) {
             Ok(resolved) => resolved,
             Err(err) => {
-                report.failures.push(err.to_string());
+                report.failures.push(err);
                 continue;
             },
         };
         match load(branch, &resolved) {
             // Cloned because the report outlives the borrowed plan.
             Ok(()) => report.loaded.push(branch.sink.clone()),
-            Err(err) => report.failures.push(err.to_string()),
+            Err(err) => report.failures.push(err),
         }
     }
     report
@@ -381,7 +382,10 @@ impl BranchLoadReport {
         if self.failures.is_empty() {
             return Ok(());
         }
-        Err(AudioError::PipeWire(self.failures.join("; ")))
+        // RED-phase stub (#147): every failure is still flattened into one
+        // `PipeWire`, an `Unanswered` one included.
+        let messages: Vec<String> = self.failures.iter().map(ToString::to_string).collect();
+        Err(AudioError::PipeWire(messages.join("; ")))
     }
 }
 
@@ -952,7 +956,7 @@ impl<G: Graph + ?Sized> AudioRouter<G> {
                 // is reported, and the next pass retunes it again.
                 match self.graph.set_branch_delay(up.id, retune.latency_ms) {
                     Ok(()) => self.changes += 1,
-                    Err(err) => failures.push(err.to_string()),
+                    Err(err) => failures.push(err),
                 }
             }
         }
@@ -2273,6 +2277,146 @@ mod tests {
             2,
             "one message per branch that could not be loaded"
         );
+    }
+
+    /// The speaker of the third branch in the typed-failure tests below: one
+    /// that resolves and loads.
+    const THIRD: &str = "bluez_output.2C_FD_B4_D3_AC_21";
+
+    /// A report of a pass that loaded `LIVE` and failed with `failures`.
+    fn report_failing(failures: Vec<AudioError>) -> BranchLoadReport {
+        BranchLoadReport {
+            loaded: vec![LIVE.to_string()],
+            failures,
+        }
+    }
+
+    /// The refusal the fake graph answers a load it was told to fail.
+    fn refused_load() -> AudioError {
+        AudioError::PipeWire(format!("fake graph: LoadBranch told to fail for {DEAD}.1"))
+    }
+
+    // Criterion (#147, 2026-10-03): `BranchLoadReport` keeps its failures as
+    // `AudioError`s, and `into_result` answers `Ok(())` with none,
+    // `Unanswered` when one is `Unanswered`, and `PipeWire` with the messages
+    // joined by "; " otherwise — the same text as before the failures were
+    // typed, which joined each failure's `Display`: a refusal reads
+    // "PipeWire error: …" inside the joined text, and the whole is compared
+    // so a join of the bare inner messages fails.
+    #[test]
+    fn test_branch_load_report_answers_ok_unanswered_or_the_joined_pipewire_text() {
+        let none = report_failing(vec![]).into_result();
+        let stalled = report_failing(vec![AudioError::Unanswered]).into_result();
+        let answered = report_failing(vec![
+            refused_load(),
+            AudioError::PipeWire(format!("no PipeWire sink for prefix {THIRD}")),
+        ])
+        .into_result();
+
+        assert_eq!(none, Ok(()));
+        assert_eq!(
+            stalled,
+            Err(AudioError::Unanswered),
+            "a pass that stalled is a daemon that did not answer, not a refusal"
+        );
+        assert_eq!(
+            answered,
+            Err(AudioError::PipeWire(format!(
+                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 PipeWire error: no PipeWire sink for prefix {THIRD}"
+            ))),
+            "answers only: today's text, unchanged"
+        );
+    }
+
+    // Guard (#147, 2026-10-03, a branch pass is `Unanswered` only when a
+    // failure is): the near misses are a report holding one refusal alone,
+    // which must stay `PipeWire` with today's exact text — a rule keyed on
+    // "any failure" answers it 503 — and the same refusal worded as the
+    // deadline exit used to word itself, which a rule matching "did not
+    // answer" in the message would take for a stall. Beside them, a refusal
+    // *then* a stall, and a stall *then* a refusal: both `Unanswered`, so a
+    // rule reading the first failure only, or the last only, fails one.
+    #[test]
+    fn test_branch_load_report_is_unanswered_only_when_a_failure_is_whatever_its_position() {
+        let alone = report_failing(vec![refused_load()]).into_result();
+        let worded = report_failing(vec![AudioError::PipeWire(
+            "PipeWire did not answer a sync round trip".to_string(),
+        )])
+        .into_result();
+        let refusal_then_stall =
+            report_failing(vec![refused_load(), AudioError::Unanswered]).into_result();
+        let stall_then_refusal =
+            report_failing(vec![AudioError::Unanswered, refused_load()]).into_result();
+
+        assert_eq!(
+            alone,
+            Err(AudioError::PipeWire(format!(
+                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1"
+            ))),
+            "a refused load is an answer: it stays `PipeWire`, with its own text"
+        );
+        assert_eq!(
+            worded,
+            Err(AudioError::PipeWire(
+                "PipeWire error: PipeWire did not answer a sync round trip".to_string()
+            )),
+            "the variant decides, never the wording"
+        );
+        assert_eq!(
+            refusal_then_stall,
+            Err(AudioError::Unanswered),
+            "a reading of the first failure alone misses the stall"
+        );
+        assert_eq!(
+            stall_then_refusal,
+            Err(AudioError::Unanswered),
+            "a reading of the last failure alone misses the stall"
+        );
+    }
+
+    // Criterion (#147, 2026-10-03): `load_planned_branches` keeps each failure
+    // as the error it was — an unresolvable branch's `PipeWire`, an
+    // unanswered load's `Unanswered` — in plan order, still attempts the
+    // branch after them, and its report answers `Unanswered`.
+    #[test]
+    fn test_load_planned_branches_keeps_each_failure_as_its_error_and_answers_unanswered() {
+        let plan = vec![
+            planned_branch(DEAD, 0),
+            planned_branch(LIVE, 40),
+            planned_branch(THIRD, 80),
+        ];
+
+        let report = load_planned_branches(
+            &plan,
+            |branch| {
+                if branch.sink == DEAD {
+                    Err(AudioError::PipeWire(format!(
+                        "no PipeWire sink for prefix {}",
+                        branch.sink
+                    )))
+                } else {
+                    Ok(format!("{}.1", branch.sink))
+                }
+            },
+            |branch, _real_sink| {
+                if branch.sink == LIVE {
+                    Err(AudioError::Unanswered)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert_eq!(report.loaded, vec![THIRD.to_string()]);
+        assert_eq!(
+            report.failures,
+            vec![
+                AudioError::PipeWire(format!("no PipeWire sink for prefix {DEAD}")),
+                AudioError::Unanswered,
+            ]
+        );
+        assert_eq!(report.into_result(), Err(AudioError::Unanswered));
     }
 
     fn names(sinks: &[&str]) -> Vec<String> {
@@ -3880,6 +4024,82 @@ mod router_tests {
                 load(SINK_B, 30),
             ]
         );
+    }
+
+    // Criterion (#147, 2026-10-03): a route that stalls on a branch load —
+    // the combined sink already in place, the second speaker's load
+    // unanswered — answers `Unanswered`, not the flattened `PipeWire` the
+    // handlers map to 500. The branch loaded before the stall is still
+    // recorded as loaded: in the graph, in the change count, and armed for
+    // its confirming reload.
+    #[test]
+    fn test_route_whose_branch_load_went_unanswered_answers_unanswered_and_keeps_the_load_before_it(
+    ) {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        fake.fail_unanswered_for(GraphOp::LoadBranch, SINK_B);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&steady_selection());
+
+        assert_eq!(result, Err(AudioError::Unanswered));
+        assert_eq!(fake.calls(), vec![load(SINK_A, 0), load(SINK_B, 30)]);
+        let sinks: Vec<String> = loaded_delays(&fake)
+            .into_iter()
+            .map(|(_, sink, _)| sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_A], "the unanswered load added nothing");
+        assert_eq!(router.graph_changes(), 1, "A's load counts as a change");
+        assert!(
+            router.next_confirmation_due().is_some(),
+            "A's load is recorded: its confirming reload is armed"
+        );
+    }
+
+    // Criterion (#147, 2026-10-03): a route that stalls on the in-place
+    // retune of a kept branch answers `Unanswered`. The near miss rides in
+    // the same pass: the other kept branch's retune is refused with the
+    // fake's usual `PipeWire` *before* the stall — the only mix one deadline
+    // per message allows — and must not decide the answer.
+    #[test]
+    fn test_route_whose_in_place_retune_went_unanswered_after_a_refused_one_answers_unanswered() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail_for(GraphOp::SetBranchDelay, &a.to_string());
+        fake.fail_unanswered_for(GraphOp::SetBranchDelay, &b.to_string());
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 50), target(MAC_B, 90)]);
+
+        assert_eq!(result, Err(AudioError::Unanswered));
+        assert_eq!(fake.calls(), vec![set_delay(a, 50), set_delay(b, 90)]);
+    }
+
+    // Criterion (#147, 2026-10-03): a route that stalls on the confirming
+    // reload answers `Unanswered`, and the reload that went through before
+    // the stall is still in the graph.
+    #[test]
+    fn test_route_whose_confirming_reload_went_unanswered_answers_unanswered() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B, COMBINED]);
+        let (mut router, clock) = router_with_clock(&fake);
+        let result = router.route_for_targets(&steady_selection());
+        assert!(result.is_ok(), "the first load failed: {result:?}");
+        let a = branch_into(&fake, SINK_A);
+        let b = branch_into(&fake, SINK_B);
+
+        advance(&clock, CONFIRM_GAP);
+        fake.fail_unanswered_for(GraphOp::LoadBranch, SINK_B);
+        fake.clear_calls();
+        let result = router.route_for_targets(&steady_selection());
+
+        assert_eq!(result, Err(AudioError::Unanswered));
+        assert_eq!(
+            fake.calls(),
+            vec![unload(a), unload(b), load(SINK_A, 0), load(SINK_B, 30)]
+        );
+        let sinks: Vec<String> = loaded_delays(&fake)
+            .into_iter()
+            .map(|(_, sink, _)| sink)
+            .collect();
+        assert_eq!(sinks, vec![SINK_A]);
     }
 
     // Non-nominal: empty selection — `NoSpeakerConnected`, and the graph receives

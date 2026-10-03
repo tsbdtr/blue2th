@@ -5033,6 +5033,84 @@ mod tests {
         );
     }
 
+    // Criterion (#147, 2026-10-03): a route whose branch load answers
+    // `Unanswered` — the combined sink already in place, the Sony's load
+    // stalling after the JBL's went through — makes `POST /play` answer 503
+    // "the audio graph is not answering", and the JBL's branch is still
+    // recorded as loaded: in the graph, and armed for its confirming reload,
+    // which the actor publishes. The engine does not start.
+    // Guard (a branch pass is `Unanswered` only when a failure is): the near
+    // miss is the same load refused with the fake's usual
+    // `PipeWire("… told to fail")`, on a graph of its own, which must stay
+    // 500 with that refusal in its message.
+    #[tokio::test]
+    async fn test_play_whose_branch_load_went_unanswered_answers_503_and_keeps_the_branch_loaded_before_it(
+    ) {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        let load = |real_sink: &str| GraphCall::LoadBranch {
+            sink_name: COMBINED_SINK.to_string(),
+            real_sink: real_sink.to_string(),
+            latency_ms: 0,
+        };
+
+        let stalled = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        stalled.fail_unanswered_for(GraphOp::LoadBranch, SONY_SINK);
+        let stalled_state = selected_state(&stalled, &[JBL, SONY], &[JBL, SONY]).await;
+        let refused = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        refused.fail_for(GraphOp::LoadBranch, SONY_SINK);
+        let refused_state = selected_state(&refused, &[JBL, SONY], &[JBL, SONY]).await;
+
+        let unanswered = play(State(stalled_state.clone())).await;
+        let failed = play(State(refused_state.clone())).await;
+        settle().await;
+
+        assert_eq!(
+            failure(&unanswered),
+            Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                GRAPH_NOT_ANSWERING.to_string()
+            ))
+        );
+        assert_eq!(
+            stalled.routing_calls(),
+            vec![load(JBL_SINK), load(SONY_SINK)],
+            "the pass reached the Sony's load, past the JBL's"
+        );
+        let loaded: Vec<String> = stalled
+            .loaded(COMBINED_SINK)
+            .into_iter()
+            .map(|b| b.branch.sink)
+            .collect();
+        assert_eq!(loaded, vec![JBL_SINK.to_string()]);
+        assert!(
+            stalled_state.router.confirmation_due().borrow().is_some(),
+            "the JBL's load is recorded: its confirming reload is armed"
+        );
+        assert_ne!(
+            stalled_state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "a 503 starts no tone"
+        );
+
+        let failed = failure(&failed);
+        assert_eq!(
+            failed.as_ref().map(|(status, _)| *status),
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "a refused load is an answer, not a graph that did not answer"
+        );
+        assert!(
+            failed
+                .as_ref()
+                .is_some_and(|(_, message)| message.contains("LoadBranch told to fail")),
+            "got {failed:?}"
+        );
+        assert_eq!(
+            refused.routing_calls(),
+            vec![load(JBL_SINK), load(SONY_SINK)]
+        );
+    }
+
     // Criterion (#147, 2026-10-03): `POST /devices/{addr}/offset` whose
     // retune answers `Unanswered` logs it and does not call
     // `request_routing`: the delay may have been set, so it is not "nothing
