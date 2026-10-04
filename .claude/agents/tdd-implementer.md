@@ -82,7 +82,8 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 - `dx build --platform android --package blue2th-frontend 2>&1 | tail -40` — must exit 0. Verifies the
   `#[cfg(target_os = "android")]` code compiles for the real target.
 
-9. Commit all implementation changes: `git add -A && git commit -m "<type>(<scope>): <description>"`, where `<type>` is the **Change Type** given in the prompt — `feat` when none is given. It is the type the branch and the pull request carry, so a `refactor/` branch commits `refactor(<scope>): …` here, not `feat(<scope>): …`.
+9. Commit all implementation changes with explicit paths: `git add <the files you changed> && git commit -m "<type>(<scope>): <description>"`, where `<type>` is the **Change Type** given in the prompt — `feat` when none is given. It is the type the branch and the pull request carry, so a `refactor/` branch commits `refactor(<scope>): …` here, not `feat(<scope>): …`.
+   - Explicit paths, never `git add -A`: it commits whatever else sits in the worktree — working files, generated artifacts — and nine commits in the history exist to take such files back out. Check `git status --short` before committing.
 10. Output a summary: what you implemented (per layer), the final `cargo test --workspace` output,
     and — if mobile was affected — whether `dx build --platform android --package blue2th-frontend` succeeded.
 

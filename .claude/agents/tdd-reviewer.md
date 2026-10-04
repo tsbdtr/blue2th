@@ -136,7 +136,8 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 - `dx build --platform android --package blue2th-frontend 2>&1 | tail -40` — must exit 0.
 
 10. Re-run the applicable gates at the end; all must be green.
-11. Commit all code changes first (before the report): `git add -A -- ':!tdd/REVIEW.md' && git commit -m "refactor(<scope>): <description>"`. Skip this commit if there are no code changes.
+11. Commit all code changes first (before the report), with explicit paths: `git add <the files you changed> && git commit -m "refactor(<scope>): <description>"`. Skip this commit if there are no code changes.
+    - Explicit paths, never `git add -A`: it commits whatever else sits in the worktree — working files, generated artifacts — and nine commits in the history exist to take such files back out. Check `git status --short` before committing.
 12. Write the report at `tdd/REVIEW.md` inside the worktree:
 
 ```markdown
