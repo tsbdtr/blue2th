@@ -205,6 +205,28 @@ Render `LAYERS` as a comma-separated list (e.g. `server, proto`) and inject it i
 every agent prompt under an `## Affected Layers` heading. Agents use it to decide
 whether to run the Android NDK cross-build (mobile only) and which crates to focus on.
 
+### 6b. Build the project map
+
+The agents' definitions describe what does not change: the layers, their
+rules, the hardware boundary. Which files a crate holds and which test doubles
+stand in for the hardware do change, and every copy of them written into the
+definitions went stale: six catch-ups by hand, and at the 2026-10-02 review
+`FakeGraph` in none of the three and 4 of 18 server files listed. So that part is generated here, before
+each agent spawn, from the worktree as it stands:
+
+```bash
+CRATES="<blue2th-server for server, blue2th-proto for proto, blue2th-frontend for mobile — the LAYERS only>"
+cd "$WORKTREE_PATH" && for c in $CRATES; do
+  git ls-files "$c/src/*.rs" "$c/tests/*.rs" | xargs wc -l | grep -v ' total$'
+done
+cd "$WORKTREE_PATH" && git grep -nE '^\s*(pub(\([a-z]+\))? )?struct (Fake|Null|Stub|Mock)[A-Za-z]*' \
+  -- $(for c in $CRATES; do echo "$c/src" "$c/tests"; done)
+```
+
+Inject the two outputs into every agent prompt under `## Project Map`, as
+`### Files (lines)` and `### Test doubles (file:line)`. Line counts tell an
+agent which files to read by symbol rather than whole.
+
 ### 7. Spawn agents with targeted context
 
 Spawn each phase with its **dedicated** agent type — `tdd-test-writer` (RED),
@@ -279,6 +301,11 @@ Branch: `<BRANCH>`
 
 ---
 
+## Project Map
+<PROJECT_MAP from step 6b>
+
+---
+
 ## Feature Specification
 
 <full contents of tdd/feature.md>
@@ -314,6 +341,11 @@ Branch: `<BRANCH>`
 
 ## Affected Layers
 <LAYERS>
+
+---
+
+## Project Map
+<PROJECT_MAP from step 6b>
 
 ---
 
@@ -372,6 +404,11 @@ Branch: `<BRANCH>`
 
 ## Affected Layers
 <LAYERS>
+
+---
+
+## Project Map
+<PROJECT_MAP from step 6b>
 
 ---
 

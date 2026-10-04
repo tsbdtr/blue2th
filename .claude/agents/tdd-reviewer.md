@@ -19,9 +19,10 @@ Read the **Affected Layers** section of your prompt — review only those layers
   no Bluetooth; the backend does. Any JNI follows the dispatcher pattern (`foo()` →
   `foo_inner()` `#[cfg(target_os = "android")]` + non-Android fallback) and reuses
   `jni_util::env()` and its exception-clearing helper; error type `JniError`.
-- **server** — `blue2th-server` (Axum/Tokio). `src/{lib,main,bluetooth,audio}.rs`,
-  `tests/`. `bluer` and PipeWire (`graph_pw.rs`, `tone.rs`) are hardware-bound; the `audio.rs` no-op test
-  output must keep working. Handlers propagate errors with `?`, never panic.
+- **server** — `blue2th-server` (Axum/Tokio). Its files, and the test doubles that
+  stand in for the hardware, are in the **Project Map** of your prompt. `bluer`
+  and PipeWire are hardware-bound; their test doubles must keep working.
+  Handlers propagate errors with `?`, never panic.
 - **proto** — `blue2th-proto`. **Must stay target-agnostic** — no platform/hardware deps.
 
 ## Serena (optional)

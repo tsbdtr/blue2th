@@ -24,11 +24,12 @@ Read the **Affected Layers** section of your prompt — implement only in those 
     reuses `jni_util::env(vm)` and its exception-clearing helper rather than
     recreating them. Error type: `JniError`. New UI state follows the `Signal<T>` /
     `use_context_provider` pattern.
-- **server** — `blue2th-server` (Axum 0.8 / Tokio). `src/{lib,main,bluetooth,audio}.rs`.
+- **server** — `blue2th-server` (Axum / Tokio). Its files, and the test doubles
+  that stand in for the hardware, are in the **Project Map** of your prompt.
   - Axum handlers return a `Result`/`IntoResponse`; propagate errors with `?`, never panic.
-  - `bluer` (BlueZ) and PipeWire (`graph_pw.rs`, the tone stream in `tone.rs`) are
-    hardware-bound: keep them behind the abstractions already in those files. `audio.rs` has a **no-op output for tests** —
-    keep that path working; never require a real device to pass tests.
+  - BlueZ (`bluer`) and PipeWire are hardware-bound: keep them behind the
+    abstractions that already wrap them, and keep their test doubles working;
+    never require a real device to pass tests.
 - **proto** — `blue2th-proto` (serde DTOs shared by mobile + server).
   - **Must stay target-agnostic**: no platform/hardware dependencies. Derive
     `serde::{Serialize, Deserialize}`; keep types plain and owned.

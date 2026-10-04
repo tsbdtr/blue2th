@@ -23,10 +23,11 @@ layers listed there.
     (presence hooks); reuse `jni_util::env(vm)` and its exception-clearing helper,
     never recreate them.
   - `blue2th-frontend/src/` also holds the backend HTTP client (`reqwest`) and Dioxus UI/state
-    (`Signal<T>`, `use_context_provider`, `ConnectionStatus` enum).
+    (`Signal<T>`, `use_context_provider`).
   - Unit tests → `#[cfg(test)]` in the relevant `blue2th-frontend/src/*.rs`.
     Integration tests → `blue2th-frontend/tests/`.
-- **server** — `blue2th-server` (Axum 0.8 / Tokio). `src/{lib,main,bluetooth,audio}.rs`.
+- **server** — `blue2th-server` (Axum / Tokio). Its files, and the test doubles
+  that stand in for the hardware, are in the **Project Map** of your prompt.
   - Drives **BlueZ** via `bluer` and audio via PipeWire (the `pipewire` crate); exposes REST routes
     + the transport playback state machine (`audio.rs`).
   - Unit tests → `#[cfg(test)]` in `blue2th-server/src/*.rs`. Integration/route tests →
@@ -40,8 +41,8 @@ BlueZ (`bluer`), the PipeWire daemon and the audio devices behind it are unavail
 agents and to CI. **Never write a test that requires real hardware.**
 - Test pure logic only: state machines, request/response mapping, DTO serde, validation,
   error mapping, volume/offset math.
-- The server's `audio.rs` already provides a **no-op audio output** path for tests —
-  use it; do not open a real stream.
+- The **Project Map** of your prompt lists the test doubles that stand in for
+  the hardware — use them; never open a real stream or reach a real daemon.
 - If a behavior is intrinsically hardware-bound, cover the surrounding logic and leave
   the hardware boundary to manual testing (note it in your summary), per `docs/ARCHITECTURE.md`.
 
