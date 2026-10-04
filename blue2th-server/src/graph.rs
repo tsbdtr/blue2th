@@ -98,59 +98,77 @@ impl<G> NamedGuard<G> {
     }
 }
 
-// Red-phase stub (#154): answers every call with an error that is neither the
-// guard's refusal nor the wrapped graph's answer, and never delegates.
 impl<G: Graph> Graph for NamedGuard<G> {
-    fn set_deadline(&mut self, _deadline: Instant) {}
+    fn set_deadline(&mut self, deadline: Instant) {
+        self.inner.set_deadline(deadline);
+    }
 
     fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+        self.inner.sinks()
     }
 
-    fn branches(&mut self, _sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
+        named("sink", sink_name)?;
+        self.inner.branches(sink_name)
     }
 
-    fn create_combined_sink(&mut self, _sink_name: &str) -> Result<(), AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        self.inner.create_combined_sink(sink_name)
     }
 
     fn load_branch(
         &mut self,
-        _sink_name: &str,
-        _real_sink: &str,
-        _latency_ms: u32,
+        sink_name: &str,
+        real_sink: &str,
+        latency_ms: u32,
     ) -> Result<(), AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+        named("sink", sink_name)?;
+        named("target sink", real_sink)?;
+        self.inner.load_branch(sink_name, real_sink, latency_ms)
     }
 
-    fn unload_branch(&mut self, _id: u32) -> Result<(), AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn unload_branch(&mut self, id: u32) -> Result<(), AudioError> {
+        self.inner.unload_branch(id)
     }
 
-    fn set_branch_delay(&mut self, _id: u32, _delay_ms: u32) -> Result<(), AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn set_branch_delay(&mut self, id: u32, delay_ms: u32) -> Result<(), AudioError> {
+        self.inner.set_branch_delay(id, delay_ms)
     }
 
-    fn teardown(&mut self, _sink_name: &str) -> Result<(), AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
+        named("sink", sink_name)?;
+        self.inner.teardown(sink_name)
     }
 
-    fn clear_stale_default_sink(&mut self, _sink_name: &str) -> Result<bool, AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
+        named("sink", sink_name)?;
+        self.inner.clear_stale_default_sink(sink_name)
     }
 
-    fn retarget_streams(&mut self, _sink_name: &str) -> Result<usize, AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
+        named("sink", sink_name)?;
+        self.inner.retarget_streams(sink_name)
     }
 
-    fn sink_volume(&mut self, _sink: &str) -> Result<Option<f32>, AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
+        named("sink", sink)?;
+        self.inner.sink_volume(sink)
     }
 
-    fn set_sink_volume(&mut self, _sink: &str, _level: f32) -> Result<(), AudioError> {
-        Err(AudioError::PipeWire(String::new()))
+    fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
+        named("sink", sink)?;
+        self.inner.set_sink_volume(sink, level)
     }
+}
+
+/// Refuse an empty name before a graph acts on it: an empty name is a
+/// wildcard to every match below it, never "no node".
+pub(crate) fn named(what: &str, name: &str) -> Result<(), AudioError> {
+    if name.is_empty() {
+        return Err(AudioError::PipeWire(format!("empty {what} name refused")));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
