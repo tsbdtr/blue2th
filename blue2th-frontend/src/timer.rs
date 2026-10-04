@@ -25,8 +25,9 @@ pub struct Elapsed;
 
 /// Runs `future` until it completes or `duration` passes, whichever comes first.
 ///
-/// The future is polled first, so one that is already ready wins over the
-/// deadline. A timed-out future is dropped before this returns.
+/// The future is polled before the deadline, so one that is ready on its first
+/// poll is returned even under a zero `duration`. A timed-out future is dropped
+/// before this returns.
 pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Output, Elapsed> {
     let future = std::pin::pin!(future);
     let deadline = std::pin::pin!(sleep(duration));

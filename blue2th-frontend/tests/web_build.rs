@@ -241,6 +241,51 @@ fn test_shared_code_names_no_tokio_timer() {
     }
 }
 
+/// The argument list of the first `name(` call in `source`, whitespace
+/// removed, up to its matching parenthesis. Empty when there is no such call.
+fn call_arguments(source: &str, name: &str) -> String {
+    let Some(start) = source.find(name).map(|at| at + name.len()) else {
+        return String::new();
+    };
+    let mut depth = 1usize;
+    let mut arguments = String::new();
+    for c in source.get(start..).unwrap_or_default().chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {},
+        }
+        if depth == 0 {
+            break;
+        }
+        if !c.is_whitespace() {
+            arguments.push(c);
+        }
+    }
+    arguments
+}
+
+// Criterion: `browse_available` is `cfg!(not(target_arch = "wasm32"))` at the
+// call site. `cfg!` is true on every target `cargo test` builds for, so no
+// runtime test sees a call site that passes `true` and leaves Search live in
+// the browser — only the source does. Near-miss: `search_enabled(multicast,
+// true)`, which compiles everywhere and passes every other test.
+#[test]
+fn test_settings_page_derives_browse_availability_from_the_target() {
+    let shipped = shipped_part("src/main.rs");
+    let arguments = call_arguments(&shipped, "discovery::search_enabled(");
+
+    assert!(
+        !arguments.is_empty(),
+        "main.rs must call discovery::search_enabled"
+    );
+    assert!(
+        arguments.ends_with(",cfg!(not(target_arch=\"wasm32\")),")
+            || arguments.ends_with(",cfg!(not(target_arch=\"wasm32\"))"),
+        "Search must be live only where the target can browse, got ({arguments})"
+    );
+}
+
 // ── CI ───────────────────────────────────────────────────────────────────────
 
 /// The `web` job of `.github/workflows/ci.yml`, comment lines dropped and

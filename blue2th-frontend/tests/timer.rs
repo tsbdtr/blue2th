@@ -170,3 +170,17 @@ async fn test_timer_timeout_drops_the_timed_out_future() {
         "the timed-out future must be dropped by the time timeout returns"
     );
 }
+
+// Criterion (doc of `timer::timeout`): a future ready on its first poll is
+// returned even under a zero duration. Near-miss: `Duration::ZERO`, the one
+// deadline that has passed before the first poll — an implementation that
+// short-circuits an elapsed deadline (`if duration.is_zero()`, or a check of the
+// clock before polling) returns Elapsed here and passes every test above.
+// Polling the deadline first is *not* caught: tokio's `sleep(ZERO)` is not ready
+// on its first poll (observed by swapping the two arms of the `select`).
+#[tokio::test]
+async fn test_timer_timeout_of_zero_still_returns_a_ready_future_value() {
+    let result: Result<u8, timer::Elapsed> = timer::timeout(Duration::ZERO, async { 5u8 }).await;
+
+    assert_eq!(result.ok(), Some(5));
+}
