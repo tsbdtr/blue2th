@@ -284,6 +284,9 @@ pub mod fake {
         /// The raw value of `default.configured.audio.sink`, as WirePlumber
         /// stores it: `{"name":"<node>"}`, or anything else a user left there.
         configured_default: Option<String>,
+        /// What `retarget_streams` answers once a call gets through: the
+        /// number of streams it claims to have asked to move.
+        streams_to_retarget: usize,
         next_id: u32,
         new_branch_liveness: Option<bool>,
         log: Vec<GraphCall>,
@@ -319,6 +322,7 @@ pub mod fake {
                     branches: Vec::new(),
                     volumes: Vec::new(),
                     configured_default: None,
+                    streams_to_retarget: 0,
                     next_id: 1,
                     new_branch_liveness: Some(true),
                     log: Vec::new(),
@@ -412,6 +416,12 @@ pub mod fake {
         /// blue2th or a `wpctl set-default` left it; `None` is no key at all.
         pub fn set_configured_default(&self, value: Option<&str>) {
             self.state().configured_default = value.map(str::to_string);
+        }
+
+        /// Make `retarget_streams` answer `count` from now on. A new fake
+        /// answers `0`: a paused `librespot` holds no stream.
+        pub fn set_streams_to_retarget(&self, count: usize) {
+            self.state().streams_to_retarget = count;
         }
 
         /// Run `hook` once, from inside the next `sinks()` call — before it
@@ -733,9 +743,9 @@ pub mod fake {
             });
             state.refuse_empty(GraphOp::RetargetStreams, &[sink_name])?;
             state.check(GraphOp::RetargetStreams, sink_name)?;
-            // No stream is modelled: a paused `librespot` holds none, and
-            // re-targeting nothing is a success.
-            Ok(0)
+            // Streams are not modelled, only their count: `0` unless a test
+            // set one, since re-targeting nothing is a success.
+            Ok(state.streams_to_retarget)
         }
 
         fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
@@ -1540,13 +1550,15 @@ mod tests {
     }
 
     // Criterion (near miss): `retarget_streams` with a one-character name
-    // reaches the fake once, unchanged, and its count comes back.
+    // reaches the fake once, unchanged, and its count comes back. The count is
+    // not `0`, the fake's default: a guard answering a constant `Ok(0)` fails.
     #[test]
     fn test_named_guard_forwards_retarget_streams_with_a_one_character_name() {
         let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK]);
+        fake.set_streams_to_retarget(3);
         let mut guard = guarded(&fake);
 
-        assert_eq!(guard.retarget_streams(ONE_CHAR_SINK), Ok(0));
+        assert_eq!(guard.retarget_streams(ONE_CHAR_SINK), Ok(3));
         assert_eq!(
             fake.all_calls(),
             vec![GraphCall::RetargetStreams {

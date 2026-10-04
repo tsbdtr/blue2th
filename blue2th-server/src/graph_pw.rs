@@ -1969,9 +1969,11 @@ impl LoopState<PwConnector> {
     }
 }
 
-/// The loop's own state is the graph the router runs against (#147): each
-/// method is a direct call on the loop thread, sharing the one deadline the
-/// actor handed over for the message being run.
+/// The loop's own state is the graph the router runs against (#147), behind
+/// a [`NamedGuard`] that refuses an empty name before any of these calls
+/// (#154): each method is a direct call on the loop thread, sharing the one
+/// deadline the actor handed over for the message being run, and checks no
+/// name itself.
 impl Graph for LoopState<PwConnector> {
     fn set_deadline(&mut self, deadline: Instant) {
         self.deadline = deadline;
