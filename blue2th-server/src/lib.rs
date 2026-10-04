@@ -5033,6 +5033,76 @@ mod tests {
         );
     }
 
+    // Criterion (#152): `POST /play` over a graph whose reconciliation's first
+    // sink-list read is unanswered answers 503 "the audio graph is not
+    // answering" — it answered 200 in 0.41 s on a frozen daemon (#147's
+    // budget test) — and starts no tone. The combined sink is up with a
+    // branch into each speaker and only the JBL is selected, so a pass that
+    // acted on the list would unload the Sony's branch: no mutating call
+    // reaches the graph.
+    #[tokio::test]
+    async fn test_play_whose_reconcile_read_went_unanswered_answers_503_and_changes_nothing() {
+        use graph::fake::{FakeGraph, GraphCall, GraphOp};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED_SINK]);
+        fake.seed_branch(COMBINED_SINK, JBL_SINK, 0, Some(true));
+        fake.seed_branch(COMBINED_SINK, SONY_SINK, 0, Some(true));
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL]).await;
+        fake.fail_unanswered_after(GraphOp::Sinks, 1);
+
+        let answer = play(State(state.clone())).await;
+
+        assert_eq!(
+            failure(&answer),
+            Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                GRAPH_NOT_ANSWERING.to_string()
+            ))
+        );
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        assert_eq!(fake.loaded(COMBINED_SINK).len(), 2, "no branch unloaded");
+        assert_ne!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "a 503 starts no tone"
+        );
+    }
+
+    // Criterion (#152): `POST /play` whose route stalls while resolving a
+    // branch's sink — a build from nothing, the JBL's resolution answered and
+    // its branch loaded, the Sony's resolution unanswered — answers 503 "the
+    // audio graph is not answering", where the stall read as "no PipeWire
+    // sink for prefix" and answered 500.
+    #[tokio::test]
+    async fn test_play_whose_branch_resolution_went_unanswered_answers_503() {
+        use graph::fake::{FakeGraph, GraphOp};
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        let state = selected_state(&fake, &[JBL, SONY], &[JBL, SONY]).await;
+        fake.fail_unanswered_after(GraphOp::Sinks, 2);
+
+        let answer = play(State(state.clone())).await;
+
+        assert_eq!(
+            failure(&answer),
+            Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                GRAPH_NOT_ANSWERING.to_string()
+            ))
+        );
+        let loaded: Vec<String> = fake
+            .loaded(COMBINED_SINK)
+            .into_iter()
+            .map(|b| b.branch.sink)
+            .collect();
+        assert_eq!(loaded, vec![JBL_SINK.to_string()], "the JBL loaded first");
+        assert_ne!(
+            state.engine.lock().await.poll_state().status,
+            PlaybackStatus::Playing,
+            "a 503 starts no tone"
+        );
+    }
+
     // Criterion (#147, 2026-10-03): a route whose branch load answers
     // `Unanswered` — the combined sink already in place, the Sony's load
     // stalling after the JBL's went through — makes `POST /play` answer 503

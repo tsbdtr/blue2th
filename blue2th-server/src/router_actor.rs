@@ -195,6 +195,21 @@ impl Shared {
         self.generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// Ask the background applier to route the graph to the current
+    /// selection (#152): the generation moves, then the applier is woken.
+    /// Never waits, and needs no handle: the loop thread pays an owed
+    /// re-apply through it.
+    // Red-phase stub (#152): publishes nothing yet.
+    pub(crate) fn request_routing(&self) {}
+
+    /// A receiver of [`Self::request_routing`] wakes, for the applier. Only
+    /// the requests made after this call wake it.
+    // Red-phase stub (#152): a receiver of a channel nobody sends on.
+    pub(crate) fn routing_requests(&self) -> watch::Receiver<()> {
+        let (_, receiver) = watch::channel(());
+        receiver
+    }
+
     /// A receiver of the published confirmation due time.
     pub(crate) fn confirmation_due(&self) -> watch::Receiver<Option<Instant>> {
         self.confirmation_due.subscribe()
@@ -373,6 +388,13 @@ impl<G: Graph + ?Sized> Actor<G> {
     pub(crate) fn graph_mut(&mut self) -> &mut G {
         self.router.graph_mut()
     }
+
+    /// The graph answers again (#152) — the late `done` of a stalled sync
+    /// arrived, or a lost connection is back: pay an owed re-apply with one
+    /// [`Shared::request_routing`], and clear the debt. Nothing owed,
+    /// nothing published.
+    // Red-phase stub (#152): pays nothing yet.
+    pub(crate) fn graph_answers_again(&mut self) {}
 
     /// Publish the router's earliest confirmation due time.
     fn publish_confirmation_due(&self) {
@@ -2471,5 +2493,439 @@ mod tests {
 
         assert_eq!(fake.all_calls(), Vec::<GraphCall>::new());
         assert_eq!(fake.deadlines(), Vec::<Instant>::new());
+    }
+
+    // ─── #152: a routing message lost to a stall owes one re-apply ──────────
+
+    /// What the routing applier sees of a [`Shared`]: the routing generation
+    /// and its wake-up receiver, taken before anything ran.
+    struct Applier {
+        shared: Shared,
+        generation: u64,
+        wakes: watch::Receiver<()>,
+    }
+
+    /// What the applier saw over one step: how far the routing generation
+    /// moved, and whether its receiver woke — `None` for a receiver whose
+    /// sender is gone, which no request can ever wake.
+    type Seen = (u64, Option<bool>);
+
+    /// Nothing published: the generation stands, the applier sleeps on.
+    const NOTHING: Seen = (0, Some(false));
+    /// One routing request published: the generation moved by one, and the
+    /// applier woke.
+    const ONE_REQUEST: Seen = (1, Some(true));
+
+    impl Applier {
+        fn on(shared: &Shared) -> Self {
+            Self {
+                // Cloned: the test reads what the actor publishes into.
+                shared: shared.clone(),
+                generation: shared.generation(),
+                wakes: shared.routing_requests(),
+            }
+        }
+
+        /// What was published since the last look; marks it seen.
+        fn look(&mut self) -> Seen {
+            let generation = self.shared.generation();
+            let moved = generation - self.generation;
+            self.generation = generation;
+            let woke = self.wakes.has_changed().ok();
+            self.wakes.borrow_and_update();
+            (moved, woke)
+        }
+    }
+
+    /// What one message did to the debt.
+    #[derive(Debug)]
+    struct Lost {
+        /// Whether the message ran at all.
+        ran: bool,
+        /// What its reply held.
+        answer: Held,
+        /// What running it published, before the graph answered again.
+        by_the_run: Seen,
+        /// What the first "the graph answers again" published.
+        first_thaw: Seen,
+        /// What a second one, right behind it, published.
+        second_thaw: Seen,
+    }
+
+    /// Run the message `make` builds — handed the current routing
+    /// generation, for an apply-selection to be stamped with — alone at `at`,
+    /// then tell `actor` twice that the graph answers again.
+    fn lose_then_thaw<T: std::fmt::Debug>(
+        actor: &mut Actor,
+        shared: &Shared,
+        at: Instant,
+        make: impl FnOnce(u64) -> (Envelope, Answer<T>),
+    ) -> Lost {
+        let mut applier = Applier::on(shared);
+        let (envelope, mut answer) = make(shared.generation());
+        let ran = run_alone(actor, envelope, at);
+        let answer = held(&mut answer);
+        let by_the_run = applier.look();
+        actor.graph_answers_again();
+        let first_thaw = applier.look();
+        actor.graph_answers_again();
+        let second_thaw = applier.look();
+        Lost {
+            ran,
+            answer,
+            by_the_run,
+            first_thaw,
+            second_thaw,
+        }
+    }
+
+    /// Whether a reply held an `Unanswered` — a request's own error, or a
+    /// repair's `routed`.
+    fn unanswered(answer: &Held) -> bool {
+        matches!(answer, Held::Other(text) if text.contains("Unanswered"))
+    }
+
+    // Criterion (#152): every routing message — `Route`, `RouteForSpotify`,
+    // `ApplySelection` (a selection, and the last deselect that tears the
+    // combined sink down), `Retune`, `Repair` (its `routed` being
+    // `Err(Unanswered)`) — that ends `Unanswered` leaves a re-apply owed.
+    // Running it publishes nothing (no busy loop: nothing is sent until the
+    // graph has answered); the first "the graph answers again" publishes
+    // exactly one routing request; a second one right behind it publishes
+    // nothing, the debt being cleared. One entry per variant, so a variant
+    // left out of the routing set fails on its own line. The selection lost
+    // in the nominal scenario — the reconcile's first sink-list read
+    // stalling while the Sony is deselected — is among them.
+    #[test]
+    fn test_each_routing_message_that_went_unanswered_owes_one_re_apply_paid_when_the_graph_answers_again(
+    ) {
+        type Case = (
+            &'static str,
+            FakeGraph,
+            Box<dyn FnOnce(&mut Actor, &Shared) -> Lost>,
+        );
+
+        let stalled_reads = || {
+            let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+            fake.fail_unanswered(GraphOp::Sinks);
+            fake
+        };
+        let now = Instant::now();
+        let cases: Vec<Case> = vec![
+            (
+                "Route",
+                stalled_reads(),
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |_| route(&[target(JBL, 40)], None))
+                }),
+            ),
+            (
+                "RouteForSpotify",
+                stalled_reads(),
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |_| spotify(&[target(JBL, 40)], None))
+                }),
+            ),
+            (
+                "ApplySelection",
+                stalled_reads(),
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |generation| {
+                        apply(&[target(JBL, 40)], generation)
+                    })
+                }),
+            ),
+            (
+                "ApplySelection, the reconcile's first read stalled",
+                {
+                    let (fake, _, _) = steady_graph();
+                    fake.fail_unanswered_after(GraphOp::Sinks, 1);
+                    fake
+                },
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |generation| {
+                        apply(&[target(JBL, 0)], generation)
+                    })
+                }),
+            ),
+            (
+                "ApplySelection, empty",
+                {
+                    let (fake, _, _) = steady_graph();
+                    fake.fail_unanswered(GraphOp::Teardown);
+                    fake
+                },
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |generation| apply(&[], generation))
+                }),
+            ),
+            (
+                "Retune",
+                {
+                    let (fake, _, _) = steady_graph();
+                    fake.fail_unanswered(GraphOp::Sinks);
+                    fake
+                },
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |_| retune(SONY, 120, None))
+                }),
+            ),
+            (
+                "Repair",
+                stalled_reads(),
+                Box::new(move |actor: &mut Actor, shared: &Shared| {
+                    lose_then_thaw(actor, shared, now, |_| repair(&[target(JBL, 0)], None))
+                }),
+            ),
+        ];
+
+        for (name, fake, lose) in cases {
+            let (mut actor, shared, _) = actor_on(&fake);
+
+            let lost = lose(&mut actor, &shared);
+
+            assert!(lost.ran, "{name}: the message ran: {lost:?}");
+            assert!(
+                unanswered(&lost.answer),
+                "{name}: the message ended Unanswered: {lost:?}"
+            );
+            assert_eq!(lost.by_the_run, NOTHING, "{name}: running it sends nothing");
+            assert_eq!(
+                lost.first_thaw, ONE_REQUEST,
+                "{name}: the graph answering again pays one re-apply"
+            );
+            assert_eq!(lost.second_thaw, NOTHING, "{name}: the debt is cleared");
+        }
+    }
+
+    // Criterion (#152, guard, only routing messages owe): `SinkVolumes` and
+    // `SetSinkVolumes` ending `Unanswered` leave nothing owed — a volume
+    // slider that already reported its failure must not change the level
+    // later, and a read has nothing to re-apply. The near miss is the
+    // `Unanswered` itself, the same error that makes a routing message owe:
+    // "every `Unanswered` owes" publishes on the first thaw here. The
+    // control, on the same actor and the same stalled graph: a route lost
+    // the same way does owe.
+    #[test]
+    fn test_a_volume_message_that_went_unanswered_owes_nothing() {
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.set_volume(JBL_SINK, 0.4);
+        fake.fail_unanswered(GraphOp::Sinks);
+        fake.fail_unanswered(GraphOp::SetSinkVolume);
+        let (mut actor, shared, _) = actor_on(&fake);
+        let now = Instant::now();
+
+        let read_lost = lose_then_thaw(&mut actor, &shared, now, |_| read(&[JBL], None));
+        let set_lost = lose_then_thaw(&mut actor, &shared, now, |_| set(&[JBL], 0.45, None));
+
+        assert!(unanswered(&read_lost.answer), "{read_lost:?}");
+        assert_eq!(read_lost.first_thaw, NOTHING, "a read owes nothing");
+        assert_eq!(read_lost.second_thaw, NOTHING);
+        assert!(unanswered(&set_lost.answer), "{set_lost:?}");
+        assert_eq!(set_lost.first_thaw, NOTHING, "a volume set owes nothing");
+        assert_eq!(set_lost.second_thaw, NOTHING);
+
+        let route_lost =
+            lose_then_thaw(&mut actor, &shared, now, |_| route(&[target(JBL, 0)], None));
+        assert!(unanswered(&route_lost.answer), "{route_lost:?}");
+        assert_eq!(
+            route_lost.first_thaw, ONE_REQUEST,
+            "control: a routing message lost the same way owes"
+        );
+    }
+
+    // Criterion (#152, guard, only `Unanswered` owes): a routing message
+    // ending with any other error leaves nothing owed — a `PipeWire(..)`
+    // refusal (the daemon answered: re-sending gets the same answer), on an
+    // apply-selection, a route-for-Spotify, a retune and a repair;
+    // `NoSpeakerConnected`; `Expired` (taken out of the queue past its
+    // `start_by`, already handed to the applier); and a repair whose
+    // `routed` is `Ok`. The near miss is the failure: "every failed routing
+    // message owes" publishes on the first thaw. The control, on the same
+    // actor: once the reads stall instead of being refused, a route owes.
+    #[test]
+    fn test_a_routing_message_that_failed_with_an_answer_owes_nothing() {
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK]);
+        fake.fail(GraphOp::Sinks);
+        let (mut actor, shared, _) = actor_on(&fake);
+        let now = Instant::now();
+
+        let mut outcomes = vec![
+            (
+                "ApplySelection refused",
+                lose_then_thaw(&mut actor, &shared, now, |generation| {
+                    apply(&[target(JBL, 0)], generation)
+                }),
+            ),
+            (
+                "RouteForSpotify refused",
+                lose_then_thaw(&mut actor, &shared, now, |_| {
+                    spotify(&[target(JBL, 0)], None)
+                }),
+            ),
+            (
+                "Retune refused",
+                lose_then_thaw(&mut actor, &shared, now, |_| retune(SONY, 120, None)),
+            ),
+            (
+                "Repair refused",
+                lose_then_thaw(&mut actor, &shared, now, |_| {
+                    repair(&[target(JBL, 0)], None)
+                }),
+            ),
+            (
+                "Route to no speaker",
+                lose_then_thaw(&mut actor, &shared, now, |_| route(&[], None)),
+            ),
+            (
+                "Route expired",
+                lose_then_thaw(&mut actor, &shared, now + Duration::from_millis(1), |_| {
+                    route(&[target(JBL, 0)], Some(now))
+                }),
+            ),
+        ];
+        fake.clear_failures();
+        outcomes.push((
+            "Repair routed",
+            lose_then_thaw(&mut actor, &shared, now, |_| {
+                repair(&[target(JBL, 0)], None)
+            }),
+        ));
+
+        for (name, lost) in &outcomes {
+            assert!(!unanswered(&lost.answer), "{name}: answered: {lost:?}");
+            assert!(
+                !matches!(lost.answer, Held::Nothing | Held::Dropped),
+                "{name}: an answer came back: {lost:?}"
+            );
+            assert_eq!(lost.first_thaw, NOTHING, "{name}: owes nothing");
+            assert_eq!(lost.second_thaw, NOTHING, "{name}");
+        }
+        let expired = outcomes.iter().find(|(name, _)| *name == "Route expired");
+        assert!(
+            expired.is_some_and(|(_, lost)| !lost.ran && lost.answer == Held::Expired),
+            "the expired route was refused, not run: {expired:?}"
+        );
+
+        fake.fail_unanswered(GraphOp::Sinks);
+        let route_lost =
+            lose_then_thaw(&mut actor, &shared, now, |_| route(&[target(JBL, 0)], None));
+        assert!(unanswered(&route_lost.answer), "{route_lost:?}");
+        assert_eq!(
+            route_lost.first_thaw, ONE_REQUEST,
+            "control: the same route, stalled rather than refused, owes"
+        );
+    }
+
+    // Criterion (#152, guard, exactly one re-apply per thaw): a selection,
+    // then an offset, then a repair pass, all lost to the same freeze, give
+    // one routing request when the graph answers again — not three — and a
+    // second "answers again" gives none. The re-apply reads the current
+    // state, so one covers them all.
+    #[test]
+    fn test_several_unanswered_routing_messages_owe_one_re_apply_in_total() {
+        let (fake, _, _) = steady_graph();
+        fake.fail_unanswered(GraphOp::Sinks);
+        let (mut actor, shared, _) = actor_on(&fake);
+        let mut applier = Applier::on(&shared);
+        let now = Instant::now();
+
+        let (selection, mut selection_answer) = apply(&[target(JBL, 0)], shared.generation());
+        let (offset, mut offset_answer) = retune(JBL, 120, None);
+        let (pass, mut pass_answer) = repair(&[target(JBL, 120)], None);
+        assert!(run_alone(&mut actor, selection, now));
+        assert!(run_alone(&mut actor, offset, now));
+        assert!(run_alone(&mut actor, pass, now));
+        for answer in [
+            held(&mut selection_answer),
+            held(&mut offset_answer),
+            held(&mut pass_answer),
+        ] {
+            assert!(unanswered(&answer), "each was lost: {answer:?}");
+        }
+        assert_eq!(applier.look(), NOTHING, "nothing sent during the freeze");
+
+        actor.graph_answers_again();
+        assert_eq!(applier.look(), ONE_REQUEST, "one re-apply for the three");
+
+        actor.graph_answers_again();
+        assert_eq!(applier.look(), NOTHING, "and only one");
+    }
+
+    // Criterion (#152): a re-apply that goes `Unanswered` itself — the daemon
+    // froze again before it ran — leaves a re-apply owed again, paid at the
+    // next thaw. The re-apply is the apply-selection the applier sends,
+    // stamped with the generation the payment moved to.
+    #[test]
+    fn test_a_re_apply_that_went_unanswered_owes_again() {
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.fail_unanswered(GraphOp::Sinks);
+        let (mut actor, shared, _) = actor_on(&fake);
+        let now = Instant::now();
+
+        let first = lose_then_thaw(&mut actor, &shared, now, |_| route(&[target(JBL, 0)], None));
+        assert_eq!(first.first_thaw, ONE_REQUEST, "{first:?}");
+
+        let reapply = lose_then_thaw(&mut actor, &shared, now, |generation| {
+            apply(&[target(JBL, 0)], generation)
+        });
+        assert!(reapply.ran, "the re-apply is not outdated: {reapply:?}");
+        assert!(unanswered(&reapply.answer), "{reapply:?}");
+        assert_eq!(reapply.by_the_run, NOTHING);
+        assert_eq!(
+            reapply.first_thaw, ONE_REQUEST,
+            "the lost re-apply is owed again"
+        );
+        assert_eq!(reapply.second_thaw, NOTHING);
+    }
+
+    // Criterion (#152): the graph answering again with nothing owed publishes
+    // nothing — on a fresh actor, and after a route the graph answered. The
+    // control: once a route is lost, the same call publishes one request.
+    #[test]
+    fn test_the_graph_answering_again_with_nothing_owed_publishes_nothing() {
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        let (mut actor, shared, _) = actor_on(&fake);
+        let mut applier = Applier::on(&shared);
+
+        actor.graph_answers_again();
+        assert_eq!(applier.look(), NOTHING, "a fresh actor owes nothing");
+
+        let routed = lose_then_thaw(&mut actor, &shared, Instant::now(), |_| {
+            route(&[target(JBL, 0)], None)
+        });
+        assert_eq!(routed.answer, Held::Other("Ok(())".to_string()));
+        assert_eq!(routed.first_thaw, NOTHING, "an answered route owes nothing");
+
+        fake.fail_unanswered(GraphOp::Sinks);
+        let lost = lose_then_thaw(&mut actor, &shared, Instant::now(), |_| {
+            route(&[target(JBL, 0)], None)
+        });
+        assert_eq!(lost.first_thaw, ONE_REQUEST, "control: a lost route owes");
+    }
+
+    // Criterion (#152): the owed re-apply survives the loss of what ran the
+    // message: it is held in the `Shared` every actor of a handle shares,
+    // not by the connection nor by one actor. A route is lost on one actor;
+    // that actor goes away, as a loop thread replaced after it died; the
+    // next actor over the same `Shared` — told the graph answers again once
+    // it holds a connection — pays it, whether or not anything plays.
+    #[test]
+    fn test_an_owed_re_apply_survives_the_actor_and_is_paid_by_the_next_one_sharing_its_state() {
+        let fake = FakeGraph::with_sinks(&[JBL_SINK]);
+        fake.fail_unanswered(GraphOp::Sinks);
+        let (mut first, shared, clock) = actor_on(&fake);
+        let mut applier = Applier::on(&shared);
+        let (envelope, mut answer) = route(&[target(JBL, 0)], None);
+        assert!(run_alone(&mut first, envelope, Instant::now()));
+        assert!(unanswered(&held(&mut answer)));
+        drop(first);
+        fake.clear_failures();
+
+        let mut next = actor_sharing(&fake, &shared, &clock);
+        assert_eq!(applier.look(), NOTHING, "a new actor publishes no request");
+        next.graph_answers_again();
+
+        assert_eq!(applier.look(), ONE_REQUEST);
     }
 }

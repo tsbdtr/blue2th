@@ -841,6 +841,92 @@ mod tests {
         assert!(parked.lock().unwrap().is_empty());
     }
 
+    // Criterion (#152): the routing-request sender is reachable from
+    // `Shared`, so the loop thread wakes the applier without a
+    // `RouterHandle`. A request published through the `Shared` a handle was
+    // built over advances the handle's generation by one and wakes the
+    // receiver the applier took from the handle; and the other way round, a
+    // request made on the handle wakes a receiver taken from the `Shared`.
+    // The near miss is two channels — one in the handle, one in `Shared` —
+    // each of which works alone: the applier, which subscribes through the
+    // handle, would never hear of a re-apply paid on the loop thread.
+    #[tokio::test]
+    async fn test_a_routing_request_through_shared_wakes_the_applier_the_handle_feeds() {
+        let shared = Shared::new();
+        let handle = RouterHandle::over(
+            Box::new(|_envelope: Envelope| Ok(())),
+            // Cloned: the handle and the loop side share the one state.
+            shared.clone(),
+        );
+        let mut from_handle = handle.routing_requests();
+        let mut from_shared = shared.routing_requests();
+        let before = handle.routing_generation();
+
+        shared.request_routing();
+
+        assert_eq!(handle.routing_generation(), before + 1);
+        assert_eq!(from_handle.has_changed().ok(), Some(true));
+        assert_eq!(from_shared.has_changed().ok(), Some(true));
+        from_handle.borrow_and_update();
+        from_shared.borrow_and_update();
+
+        handle.request_routing();
+
+        assert_eq!(shared.generation(), before + 2);
+        assert_eq!(from_shared.has_changed().ok(), Some(true));
+        assert_eq!(from_handle.has_changed().ok(), Some(true));
+    }
+
+    // Criterion (#152): end to end over the actor — a selection lost to a
+    // stall on the actor, then "the graph answers again" on that actor,
+    // wakes the applier through the handle sharing its state, once, and
+    // advances the generation the applier stamps its next selection with.
+    // A selection read before that payment is outdated, so the re-apply
+    // reads the current selection rather than re-sending a stale one.
+    #[tokio::test]
+    async fn test_a_re_apply_paid_on_the_actor_wakes_the_applier_through_the_handle() {
+        use crate::audio::AudioRouter;
+        use crate::router_actor::Actor;
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED]);
+        fake.fail_unanswered(GraphOp::Sinks);
+        let shared = Shared::new();
+        let handle = RouterHandle::over(
+            Box::new(|_envelope: Envelope| Ok(())),
+            // Cloned: the handle and the actor share the one state.
+            shared.clone(),
+        );
+        let mut actor: Actor = Actor::new(
+            AudioRouter::with_clock(Box::new(fake.clone()), Box::new(Instant::now)),
+            // Cloned: as above.
+            shared.clone(),
+        );
+        let wakes = handle.routing_requests();
+        let stamped = handle.routing_generation();
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        let queue = std::cell::RefCell::new(crate::router_actor::Queue::new());
+        queue.borrow_mut().push(Envelope {
+            start_by: None,
+            message: Message::ApplySelection {
+                speakers: vec![target(JBL, 0)],
+                generation: stamped,
+                reply,
+            },
+        });
+
+        assert!(actor.run_next(&queue, Instant::now()));
+        assert!(matches!(
+            answer.try_recv(),
+            Ok(Err(RouterError::Audio(AudioError::Unanswered)))
+        ));
+        assert_eq!(wakes.has_changed().ok(), Some(false), "nothing sent yet");
+
+        actor.graph_answers_again();
+
+        assert_eq!(handle.routing_generation(), stamped + 1);
+        assert_eq!(wakes.has_changed().ok(), Some(true));
+    }
+
     // Criterion: a freshly built handle publishes no confirmation due time.
     #[test]
     fn test_confirmation_due_of_a_fresh_handle_is_none() {
