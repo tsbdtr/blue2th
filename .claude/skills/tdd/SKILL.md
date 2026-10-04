@@ -255,6 +255,12 @@ server. Bound to the base checkout, it would show the agents `develop`, and
 their Serena edits would land in the base checkout while their Read/Edit work
 lands in the worktree. Around **each** agent spawn:
 
+Send each `activate_project` **alone**, and wait for its answer before the next
+Serena call. Calls sent in one parallel batch reach Serena in no guaranteed
+order: in the #154 cycle a switch back to the base checkout and a switch to the
+worktree, batched together, were applied in reverse, and Serena stayed on the
+base checkout. The check in 2 caught it; sending them one at a time avoids it.
+
 1. `mcp__serena__activate_project` with `project: "<WORKTREE_PATH>"`. It answers
    at once and starts rust-analyzer on the worktree in the background. The
    worktree's `project.local.yml` (step 4f) turns the `tdd-worktree` mode on:
