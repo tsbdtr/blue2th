@@ -926,10 +926,12 @@ impl<G: Graph + ?Sized> AudioRouter<G> {
         // it would unload every branch. So an unreadable list ends the pass, and
         // so does one naming no sink at all: it does not even name the combined
         // sink this pass was entered for, so it describes no graph worth acting on.
-        let sinks = match self.graph.sinks() {
-            Ok(names) if !names.is_empty() => names,
-            _ => return Ok(()),
-        };
+        // The unreadable list is still answered as its own error (#152): a stall
+        // reported as `Ok(())` leaves nothing to re-apply once the daemon answers.
+        let sinks = self.graph.sinks()?;
+        if sinks.is_empty() {
+            return Ok(());
+        }
         // A speaker that is switched off is absent, not broken: asking for it on
         // every tick would attempt a load that cannot succeed.
         let reachable = CombineSinkSpec {
@@ -1197,9 +1199,7 @@ fn resolve_branch_sink<G: Graph + ?Sized>(
     graph: &mut G,
     branch: &CombineBranch,
 ) -> Result<String, AudioError> {
-    find_sink_with_prefix(graph, &branch.sink)
-        .ok()
-        .flatten()
+    find_sink_with_prefix(graph, &branch.sink)?
         .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for prefix {}", branch.sink)))
 }
 

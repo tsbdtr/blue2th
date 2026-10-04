@@ -16,7 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -161,12 +161,22 @@ pub(crate) trait Transport: Send {
 }
 
 /// What a handle and every actor started for it have in common: the routing
-/// generation the handle advances and the actor reads, and the confirmation
-/// due time the actor publishes and the confirmation timer reads.
+/// generation the handle advances and the actor reads, the confirmation
+/// due time the actor publishes and the confirmation timer reads, the
+/// applier's wake-up, and the re-apply owed to a routing message a stalled
+/// daemon left unanswered (#152).
 #[derive(Clone)]
 pub(crate) struct Shared {
     generation: Arc<AtomicU64>,
     confirmation_due: Arc<watch::Sender<Option<Instant>>>,
+    /// Wakes the background routing applier. A `watch` rather than a queue:
+    /// every request made before the applier marks it seen folds into one
+    /// pass, which reads the selection current at that moment.
+    routing_requests: Arc<watch::Sender<()>>,
+    /// Whether a routing message ended `Unanswered` since the graph last
+    /// answered again. Held here rather than by one actor, so that a loop
+    /// thread replaced after a lost connection still pays it.
+    reapply_owed: Arc<AtomicBool>,
 }
 
 impl Default for Shared {
@@ -179,9 +189,12 @@ impl Shared {
     /// Generation zero, and no confirmation due.
     pub(crate) fn new() -> Self {
         let (confirmation_due, _) = watch::channel(None);
+        let (routing_requests, _) = watch::channel(());
         Self {
             generation: Arc::default(),
             confirmation_due: Arc::new(confirmation_due),
+            routing_requests: Arc::new(routing_requests),
+            reapply_owed: Arc::default(),
         }
     }
 
@@ -198,16 +211,28 @@ impl Shared {
     /// Ask the background applier to route the graph to the current
     /// selection (#152): the generation moves, then the applier is woken.
     /// Never waits, and needs no handle: the loop thread pays an owed
-    /// re-apply through it.
-    // Red-phase stub (#152): publishes nothing yet.
-    pub(crate) fn request_routing(&self) {}
+    /// re-apply through it. The generation moves before the applier is
+    /// woken, so the pass this wake starts stamps its selection with a
+    /// generation that already counts this request.
+    pub(crate) fn request_routing(&self) {
+        self.advance_generation();
+        self.routing_requests.send_replace(());
+    }
 
     /// A receiver of [`Self::request_routing`] wakes, for the applier. Only
     /// the requests made after this call wake it.
-    // Red-phase stub (#152): a receiver of a channel nobody sends on.
     pub(crate) fn routing_requests(&self) -> watch::Receiver<()> {
-        let (_, receiver) = watch::channel(());
-        receiver
+        self.routing_requests.subscribe()
+    }
+
+    /// A routing message ended `Unanswered`: one re-apply is owed (#152).
+    fn owe_reapply(&self) {
+        self.reapply_owed.store(true, Ordering::SeqCst);
+    }
+
+    /// Clear the owed re-apply; answers whether one was owed.
+    fn take_reapply(&self) -> bool {
+        self.reapply_owed.swap(false, Ordering::SeqCst)
     }
 
     /// A receiver of the published confirmation due time.
@@ -393,8 +418,21 @@ impl<G: Graph + ?Sized> Actor<G> {
     /// arrived, or a lost connection is back: pay an owed re-apply with one
     /// [`Shared::request_routing`], and clear the debt. Nothing owed,
     /// nothing published.
-    // Red-phase stub (#152): pays nothing yet.
-    pub(crate) fn graph_answers_again(&mut self) {}
+    pub(crate) fn graph_answers_again(&mut self) {
+        if self.shared.take_reapply() {
+            tracing::info!("the audio graph answers again: re-applying the routing");
+            self.shared.request_routing();
+        }
+    }
+
+    /// Record a re-apply owed when a routing message's `result` is a stall
+    /// (#152). An answered failure owes nothing: re-sending gets the same
+    /// answer.
+    fn note_routing<T>(&self, result: &Result<T, AudioError>) {
+        if matches!(result, Err(AudioError::Unanswered)) {
+            self.shared.owe_reapply();
+        }
+    }
 
     /// Publish the router's earliest confirmation due time.
     fn publish_confirmation_due(&self) {
@@ -426,7 +464,9 @@ impl<G: Graph + ?Sized> Actor<G> {
     fn run(&mut self, message: Message, queue: &RefCell<Queue>) {
         match message {
             Message::Route { speakers, reply } => {
-                answer(reply, self.router.route_for_targets(&speakers));
+                let routed = self.router.route_for_targets(&speakers);
+                self.note_routing(&routed);
+                answer(reply, routed);
             },
             Message::SinkVolumes { macs, reply } => {
                 let levels = self.router.sink_volumes(&macs).map_err(RouterError::from);
@@ -443,9 +483,15 @@ impl<G: Graph + ?Sized> Actor<G> {
                 sink_name,
                 branch,
                 reply,
-            } => answer(reply, self.retune(&sink_name, &branch)),
+            } => {
+                let retuned = self.retune(&sink_name, &branch);
+                self.note_routing(&retuned);
+                answer(reply, retuned);
+            },
             Message::RouteForSpotify { speakers, reply } => {
-                answer(reply, self.route_for_spotify(&speakers));
+                let routed = self.route_for_spotify(&speakers);
+                self.note_routing(&routed);
+                answer(reply, routed);
             },
             Message::ApplySelection {
                 speakers, reply, ..
@@ -455,11 +501,13 @@ impl<G: Graph + ?Sized> Actor<G> {
                 } else {
                     self.router.route_for_targets(&speakers)
                 };
+                self.note_routing(&applied);
                 answer(reply, applied);
             },
             Message::Repair { speakers, reply } => {
                 let before = self.router.graph_changes();
                 let routed = self.router.route_for_targets(&speakers);
+                self.note_routing(&routed);
                 let outcome = RepairOutcome {
                     routed,
                     changed: self.router.graph_changes() != before,

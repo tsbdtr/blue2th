@@ -950,10 +950,11 @@ fn run_loop_thread(
     let mut reconnect = ReconnectWatch::new(Instant::now());
     loop {
         let state = actor.graph_mut().inner_mut();
+        let mut answers_again = false;
         if watched && reconnect.attempt_due(state.is_connected(), Instant::now()) {
             match state.reconnect() {
                 Ok(()) => {
-                    reconnect.connected(state.connector.events.as_ref());
+                    answers_again = reconnect.connected(state.connector.events.as_ref());
                 },
                 // Connected, but the daemon did not answer the re-read in time:
                 // the connection is kept, as a message keeps it, and the next
@@ -970,6 +971,10 @@ fn run_loop_thread(
                 },
             }
         }
+        if answers_again {
+            actor.graph_answers_again();
+        }
+        let state = actor.graph_mut().inner_mut();
         let timeout = match reconnect.wait(state.is_connected(), Instant::now()) {
             Some(left) if watched => Timeout::Finite(left),
             _ => Timeout::Infinite,
@@ -978,7 +983,14 @@ fn run_loop_thread(
         if state.forget_a_lost_connection() {
             reconnect.lost(Instant::now());
         }
+        // The late `done` of a stalled sync is acted on here, while the loop
+        // is otherwise idle: waiting for the next message to see it would
+        // leave the owed re-apply unpaid until something else happens (#152).
+        let thawed = state.take_thaw();
         state.wire_waiting_branches();
+        if thawed {
+            actor.graph_answers_again();
+        }
         // The clock is read once per message, as it is taken out: one that
         // waited behind the reconnect attempt, the wiring above or a slow
         // message has spent that time out of its start budget (#146).
@@ -989,8 +1001,11 @@ fn run_loop_thread(
         }
         // A message reconnects on its own: that is a reconnection too.
         let state = actor.graph_mut().inner_mut();
-        if state.is_connected() {
-            reconnect.connected(state.connector.events.as_ref());
+        let regained = state.is_connected() && reconnect.connected(state.connector.events.as_ref());
+        // A message's own round trip can deliver the late `done` too.
+        let thawed = state.take_thaw();
+        if regained || thawed {
+            actor.graph_answers_again();
         }
     }
 }
@@ -1059,8 +1074,7 @@ impl ReconnectWatch {
         if let Some(events) = events {
             let _ = events.send(GraphEvent::Reconnected);
         }
-        // Red-phase stub (#152): a reconnection is not reported yet.
-        false
+        true
     }
 }
 
@@ -1075,17 +1089,22 @@ struct StallWatch {
 }
 
 impl StallWatch {
-    /// The `core.sync` of seq `seq` went unanswered past its deadline.
-    // Red-phase stub (#152): remembers nothing yet.
+    /// The `core.sync` of seq `seq` went unanswered past its deadline. With
+    /// a stall already outstanding, the earliest one sets the threshold: its
+    /// `done` is the first to arrive once the daemon resumes.
     fn sync_unanswered(&mut self, seq: i32) {
-        let _ = seq;
+        self.stalled_at = Some(self.stalled_at.map_or(seq, |stalled| stalled.min(seq)));
     }
 
     /// A `done` of seq `seq` arrived: answers whether it is the thaw.
-    // Red-phase stub (#152): never a thaw yet.
     fn done(&mut self, seq: i32) -> bool {
-        let _ = (seq, self.stalled_at);
-        false
+        match self.stalled_at {
+            Some(stalled) if seq >= stalled => {
+                self.stalled_at = None;
+                true
+            },
+            _ => false,
+        }
     }
 }
 
@@ -1136,6 +1155,11 @@ struct Shared {
     globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
     done: Option<i32>,
     lost: bool,
+    /// The syncs of this connection that went unanswered (#152). Per
+    /// connection: a new one starts a fresh seq space.
+    stall: StallWatch,
+    /// Set by the `done` that thawed a stall, until the loop side takes it.
+    thawed: bool,
     /// The combined sinks this connection holds the proxy for, by node id
     /// (#139): only their removal is someone else's doing.
     combined_sinks: BTreeMap<u32, String>,
@@ -1184,7 +1208,11 @@ impl PwConnection {
                 let shared = Rc::clone(&shared);
                 move |id, seq| {
                     if id == pw::core::PW_ID_CORE {
-                        shared.borrow_mut().done = Some(seq.seq());
+                        let mut shared = shared.borrow_mut();
+                        shared.done = Some(seq.seq());
+                        if shared.stall.done(seq.seq()) {
+                            shared.thawed = true;
+                        }
                     }
                 }
             })
@@ -1254,6 +1282,10 @@ impl PwConnection {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                let mut shared = self.shared.borrow_mut();
+                shared.stall.sync_unanswered(pending);
+                // A thaw not yet acted on is stale: the daemon stalls again.
+                shared.thawed = false;
                 return Err(AudioError::Unanswered);
             }
             self.mainloop.loop_().iterate(Timeout::Finite(left));
@@ -1677,6 +1709,14 @@ impl LoopState<PwConnector> {
             self.on_disconnect();
         }
         lost
+    }
+
+    /// Whether the late `done` of a stalled sync arrived since the last call
+    /// (#152): the daemon answers again. Taken once.
+    fn take_thaw(&mut self) -> bool {
+        self.connection
+            .as_ref()
+            .is_some_and(|connection| std::mem::take(&mut connection.shared.borrow_mut().thawed))
     }
 
     /// Connect, and re-read the whole registry in one round trip.

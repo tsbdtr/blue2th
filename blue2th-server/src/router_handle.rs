@@ -88,12 +88,9 @@ pub struct RouterHandle {
     /// The way to whatever runs the actor. The lock is held for the send
     /// alone, which never blocks: no caller waits for an answer under it.
     transport: Arc<Mutex<Box<dyn Transport>>>,
-    /// Wakes the background routing applier. A `watch` rather than a queue:
-    /// every request made before the applier marks it seen folds into one
-    /// pass, which reads the selection current at that moment.
-    routing_requests: Arc<watch::Sender<()>>,
-    /// The routing generation and the confirmation due time, shared with
-    /// every actor started for this handle (#147).
+    /// The routing generation, the confirmation due time and the applier's
+    /// wake-up, shared with every actor started for this handle (#147,
+    /// #152).
     shared: Shared,
     /// The means to hold the actor, when it is a fake one.
     #[cfg(test)]
@@ -104,10 +101,8 @@ impl RouterHandle {
     /// A handle sending through `transport`, to actors sharing `shared`
     /// (#147).
     pub(crate) fn over(transport: Box<dyn Transport>, shared: Shared) -> Self {
-        let (routing_requests, _) = watch::channel(());
         Self {
             transport: Arc::new(Mutex::new(transport)),
-            routing_requests: Arc::new(routing_requests),
             shared,
             #[cfg(test)]
             holder: None,
@@ -125,14 +120,13 @@ impl RouterHandle {
     /// pass this wake starts stamps its selection with a generation that
     /// already counts this request.
     pub fn request_routing(&self) {
-        self.shared.advance_generation();
-        self.routing_requests.send_replace(());
+        self.shared.request_routing();
     }
 
     /// A receiver of [`Self::request_routing`] wakes, for the applier. Only
     /// the requests made after this call wake it.
     pub fn routing_requests(&self) -> watch::Receiver<()> {
-        self.routing_requests.subscribe()
+        self.shared.routing_requests()
     }
 
     /// The current routing generation (#147): what the applier stamps the
