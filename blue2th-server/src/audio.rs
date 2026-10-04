@@ -395,7 +395,16 @@ impl BranchLoadReport {
             }
             return Err(AudioError::Unanswered);
         }
-        let messages: Vec<String> = self.failures.iter().map(ToString::to_string).collect();
+        // A refusal's own text, not its `Display`: the joined error is a
+        // `PipeWire` whose `Display` names it as one, once.
+        let messages: Vec<String> = self
+            .failures
+            .into_iter()
+            .map(|failure| match failure {
+                AudioError::PipeWire(message) => message,
+                other => other.to_string(),
+            })
+            .collect();
         Err(AudioError::PipeWire(messages.join("; ")))
     }
 }
@@ -926,10 +935,12 @@ impl<G: Graph + ?Sized> AudioRouter<G> {
         // it would unload every branch. So an unreadable list ends the pass, and
         // so does one naming no sink at all: it does not even name the combined
         // sink this pass was entered for, so it describes no graph worth acting on.
-        let sinks = match self.graph.sinks() {
-            Ok(names) if !names.is_empty() => names,
-            _ => return Ok(()),
-        };
+        // The unreadable list ends it with its own error (#152): a stall
+        // reported as `Ok(())` leaves nothing to re-apply once the daemon answers.
+        let sinks = self.graph.sinks()?;
+        if sinks.is_empty() {
+            return Ok(());
+        }
         // A speaker that is switched off is absent, not broken: asking for it on
         // every tick would attempt a load that cannot succeed.
         let reachable = CombineSinkSpec {
@@ -1197,9 +1208,7 @@ fn resolve_branch_sink<G: Graph + ?Sized>(
     graph: &mut G,
     branch: &CombineBranch,
 ) -> Result<String, AudioError> {
-    find_sink_with_prefix(graph, &branch.sink)
-        .ok()
-        .flatten()
+    find_sink_with_prefix(graph, &branch.sink)?
         .ok_or_else(|| AudioError::PipeWire(format!("no PipeWire sink for prefix {}", branch.sink)))
 }
 
@@ -2310,10 +2319,10 @@ mod tests {
     // Criterion (#147, 2026-10-03): `BranchLoadReport` keeps its failures as
     // `AudioError`s, and `into_result` answers `Ok(())` with none,
     // `Unanswered` when one is `Unanswered`, and `PipeWire` with the messages
-    // joined by "; " otherwise — the same text as before the failures were
-    // typed, which joined each failure's `Display`: a refusal reads
-    // "PipeWire error: …" inside the joined text, and the whole is compared
-    // so a join of the bare inner messages fails.
+    // joined by "; " otherwise — each refusal's own text, without the
+    // "PipeWire error: " its `Display` adds, which the joined error's
+    // `Display` adds once. The whole is compared, so a join of each
+    // failure's `Display` fails.
     #[test]
     fn test_branch_load_report_answers_ok_unanswered_or_the_joined_pipewire_text() {
         let none = report_failing(vec![]).into_result();
@@ -2333,16 +2342,16 @@ mod tests {
         assert_eq!(
             answered,
             Err(AudioError::PipeWire(format!(
-                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
-                 PipeWire error: no PipeWire sink for prefix {THIRD}"
+                "fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 no PipeWire sink for prefix {THIRD}"
             ))),
-            "answers only: today's text, unchanged"
+            "answers only: the refusals' own texts, joined"
         );
     }
 
     // Guard (#147, 2026-10-03, a branch pass is `Unanswered` only when a
     // failure is): the near misses are a report holding one refusal alone,
-    // which must stay `PipeWire` with today's exact text — a rule keyed on
+    // which must stay `PipeWire` with its own exact text — a rule keyed on
     // "any failure" answers it 503 — and the same refusal worded as the
     // deadline exit used to word itself, which a rule matching "did not
     // answer" in the message would take for a stall. Beside them, a refusal
@@ -2363,14 +2372,14 @@ mod tests {
         assert_eq!(
             alone,
             Err(AudioError::PipeWire(format!(
-                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1"
+                "fake graph: LoadBranch told to fail for {DEAD}.1"
             ))),
             "a refused load is an answer: it stays `PipeWire`, with its own text"
         );
         assert_eq!(
             worded,
             Err(AudioError::PipeWire(
-                "PipeWire error: PipeWire did not answer a sync round trip".to_string()
+                "PipeWire did not answer a sync round trip".to_string()
             )),
             "the variant decides, never the wording"
         );
@@ -2383,6 +2392,44 @@ mod tests {
             stall_then_refusal,
             Err(AudioError::Unanswered),
             "a reading of the last failure alone misses the stall"
+        );
+    }
+
+    // Criterion (found in #152's manual verification): a branch failure is
+    // named once in the error a pass answers. `AudioError::PipeWire`'s own
+    // `Display` prefixes "PipeWire error: ", and joining each failure's
+    // `Display` inside a new `PipeWire` doubled it: the log read
+    // "PipeWire error: PipeWire error: no PipeWire sink for prefix …". One
+    // refusal, two refusals, and a refusal beside another variant, which keeps
+    // its own readable text inside the joined one.
+    #[test]
+    fn test_branch_load_report_names_a_pipewire_failure_once() {
+        let absent = || AudioError::PipeWire(format!("no PipeWire sink for prefix {THIRD}"));
+        let text = |failures| {
+            report_failing(failures)
+                .into_result()
+                .map_err(|e| e.to_string())
+        };
+
+        assert_eq!(
+            text(vec![absent()]),
+            Err(format!(
+                "PipeWire error: no PipeWire sink for prefix {THIRD}"
+            ))
+        );
+        assert_eq!(
+            text(vec![refused_load(), absent()]),
+            Err(format!(
+                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 no PipeWire sink for prefix {THIRD}"
+            ))
+        );
+        assert_eq!(
+            text(vec![refused_load(), AudioError::NoSpeakerConnected]),
+            Err(format!(
+                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 no speaker connected"
+            ))
         );
     }
 
@@ -3885,17 +3932,23 @@ mod router_tests {
         assert_eq!(ids, vec![a, b, stale]);
     }
 
-    // Non-nominal: the sink list stops being readable in the middle of a pass —
-    // the reconciliation returns `Ok(())` without unloading anything.
+    // Non-nominal (#152, changed): the sink list stops being readable in the
+    // middle of a pass — the reconciliation answers the read's own error
+    // (no longer `Ok(())`) without unloading anything. The route entry
+    // point's read of the combined sink went through; the reconciliation's
+    // own read is the one refused.
     #[test]
-    fn test_route_with_a_sink_list_lost_mid_pass_returns_ok_and_unloads_nothing() {
+    fn test_route_with_a_sink_list_lost_mid_pass_answers_the_read_error_and_unloads_nothing() {
         let (fake, a, b) = steady_graph(Some(true));
         fake.fail_after(GraphOp::Sinks, 1);
         let mut router = router_on(&fake);
 
         let result = router.route_for_targets(&steady_selection());
 
-        assert!(result.is_ok(), "route failed: {result:?}");
+        assert!(
+            matches!(&result, Err(AudioError::PipeWire(m)) if m.contains("Sinks told to fail")),
+            "got {result:?}"
+        );
         let calls = fake.calls();
         assert!(
             !calls.iter().any(changes_the_graph),
@@ -3925,6 +3978,161 @@ mod router_tests {
         assert_eq!(fake.calls(), Vec::<GraphCall>::new());
         let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![a, b]);
+    }
+
+    // ─── #152: a stall is reported as one ───────────────────────────────────
+
+    // Criterion (#152): `reconcile_combined` answers the error of an
+    // unreadable first sink-list read — `Unanswered` when the read is
+    // unanswered — and makes no mutating graph call in that pass. The plan
+    // drops the B speaker, so the near miss is the unload of B's branch a
+    // pass that read the list would make: the early exit stays, only its
+    // answer changes.
+    #[test]
+    fn test_reconcile_over_an_unanswered_sink_list_answers_unanswered_and_changes_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail_unanswered(GraphOp::Sinks);
+        let mut router = router_on(&fake);
+
+        let result = router.reconcile_combined(&combine_sink_plan(&[target(MAC_A, 0)]));
+
+        assert_eq!(result, Err(AudioError::Unanswered));
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Criterion (#152): the same stall reached through `route_for_targets`,
+    // the way every routing message enters: the route's own lookup of the
+    // combined sink is answered, the reconciliation's first read is not. The
+    // route answers `Unanswered` (it answered `Ok(())`), and B's branch, no
+    // longer planned, is not unloaded.
+    #[test]
+    fn test_route_whose_reconcile_read_went_unanswered_answers_unanswered_and_changes_nothing() {
+        let (fake, a, b) = steady_graph(Some(true));
+        fake.fail_unanswered_after(GraphOp::Sinks, 1);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0)]);
+
+        assert_eq!(result, Err(AudioError::Unanswered));
+        assert_eq!(fake.calls(), Vec::<GraphCall>::new());
+        let ids: Vec<u32> = fake.loaded(COMBINED).iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    // Criterion (#152, guard, an empty list is not an unreadable list): a
+    // sink list that reads fine and is empty still answers `Ok(())` with no
+    // mutating call, unchanged. The near miss sits in the same test: the same
+    // empty graph whose read is unanswered must answer `Err(Unanswered)` —
+    // an implementation that errs on both, or answers `Ok` on both, fails.
+    #[test]
+    fn test_reconcile_over_a_readable_empty_sink_list_answers_ok_and_an_unanswered_one_does_not() {
+        let empty = FakeGraph::new();
+        let answer = router_on(&empty).reconcile_combined(&combine_sink_plan(&steady_selection()));
+
+        assert_eq!(answer, Ok(()));
+        assert_eq!(empty.calls(), Vec::<GraphCall>::new());
+
+        let stalled = FakeGraph::new();
+        stalled.fail_unanswered(GraphOp::Sinks);
+        let answer =
+            router_on(&stalled).reconcile_combined(&combine_sink_plan(&steady_selection()));
+
+        assert_eq!(answer, Err(AudioError::Unanswered));
+        assert_eq!(stalled.calls(), Vec::<GraphCall>::new());
+    }
+
+    /// Speaker A's branch, as a plan carries it: its prefix, no card suffix.
+    fn branch_of_a() -> CombineBranch {
+        CombineBranch {
+            sink: bluez_sink_prefix(MAC_A),
+            latency_ms: 0,
+        }
+    }
+
+    // Criterion (#152): `resolve_branch_sink` answers the read error when the
+    // sink list cannot be read — `Unanswered` stays `Unanswered` — and never
+    // the "no PipeWire sink for prefix" of a speaker that is absent. A's sink
+    // is in the list, so a resolver that ignores the error and reads on
+    // would even find it.
+    #[test]
+    fn test_resolve_branch_sink_over_an_unanswered_sink_list_answers_unanswered() {
+        let mut fake = FakeGraph::with_sinks(&[SINK_A]);
+        fake.fail_unanswered(GraphOp::Sinks);
+
+        assert_eq!(
+            resolve_branch_sink(&mut fake, &branch_of_a()),
+            Err(AudioError::Unanswered)
+        );
+    }
+
+    // Criterion (#152): an answered read failure is propagated as it is too:
+    // the fake's `PipeWire("… told to fail")`, not rewritten into the
+    // message of an absent speaker.
+    #[test]
+    fn test_resolve_branch_sink_over_a_refused_sink_list_answers_the_read_s_own_error() {
+        let mut fake = FakeGraph::with_sinks(&[SINK_A]);
+        fake.fail(GraphOp::Sinks);
+
+        let answer = resolve_branch_sink(&mut fake, &branch_of_a());
+
+        assert!(
+            matches!(&answer, Err(AudioError::PipeWire(m)) if m.contains("Sinks told to fail")),
+            "got {answer:?}"
+        );
+    }
+
+    // Criterion (#152, guard, a readable list without the prefix is not an
+    // unreadable list): a list that reads fine and holds no sink for A —
+    // only B's, whose name shares all of A's prefix but its last digit, and
+    // the PC's own — still fails with `no PipeWire sink for prefix …`. The
+    // control: with A's sink in the list, A resolves to its node.
+    #[test]
+    fn test_resolve_branch_sink_over_a_readable_list_without_the_prefix_names_the_prefix() {
+        let mut fake = FakeGraph::with_sinks(&["alsa_output.pci.analog-stereo", SINK_B]);
+
+        assert_eq!(
+            resolve_branch_sink(&mut fake, &branch_of_a()),
+            Err(AudioError::PipeWire(format!(
+                "no PipeWire sink for prefix {}",
+                bluez_sink_prefix(MAC_A)
+            )))
+        );
+
+        let mut fake = FakeGraph::with_sinks(&[SINK_B, SINK_A]);
+        assert_eq!(
+            resolve_branch_sink(&mut fake, &branch_of_a()),
+            Ok(SINK_A.to_string())
+        );
+    }
+
+    // Criterion (#152): a routing pass whose branch resolution hit an
+    // unanswered read answers `Err(Unanswered)` through
+    // `BranchLoadReport::into_result`. A build from nothing reads the sink
+    // list once to look for the combined sink, then once per branch to
+    // resolve it: A's resolution is answered and A's branch loads, B's
+    // resolution stalls. Today that stall reads as "no sink for B" and the
+    // pass answers a `PipeWire` error — a 500 rather than a 503.
+    #[test]
+    fn test_route_whose_branch_resolution_went_unanswered_answers_unanswered() {
+        let fake = FakeGraph::with_sinks(&[SINK_A, SINK_B]);
+        fake.fail_unanswered_after(GraphOp::Sinks, 2);
+        let mut router = router_on(&fake);
+
+        let result = router.route_for_targets(&[target(MAC_A, 0), target(MAC_B, 30)]);
+
+        assert_eq!(result, Err(AudioError::Unanswered));
+        assert_eq!(
+            fake.routing_calls(),
+            vec![
+                clear_stale(COMBINED),
+                teardown(COMBINED),
+                create(COMBINED),
+                load(SINK_A, 0),
+            ],
+            "A loads, B is never loaded"
+        );
     }
 
     // Non-nominal: liveness cannot be read (`live == None`) — every branch is

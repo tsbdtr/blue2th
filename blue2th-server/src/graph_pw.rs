@@ -950,9 +950,12 @@ fn run_loop_thread(
     let mut reconnect = ReconnectWatch::new(Instant::now());
     loop {
         let state = actor.graph_mut().inner_mut();
+        let mut answers_again = false;
         if watched && reconnect.attempt_due(state.is_connected(), Instant::now()) {
             match state.reconnect() {
-                Ok(()) => reconnect.connected(state.connector.events.as_ref()),
+                Ok(()) => {
+                    answers_again = reconnect.connected(state.connector.events.as_ref());
+                },
                 // Connected, but the daemon did not answer the re-read in time:
                 // the connection is kept, as a message keeps it, and the next
                 // message reads the registry again.
@@ -968,6 +971,10 @@ fn run_loop_thread(
                 },
             }
         }
+        if answers_again {
+            actor.graph_answers_again();
+        }
+        let state = actor.graph_mut().inner_mut();
         let timeout = match reconnect.wait(state.is_connected(), Instant::now()) {
             Some(left) if watched => Timeout::Finite(left),
             _ => Timeout::Infinite,
@@ -976,7 +983,14 @@ fn run_loop_thread(
         if state.forget_a_lost_connection() {
             reconnect.lost(Instant::now());
         }
+        // The late `done` of a stalled sync is acted on here, while the loop
+        // is otherwise idle: waiting for the next message to see it would
+        // leave the owed re-apply unpaid until something else happens (#152).
+        let thawed = state.take_thaw();
         state.wire_waiting_branches();
+        if thawed {
+            actor.graph_answers_again();
+        }
         // The clock is read once per message, as it is taken out: one that
         // waited behind the reconnect attempt, the wiring above or a slow
         // message has spent that time out of its start budget (#146).
@@ -987,8 +1001,11 @@ fn run_loop_thread(
         }
         // A message reconnects on its own: that is a reconnection too.
         let state = actor.graph_mut().inner_mut();
-        if state.is_connected() {
-            reconnect.connected(state.connector.events.as_ref());
+        let regained = state.is_connected() && reconnect.connected(state.connector.events.as_ref());
+        // A message's own round trip can deliver the late `done` too.
+        let thawed = state.take_thaw();
+        if regained || thawed {
+            actor.graph_answers_again();
         }
     }
 }
@@ -1045,16 +1062,61 @@ impl ReconnectWatch {
     }
 
     /// A connection is held: report the reconnection, once per loss. A closed
-    /// channel is ignored — the consumer is gone.
-    fn connected(&mut self, events: Option<&UnboundedSender<GraphEvent>>) {
+    /// channel is ignored — the consumer is gone. Answers whether this is a
+    /// connection regained after a loss, which counts as the graph answering
+    /// again (#152).
+    fn connected(&mut self, events: Option<&UnboundedSender<GraphEvent>>) -> bool {
         if !self.owes_reconnected {
-            return;
+            return false;
         }
         self.owes_reconnected = false;
         tracing::info!("PipeWire connection back");
         if let Some(events) = events {
             let _ = events.send(GraphEvent::Reconnected);
         }
+        true
+    }
+}
+
+/// Whether the daemon answers again after a `core.sync` went unanswered
+/// (#152): the first `done` whose seq is at least the seq of the stalled sync
+/// is the thaw. Pure: the loop thread feeds it the seqs, no daemon needed.
+#[derive(Debug, Default)]
+struct StallWatch {
+    /// The seq of the sync that went unanswered, while no `done` has caught
+    /// up with it.
+    stalled_at: Option<i32>,
+    /// Set by the `done` that thawed a stall, until the loop side takes it.
+    thawed: bool,
+}
+
+impl StallWatch {
+    /// The `core.sync` of seq `seq` went unanswered past its deadline. With
+    /// a stall already outstanding, the earliest one sets the threshold: its
+    /// `done` is the first to arrive once the daemon resumes. A thaw not yet
+    /// taken is dropped: the daemon stalls again, and acting on it would
+    /// re-apply into a frozen graph.
+    fn sync_unanswered(&mut self, seq: i32) {
+        self.stalled_at = Some(self.stalled_at.map_or(seq, |stalled| stalled.min(seq)));
+        self.thawed = false;
+    }
+
+    /// A `done` of seq `seq` arrived: answers whether it is the thaw, and
+    /// holds that thaw for [`Self::take_thaw`].
+    fn done(&mut self, seq: i32) -> bool {
+        match self.stalled_at {
+            Some(stalled) if seq >= stalled => {
+                self.stalled_at = None;
+                self.thawed = true;
+                true
+            },
+            _ => false,
+        }
+    }
+
+    /// Whether a thaw arrived since the last call. Taken once.
+    fn take_thaw(&mut self) -> bool {
+        std::mem::take(&mut self.thawed)
     }
 }
 
@@ -1105,6 +1167,10 @@ struct Shared {
     globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
     done: Option<i32>,
     lost: bool,
+    /// The syncs of this connection that went unanswered, and the thaw a
+    /// late `done` brought (#152). Per connection: the seqs it compares are
+    /// this connection's own.
+    stall: StallWatch,
     /// The combined sinks this connection holds the proxy for, by node id
     /// (#139): only their removal is someone else's doing.
     combined_sinks: BTreeMap<u32, String>,
@@ -1153,7 +1219,10 @@ impl PwConnection {
                 let shared = Rc::clone(&shared);
                 move |id, seq| {
                     if id == pw::core::PW_ID_CORE {
-                        shared.borrow_mut().done = Some(seq.seq());
+                        let mut shared = shared.borrow_mut();
+                        shared.done = Some(seq.seq());
+                        // A thaw is held by the watch until the loop takes it.
+                        shared.stall.done(seq.seq());
                     }
                 }
             })
@@ -1223,6 +1292,7 @@ impl PwConnection {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                self.shared.borrow_mut().stall.sync_unanswered(pending);
                 return Err(AudioError::Unanswered);
             }
             self.mainloop.loop_().iterate(Timeout::Finite(left));
@@ -1646,6 +1716,14 @@ impl LoopState<PwConnector> {
             self.on_disconnect();
         }
         lost
+    }
+
+    /// Whether the late `done` of a stalled sync arrived since the last call
+    /// (#152): the daemon answers again. Taken once.
+    fn take_thaw(&mut self) -> bool {
+        self.connection
+            .as_ref()
+            .is_some_and(|connection| connection.shared.borrow_mut().stall.take_thaw())
     }
 
     /// Connect, and re-read the whole registry in one round trip.
@@ -5560,5 +5638,153 @@ mod tests {
 
         assert_eq!(watch.failed(now), Duration::from_secs(30));
         assert_eq!(watch.failures, u32::MAX);
+    }
+
+    // Criterion (#152): a connection regained after a loss counts as "the
+    // graph answers again": `connected` answers `true` once per loss, the
+    // same once the `Reconnected` event is owed for. The thread's first
+    // connection is not regained, and a loop reporting "connected" on every
+    // wake-up while it holds the connection answers `false` after the
+    // first: a `true` on each would publish a re-apply per wake-up.
+    #[test]
+    fn test_reconnect_watch_connected_answers_true_once_per_loss() {
+        let now = Instant::now();
+        let mut watch = ReconnectWatch::new(now);
+
+        assert!(
+            !watch.connected(None),
+            "the first connection is not regained"
+        );
+        assert!(!watch.connected(None));
+
+        watch.lost(now);
+        watch.failed(now);
+        assert!(watch.connected(None), "a connection back after a loss");
+        assert!(!watch.connected(None), "and only once");
+
+        watch.lost(now);
+        assert!(watch.connected(None), "a second loss, a second one");
+    }
+
+    // ─── #152: the late `done` of a stalled sync ────────────────────────────
+
+    // Criterion (#152): with no sync stalled, a `done` of any seq is not a
+    // thaw — the daemon answering every round trip is the steady state. The
+    // control: the same watch, once a sync stalled, takes a `done` for it.
+    #[test]
+    fn test_stall_watch_without_a_stall_takes_no_done_for_a_thaw() {
+        let mut watch = StallWatch::default();
+
+        for seq in [0, 1, 2, 3, 40, i32::MAX] {
+            assert!(!watch.done(seq), "done {seq} with nothing stalled");
+        }
+
+        watch.sync_unanswered(41);
+        assert!(watch.done(41), "control: a stall makes a thaw possible");
+    }
+
+    // Criterion (#152, guard, a thaw needs `done >= stalled seq`): after a
+    // stall at seq N, a `done` of N-1 — another message's round trip,
+    // answered before the freeze — is not a thaw, and the debt must not be
+    // paid on it while the daemon may still be frozen. The `done` of N is.
+    #[test]
+    fn test_stall_watch_takes_the_done_of_the_stalled_seq_and_not_the_one_before_it() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+
+        assert!(!watch.done(2), "done N-1 is not a thaw");
+        assert!(watch.done(3), "done N is the thaw");
+    }
+
+    // Criterion (#152): a `done` past the stalled seq is a thaw too — a later
+    // sync's `done` can arrive first only if the daemon answered, and
+    // answering N+3 means N was answered on the way.
+    #[test]
+    fn test_stall_watch_takes_a_done_past_the_stalled_seq_for_the_thaw() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+
+        assert!(watch.done(6), "done N+3 is a thaw");
+    }
+
+    // Criterion (#152, exactly one thaw per stall): after a thaw a later
+    // `done` is not a second thaw, until the next stall; that next stall is
+    // thawed by its own `done`, not by a seq the first thaw already passed.
+    #[test]
+    fn test_stall_watch_takes_one_thaw_per_stall() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+        assert!(watch.done(3));
+
+        assert!(!watch.done(4), "a later done is not a second thaw");
+        assert!(!watch.done(9));
+
+        watch.sync_unanswered(12);
+        assert!(!watch.done(11), "the next stall waits for its own done");
+        assert!(watch.done(12), "and is thawed by it");
+        assert!(!watch.done(13));
+    }
+
+    // Criterion (#152): the loop side takes a thaw once — what makes the
+    // loop pay one re-apply per thaw, whether it looks while idle or after a
+    // message. Before the stall's `done` there is nothing to take; the
+    // `done` before the stalled seq brings nothing either.
+    #[test]
+    fn test_stall_watch_holds_the_thaw_until_it_is_taken_once() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+        assert!(!watch.take_thaw(), "stalled, not thawed");
+        watch.done(2);
+        assert!(!watch.take_thaw(), "done N-1 brings no thaw");
+
+        watch.done(3);
+
+        assert!(watch.take_thaw(), "the thaw is held for the loop");
+        assert!(!watch.take_thaw(), "and taken once");
+    }
+
+    // Criterion (#152): a thaw the loop has not taken yet is dropped when a
+    // later sync goes unanswered — the daemon froze again, and a re-apply
+    // sent now would be lost to the same freeze. The debt stays owed, and is
+    // paid on the `done` of the new stall.
+    #[test]
+    fn test_stall_watch_drops_a_thaw_not_taken_when_the_daemon_stalls_again() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+        watch.done(3);
+
+        watch.sync_unanswered(5);
+
+        assert!(!watch.take_thaw(), "a new stall drops the thaw");
+        watch.done(4);
+        assert!(!watch.take_thaw(), "done 4 is not the new stall's");
+        watch.done(5);
+        assert!(watch.take_thaw(), "the new stall's done thaws it");
+    }
+
+    // Captured (spike `pw-probe stall <pipewire_pid> 5`, PipeWire 1.4.11,
+    // 2026-10-04, two runs):
+    //   baseline sync seq=2: answered=true in 344.621µs
+    //   stalled sync A seq=3: answered=false at +1.602341473s after STOP
+    //   stalled sync B seq=4: answered=false at +3.203672025s after STOP
+    //   seq=3  +8.866µs after CONT
+    //   seq=4  +9.748µs after CONT
+    //   all done seqs in arrival order: [2, 3, 4] (monotonic: true)
+    // Criterion (#152): two syncs stalled during one freeze — seqs 3 and 4 —
+    // then both `done`s arriving together after `SIGCONT`: the first `done`
+    // at least the earliest stalled seq, 3, is the thaw, and 4 right behind
+    // it is not a second one. The baseline's `done` of 2, before the freeze,
+    // is none. Pinned reading: the earliest outstanding stall sets the
+    // threshold, so the thaw is seen on the first `done` after the resume.
+    #[test]
+    fn test_stall_watch_over_the_captured_freeze_takes_the_done_of_seq_3_for_the_one_thaw() {
+        let mut watch = StallWatch::default();
+
+        assert!(!watch.done(2), "the baseline, answered before the freeze");
+        watch.sync_unanswered(3);
+        watch.sync_unanswered(4);
+
+        assert!(watch.done(3), "the first done after SIGCONT is the thaw");
+        assert!(!watch.done(4), "its neighbour is not a second thaw");
     }
 }

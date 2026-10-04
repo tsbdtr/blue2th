@@ -493,6 +493,18 @@ pub mod fake {
             });
         }
 
+        /// Let `successes` calls to `op` through, then fail every later one
+        /// with [`AudioError::Unanswered`]: a daemon that answers the first
+        /// reads of a message and stalls on the next (#152).
+        pub fn fail_unanswered_after(&self, op: GraphOp, successes: usize) {
+            self.state().rules.push(FailRule {
+                op,
+                node: None,
+                skip: successes,
+                unanswered: true,
+            });
+        }
+
         // --- Inspection. ---
 
         /// The mutating calls received, in order. A failed attempt is recorded
@@ -1062,6 +1074,19 @@ mod tests {
         assert_eq!(fake.sinks().unwrap(), vec![SPEAKER]);
         assert!(matches!(fake.sinks(), Err(AudioError::PipeWire(_))));
         assert!(matches!(fake.sinks(), Err(AudioError::PipeWire(_))));
+    }
+
+    // Criterion (#152, test double): `FakeGraph` can report a stall —
+    // `sinks()` answers `Unanswered` — from a chosen read onwards, the reads
+    // before it answering the list as it is.
+    #[test]
+    fn test_fake_graph_reports_unanswered_from_a_chosen_read_onwards() {
+        let mut fake = FakeGraph::with_sinks(&[SPEAKER]);
+        fake.fail_unanswered_after(GraphOp::Sinks, 1);
+
+        assert_eq!(fake.sinks(), Ok(vec![SPEAKER.to_string()]));
+        assert_eq!(fake.sinks(), Err(AudioError::Unanswered));
+        assert_eq!(fake.sinks(), Err(AudioError::Unanswered));
     }
 
     // Criterion: `FakeGraph` records `set_branch_delay` and updates the stored

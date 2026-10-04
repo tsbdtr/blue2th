@@ -88,12 +88,9 @@ pub struct RouterHandle {
     /// The way to whatever runs the actor. The lock is held for the send
     /// alone, which never blocks: no caller waits for an answer under it.
     transport: Arc<Mutex<Box<dyn Transport>>>,
-    /// Wakes the background routing applier. A `watch` rather than a queue:
-    /// every request made before the applier marks it seen folds into one
-    /// pass, which reads the selection current at that moment.
-    routing_requests: Arc<watch::Sender<()>>,
-    /// The routing generation and the confirmation due time, shared with
-    /// every actor started for this handle (#147).
+    /// The routing generation, the confirmation due time and the applier's
+    /// wake-up, shared with every actor started for this handle (#147,
+    /// #152).
     shared: Shared,
     /// The means to hold the actor, when it is a fake one.
     #[cfg(test)]
@@ -104,10 +101,8 @@ impl RouterHandle {
     /// A handle sending through `transport`, to actors sharing `shared`
     /// (#147).
     pub(crate) fn over(transport: Box<dyn Transport>, shared: Shared) -> Self {
-        let (routing_requests, _) = watch::channel(());
         Self {
             transport: Arc::new(Mutex::new(transport)),
-            routing_requests: Arc::new(routing_requests),
             shared,
             #[cfg(test)]
             holder: None,
@@ -125,14 +120,13 @@ impl RouterHandle {
     /// pass this wake starts stamps its selection with a generation that
     /// already counts this request.
     pub fn request_routing(&self) {
-        self.shared.advance_generation();
-        self.routing_requests.send_replace(());
+        self.shared.request_routing();
     }
 
     /// A receiver of [`Self::request_routing`] wakes, for the applier. Only
     /// the requests made after this call wake it.
     pub fn routing_requests(&self) -> watch::Receiver<()> {
-        self.routing_requests.subscribe()
+        self.shared.routing_requests()
     }
 
     /// The current routing generation (#147): what the applier stamps the
@@ -839,6 +833,92 @@ mod tests {
         assert_eq!(handle.routing_generation(), before + 3);
         assert_eq!(wakes.has_changed().ok(), Some(true));
         assert!(parked.lock().unwrap().is_empty());
+    }
+
+    // Criterion (#152): the routing-request sender is reachable from
+    // `Shared`, so the loop thread wakes the applier without a
+    // `RouterHandle`. A request published through the `Shared` a handle was
+    // built over advances the handle's generation by one and wakes the
+    // receiver the applier took from the handle; and the other way round, a
+    // request made on the handle wakes a receiver taken from the `Shared`.
+    // The near miss is two channels — one in the handle, one in `Shared` —
+    // each of which works alone: the applier, which subscribes through the
+    // handle, would never hear of a re-apply paid on the loop thread.
+    #[tokio::test]
+    async fn test_a_routing_request_through_shared_wakes_the_applier_the_handle_feeds() {
+        let shared = Shared::new();
+        let handle = RouterHandle::over(
+            Box::new(|_envelope: Envelope| Ok(())),
+            // Cloned: the handle and the loop side share the one state.
+            shared.clone(),
+        );
+        let mut from_handle = handle.routing_requests();
+        let mut from_shared = shared.routing_requests();
+        let before = handle.routing_generation();
+
+        shared.request_routing();
+
+        assert_eq!(handle.routing_generation(), before + 1);
+        assert_eq!(from_handle.has_changed().ok(), Some(true));
+        assert_eq!(from_shared.has_changed().ok(), Some(true));
+        from_handle.borrow_and_update();
+        from_shared.borrow_and_update();
+
+        handle.request_routing();
+
+        assert_eq!(shared.generation(), before + 2);
+        assert_eq!(from_shared.has_changed().ok(), Some(true));
+        assert_eq!(from_handle.has_changed().ok(), Some(true));
+    }
+
+    // Criterion (#152): end to end over the actor — a selection lost to a
+    // stall on the actor, then "the graph answers again" on that actor,
+    // wakes the applier through the handle sharing its state, once, and
+    // advances the generation the applier stamps its next selection with.
+    // A selection read before that payment is outdated, so the re-apply
+    // reads the current selection rather than re-sending a stale one.
+    #[tokio::test]
+    async fn test_a_re_apply_paid_on_the_actor_wakes_the_applier_through_the_handle() {
+        use crate::audio::AudioRouter;
+        use crate::router_actor::Actor;
+
+        let fake = FakeGraph::with_sinks(&[JBL_SINK, SONY_SINK, COMBINED]);
+        fake.fail_unanswered(GraphOp::Sinks);
+        let shared = Shared::new();
+        let handle = RouterHandle::over(
+            Box::new(|_envelope: Envelope| Ok(())),
+            // Cloned: the handle and the actor share the one state.
+            shared.clone(),
+        );
+        let mut actor: Actor = Actor::new(
+            AudioRouter::with_clock(Box::new(fake.clone()), Box::new(Instant::now)),
+            // Cloned: as above.
+            shared.clone(),
+        );
+        let wakes = handle.routing_requests();
+        let stamped = handle.routing_generation();
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        let queue = std::cell::RefCell::new(crate::router_actor::Queue::new());
+        queue.borrow_mut().push(Envelope {
+            start_by: None,
+            message: Message::ApplySelection {
+                speakers: vec![target(JBL, 0)],
+                generation: stamped,
+                reply,
+            },
+        });
+
+        assert!(actor.run_next(&queue, Instant::now()));
+        assert!(matches!(
+            answer.try_recv(),
+            Ok(Err(RouterError::Audio(AudioError::Unanswered)))
+        ));
+        assert_eq!(wakes.has_changed().ok(), Some(false), "nothing sent yet");
+
+        actor.graph_answers_again();
+
+        assert_eq!(handle.routing_generation(), stamped + 1);
+        assert_eq!(wakes.has_changed().ok(), Some(true));
     }
 
     // Criterion: a freshly built handle publishes no confirmation due time.
