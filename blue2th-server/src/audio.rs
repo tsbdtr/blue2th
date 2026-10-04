@@ -935,7 +935,7 @@ impl<G: Graph + ?Sized> AudioRouter<G> {
         // it would unload every branch. So an unreadable list ends the pass, and
         // so does one naming no sink at all: it does not even name the combined
         // sink this pass was entered for, so it describes no graph worth acting on.
-        // The unreadable list is still answered as its own error (#152): a stall
+        // The unreadable list ends it with its own error (#152): a stall
         // reported as `Ok(())` leaves nothing to re-apply once the daemon answers.
         let sinks = self.graph.sinks()?;
         if sinks.is_empty() {

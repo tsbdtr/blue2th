@@ -1086,25 +1086,37 @@ struct StallWatch {
     /// The seq of the sync that went unanswered, while no `done` has caught
     /// up with it.
     stalled_at: Option<i32>,
+    /// Set by the `done` that thawed a stall, until the loop side takes it.
+    thawed: bool,
 }
 
 impl StallWatch {
     /// The `core.sync` of seq `seq` went unanswered past its deadline. With
     /// a stall already outstanding, the earliest one sets the threshold: its
-    /// `done` is the first to arrive once the daemon resumes.
+    /// `done` is the first to arrive once the daemon resumes. A thaw not yet
+    /// taken is dropped: the daemon stalls again, and acting on it would
+    /// re-apply into a frozen graph.
     fn sync_unanswered(&mut self, seq: i32) {
         self.stalled_at = Some(self.stalled_at.map_or(seq, |stalled| stalled.min(seq)));
+        self.thawed = false;
     }
 
-    /// A `done` of seq `seq` arrived: answers whether it is the thaw.
+    /// A `done` of seq `seq` arrived: answers whether it is the thaw, and
+    /// holds that thaw for [`Self::take_thaw`].
     fn done(&mut self, seq: i32) -> bool {
         match self.stalled_at {
             Some(stalled) if seq >= stalled => {
                 self.stalled_at = None;
+                self.thawed = true;
                 true
             },
             _ => false,
         }
+    }
+
+    /// Whether a thaw arrived since the last call. Taken once.
+    fn take_thaw(&mut self) -> bool {
+        std::mem::take(&mut self.thawed)
     }
 }
 
@@ -1155,11 +1167,10 @@ struct Shared {
     globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
     done: Option<i32>,
     lost: bool,
-    /// The syncs of this connection that went unanswered (#152). Per
-    /// connection: a new one starts a fresh seq space.
+    /// The syncs of this connection that went unanswered, and the thaw a
+    /// late `done` brought (#152). Per connection: the seqs it compares are
+    /// this connection's own.
     stall: StallWatch,
-    /// Set by the `done` that thawed a stall, until the loop side takes it.
-    thawed: bool,
     /// The combined sinks this connection holds the proxy for, by node id
     /// (#139): only their removal is someone else's doing.
     combined_sinks: BTreeMap<u32, String>,
@@ -1210,9 +1221,8 @@ impl PwConnection {
                     if id == pw::core::PW_ID_CORE {
                         let mut shared = shared.borrow_mut();
                         shared.done = Some(seq.seq());
-                        if shared.stall.done(seq.seq()) {
-                            shared.thawed = true;
-                        }
+                        // A thaw is held by the watch until the loop takes it.
+                        shared.stall.done(seq.seq());
                     }
                 }
             })
@@ -1282,10 +1292,7 @@ impl PwConnection {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                let mut shared = self.shared.borrow_mut();
-                shared.stall.sync_unanswered(pending);
-                // A thaw not yet acted on is stale: the daemon stalls again.
-                shared.thawed = false;
+                self.shared.borrow_mut().stall.sync_unanswered(pending);
                 return Err(AudioError::Unanswered);
             }
             self.mainloop.loop_().iterate(Timeout::Finite(left));
@@ -1716,7 +1723,7 @@ impl LoopState<PwConnector> {
     fn take_thaw(&mut self) -> bool {
         self.connection
             .as_ref()
-            .is_some_and(|connection| std::mem::take(&mut connection.shared.borrow_mut().thawed))
+            .is_some_and(|connection| connection.shared.borrow_mut().stall.take_thaw())
     }
 
     /// Connect, and re-read the whole registry in one round trip.
@@ -5716,6 +5723,43 @@ mod tests {
         assert!(!watch.done(11), "the next stall waits for its own done");
         assert!(watch.done(12), "and is thawed by it");
         assert!(!watch.done(13));
+    }
+
+    // Criterion (#152): the loop side takes a thaw once — what makes the
+    // loop pay one re-apply per thaw, whether it looks while idle or after a
+    // message. Before the stall's `done` there is nothing to take; the
+    // `done` before the stalled seq brings nothing either.
+    #[test]
+    fn test_stall_watch_holds_the_thaw_until_it_is_taken_once() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+        assert!(!watch.take_thaw(), "stalled, not thawed");
+        watch.done(2);
+        assert!(!watch.take_thaw(), "done N-1 brings no thaw");
+
+        watch.done(3);
+
+        assert!(watch.take_thaw(), "the thaw is held for the loop");
+        assert!(!watch.take_thaw(), "and taken once");
+    }
+
+    // Criterion (#152): a thaw the loop has not taken yet is dropped when a
+    // later sync goes unanswered — the daemon froze again, and a re-apply
+    // sent now would be lost to the same freeze. The debt stays owed, and is
+    // paid on the `done` of the new stall.
+    #[test]
+    fn test_stall_watch_drops_a_thaw_not_taken_when_the_daemon_stalls_again() {
+        let mut watch = StallWatch::default();
+        watch.sync_unanswered(3);
+        watch.done(3);
+
+        watch.sync_unanswered(5);
+
+        assert!(!watch.take_thaw(), "a new stall drops the thaw");
+        watch.done(4);
+        assert!(!watch.take_thaw(), "done 4 is not the new stall's");
+        watch.done(5);
+        assert!(watch.take_thaw(), "the new stall's done thaws it");
     }
 
     // Captured (spike `pw-probe stall <pipewire_pid> 5`, PipeWire 1.4.11,

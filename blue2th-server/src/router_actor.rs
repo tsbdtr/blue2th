@@ -174,8 +174,9 @@ pub(crate) struct Shared {
     /// pass, which reads the selection current at that moment.
     routing_requests: Arc<watch::Sender<()>>,
     /// Whether a routing message ended `Unanswered` since the graph last
-    /// answered again. Held here rather than by one actor, so that a loop
-    /// thread replaced after a lost connection still pays it.
+    /// answered again. Held here rather than by one actor: an actor dies
+    /// with its loop thread, and the debt outlives it, for the actor of the
+    /// thread replacing it to pay.
     reapply_owed: Arc<AtomicBool>,
 }
 
@@ -2955,9 +2956,9 @@ mod tests {
     // Criterion (#152): the owed re-apply survives the loss of what ran the
     // message: it is held in the `Shared` every actor of a handle shares,
     // not by the connection nor by one actor. A route is lost on one actor;
-    // that actor goes away, as a loop thread replaced after it died; the
-    // next actor over the same `Shared` — told the graph answers again once
-    // it holds a connection — pays it, whether or not anything plays.
+    // that actor goes away, as with a loop thread that died; the next actor
+    // over the same `Shared` — told the graph answers again, by a thaw or a
+    // connection regained — pays it, whether or not anything plays.
     #[test]
     fn test_an_owed_re_apply_survives_the_actor_and_is_paid_by_the_next_one_sharing_its_state() {
         let fake = FakeGraph::with_sinks(&[JBL_SINK]);
