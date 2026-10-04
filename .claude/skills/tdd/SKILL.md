@@ -292,6 +292,13 @@ base checkout. The check in 2 caught it; sending them one at a time avoids it.
 - Serena's tools approved without a prompt for headless agents — the
   `serena-hooks auto-approve` hook, or `mcp__serena__*` in the allow list.
 
+**The worktree stays in Serena's registry after cleanup, and that is fine.**
+Each activation registers the worktree in `~/.serena/serena_config.yml`, and
+nothing here removes it: Serena skips a registered project whose directory is
+gone when it next starts. Until then a running server keeps it in memory and
+rewrites the file on every activation, so an entry deleted by hand while a
+server runs comes back. Do not edit the registry by hand.
+
 ---
 
 #### RED — tdd-test-writer
