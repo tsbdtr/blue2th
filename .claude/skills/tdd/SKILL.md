@@ -74,7 +74,9 @@ has only the template:
 [ -f tdd/feature.md ] || cp tdd/feature.template.md tdd/feature.md
 ```
 
-Then read it. If any line equals exactly `PENDING`, stop and tell the user:
+Then read it. If any line is `PENDING`, or ends with ` PENDING` — a list item
+the template left open, such as `- PENDING`, `- [ ] PENDING` or
+`- Speaker lost (Bluetooth drop, power off): PENDING` — stop and tell the user:
 
 > "`tdd/feature.md` still has PENDING sections. Describe the feature and I will fill the file."
 

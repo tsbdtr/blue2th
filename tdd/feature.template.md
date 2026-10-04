@@ -37,6 +37,20 @@ PENDING
 <!-- Edge cases and error cases, each with its expected behaviour -->
 - PENDING
 
+## Transitions
+<!-- Walk every transition below and give each one its expected behaviour, -->
+<!-- "out of scope", or "n/a" with the reason. These are the cases a spec -->
+<!-- forgets when it only lists errors: a non-nominal case nobody named is one -->
+<!-- no test covers (#53, #70, #122, #134). Add a transition the feature has -->
+<!-- that the list lacks; never delete an entry. -->
+- Speaker selected while playing: PENDING
+- Speaker deselected while playing: PENDING
+- Speaker lost (Bluetooth drop, power off): PENDING
+- Speaker back after a loss: PENDING
+- App to background, then back to foreground: PENDING
+- Server exits or restarts: PENDING
+- PipeWire daemon stalls or restarts: PENDING
+
 ## Acceptance Criteria
 <!-- Each criterion must map to one or more tests -->
 - [ ] PENDING
