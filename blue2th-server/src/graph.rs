@@ -73,6 +73,86 @@ pub trait Graph {
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError>;
 }
 
+/// A [`Graph`] that refuses an empty node name before the graph it wraps sees
+/// it (#154): an empty name is a wildcard to every prefix or substring match
+/// below it, never "no node". Every other call is delegated as it is.
+///
+/// No `Deref` to the wrapped graph, on purpose: `LoopState` carries inherent
+/// methods named like the trait's, and a call resolved through `Deref` where
+/// [`Graph`] is not in scope would skip the guard without a sound. The wrapped
+/// graph is reached only through [`NamedGuard::inner_mut`].
+pub(crate) struct NamedGuard<G> {
+    inner: G,
+}
+
+impl<G> NamedGuard<G> {
+    /// Put `inner` behind the guard.
+    pub(crate) fn new(inner: G) -> Self {
+        Self { inner }
+    }
+
+    /// The wrapped graph, for what is not a [`Graph`] call (connection
+    /// management on the loop thread).
+    pub(crate) fn inner_mut(&mut self) -> &mut G {
+        &mut self.inner
+    }
+}
+
+// Red-phase stub (#154): answers every call with an error that is neither the
+// guard's refusal nor the wrapped graph's answer, and never delegates.
+impl<G: Graph> Graph for NamedGuard<G> {
+    fn set_deadline(&mut self, _deadline: Instant) {}
+
+    fn sinks(&mut self) -> Result<Vec<String>, AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn branches(&mut self, _sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn create_combined_sink(&mut self, _sink_name: &str) -> Result<(), AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn load_branch(
+        &mut self,
+        _sink_name: &str,
+        _real_sink: &str,
+        _latency_ms: u32,
+    ) -> Result<(), AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn unload_branch(&mut self, _id: u32) -> Result<(), AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn set_branch_delay(&mut self, _id: u32, _delay_ms: u32) -> Result<(), AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn teardown(&mut self, _sink_name: &str) -> Result<(), AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn clear_stale_default_sink(&mut self, _sink_name: &str) -> Result<bool, AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn retarget_streams(&mut self, _sink_name: &str) -> Result<usize, AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn sink_volume(&mut self, _sink: &str) -> Result<Option<f32>, AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+
+    fn set_sink_volume(&mut self, _sink: &str, _level: f32) -> Result<(), AudioError> {
+        Err(AudioError::PipeWire(String::new()))
+    }
+}
+
 #[cfg(test)]
 pub mod fake {
     //! An in-memory [`Graph`] for the tests: it keeps sinks and branches
@@ -677,8 +757,8 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::fake::{FakeGraph, GraphCall, GraphOp};
-    use super::Graph;
-    use crate::audio::AudioError;
+    use super::{Graph, LoadedBranch};
+    use crate::audio::{AudioError, CombineBranch};
 
     const COMBINED: &str = "blue2th_combined";
     const SPEAKER: &str = "bluez_output.AA_BB_CC_DD_EE_01.1";
@@ -1196,5 +1276,461 @@ mod tests {
         assert_eq!(loaded[0].id, dead);
         assert_eq!(loaded[0].live, Some(false));
         assert_eq!(loaded[1].live, None);
+    }
+
+    // --- NamedGuard (#154) ---
+    //
+    // The trap every refusal test below avoids: the fake refuses an empty name
+    // too, with an `Err` of the same variant. So each one asserts the guard's
+    // own message, an empty call log (the fake logs a call before refusing
+    // it) and `empty_names_refused() == 0` — any of the three alone would
+    // fail with the guard's check deleted.
+
+    /// The smallest non-empty names: the near miss of "empty". Distinct, so a
+    /// swapped sink and target fail.
+    const ONE_CHAR_SINK: &str = "x";
+    const ONE_CHAR_TARGET: &str = "y";
+    const SINK_REFUSED: &str = "empty sink name refused";
+    const TARGET_REFUSED: &str = "empty target sink name refused";
+
+    /// A guard over `fake`. The clone is a handle onto the same state, so the
+    /// test keeps reading the fake after the guard owns its copy.
+    fn guarded(fake: &FakeGraph) -> super::NamedGuard<FakeGraph> {
+        super::NamedGuard::new(fake.clone())
+    }
+
+    /// `answer` is the guard's refusal `expected`, and the wrapped fake was
+    /// never reached.
+    fn assert_refused_by_the_guard<T: std::fmt::Debug>(
+        answer: Result<T, AudioError>,
+        fake: &FakeGraph,
+        expected: &str,
+    ) {
+        assert!(
+            matches!(&answer, Err(AudioError::PipeWire(m)) if m == expected),
+            "expected the guard's {expected:?}, got {answer:?}"
+        );
+        assert_eq!(
+            fake.all_calls(),
+            Vec::<GraphCall>::new(),
+            "the wrapped graph was called"
+        );
+        assert_eq!(
+            fake.empty_names_refused(),
+            0,
+            "the fake refused the empty name, not the guard"
+        );
+    }
+
+    // Criterion: `branches("")` through `NamedGuard<FakeGraph>` is the guard's
+    // "empty sink name refused", the fake never called.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_branches() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.branches(""), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `create_combined_sink("")` is refused by the guard.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_create_combined_sink() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.create_combined_sink(""), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `load_branch` with an empty sink and a **valid** target is
+    // refused by the guard's sink check — only that check can refuse it.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_load_branch() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.load_branch("", SPEAKER, 37), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `teardown("")` is refused by the guard.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_teardown() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.teardown(""), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `clear_stale_default_sink("")` is refused by the guard.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_clear_stale_default_sink() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.clear_stale_default_sink(""), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `retarget_streams("")` is refused by the guard.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_retarget_streams() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.retarget_streams(""), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `sink_volume("")` is refused by the guard.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_sink_volume() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.sink_volume(""), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `set_sink_volume("", level)` is refused by the guard.
+    #[test]
+    fn test_named_guard_refuses_an_empty_sink_in_set_sink_volume() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.set_sink_volume("", 0.375), &fake, SINK_REFUSED);
+    }
+
+    // Criterion: `load_branch` with a valid sink and an empty target is the
+    // guard's "empty target sink name refused". The sink is valid, so only
+    // the target check can refuse it.
+    #[test]
+    fn test_named_guard_refuses_an_empty_target_sink_in_load_branch() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.load_branch(COMBINED, "", 37), &fake, TARGET_REFUSED);
+    }
+
+    // Criterion: with both `load_branch` names empty, the sink is checked
+    // first, so the refusal names the sink. A guard checking the target first
+    // answers "empty target sink name refused" and fails this.
+    #[test]
+    fn test_named_guard_names_the_sink_first_when_both_load_branch_names_are_empty() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+        assert_refused_by_the_guard(guard.load_branch("", "", 37), &fake, SINK_REFUSED);
+    }
+
+    // Criterion (near miss): `branches` with a one-character name reaches the
+    // fake once, with the name unchanged, and the fake's answer comes back.
+    #[test]
+    fn test_named_guard_forwards_branches_with_a_one_character_name() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK, ONE_CHAR_TARGET]);
+        let id = fake.seed_branch(ONE_CHAR_SINK, ONE_CHAR_TARGET, 37, Some(true));
+        let mut guard = guarded(&fake);
+
+        let answer = guard.branches(ONE_CHAR_SINK);
+
+        assert_eq!(
+            answer,
+            Ok(vec![LoadedBranch {
+                id,
+                branch: CombineBranch {
+                    sink: ONE_CHAR_TARGET.to_string(),
+                    latency_ms: 37,
+                },
+                live: Some(true),
+            }])
+        );
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::Branches {
+                sink_name: ONE_CHAR_SINK.to_string()
+            }]
+        );
+    }
+
+    // Criterion (near miss): `create_combined_sink` with a one-character name
+    // reaches the fake once, unchanged, and creates the sink there.
+    #[test]
+    fn test_named_guard_forwards_create_combined_sink_with_a_one_character_name() {
+        let fake = FakeGraph::new();
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.create_combined_sink(ONE_CHAR_SINK), Ok(()));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::CreateCombinedSink {
+                sink_name: ONE_CHAR_SINK.to_string()
+            }]
+        );
+        assert_eq!(fake.sink_names(), vec![ONE_CHAR_SINK.to_string()]);
+    }
+
+    // Criterion (near miss): `load_branch` with one-character names reaches
+    // the fake once with sink, target and `latency_ms` unchanged — distinct
+    // values, so a swap fails.
+    #[test]
+    fn test_named_guard_forwards_load_branch_with_one_character_names() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK, ONE_CHAR_TARGET]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(
+            guard.load_branch(ONE_CHAR_SINK, ONE_CHAR_TARGET, 37),
+            Ok(())
+        );
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::LoadBranch {
+                sink_name: ONE_CHAR_SINK.to_string(),
+                real_sink: ONE_CHAR_TARGET.to_string(),
+                latency_ms: 37,
+            }]
+        );
+        let loaded = fake.loaded(ONE_CHAR_SINK);
+        assert_eq!(loaded.len(), 1, "one branch loaded, got {loaded:?}");
+        assert_eq!(
+            loaded.first().map(|b| b.branch.clone()),
+            Some(CombineBranch {
+                sink: ONE_CHAR_TARGET.to_string(),
+                latency_ms: 37,
+            })
+        );
+    }
+
+    // Criterion (near miss): `teardown` with a one-character name reaches the
+    // fake once, unchanged, and removes that sink only.
+    #[test]
+    fn test_named_guard_forwards_teardown_with_a_one_character_name() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK, ONE_CHAR_TARGET]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.teardown(ONE_CHAR_SINK), Ok(()));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::Teardown {
+                sink_name: ONE_CHAR_SINK.to_string()
+            }]
+        );
+        assert_eq!(fake.sink_names(), vec![ONE_CHAR_TARGET.to_string()]);
+    }
+
+    // Criterion (near miss): `clear_stale_default_sink` with a one-character
+    // name reaches the fake once, unchanged, and its `true` comes back — a
+    // guard answering a constant `false` fails this.
+    #[test]
+    fn test_named_guard_forwards_clear_stale_default_sink_with_a_one_character_name() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK]);
+        fake.set_configured_default(Some(r#"{"name":"x"}"#));
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.clear_stale_default_sink(ONE_CHAR_SINK), Ok(true));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::ClearStaleDefaultSink {
+                sink_name: ONE_CHAR_SINK.to_string()
+            }]
+        );
+        assert_eq!(fake.configured_default(), None);
+    }
+
+    // Criterion (near miss): `retarget_streams` with a one-character name
+    // reaches the fake once, unchanged, and its count comes back.
+    #[test]
+    fn test_named_guard_forwards_retarget_streams_with_a_one_character_name() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.retarget_streams(ONE_CHAR_SINK), Ok(0));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::RetargetStreams {
+                sink_name: ONE_CHAR_SINK.to_string()
+            }]
+        );
+    }
+
+    // Criterion (near miss): `sink_volume` with a one-character name reaches
+    // the fake once, unchanged, and the fake's level comes back.
+    #[test]
+    fn test_named_guard_forwards_sink_volume_with_a_one_character_name() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK]);
+        fake.set_volume(ONE_CHAR_SINK, 0.625);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.sink_volume(ONE_CHAR_SINK), Ok(Some(0.625)));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::SinkVolume {
+                sink: ONE_CHAR_SINK.to_string()
+            }]
+        );
+    }
+
+    // Criterion (near miss): `set_sink_volume` with a one-character name
+    // reaches the fake once with the sink and a non-default `level`
+    // unchanged.
+    #[test]
+    fn test_named_guard_forwards_set_sink_volume_with_a_one_character_name() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.set_sink_volume(ONE_CHAR_SINK, 0.375), Ok(()));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::SetSinkVolume {
+                sink: ONE_CHAR_SINK.to_string(),
+                level: 0.375,
+            }]
+        );
+    }
+
+    // Criterion: `set_deadline` takes no name and reaches the fake with its
+    // instant unchanged.
+    #[test]
+    fn test_named_guard_passes_set_deadline_through() {
+        let fake = FakeGraph::new();
+        let mut guard = guarded(&fake);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2300);
+
+        guard.set_deadline(deadline);
+
+        assert_eq!(fake.deadlines(), vec![deadline]);
+    }
+
+    // Criterion: `sinks` takes no name and reaches the fake once; its list
+    // comes back unchanged.
+    #[test]
+    fn test_named_guard_passes_sinks_through() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(
+            guard.sinks(),
+            Ok(vec![COMBINED.to_string(), SPEAKER.to_string()])
+        );
+        assert_eq!(fake.all_calls(), vec![GraphCall::Sinks]);
+    }
+
+    // Criterion (guard, nothing checked): `unload_branch` takes no name and
+    // reaches the fake with its id unchanged — id `0` included, so a guard
+    // that wrongly treats `0` as "empty" fails this.
+    #[test]
+    fn test_named_guard_passes_unload_branch_through_unchecked() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.unload_branch(0), Ok(()));
+        assert_eq!(fake.all_calls(), vec![GraphCall::UnloadBranch { id: 0 }]);
+    }
+
+    // Criterion: `set_branch_delay` takes no name and reaches the fake with
+    // id and delay unchanged — distinct values, so a swap fails — and
+    // retunes the branch there.
+    #[test]
+    fn test_named_guard_passes_set_branch_delay_through() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let id = fake.seed_branch(COMBINED, SPEAKER, 50, Some(true));
+        let mut guard = guarded(&fake);
+
+        assert_eq!(guard.set_branch_delay(id, 73), Ok(()));
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::SetBranchDelay { id, delay_ms: 73 }]
+        );
+        assert_eq!(
+            fake.loaded(COMBINED).first().map(|b| b.branch.latency_ms),
+            Some(73)
+        );
+    }
+
+    // Criterion (guard, nothing checked): `set_branch_delay(0, 0)` is not
+    // refused by the guard — it reaches the fake, whose own answer (no branch
+    // carries id 0) comes back unchanged.
+    #[test]
+    fn test_named_guard_passes_set_branch_delay_with_zeroes_through_unchecked() {
+        let fake = FakeGraph::with_sinks(&[COMBINED, SPEAKER]);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(
+            guard.set_branch_delay(0, 0),
+            Err(AudioError::PipeWire("fake graph: no branch 0".to_string()))
+        );
+        assert_eq!(
+            fake.all_calls(),
+            vec![GraphCall::SetBranchDelay { id: 0, delay_ms: 0 }]
+        );
+    }
+
+    // Criterion: an `Err` from the wrapped graph on a call that passed the
+    // guard comes back unchanged — variant and text — on every method that
+    // can fail, the name-taking ones and the others alike.
+    #[test]
+    fn test_named_guard_returns_the_wrapped_graphs_error_unchanged() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK, ONE_CHAR_TARGET]);
+        for op in [
+            GraphOp::Branches,
+            GraphOp::CreateCombinedSink,
+            GraphOp::Teardown,
+            GraphOp::ClearStaleDefaultSink,
+            GraphOp::RetargetStreams,
+            GraphOp::SinkVolume,
+            GraphOp::SetSinkVolume,
+        ] {
+            fake.fail_for(op, ONE_CHAR_SINK);
+        }
+        // `load_branch` failure rules match on the target sink.
+        fake.fail_for(GraphOp::LoadBranch, ONE_CHAR_TARGET);
+        fake.fail(GraphOp::Sinks);
+        fake.fail(GraphOp::UnloadBranch);
+        fake.fail(GraphOp::SetBranchDelay);
+        let mut guard = guarded(&fake);
+        let told = |what: &str| AudioError::PipeWire(format!("fake graph: {what}"));
+
+        assert_eq!(guard.sinks(), Err(told("Sinks told to fail for ")));
+        assert_eq!(
+            guard.branches(ONE_CHAR_SINK),
+            Err(told("Branches told to fail for x"))
+        );
+        assert_eq!(
+            guard.create_combined_sink(ONE_CHAR_SINK),
+            Err(told("CreateCombinedSink told to fail for x"))
+        );
+        assert_eq!(
+            guard.load_branch(ONE_CHAR_SINK, ONE_CHAR_TARGET, 37),
+            Err(told("LoadBranch told to fail for y"))
+        );
+        assert_eq!(
+            guard.unload_branch(4),
+            Err(told("UnloadBranch told to fail for 4"))
+        );
+        assert_eq!(
+            guard.set_branch_delay(4, 73),
+            Err(told("SetBranchDelay told to fail for 4"))
+        );
+        assert_eq!(
+            guard.teardown(ONE_CHAR_SINK),
+            Err(told("Teardown told to fail for x"))
+        );
+        assert_eq!(
+            guard.clear_stale_default_sink(ONE_CHAR_SINK),
+            Err(told("ClearStaleDefaultSink told to fail for x"))
+        );
+        assert_eq!(
+            guard.retarget_streams(ONE_CHAR_SINK),
+            Err(told("RetargetStreams told to fail for x"))
+        );
+        assert_eq!(
+            guard.sink_volume(ONE_CHAR_SINK),
+            Err(told("SinkVolume told to fail for x"))
+        );
+        assert_eq!(
+            guard.set_sink_volume(ONE_CHAR_SINK, 0.375),
+            Err(told("SetSinkVolume told to fail for x"))
+        );
+        assert_eq!(fake.all_calls().len(), 11, "every call reached the fake");
+    }
+
+    // Criterion: an `Unanswered` from the wrapped graph comes back as
+    // `Unanswered`, not rewritten into a `PipeWire` error.
+    #[test]
+    fn test_named_guard_returns_an_unanswered_error_unchanged() {
+        let fake = FakeGraph::with_sinks(&[ONE_CHAR_SINK, ONE_CHAR_TARGET]);
+        fake.fail_unanswered(GraphOp::LoadBranch);
+        fake.fail_unanswered(GraphOp::Sinks);
+        let mut guard = guarded(&fake);
+
+        assert_eq!(
+            guard.load_branch(ONE_CHAR_SINK, ONE_CHAR_TARGET, 37),
+            Err(AudioError::Unanswered)
+        );
+        assert_eq!(guard.sinks(), Err(AudioError::Unanswered));
     }
 }
