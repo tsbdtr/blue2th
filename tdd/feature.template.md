@@ -52,7 +52,13 @@ PENDING
 - PipeWire daemon stalls or restarts: PENDING
 
 ## Acceptance Criteria
-<!-- Each criterion must map to one or more tests -->
+<!-- Each criterion must map to one or more tests. -->
+<!-- A criterion that names a value the system does not own (a node name, a -->
+<!-- property, a flag, a default, a line another tool prints) says where that -->
+<!-- value was observed: the capture, the tool and its version, or the doc. -->
+<!-- The agents test against the criterion, so a wrong value written here is -->
+<!-- pinned by every phase (#69). "Observed: `pw-dump`, PipeWire 1.4.2" or -->
+<!-- "assumed, to check by hand" — never nothing. -->
 - [ ] PENDING
 
 ## Layers touched
