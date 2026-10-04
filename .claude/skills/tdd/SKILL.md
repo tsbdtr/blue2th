@@ -133,12 +133,16 @@ f. Write the two files the optional Serena mode reads (step 7a). Both are
    ```bash
    mkdir -p "$WORKTREE_PATH/.serena/memories"
    echo "tdd worktree: <slug>" > "$WORKTREE_PATH/.serena/memories/tdd_worktree.md"
-   printf 'added_modes:\n  - %s\n' "$ROOT/.serena/modes/tdd-worktree.yml" \
+   printf 'project_name: "blue2th-%s"\nadded_modes:\n  - %s\n' \
+     "<slug>" "$ROOT/.serena/modes/tdd-worktree.yml" \
      > "$WORKTREE_PATH/.serena/project.local.yml"
    ```
    The marker is how an agent tells that Serena is bound to its worktree. The
    mode is named by an absolute path because Serena resolves a relative one from
-   its own working directory, not from the project it serves.
+   its own working directory, not from the project it serves. The project name
+   is overridden because the versioned `project.yml` says `blue2th`: without it
+   every worktree registers in Serena under the base checkout's name, and an
+   activation by name no longer says which checkout it means.
 
 g. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 
