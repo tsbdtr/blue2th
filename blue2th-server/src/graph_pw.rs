@@ -41,7 +41,7 @@ use pw::types::ObjectType;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::audio::{AudioError, AudioRouter, CombineBranch};
-use crate::graph::{Graph, LoadedBranch};
+use crate::graph::{named, Graph, LoadedBranch, NamedGuard};
 use crate::router_actor::{Actor, Envelope, Queue, Shared as RouterShared, Transport};
 
 /// How long the loop thread gives the round trips of one router message, all
@@ -224,15 +224,6 @@ impl Transport for PipeWireGraph {
         self.sender = Some(fresh);
         sent.map_err(|_| AudioError::PipeWire("the PipeWire graph thread is not running".into()))
     }
-}
-
-/// Refuse an empty name before the loop acts on it: an empty name is a
-/// wildcard to every match below it, never "no node".
-fn named(what: &str, name: &str) -> Result<(), AudioError> {
-    if name.is_empty() {
-        return Err(AudioError::PipeWire(format!("empty {what} name refused")));
-    }
-    Ok(())
 }
 
 /// One node of the registry mirror: the properties of its global.
@@ -948,17 +939,17 @@ fn run_loop_thread(
         move |envelope| inbox.borrow_mut().push(envelope)
     });
     let watched = events.is_some();
-    let state = LoopState::new(PwConnector {
+    let state = NamedGuard::new(LoopState::new(PwConnector {
         mainloop: mainloop.clone(),
         events,
-    });
+    }));
     let mut actor = Actor::new(
         AudioRouter::over(Box::new(state), Box::new(Instant::now)),
         shared,
     );
     let mut reconnect = ReconnectWatch::new(Instant::now());
     loop {
-        let state = actor.graph_mut();
+        let state = actor.graph_mut().inner_mut();
         if watched && reconnect.attempt_due(state.is_connected(), Instant::now()) {
             match state.reconnect() {
                 Ok(()) => reconnect.connected(state.connector.events.as_ref()),
@@ -990,12 +981,12 @@ fn run_loop_thread(
         // waited behind the reconnect attempt, the wiring above or a slow
         // message has spent that time out of its start budget (#146).
         while actor.run_next(&inbox, Instant::now()) {
-            if actor.graph_mut().forget_a_lost_connection() {
+            if actor.graph_mut().inner_mut().forget_a_lost_connection() {
                 reconnect.lost(Instant::now());
             }
         }
         // A message reconnects on its own: that is a reconnection too.
-        let state = actor.graph_mut();
+        let state = actor.graph_mut().inner_mut();
         if state.is_connected() {
             reconnect.connected(state.connector.events.as_ref());
         }
@@ -1978,9 +1969,11 @@ impl LoopState<PwConnector> {
     }
 }
 
-/// The loop's own state is the graph the router runs against (#147): each
-/// method is a direct call on the loop thread, sharing the one deadline the
-/// actor handed over for the message being run.
+/// The loop's own state is the graph the router runs against (#147), behind
+/// a [`NamedGuard`] that refuses an empty name before any of these calls
+/// (#154): each method is a direct call on the loop thread, sharing the one
+/// deadline the actor handed over for the message being run, and checks no
+/// name itself.
 impl Graph for LoopState<PwConnector> {
     fn set_deadline(&mut self, deadline: Instant) {
         self.deadline = deadline;
@@ -1991,12 +1984,10 @@ impl Graph for LoopState<PwConnector> {
     }
 
     fn branches(&mut self, sink_name: &str) -> Result<Vec<LoadedBranch>, AudioError> {
-        named("sink", sink_name)?;
         LoopState::branches(self, sink_name)
     }
 
     fn create_combined_sink(&mut self, sink_name: &str) -> Result<(), AudioError> {
-        named("sink", sink_name)?;
         LoopState::create_combined_sink(self, sink_name)
     }
 
@@ -2006,8 +1997,6 @@ impl Graph for LoopState<PwConnector> {
         real_sink: &str,
         latency_ms: u32,
     ) -> Result<(), AudioError> {
-        named("sink", sink_name)?;
-        named("target sink", real_sink)?;
         LoopState::load_branch(self, sink_name, real_sink, latency_ms)
     }
 
@@ -2020,27 +2009,22 @@ impl Graph for LoopState<PwConnector> {
     }
 
     fn teardown(&mut self, sink_name: &str) -> Result<(), AudioError> {
-        named("sink", sink_name)?;
         LoopState::teardown(self, sink_name)
     }
 
     fn clear_stale_default_sink(&mut self, sink_name: &str) -> Result<bool, AudioError> {
-        named("sink", sink_name)?;
         LoopState::clear_stale_default_sink(self, sink_name)
     }
 
     fn retarget_streams(&mut self, sink_name: &str) -> Result<usize, AudioError> {
-        named("sink", sink_name)?;
         LoopState::retarget_streams(self, sink_name)
     }
 
     fn sink_volume(&mut self, sink: &str) -> Result<Option<f32>, AudioError> {
-        named("sink", sink)?;
         LoopState::sink_volume(self, sink)
     }
 
     fn set_sink_volume(&mut self, sink: &str, level: f32) -> Result<(), AudioError> {
-        named("sink", sink)?;
         LoopState::set_sink_volume(self, sink, level)
     }
 }
