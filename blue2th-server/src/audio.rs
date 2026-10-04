@@ -395,7 +395,16 @@ impl BranchLoadReport {
             }
             return Err(AudioError::Unanswered);
         }
-        let messages: Vec<String> = self.failures.iter().map(ToString::to_string).collect();
+        // A refusal's own text, not its `Display`: the joined error is a
+        // `PipeWire` whose `Display` names it as one, once.
+        let messages: Vec<String> = self
+            .failures
+            .into_iter()
+            .map(|failure| match failure {
+                AudioError::PipeWire(message) => message,
+                other => other.to_string(),
+            })
+            .collect();
         Err(AudioError::PipeWire(messages.join("; ")))
     }
 }
@@ -2310,10 +2319,10 @@ mod tests {
     // Criterion (#147, 2026-10-03): `BranchLoadReport` keeps its failures as
     // `AudioError`s, and `into_result` answers `Ok(())` with none,
     // `Unanswered` when one is `Unanswered`, and `PipeWire` with the messages
-    // joined by "; " otherwise — the same text as before the failures were
-    // typed, which joined each failure's `Display`: a refusal reads
-    // "PipeWire error: …" inside the joined text, and the whole is compared
-    // so a join of the bare inner messages fails.
+    // joined by "; " otherwise — each refusal's own text, without the
+    // "PipeWire error: " its `Display` adds, which the joined error's
+    // `Display` adds once. The whole is compared, so a join of each
+    // failure's `Display` fails.
     #[test]
     fn test_branch_load_report_answers_ok_unanswered_or_the_joined_pipewire_text() {
         let none = report_failing(vec![]).into_result();
@@ -2333,16 +2342,16 @@ mod tests {
         assert_eq!(
             answered,
             Err(AudioError::PipeWire(format!(
-                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
-                 PipeWire error: no PipeWire sink for prefix {THIRD}"
+                "fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 no PipeWire sink for prefix {THIRD}"
             ))),
-            "answers only: today's text, unchanged"
+            "answers only: the refusals' own texts, joined"
         );
     }
 
     // Guard (#147, 2026-10-03, a branch pass is `Unanswered` only when a
     // failure is): the near misses are a report holding one refusal alone,
-    // which must stay `PipeWire` with today's exact text — a rule keyed on
+    // which must stay `PipeWire` with its own exact text — a rule keyed on
     // "any failure" answers it 503 — and the same refusal worded as the
     // deadline exit used to word itself, which a rule matching "did not
     // answer" in the message would take for a stall. Beside them, a refusal
@@ -2363,14 +2372,14 @@ mod tests {
         assert_eq!(
             alone,
             Err(AudioError::PipeWire(format!(
-                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1"
+                "fake graph: LoadBranch told to fail for {DEAD}.1"
             ))),
             "a refused load is an answer: it stays `PipeWire`, with its own text"
         );
         assert_eq!(
             worded,
             Err(AudioError::PipeWire(
-                "PipeWire error: PipeWire did not answer a sync round trip".to_string()
+                "PipeWire did not answer a sync round trip".to_string()
             )),
             "the variant decides, never the wording"
         );
@@ -2383,6 +2392,44 @@ mod tests {
             stall_then_refusal,
             Err(AudioError::Unanswered),
             "a reading of the last failure alone misses the stall"
+        );
+    }
+
+    // Criterion (found in #152's manual verification): a branch failure is
+    // named once in the error a pass answers. `AudioError::PipeWire`'s own
+    // `Display` prefixes "PipeWire error: ", and joining each failure's
+    // `Display` inside a new `PipeWire` doubled it: the log read
+    // "PipeWire error: PipeWire error: no PipeWire sink for prefix …". One
+    // refusal, two refusals, and a refusal beside another variant, which keeps
+    // its own readable text inside the joined one.
+    #[test]
+    fn test_branch_load_report_names_a_pipewire_failure_once() {
+        let absent = || AudioError::PipeWire(format!("no PipeWire sink for prefix {THIRD}"));
+        let text = |failures| {
+            report_failing(failures)
+                .into_result()
+                .map_err(|e| e.to_string())
+        };
+
+        assert_eq!(
+            text(vec![absent()]),
+            Err(format!(
+                "PipeWire error: no PipeWire sink for prefix {THIRD}"
+            ))
+        );
+        assert_eq!(
+            text(vec![refused_load(), absent()]),
+            Err(format!(
+                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 no PipeWire sink for prefix {THIRD}"
+            ))
+        );
+        assert_eq!(
+            text(vec![refused_load(), AudioError::NoSpeakerConnected]),
+            Err(format!(
+                "PipeWire error: fake graph: LoadBranch told to fail for {DEAD}.1; \
+                 no speaker connected"
+            ))
         );
     }
 
