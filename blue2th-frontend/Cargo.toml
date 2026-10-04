@@ -29,6 +29,9 @@ ndk-context = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+# Parses this crate's own manifest in tests/web_build.rs (#159). Already in the
+# lockfile through rust-i18n-support, so the lockfile gains no crate.
+toml = "0.8"
 
 [features]
 default = ["mobile"]

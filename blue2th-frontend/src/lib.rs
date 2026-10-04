@@ -8,3 +8,4 @@ pub mod discovery;
 pub mod jni_util;
 pub mod lifecycle;
 pub mod settings;
+pub mod timer;

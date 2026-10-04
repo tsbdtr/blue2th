@@ -1869,7 +1869,10 @@ fn AppSettingsPage() -> Element {
     let mut found: Signal<Vec<blue2th_proto::DiscoveredBackend>> = use_signal(Vec::new);
     // A ROM that cannot resolve `MulticastLock` renders the button disabled
     // rather than failing on tap: the verdict is cached, so this costs no JNI.
-    let can_search = discovery::search_enabled(jni_util::multicast_supported());
+    let can_search = discovery::search_enabled(
+        jni_util::multicast_supported(),
+        cfg!(not(target_arch = "wasm32")),
+    );
     let (auto_repair, adds_backends) = {
         let snapshot = app_settings.read();
         (snapshot.auto_repair_url, snapshot.discovery_adds_backends)

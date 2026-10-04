@@ -42,9 +42,12 @@ impl std::error::Error for DiscoveryError {}
 /// How long a browse listens before reporting what it found.
 pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Whether the Search button is live, derived from the cached preflight verdict.
+/// Whether the Search button is live, derived from the cached preflight verdict
+/// and from whether this target can browse at all.
 /// Pure, so the disabled case is testable with no JNI at all.
-pub fn search_enabled(multicast_supported: bool) -> bool {
+pub fn search_enabled(multicast_supported: bool, browse_available: bool) -> bool {
+    // RED-phase stub (#159): still ignores `browse_available`.
+    let _ = browse_available;
     multicast_supported
 }
 
@@ -253,13 +256,31 @@ mod tests {
     // Criterion: the Search button's enabled state is a pure function over the
     // cached preflight verdict — a ROM that cannot resolve `MulticastLock`
     // renders it disabled, and no JNI call is ever attempted.
+    // #159: with browsing available, the verdict alone decides.
     #[test]
     fn test_search_enabled_follows_the_preflight_verdict() {
-        assert!(search_enabled(true), "a capable ROM keeps the button live");
         assert!(
-            !search_enabled(false),
+            search_enabled(true, true),
+            "a capable ROM keeps the button live"
+        );
+        assert!(
+            !search_enabled(false, true),
             "a failed preflight disables the button rather than failing on tap"
         );
+    }
+
+    // Criterion (#159): `search_enabled` is false whenever browsing is
+    // unavailable on the target, whatever the multicast verdict.
+    // Guard near-miss: `(true, false)` — multicast says yes (as it does off
+    // Android, i.e. on wasm), and only the browse-availability guard says no.
+    #[test]
+    fn test_search_enabled_is_false_without_browsing_whatever_the_multicast_verdict() {
+        assert!(
+            !search_enabled(true, false),
+            "a target with no browse (wasm) must disable the button even though \
+             multicast_supported() answers true there"
+        );
+        assert!(!search_enabled(false, false));
     }
 
     // Criterion (non-nominal): the multicast lock could not be acquired — browse
