@@ -7,9 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-dioxus = { version = "0.7.10", features = ["mobile", "router"] }
+# No platform feature here: the renderer comes from the crate's `mobile` or `web`
+# feature, so `--no-default-features --features web` builds no mobile renderer.
+dioxus = { version = "0.7.10", features = ["router"] }
 rust-i18n = "4"
-tokio = { version = "1", features = ["time", "rt"] }
 blue2th-proto = { path = "../blue2th-proto" }
 # No TLS backend: the backend is reached over plain HTTP on the LAN (a TLS option
 # can be added later). `json` pulls in serde_json for response decoding; `stream`
@@ -20,8 +21,19 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { workspace = true }
 serde_json = "1"
 futures = "0.3"
+
+# tokio's timer and runtime, and the mDNS browse, do not build for the browser
+# (#159). Gated on `not(wasm32)` rather than on Android so the host build, and
+# host clippy, keep checking the native code.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["time", "rt"] }
 # Phase 6.6: browsing `_blue2th._tcp.local.` on the LAN. See the workspace entry.
 mdns-sd = { workspace = true }
+
+# The browser's timer behind `timer::sleep`. Already in the wasm tree through
+# dioxus-web; only its `futures` feature is new.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
@@ -36,3 +48,4 @@ toml = "0.8"
 [features]
 default = ["mobile"]
 mobile = ["dioxus/mobile"]
+web = ["dioxus/web"]

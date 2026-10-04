@@ -646,7 +646,7 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     };
 
     // Stop after the window even if the server keeps the stream open.
-    let _ = tokio::time::timeout(SCAN_WINDOW, collect).await;
+    let _ = crate::timer::timeout(SCAN_WINDOW, collect).await;
     Ok(found)
 }
 

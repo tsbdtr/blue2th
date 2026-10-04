@@ -93,6 +93,42 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # The browser build (#159). `cargo test` and the host clippy never compile for
+  # wasm, so tokio or mdns-sd creeping back into the shared code would only be
+  # noticed here.
+  web:
+    name: "Frontend: browser build"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same pin as the quality job, for the same reason: new clippy lints.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Same dx as release.yml: the web build must use the CLI the app ships with.
+      - uses: cargo-bins/cargo-binstall@v1.24.0
+
+      - name: Install dioxus-cli 0.7.10
+        run: cargo binstall -y dioxus-cli@0.7.10
+
+      # Native-only code must be gated, not left as a wasm warning.
+      - name: clippy (wasm)
+        run: |
+          cargo clippy -p blue2th-frontend --target wasm32-unknown-unknown \
+            --no-default-features --features web -- -D warnings
+
+      # No feature flags: dx drops the `mobile` default and enables `web` itself
+      # for --platform web (observed with dx 0.7.10).
+      - name: dx build (web)
+        run: dx build --platform web --package blue2th-frontend
+
   scripts:
     name: "Release scripts: shell tests"
     runs-on: ubuntu-latest
