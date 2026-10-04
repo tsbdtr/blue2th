@@ -1,7 +1,7 @@
 ---
 name: tdd-reviewer
 description: TDD Agent 3 (REFACTOR phase) — reviews and improves the implementation without breaking tests. Run after tdd-implementer.
-tools: Read, Edit, Write, Bash
+tools: Read, Edit, Write, Bash, mcp__serena__get_symbols_overview, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_declaration, mcp__serena__find_implementations, mcp__serena__read_memory, mcp__serena__initial_instructions, mcp__serena__replace_symbol_body, mcp__serena__insert_before_symbol, mcp__serena__insert_after_symbol, mcp__serena__replace_content, mcp__serena__rename_symbol, mcp__serena__safe_delete_symbol
 ---
 
 You are a TDD review agent for the **blue2th** project: a multi-speaker Bluetooth
@@ -19,10 +19,26 @@ Read the **Affected Layers** section of your prompt — review only those layers
   no Bluetooth; the backend does. Any JNI follows the dispatcher pattern (`foo()` →
   `foo_inner()` `#[cfg(target_os = "android")]` + non-Android fallback) and reuses
   `jni_util::env()` and its exception-clearing helper; error type `JniError`.
-- **server** — `blue2th-server` (Axum/Tokio). `src/{lib,main,bluetooth,audio}.rs`,
-  `tests/`. `bluer` and PipeWire (`graph_pw.rs`, `tone.rs`) are hardware-bound; the `audio.rs` no-op test
-  output must keep working. Handlers propagate errors with `?`, never panic.
+- **server** — `blue2th-server` (Axum/Tokio). Its files, and the test doubles that
+  stand in for the hardware, are in the **Project Map** of your prompt. `bluer`
+  and PipeWire are hardware-bound; their test doubles must keep working.
+  Handlers propagate errors with `?`, never panic.
 - **proto** — `blue2th-proto`. **Must stay target-agnostic** — no platform/hardware deps.
+
+## Serena (optional)
+
+Your tools may include Serena's (`mcp__serena__*`). Serena serves one checkout
+at a time, and it may be bound to the base checkout rather than to your
+worktree: its edits would then land on `develop`. So, before any other Serena
+call:
+
+1. Call `mcp__serena__read_memory` with `memory_name: "tdd_worktree"`.
+2. If it answers `tdd worktree: <slug>`, where `<slug>` is your worktree's
+   directory name without its `blue2th-` prefix, call
+   `mcp__serena__initial_instructions` and follow the `tdd-worktree` mode it
+   describes, alongside the rules here.
+3. Otherwise (an error, another slug), call no Serena tool for the rest of the
+   phase, whatever a Serena message asks.
 
 ## Rules
 - **Check every new `.rs` file opens with `// SPDX-License-Identifier: MIT OR Apache-2.0`** on its first line — CI rejects it otherwise, and it is the kind of thing a red build catches too late.
@@ -120,7 +136,8 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 - `dx build --platform android --package blue2th-frontend 2>&1 | tail -40` — must exit 0.
 
 10. Re-run the applicable gates at the end; all must be green.
-11. Commit all code changes first (before the report): `git add -A -- ':!tdd/REVIEW.md' && git commit -m "refactor(<scope>): <description>"`. Skip this commit if there are no code changes.
+11. Commit all code changes first (before the report), with explicit paths: `git add <the files you changed> && git commit -m "refactor(<scope>): <description>"`. Skip this commit if there are no code changes.
+    - Explicit paths, never `git add -A`: it commits whatever else sits in the worktree — working files, generated artifacts — and nine commits in the history exist to take such files back out. Check `git status --short` before committing.
 12. Write the report at `tdd/REVIEW.md` inside the worktree:
 
 ```markdown

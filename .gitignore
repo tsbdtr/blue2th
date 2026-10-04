@@ -60,7 +60,13 @@ tdd/REVIEW.md
 #     regenerates it *after* the merge, in its own commit on develop — so that
 #     diff never reaches a reviewer and the justification did not hold.
 graphify-out/
-# Serena's per-project state (config, symbol cache, memories). Ignored whole, as
-# graphify-out/ is: it is one developer's tooling, and its memories only point
-# at CLAUDE.md and docs/, which stay the single versioned source.
-.serena/
+# Serena's per-project state. The config, the memories and the modes are
+# versioned: Serena reads them from the checkout it is bound to, so a /tdd
+# worktree that does not carry them gets a default config and no memory at all.
+# The memories stay pointers into CLAUDE.md and docs/, the single versioned
+# source. The symbol cache and project.local.yml (one developer's overrides, and
+# in a /tdd worktree the line that turns the tdd-worktree mode on) are ignored by
+# Serena's own .serena/.gitignore. The marker /tdd writes into its worktree, by
+# which an agent tells that Serena is bound to it and not to the base checkout,
+# is ignored here.
+.serena/memories/tdd_worktree.md

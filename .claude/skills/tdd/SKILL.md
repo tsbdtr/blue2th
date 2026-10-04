@@ -44,8 +44,8 @@ file.
 
 The three sub-agents run headless. A `gh` command that would raise a permission
 prompt gets no prompt there — it hangs or fails with nothing to show for it. The
-agents keep to Read/Edit/Write/Bash inside their worktree, which removes the
-problem rather than working around it.
+agents keep to Read/Edit/Write/Bash (and Serena, per step 7a) inside their
+worktree, which removes the problem rather than working around it.
 
 ## Steps
 
@@ -74,7 +74,9 @@ has only the template:
 [ -f tdd/feature.md ] || cp tdd/feature.template.md tdd/feature.md
 ```
 
-Then read it. If any line equals exactly `PENDING`, stop and tell the user:
+Then read it. If any line is `PENDING`, or ends with ` PENDING` — a list item
+the template left open, such as `- PENDING`, `- [ ] PENDING` or
+`- Speaker lost (Bluetooth drop, power off): PENDING` — stop and tell the user:
 
 > "`tdd/feature.md` still has PENDING sections. Describe the feature and I will fill the file."
 
@@ -126,7 +128,19 @@ e. Copy the spec into the worktree. `tdd/feature.md` is gitignored, so
    ```
    It stays ignored there too, so it cannot reach the branch.
 
-f. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
+f. Write the two files the optional Serena mode reads (step 7a). Both are
+   gitignored and harmless when Serena is not used, so they are written always:
+   ```bash
+   mkdir -p "$WORKTREE_PATH/.serena/memories"
+   echo "tdd worktree: <slug>" > "$WORKTREE_PATH/.serena/memories/tdd_worktree.md"
+   printf 'added_modes:\n  - %s\n' "$ROOT/.serena/modes/tdd-worktree.yml" \
+     > "$WORKTREE_PATH/.serena/project.local.yml"
+   ```
+   The marker is how an agent tells that Serena is bound to its worktree. The
+   mode is named by an absolute path because Serena resolves a relative one from
+   its own working directory, not from the project it serves.
+
+g. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 
 ### 5. `issue` — open the tracking issue
 
@@ -191,18 +205,82 @@ Render `LAYERS` as a comma-separated list (e.g. `server, proto`) and inject it i
 every agent prompt under an `## Affected Layers` heading. Agents use it to decide
 whether to run the Android NDK cross-build (mobile only) and which crates to focus on.
 
+### 6b. Build the project map
+
+The agents' definitions describe what does not change: the layers, their
+rules, the hardware boundary. Which files a crate holds and which test doubles
+stand in for the hardware do change, and every copy of them written into the
+definitions went stale: six catch-ups by hand, and at the 2026-10-02 review
+`FakeGraph` in none of the three and 4 of 18 server files listed. So that part is generated here, before
+each agent spawn, from the worktree as it stands:
+
+```bash
+CRATES="<blue2th-server for server, blue2th-proto for proto, blue2th-frontend for mobile — the LAYERS only>"
+cd "$WORKTREE_PATH" && for c in $CRATES; do
+  git ls-files "$c/src/*.rs" "$c/tests/*.rs" | xargs wc -l | grep -v ' total$'
+done
+cd "$WORKTREE_PATH" && for c in $CRATES; do git ls-files "$c/tests" ':!*.rs'; done
+cd "$WORKTREE_PATH" && git grep -nE '^\s*(pub(\([a-z]+\))? )?struct (Fake|Null|Stub|Mock)[A-Za-z]*' \
+  -- $(for c in $CRATES; do echo "$c/src" "$c/tests"; done)
+```
+
+Inject the three outputs into every agent prompt under `## Project Map`, as
+`### Files (lines)`, `### Fixtures` and `### Test doubles (file:line)`. Line
+counts tell an agent which files to read by symbol rather than whole. The
+fixtures are captures of what the system really produced, which a test builds
+on before inventing data; write "none" when the list is empty.
+
 ### 7. Spawn agents with targeted context
 
 Spawn each phase with its **dedicated** agent type — `tdd-test-writer` (RED),
 `tdd-implementer` (GREEN), `tdd-reviewer` (REFACTOR). These agents carry the right
-tool grants (`Read, Edit, Write, Bash`); `general-purpose` is denied `Read`/`Bash`
-by the permission hooks and will stall.
+tool grants (`Read, Edit, Write, Bash`, plus Serena's, which they use only per
+step 7a); `general-purpose` is denied `Read`/`Bash` by the permission hooks and
+will stall. A Serena tool listed while no Serena server runs is dropped, not an
+error.
 
 Because the dedicated agent's `.md` body is already its system prompt, **do not**
 re-inject it into the prompt. Pass only the contextual sections shown below (the
 parts after the first `---`: Worktree, Affected Layers, and the phase-specific
 context). The leading `<...-body>` placeholder in each structure is therefore
 omitted when spawning a dedicated agent.
+
+### 7a. Serena mode (optional) — around each agent
+
+**Skip this step when `mcp__serena__activate_project` is not among your tools.**
+The cycle then runs as it always has, and the agents keep to Read/Edit.
+
+Serena serves one project at a time, and the agents share this session's
+server. Bound to the base checkout, it would show the agents `develop`, and
+their Serena edits would land in the base checkout while their Read/Edit work
+lands in the worktree. Around **each** agent spawn:
+
+1. `mcp__serena__activate_project` with `project: "<WORKTREE_PATH>"`. It answers
+   at once and starts rust-analyzer on the worktree in the background. The
+   worktree's `project.local.yml` (step 4f) turns the `tdd-worktree` mode on:
+   its rules, and no memory writes.
+2. Check the binding before the agent meets it:
+   - `mcp__serena__read_memory` with `memory_name: "tdd_worktree"` must answer
+     `tdd worktree: <slug>`. This first call waits for rust-analyzer: about
+     15–20 s on a fresh worktree.
+   - `mcp__serena__find_referencing_symbols` with `name_path: "AudioError"` and
+     `relative_path: "blue2th-server/src/audio.rs"` must answer at least one
+     reference. rust-analyzer answers an empty list while it is still loading,
+     and that must reach this check, not an agent. Retry it a few times.
+
+   If either check still fails, say so, run step 4 now, and spawn the agent
+   anyway: it finds no marker and keeps to Read/Edit.
+3. Spawn the agent (the prompt structures below).
+4. `mcp__serena__activate_project` with `project: "<ROOT>"` — also when the
+   agent failed, and before the manual-verification halt — so this session's
+   own Serena calls read the base checkout again.
+
+**Setup this mode needs**, all local to one developer:
+- Serena running with a context whose `single_project` is `false`. The built-in
+  `claude-code` context sets it to `true`, which removes `activate_project`: copy
+  that context, flip the key, and pass the copy with `--context=<path>`.
+- Serena's tools approved without a prompt for headless agents — the
+  `serena-hooks auto-approve` hook, or `mcp__serena__*` in the allow list.
 
 ---
 
@@ -223,6 +301,11 @@ Branch: `<BRANCH>`
 
 ## Affected Layers
 <LAYERS>
+
+---
+
+## Project Map
+<PROJECT_MAP from step 6b>
 
 ---
 
@@ -261,6 +344,11 @@ Branch: `<BRANCH>`
 
 ## Affected Layers
 <LAYERS>
+
+---
+
+## Project Map
+<PROJECT_MAP from step 6b>
 
 ---
 
@@ -319,6 +407,11 @@ Branch: `<BRANCH>`
 
 ## Affected Layers
 <LAYERS>
+
+---
+
+## Project Map
+<PROJECT_MAP from step 6b>
 
 ---
 
@@ -454,3 +547,6 @@ After the phases complete:
 
 1. If REFACTOR ran, read `<WORKTREE_PATH>/tdd/REVIEW.md` and display its full contents.
 2. Print the worktree, the branch, the tracking issue and the pull request URL.
+3. Say whether the Serena mode ran for each agent (step 7a), and which check
+   failed when it did not. The trial is measured against the timing baseline,
+   so a phase run without Serena has to be told apart.
