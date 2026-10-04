@@ -133,12 +133,16 @@ f. Write the two files the optional Serena mode reads (step 7a). Both are
    ```bash
    mkdir -p "$WORKTREE_PATH/.serena/memories"
    echo "tdd worktree: <slug>" > "$WORKTREE_PATH/.serena/memories/tdd_worktree.md"
-   printf 'added_modes:\n  - %s\n' "$ROOT/.serena/modes/tdd-worktree.yml" \
+   printf 'project_name: "blue2th-%s"\nadded_modes:\n  - %s\n' \
+     "<slug>" "$ROOT/.serena/modes/tdd-worktree.yml" \
      > "$WORKTREE_PATH/.serena/project.local.yml"
    ```
    The marker is how an agent tells that Serena is bound to its worktree. The
    mode is named by an absolute path because Serena resolves a relative one from
-   its own working directory, not from the project it serves.
+   its own working directory, not from the project it serves. The project name
+   is overridden because the versioned `project.yml` says `blue2th`: without it
+   every worktree registers in Serena under the base checkout's name, and an
+   activation by name no longer says which checkout it means.
 
 g. Print: `Worktree ready: $WORKTREE_PATH (branch: $BRANCH, base: $BASE_SHA)`
 
@@ -255,6 +259,12 @@ server. Bound to the base checkout, it would show the agents `develop`, and
 their Serena edits would land in the base checkout while their Read/Edit work
 lands in the worktree. Around **each** agent spawn:
 
+Send each `activate_project` **alone**, and wait for its answer before the next
+Serena call. Calls sent in one parallel batch reach Serena in no guaranteed
+order: in the #154 cycle a switch back to the base checkout and a switch to the
+worktree, batched together, were applied in reverse, and Serena stayed on the
+base checkout. The check in 2 caught it; sending them one at a time avoids it.
+
 1. `mcp__serena__activate_project` with `project: "<WORKTREE_PATH>"`. It answers
    at once and starts rust-analyzer on the worktree in the background. The
    worktree's `project.local.yml` (step 4f) turns the `tdd-worktree` mode on:
@@ -281,6 +291,13 @@ lands in the worktree. Around **each** agent spawn:
   that context, flip the key, and pass the copy with `--context=<path>`.
 - Serena's tools approved without a prompt for headless agents — the
   `serena-hooks auto-approve` hook, or `mcp__serena__*` in the allow list.
+
+**The worktree stays in Serena's registry after cleanup, and that is fine.**
+Each activation registers the worktree in `~/.serena/serena_config.yml`, and
+nothing here removes it: Serena skips a registered project whose directory is
+gone when it next starts. Until then a running server keeps it in memory and
+rewrites the file on every activation, so an entry deleted by hand while a
+server runs comes back. Do not edit the registry by hand.
 
 ---
 

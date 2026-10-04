@@ -65,8 +65,8 @@ graphify-out/
 # worktree that does not carry them gets a default config and no memory at all.
 # The memories stay pointers into CLAUDE.md and docs/, the single versioned
 # source. The symbol cache and project.local.yml (one developer's overrides, and
-# in a /tdd worktree the line that turns the tdd-worktree mode on) are ignored by
-# Serena's own .serena/.gitignore. The marker /tdd writes into its worktree, by
+# in a /tdd worktree its own project name and the line that turns the
+# tdd-worktree mode on) are ignored by Serena's own .serena/.gitignore. The marker /tdd writes into its worktree, by
 # which an agent tells that Serena is bound to it and not to the base checkout,
 # is ignored here.
 .serena/memories/tdd_worktree.md
