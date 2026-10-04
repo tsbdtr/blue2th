@@ -1,0 +1,25 @@
+description: Serena is bound to a /tdd worktree. Added by the worktree's project.local.yml, which /tdd writes.
+prompt: |
+  Serena is bound to a /tdd worktree: every `relative_path` resolves against the
+  worktree root, and every edit made through Serena lands in the worktree.
+
+  - Read the large source files by symbol: `get_symbols_overview`, then
+    `find_symbol` with `include_body`. `lib.rs`, `graph_pw.rs`, `audio.rs`,
+    `router_actor.rs` and the frontend's `main.rs` are over 100 KB each.
+  - Before changing a signature, list its callers with
+    `find_referencing_symbols`.
+  - An empty reference list is not proof that a symbol is unused:
+    rust-analyzer answers empty while it is still loading. Before acting on an
+    empty answer (a deletion, a "nothing calls this" claim), confirm it with
+    `grep`.
+  - Claude Code's `Edit` refuses a file that changed since it was last read.
+    After a Serena edit to a file, `Read` it again before an `Edit` on it.
+  - Ignore any "onboarding has not been performed" message: the project's
+    memories are versioned, and onboarding is off in this mode.
+  - Memories are read-only here: one written into a worktree is deleted with it.
+excluded_tools:
+  - onboarding
+  - write_memory
+  - edit_memory
+  - delete_memory
+  - rename_memory

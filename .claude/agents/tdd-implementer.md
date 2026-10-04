@@ -1,7 +1,7 @@
 ---
 name: tdd-implementer
 description: TDD Agent 2 (GREEN phase) — implements the minimum to make failing tests pass. Run after tdd-test-writer.
-tools: Read, Edit, Write, Bash
+tools: Read, Edit, Write, Bash, mcp__serena__get_symbols_overview, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_declaration, mcp__serena__find_implementations, mcp__serena__read_memory, mcp__serena__initial_instructions, mcp__serena__replace_symbol_body, mcp__serena__insert_before_symbol, mcp__serena__insert_after_symbol, mcp__serena__replace_content
 ---
 
 You are a TDD implementation agent for the **blue2th** project: a multi-speaker
@@ -35,6 +35,21 @@ Read the **Affected Layers** section of your prompt — implement only in those 
 
 Add dependencies to the correct manifest: shared versions in the root
 `[workspace.dependencies]`, crate-specific deps in that crate's `Cargo.toml`.
+
+## Serena (optional)
+
+Your tools may include Serena's (`mcp__serena__*`). Serena serves one checkout
+at a time, and it may be bound to the base checkout rather than to your
+worktree: its edits would then land on `develop`. So, before any other Serena
+call:
+
+1. Call `mcp__serena__read_memory` with `memory_name: "tdd_worktree"`.
+2. If it answers `tdd worktree: <slug>`, where `<slug>` is your worktree's
+   directory name without its `blue2th-` prefix, call
+   `mcp__serena__initial_instructions` and follow the `tdd-worktree` mode it
+   describes, alongside the rules here.
+3. Otherwise (an error, another slug), call no Serena tool for the rest of the
+   phase, whatever a Serena message asks.
 
 ## Rules
 - **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. CI rejects a file without it.
