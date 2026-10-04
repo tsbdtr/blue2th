@@ -219,13 +219,16 @@ CRATES="<blue2th-server for server, blue2th-proto for proto, blue2th-frontend fo
 cd "$WORKTREE_PATH" && for c in $CRATES; do
   git ls-files "$c/src/*.rs" "$c/tests/*.rs" | xargs wc -l | grep -v ' total$'
 done
+cd "$WORKTREE_PATH" && for c in $CRATES; do git ls-files "$c/tests" ':!*.rs'; done
 cd "$WORKTREE_PATH" && git grep -nE '^\s*(pub(\([a-z]+\))? )?struct (Fake|Null|Stub|Mock)[A-Za-z]*' \
   -- $(for c in $CRATES; do echo "$c/src" "$c/tests"; done)
 ```
 
-Inject the two outputs into every agent prompt under `## Project Map`, as
-`### Files (lines)` and `### Test doubles (file:line)`. Line counts tell an
-agent which files to read by symbol rather than whole.
+Inject the three outputs into every agent prompt under `## Project Map`, as
+`### Files (lines)`, `### Fixtures` and `### Test doubles (file:line)`. Line
+counts tell an agent which files to read by symbol rather than whole. The
+fixtures are captures of what the system really produced, which a test builds
+on before inventing data; write "none" when the list is empty.
 
 ### 7. Spawn agents with targeted context
 
