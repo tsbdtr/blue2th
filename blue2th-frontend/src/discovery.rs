@@ -12,8 +12,10 @@
 //! is live, whether a failed lock stops the browse, and what a find means for the
 //! settings ([`crate::settings::reconcile`]) — is pure and tested here.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 use blue2th_proto::DiscoveredBackend;
 
 /// Why a browse could not be run or completed.
@@ -23,6 +25,7 @@ pub enum DiscoveryError {
     /// not be resolved, so the Search button is disabled and nothing is tried.
     Unsupported,
     /// The mDNS browse itself failed (socket, interface, timeout plumbing).
+    #[cfg(not(target_arch = "wasm32"))]
     Browse(String),
 }
 
@@ -32,6 +35,7 @@ impl std::fmt::Display for DiscoveryError {
             DiscoveryError::Unsupported => {
                 write!(f, "this device cannot search the network")
             },
+            #[cfg(not(target_arch = "wasm32"))]
             DiscoveryError::Browse(detail) => write!(f, "{detail}"),
         }
     }
@@ -40,12 +44,14 @@ impl std::fmt::Display for DiscoveryError {
 impl std::error::Error for DiscoveryError {}
 
 /// How long a browse listens before reporting what it found.
+#[cfg(not(target_arch = "wasm32"))]
 pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Whether the Search button is live, derived from the cached preflight verdict.
+/// Whether the Search button is live, derived from the cached preflight verdict
+/// and from whether this target can browse at all.
 /// Pure, so the disabled case is testable with no JNI at all.
-pub fn search_enabled(multicast_supported: bool) -> bool {
-    multicast_supported
+pub fn search_enabled(multicast_supported: bool, browse_available: bool) -> bool {
+    multicast_supported && browse_available
 }
 
 /// Whether the browse runs, given whether the multicast lock was acquired. Pure.
@@ -53,6 +59,7 @@ pub fn search_enabled(multicast_supported: bool) -> bool {
 /// A failed lock must **not** fail the scan: some devices do not filter
 /// multicast, and in hotspot mode the phone is the access point. Only the browse
 /// result decides what the user is told.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn browse_proceeds(lock_acquired: bool) -> bool {
     // Deliberately ignores its input: the lock is an optimisation, not a
     // precondition. Kept as a named function so the rule is pinned by a test
@@ -69,6 +76,7 @@ pub fn browse_proceeds(lock_acquired: bool) -> bool {
 /// not errors, and manual entry plus the QR stay the way out.
 ///
 /// The network seam itself is validated by hand on a device.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredBackend>, DiscoveryError> {
     if !crate::jni_util::multicast_supported() {
         return Err(DiscoveryError::Unsupported);
@@ -115,6 +123,7 @@ pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredBackend>, Discove
 /// an id already listed: a multi-homed backend resolves once per interface, and
 /// listing it twice would show the same machine as two entries and make the scan
 /// repair it twice.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn is_new_find(found: &[DiscoveredBackend], candidate: &DiscoveredBackend) -> bool {
     !found
         .iter()
@@ -125,6 +134,7 @@ pub fn is_new_find(found: &[DiscoveredBackend], candidate: &DiscoveredBackend) -
 /// usable IPv4 address. Address selection is `min` rather than "first" so a
 /// multi-homed backend resolves to the same URL on every scan — a `HashSet` has
 /// no order, and an unstable URL would look like a move on each browse.
+#[cfg(not(target_arch = "wasm32"))]
 fn resolved_to_backend(service: &mdns_sd::ResolvedService) -> Option<DiscoveredBackend> {
     let addr = service.get_addresses_v4().into_iter().min()?;
     let url = format!("http://{addr}:{}", service.get_port());
@@ -236,10 +246,10 @@ impl Drop for MulticastGuard {
 }
 
 /// No multicast filtering to lift off Android: the browse runs as-is.
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 struct MulticastGuard;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 impl MulticastGuard {
     fn acquire() -> Option<Self> {
         Some(Self)
@@ -253,13 +263,31 @@ mod tests {
     // Criterion: the Search button's enabled state is a pure function over the
     // cached preflight verdict — a ROM that cannot resolve `MulticastLock`
     // renders it disabled, and no JNI call is ever attempted.
+    // #159: with browsing available, the verdict alone decides.
     #[test]
     fn test_search_enabled_follows_the_preflight_verdict() {
-        assert!(search_enabled(true), "a capable ROM keeps the button live");
         assert!(
-            !search_enabled(false),
+            search_enabled(true, true),
+            "a capable ROM keeps the button live"
+        );
+        assert!(
+            !search_enabled(false, true),
             "a failed preflight disables the button rather than failing on tap"
         );
+    }
+
+    // Criterion (#159): `search_enabled` is false whenever browsing is
+    // unavailable on the target, whatever the multicast verdict.
+    // Guard near-miss: `(true, false)` — multicast says yes (as it does off
+    // Android, i.e. on wasm), and only the browse-availability guard says no.
+    #[test]
+    fn test_search_enabled_is_false_without_browsing_whatever_the_multicast_verdict() {
+        assert!(
+            !search_enabled(true, false),
+            "a target with no browse (wasm) must disable the button even though \
+             multicast_supported() answers true there"
+        );
+        assert!(!search_enabled(false, false));
     }
 
     // Criterion (non-nominal): the multicast lock could not be acquired — browse

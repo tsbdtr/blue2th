@@ -8,8 +8,12 @@ mod backend;
 mod deep_link;
 mod discovery;
 mod jni_util;
+// The JNI presence hooks hand work to the tokio runtime, which the browser
+// build does not have (#159).
+#[cfg(not(target_arch = "wasm32"))]
 mod lifecycle;
 mod settings;
+mod timer;
 
 rust_i18n::i18n!("locales", fallback = "fr");
 
@@ -107,7 +111,7 @@ const PAIRING_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_
 async fn await_new_token() {
     let refused = settings::current().active_token();
     loop {
-        tokio::time::sleep(PAIRING_RECHECK_INTERVAL).await;
+        timer::sleep(PAIRING_RECHECK_INTERVAL).await;
         if settings::current().active_token() != refused {
             return;
         }
@@ -239,7 +243,7 @@ fn App() -> Element {
                 if reachable && mismatch.is_none() && !was_usable {
                     backend::push_active_name().await;
                 }
-                tokio::time::sleep(BACKEND_HEALTH_INTERVAL).await;
+                timer::sleep(BACKEND_HEALTH_INTERVAL).await;
             }
         });
     });
@@ -247,6 +251,7 @@ fn App() -> Element {
     // Hand the app's runtime to the JNI lifecycle hooks, so the activity can
     // report from a Java thread whether blue2th is on screen, backgrounded or
     // closing — the backend cannot tell a frozen app from a dead one otherwise.
+    #[cfg(not(target_arch = "wasm32"))]
     use_hook(|| {
         spawn(async {
             lifecycle::arm(tokio::runtime::Handle::current());
@@ -314,7 +319,7 @@ fn App() -> Element {
                         }
                     }
                 }
-                tokio::time::sleep(SPOTIFY_POLL_INTERVAL).await;
+                timer::sleep(SPOTIFY_POLL_INTERVAL).await;
             }
         });
     });
@@ -342,7 +347,7 @@ fn App() -> Element {
                     }
                 }
                 // The stream closed (backend down or restarted); retry shortly.
-                tokio::time::sleep(SSE_RETRY_DELAY).await;
+                timer::sleep(SSE_RETRY_DELAY).await;
             }
         });
     });
@@ -359,7 +364,7 @@ fn App() -> Element {
         let mut app_settings = settings_state.0;
         spawn(async move {
             loop {
-                tokio::time::sleep(DEEP_LINK_POLL_INTERVAL).await;
+                timer::sleep(DEEP_LINK_POLL_INTERVAL).await;
                 let Some(uri) = deep_link::take_pending_deep_link() else {
                     continue;
                 };
@@ -906,7 +911,7 @@ fn BackendScan() -> Element {
         let mut playback = playback;
         spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                timer::sleep(std::time::Duration::from_secs(1)).await;
                 if !*backend_online.peek() {
                     continue;
                 }
@@ -925,7 +930,7 @@ fn BackendScan() -> Element {
         let mut targets = targets;
         spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                timer::sleep(std::time::Duration::from_secs(2)).await;
                 if !*backend_online.peek() {
                     continue;
                 }
@@ -944,7 +949,7 @@ fn BackendScan() -> Element {
         let mut error = error;
         if error.read().is_some() {
             spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                timer::sleep(std::time::Duration::from_secs(5)).await;
                 *error.write() = None;
             });
         }
@@ -957,7 +962,7 @@ fn BackendScan() -> Element {
         let mut unavailable = unavailable;
         spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                timer::sleep(std::time::Duration::from_secs(3)).await;
                 if found.peek().is_empty() {
                     continue;
                 }
@@ -1243,7 +1248,7 @@ fn TransportBar(
         let ticket = token().wrapping_add(1);
         *token.write() = ticket;
         spawn(async move {
-            tokio::time::sleep(VOLUME_PANEL_TIMEOUT).await;
+            timer::sleep(VOLUME_PANEL_TIMEOUT).await;
             // A later interaction bumped the token: that one owns the close.
             if *token.peek() == ticket {
                 *volume_open.write() = false;
@@ -1342,7 +1347,7 @@ fn TransportBar(
                     // tap still plays it fully.
                     *handle_active.write() = true;
                     spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+                        timer::sleep(std::time::Duration::from_millis(450)).await;
                         *handle_active.write() = false;
                     });
                 },
@@ -1869,7 +1874,10 @@ fn AppSettingsPage() -> Element {
     let mut found: Signal<Vec<blue2th_proto::DiscoveredBackend>> = use_signal(Vec::new);
     // A ROM that cannot resolve `MulticastLock` renders the button disabled
     // rather than failing on tap: the verdict is cached, so this costs no JNI.
-    let can_search = discovery::search_enabled(jni_util::multicast_supported());
+    let can_search = discovery::search_enabled(
+        jni_util::multicast_supported(),
+        cfg!(not(target_arch = "wasm32")),
+    );
     let (auto_repair, adds_backends) = {
         let snapshot = app_settings.read();
         (snapshot.auto_repair_url, snapshot.discovery_adds_backends)
@@ -2010,7 +2018,14 @@ fn AppSettingsPage() -> Element {
                             *error.write() = None;
                             *notice.write() = None;
                             spawn(async move {
-                                match discovery::browse(discovery::BROWSE_TIMEOUT).await {
+                                // No mDNS in the browser (#159): the button is
+                                // disabled there, and a stray tap reports why.
+                                #[cfg(not(target_arch = "wasm32"))]
+                                let outcome = discovery::browse(discovery::BROWSE_TIMEOUT).await;
+                                #[cfg(target_arch = "wasm32")]
+                                let outcome: Result<Vec<blue2th_proto::DiscoveredBackend>, _> =
+                                    Err(discovery::DiscoveryError::Unsupported);
+                                match outcome {
                                     Ok(services) => {
                                         // Every change lands in one write, so a scan
                                         // finding two moved backends redraws once.
