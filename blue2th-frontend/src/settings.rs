@@ -71,6 +71,13 @@ pub struct BackendEntry {
     /// entry, which keeps matching on its URL until an id is adopted.
     #[serde(default)]
     pub id: Option<String>,
+    /// Whether this entry holds a config change — its name or a playback toggle
+    /// — the backend has not acknowledged yet (#160). A client pushes only such
+    /// a change and otherwise reads the backend's config, so a stale copy never
+    /// overwrites what another client set. `serde(default)`: an entry stored
+    /// before #160 holds nothing unsent, and reads on its first sync.
+    #[serde(default)]
+    pub config_pending: bool,
 }
 
 /// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
@@ -417,6 +424,7 @@ impl AppSettings {
             // Typing an address says nothing about which machine answers it; the
             // id is adopted the first time that backend is discovered or paired.
             id: None,
+            config_pending: false,
         });
         Ok(())
     }
@@ -608,6 +616,21 @@ impl AppSettings {
         Ok(())
     }
 
+    /// Rename the backend at `index` (#160: the browser's name field). The name
+    /// goes through the shared proto validator, and the change waits as
+    /// pending until the backend acknowledges it.
+    pub fn set_name(&mut self, _index: usize, _name: &str) -> Result<(), SettingsError> {
+        // Red-phase stub (#160): renames nothing.
+        Ok(())
+    }
+
+    /// Record that the backend at `url` acknowledged `pushed` (#160): its
+    /// entry is no longer pending — unless it changed again meanwhile, in which
+    /// case the newer change still has to go out.
+    pub fn confirm_config_push(&mut self, _url: &str, _pushed: &blue2th_proto::ConfigRequest) {
+        // Red-phase stub (#160): confirms nothing.
+    }
+
     /// Remove the backend at `index`. Removing the active one leaves no active
     /// backend at all (the app then knows no address).
     pub fn remove(&mut self, index: usize) -> Result<(), SettingsError> {
@@ -720,6 +743,14 @@ pub fn config_sync_on_reconnect(kind: ClientKind) -> ConfigSync {
     }
 }
 
+/// The config sync a client runs for its active backend (#160), the same rule
+/// on the phone and in the browser: push a change the backend has not
+/// acknowledged, and otherwise read the backend's config. Pure.
+pub fn config_sync(_settings: &AppSettings) -> ConfigSync {
+    // Red-phase stub (#160): always reads.
+    ConfigSync::Read
+}
+
 /// The page the app opens on (#160).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartPage {
@@ -772,6 +803,7 @@ pub fn browser_settings(stored: AppSettings, origin: &str) -> AppSettings {
             token: None,
             pairing: PairingMethod::Code,
             id: None,
+            config_pending: false,
         });
     AppSettings {
         backends: vec![entry],

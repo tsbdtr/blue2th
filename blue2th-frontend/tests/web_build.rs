@@ -324,21 +324,26 @@ fn shipped_code(relative: &str) -> String {
         .join("\n")
 }
 
-// Criterion: the browser never pushes `POST /config` on reconnection, and an
-// unpaired browser opens on `/settings`. Both policies are pure and tested in
-// `tests/browser.rs`; what no runtime test sees is whether the app asks them.
-// Near-miss: the policies defined and green while the health loop still calls
-// `push_active_name` for every client and the router always opens on `/`.
+// Criterion: every client syncs its backend's config through the one rule —
+// push only what is pending, otherwise read (#160) — and an unpaired browser
+// opens on `/settings`. Both are tested at runtime (`backend::sync_config`,
+// `tests/browser.rs`); what no runtime test sees is whether the app asks them.
+// Near-miss: the rule defined and green while the health loop still calls
+// `push_active_name` and the router always opens on `/`.
 #[test]
-fn test_app_consults_the_reconnection_and_start_page_policies() {
+fn test_app_consults_the_config_sync_and_start_page_policies() {
     let shipped = shipped_code("src/main.rs");
 
-    for call in ["config_sync_on_reconnect(", "start_page("] {
+    for call in ["backend::sync_config(", "start_page("] {
         assert!(
             shipped.contains(call),
-            "main.rs must decide through settings::{call}…)"
+            "main.rs must decide through {call}…)"
         );
     }
+    assert!(
+        !shipped.contains("push_active_name("),
+        "no client re-pushes its stored config on reconnection any more"
+    );
 }
 
 // ── CI ───────────────────────────────────────────────────────────────────────

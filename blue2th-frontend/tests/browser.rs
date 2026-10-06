@@ -11,7 +11,7 @@
 
 use blue2th_frontend::lifecycle::{presence_for, PageEvent};
 use blue2th_frontend::settings::{
-    self, AppSettings, BackendEntry, ClientKind, ConfigSync, PairingMethod, StartPage,
+    self, AppSettings, BackendEntry, ClientKind, PairingMethod, StartPage,
 };
 use blue2th_proto::{ClientPresence, ServerConfig};
 
@@ -35,6 +35,7 @@ fn entry(
         token: token.map(str::to_string),
         pairing: PairingMethod::Code,
         id: None,
+        config_pending: false,
     }
 }
 
@@ -240,22 +241,6 @@ fn test_adopt_config_without_an_active_entry_changes_nothing() {
 }
 
 // ── client kind: reconnection and start page ─────────────────────────────────
-
-// Criterion (guard, "never push config on reconnection in the browser"): the
-// browser **reads** the backend's config when the backend becomes usable
-// again; the phone keeps pushing its own. Near-miss: the phone's answer, which
-// is what the shared health loop did for every client before #160.
-#[test]
-fn test_config_sync_on_reconnect_reads_in_the_browser_and_pushes_on_the_phone() {
-    assert_eq!(
-        settings::config_sync_on_reconnect(ClientKind::Browser),
-        ConfigSync::Read
-    );
-    assert_eq!(
-        settings::config_sync_on_reconnect(ClientKind::Phone),
-        ConfigSync::Push
-    );
-}
 
 // Criterion: an unpaired browser opens on `/settings`; a paired one on `/`.
 #[test]
