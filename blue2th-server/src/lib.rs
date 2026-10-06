@@ -303,9 +303,14 @@ const DEFAULT_BIND: &str = "0.0.0.0:4000";
 /// TCP port the backend listens on.
 const DEFAULT_PORT: u16 = 4000;
 
-/// Env var overriding the bind address; it always wins over the automatic LAN
-/// choice, so an operator can still ask for `0.0.0.0` (or a specific interface).
+/// Env var overriding the bind address in **debug builds only** (#160): the dev
+/// loop sets it once in a shell. Release builds take `--bind` instead, so an
+/// environment inherited by a service cannot move the API to another
+/// interface unnoticed.
 const BIND_ENV: &str = "BLUE2TH_BIND";
+
+/// The most pairing codes `--pair <n>` arms at once.
+const MAX_PAIR_COUNT: u32 = 10;
 
 /// Run the backend: initialise tracing, bind the socket and serve the router.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -316,14 +321,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // minted in its place has just invalidated every paired client — and
     // otherwise only when the operator asks for one. Arming a code at every
     // restart would leave the one open door ajar for no reason.
-    let pair_requested = std::env::args().any(|arg| arg == "--pair");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = match parse_args(&args) {
+        Ok(cli) => cli,
+        Err(e) => {
+            tracing::error!("{e}");
+            return Err(e.into());
+        },
+    };
 
     let mut auth_store = AuthStore::with_store(auth::auth_store_path());
     let server_name = config::ServerName::with_store(config::name_store_path());
-    let addr = lan_bind_address();
+    let addr = resolve_bind_address(cli.bind.as_deref());
 
-    if auth_store.minted_a_new_token() || pair_requested {
-        let codes = auth_store.arm_pairing(1, std::time::SystemTime::now());
+    if auth_store.minted_a_new_token() || cli.pair.is_some() {
+        let codes = auth_store.arm_pairing(cli.pair.unwrap_or(1), std::time::SystemTime::now());
         tracing::info!(
             "{}",
             pairing_banners(&advertised_url(&addr), server_name.name(), &codes)
@@ -544,17 +556,23 @@ fn advertised_service_from(
     }
 }
 
-/// The address the backend binds to: `BLUE2TH_BIND` when set, otherwise the
-/// host's LAN IPv4, otherwise every interface.
+/// The address the backend binds to with no `--bind`: `BLUE2TH_BIND` when set
+/// in a debug build, otherwise the host's LAN IPv4, otherwise every interface.
 ///
 /// Binding to the LAN address is **defence in depth, not authentication**: it
 /// stops the API being served on other interfaces (a VPN, a laptop's public
 /// one). It does not restrict who on the LAN may connect — that is the bearer
 /// token's job.
 pub fn lan_bind_address() -> String {
+    resolve_bind_address(None)
+}
+
+/// The address the backend binds to, `--bind` (`cli`) first; see
+/// [`bind_address`] for the precedence. Logs the warning it produces.
+fn resolve_bind_address(cli: Option<&str>) -> String {
     let env = std::env::var(BIND_ENV).ok();
     let choice = bind_address(
-        None,
+        cli,
         env.as_deref(),
         cfg!(debug_assertions),
         preferred_lan_ipv4(&host_ipv4_addresses()),
@@ -605,19 +623,25 @@ fn bind_address(
     debug: bool,
     detected: Option<std::net::Ipv4Addr>,
 ) -> BindChoice {
-    // Red-phase stub (#160): the pre-#160 precedence — the env var wins in
-    // every build, `--bind` is ignored and nothing is ever warned about.
-    let _ = (cli, debug);
-    let override_addr = env.filter(|a| !a.is_empty());
+    // An empty env var is unset, never an empty bind address.
+    let env = env.filter(|a| !a.is_empty());
+    let warning = (!debug && env.is_some()).then(|| {
+        format!(
+            "{BIND_ENV} is read only by debug builds and was ignored; \
+             use --bind <host:port> instead"
+        )
+    });
+    let override_addr = cli.or(if debug { env } else { None });
     let addr = match (override_addr, detected) {
+        // An explicit override always wins: the operator knows their network
+        // better than a heuristic does.
         (Some(addr), _) => addr.to_string(),
         (None, Some(lan)) => format!("{lan}:{DEFAULT_PORT}"),
+        // No routable address (no interface up): every interface, with the
+        // warning left to the caller. Refusing to start would be worse.
         (None, None) => DEFAULT_BIND.to_string(),
     };
-    BindChoice {
-        addr,
-        warning: None,
-    }
+    BindChoice { addr, warning }
 }
 
 /// The options the backend reads off its command line (#160).
@@ -641,8 +665,13 @@ pub enum CliError {
 
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Red-phase stub: names neither the flag nor the accepted range.
-        write!(f, "invalid arguments")
+        match self {
+            CliError::PairCount(value) => write!(
+                f,
+                "--pair expects a number of codes from 1 to {MAX_PAIR_COUNT}, got {value:?}"
+            ),
+            CliError::BindValue => write!(f, "--bind expects an address, as <host:port>"),
+        }
     }
 }
 
@@ -652,9 +681,38 @@ impl std::error::Error for CliError {}
 ///
 /// Unknown arguments are ignored, as they always were.
 pub fn parse_args(args: &[String]) -> Result<CliOptions, CliError> {
-    // Red-phase stub (#160): reads nothing.
-    let _ = args;
-    Ok(CliOptions::default())
+    let mut options = CliOptions::default();
+    let mut args = args.iter().peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--pair" => {
+                // Only `--…` is a flag: `-1` is a (refused) count, not a bare
+                // `--pair` followed by something else.
+                let count = match args.next_if(|next| !next.starts_with("--")) {
+                    Some(value) => value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|n| (1..=MAX_PAIR_COUNT).contains(n))
+                        // Owned copy: the refusal outlives the argument list.
+                        .ok_or_else(|| CliError::PairCount(value.clone()))?,
+                    None => 1,
+                };
+                options.pair = Some(count);
+            },
+            "--bind" => {
+                // An empty value would read as "no override" and quietly fall
+                // back to the automatic choice: refused instead.
+                let value = args
+                    .next()
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or(CliError::BindValue)?;
+                // Owned copy: the options outlive the argument list.
+                options.bind = Some(value.clone());
+            },
+            _ => {},
+        }
+    }
+    Ok(options)
 }
 
 /// The best LAN IPv4 among the host's addresses: a routable, non-loopback,
@@ -689,11 +747,24 @@ pub fn pairing_banner(url: &str, name: &str, code: &str) -> String {
 /// The startup banner for every armed code: one [`pairing_banner`] block per
 /// code, numbered `k/n`. With a single code it is exactly [`pairing_banner`].
 pub fn pairing_banners(url: &str, name: &str, codes: &[String]) -> String {
-    // Red-phase stub (#160): the first code's block only, unnumbered.
+    let n = codes.len();
+    if n == 1 {
+        return codes
+            .first()
+            .map(|code| pairing_banner(url, name, code))
+            .unwrap_or_default();
+    }
     codes
-        .first()
-        .map(|code| pairing_banner(url, name, code))
-        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(k, code)| {
+            format!(
+                "\nPairing code {}/{n}:{}",
+                k + 1,
+                pairing_banner(url, name, code)
+            )
+        })
+        .collect()
 }
 
 /// Render `link` as a QR code in text a terminal can show.

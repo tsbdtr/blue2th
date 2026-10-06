@@ -476,10 +476,10 @@ pub async fn push_active_config() -> Result<(), BackendError> {
 
 /// `GET {base}/config` — the active backend's configuration (#160). The browser
 /// reads it on start and after pairing, and adopts it instead of pushing its own.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub async fn fetch_config() -> Result<ServerConfig, BackendError> {
-    // Red-phase stub (#160): reaches nothing.
-    Err(BackendError::new(NO_BACKEND_CONFIGURED))
+    let (client, base) = authed_client()?;
+    send_json(client.get(config_url(&base)).timeout(SETTINGS_CALL_TIMEOUT)).await
 }
 
 /// Everything the browser's presence post carries (#160), built on the host so
@@ -499,14 +499,20 @@ pub struct PresencePost {
 
 /// The presence post for `presence` against the active backend of `settings`.
 /// Pure. Fails like every guarded call: no backend configured, or not paired.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn browser_presence_post(
     settings: &AppSettings,
     presence: ClientPresence,
 ) -> Result<PresencePost, BackendError> {
-    // Red-phase stub (#160).
-    let _ = (settings, presence);
-    Err(BackendError::new(NO_BACKEND_CONFIGURED))
+    let (base, token) = authed_base_from(settings)?;
+    let body = serde_json::to_string(&PresenceRequest { presence })
+        .map_err(|e| BackendError::new(e.to_string()))?;
+    Ok(PresencePost {
+        url: format!("{}/client/presence", base.trim_end_matches('/')),
+        authorization: auth_header_value(&token),
+        body,
+        keepalive: true,
+    })
 }
 
 /// Whether the backend at `previous` is really being left behind by a switch to

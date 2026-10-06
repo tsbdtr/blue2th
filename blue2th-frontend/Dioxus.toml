@@ -61,3 +61,52 @@ script = []
 # Javascript code file
 # serve: [dev-server] only
 script = []
+
+# ── Dev proxy for `dx serve --platform web` (#160) ───────────────────────────
+# In the browser every API call goes to the page's own origin; dx relays each
+# top-level prefix of the server's `ROUTES` table to a backend on its default
+# port. One entry per prefix, never one for `/`: a proxy URL needs a non-empty
+# path (dx 0.7.10), and a catch-all would swallow the page's own assets.
+# blue2th-server/tests/web_proxy.rs checks this list against `ROUTES`.
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/adapters"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/client"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/config"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/devices"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/health"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/pair"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/pause"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/play"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/playback"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/scan"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/spotify"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/stop"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/targets"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:4000/volume"

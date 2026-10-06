@@ -69,6 +69,13 @@ usable once. Leave it running and go to [`PAIRING.md`](PAIRING.md).
 On later starts, a backend that has already been paired arms no code and says
 so. `--pair` arms a new one whenever you want to pair another phone.
 
+### Options
+
+| Option | Effect |
+|---|---|
+| `--pair [n]` | Arm `n` pairing codes at once, 1 to 10 (one when `n` is left out), each printed as its own banner block numbered `k/n`. Each code works once and for five minutes; five wrong attempts in total, across all of them, cancel every code. `--pair 2` pairs a phone and a browser from one start. Any other count refuses to start. |
+| `--bind <host:port>` | Bind address. Overrides the automatic LAN choice — useful when the PC has several interfaces (the backend takes the first routable one) or to listen on `0.0.0.0:4000`. A missing or empty value refuses to start. |
+
 ### Where it keeps its state
 
 Under `$XDG_STATE_HOME/blue2th/` (`~/.local/state/blue2th/` by default):
@@ -85,7 +92,7 @@ code again.
 
 | Variable | Effect |
 |---|---|
-| `BLUE2TH_BIND` | Bind address, `host:port`. Overrides the automatic LAN choice — useful when the PC has several interfaces (the backend takes the first routable one) or to listen on `0.0.0.0:4000`. |
+| `BLUE2TH_BIND` | Bind address, `host:port`, read by **debug builds only** (the dev loop). `--bind` wins over it. A release build ignores it and warns at start; use `--bind` there. |
 | `BLUE2TH_SPOTIFY_CLIENT_ID` | The Spotify application's client id (below). Spotify features stay off without it, and the backend says which variable is missing. |
 | `BLUE2TH_SPOTIFY_REDIRECT_URI` | The OAuth redirect URI. Defaults to `blue2th://spotify-callback`, which the app registers; leave it alone unless you rebuilt the app with another scheme. |
 

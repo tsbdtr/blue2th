@@ -77,8 +77,10 @@ mDNS, and the lifecycle hooks that report presence.
 
 ## The control API
 
-The backend listens on the PC's LAN address, port 4000 (`BLUE2TH_BIND` overrides
-it), and serves:
+The backend listens on the PC's LAN address, port 4000, and serves the routes
+below. `--bind <host:port>` overrides the address in every build; `BLUE2TH_BIND`
+does too, below `--bind`, in debug builds only; with neither, the first routable
+LAN address, and `0.0.0.0:4000` when there is none.
 
 | Area | Routes |
 |---|---|

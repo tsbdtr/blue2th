@@ -258,7 +258,7 @@ struct StoredToken {
     token: String,
 }
 
-/// The backend's API token and the pairing code currently armed, optionally
+/// The backend's API token and the pairing codes currently armed, optionally
 /// persisted.
 ///
 /// Following the `state_store` pattern, [`AuthStore::new`] and
@@ -268,8 +268,11 @@ struct StoredToken {
 pub struct AuthStore {
     /// The long-lived bearer token every guarded route requires.
     token: String,
-    /// The pairing code currently armed, if any.
-    pairing: Option<PairingCode>,
+    /// The pairing codes currently armed, unconsumed ones only (#160).
+    pairing: Vec<PairingCode>,
+    /// Failed redemptions since the codes were armed, counted once for all of
+    /// them: n codes must not multiply the attempts an attacker gets.
+    failures: u32,
     /// Where the token is persisted, or `None` to stay in memory only.
     store: Option<PathBuf>,
     /// Whether the token was minted rather than reloaded. A minted token
@@ -283,7 +286,8 @@ impl AuthStore {
     pub fn new() -> Self {
         Self {
             token: generate_token(),
-            pairing: None,
+            pairing: Vec::new(),
+            failures: 0,
             store: None,
             minted: true,
         }
@@ -294,7 +298,8 @@ impl AuthStore {
     pub fn with_token(token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
-            pairing: None,
+            pairing: Vec::new(),
+            failures: 0,
             store: None,
             // Handed in, not minted: nothing was invalidated.
             minted: false,
@@ -322,7 +327,8 @@ impl AuthStore {
         });
         Self {
             token,
-            pairing: None,
+            pairing: Vec::new(),
+            failures: 0,
             store,
             minted,
         }
@@ -343,9 +349,9 @@ impl AuthStore {
         &self.token
     }
 
-    /// The pairing code currently armed, if any.
+    /// The first pairing code still armed, if any.
     pub fn armed(&self) -> Option<&PairingCode> {
-        self.pairing.as_ref()
+        self.pairing.first()
     }
 
     /// Mint a new API token, persist it and return it. Every paired client must
@@ -362,40 +368,51 @@ impl AuthStore {
     /// ones. Every armed code redeems once; failed attempts are counted once
     /// for all of them.
     pub fn arm_pairing(&mut self, count: u32, now: SystemTime) -> Vec<String> {
-        // Red-phase stub: arms a single code whatever `count` asks for.
-        let _ = count;
-        let minted = PairingCode::mint(now);
-        // Owned copy: the code is handed to the operator while the store keeps
-        // its own to verify against.
-        let code = minted.code().to_string();
-        self.pairing = Some(minted);
-        vec![code]
+        self.pairing.clear();
+        self.failures = 0;
+        while self.pairing.len() < count as usize {
+            let minted = PairingCode::mint(now);
+            // Two equal codes would be one code redeemable twice.
+            if self.pairing.iter().all(|c| c.code() != minted.code()) {
+                self.pairing.push(minted);
+            }
+        }
+        self.pairing
+            .iter()
+            // Owned copies: the codes are handed to the operator while the
+            // store keeps its own to verify against.
+            .map(|c| c.code().to_string())
+            .collect()
     }
 
     /// Exchange a submitted code for the API token.
     ///
-    /// On success the code is consumed (one-shot); on failure the attempt is
-    /// recorded, and reaching [`MAX_PAIRING_ATTEMPTS`] invalidates the armed
-    /// code. Every failure returns the same [`PairError`].
+    /// Any armed code redeems; on success that code alone is consumed
+    /// (one-shot). On failure the attempt is recorded once for all codes, and
+    /// reaching [`MAX_PAIRING_ATTEMPTS`] invalidates every armed code. Every
+    /// failure returns the same [`PairError`].
     pub fn redeem(&mut self, submitted: &str, now: SystemTime) -> Result<String, PairError> {
-        match verify_code(self.pairing.as_ref(), submitted, now) {
-            Ok(()) => {
-                if let Some(code) = self.pairing.as_mut() {
-                    // One-shot: a code that worked once must never work again.
-                    code.consume();
-                }
+        let matched = self
+            .pairing
+            .iter()
+            .position(|code| verify_code(Some(code), submitted, now).is_ok());
+        match matched {
+            Some(index) => {
+                // One-shot: a code that worked once must never work again.
+                self.pairing.remove(index);
                 Ok(self.token.clone())
             },
-            Err(err) => {
-                if let Some(code) = self.pairing.as_mut() {
-                    code.register_failure();
+            None => {
+                if !self.pairing.is_empty() {
+                    self.failures = self.failures.saturating_add(1);
                     // The cap is what makes a six-character secret viable at
-                    // all; past it the code is not merely refused, it is gone.
-                    if code.attempts() >= MAX_PAIRING_ATTEMPTS {
-                        self.pairing = None;
+                    // all; past it the codes are not merely refused, they are
+                    // gone.
+                    if self.failures >= MAX_PAIRING_ATTEMPTS {
+                        self.pairing.clear();
                     }
                 }
-                Err(err)
+                Err(PairError::Rejected)
             },
         }
     }
