@@ -13,7 +13,7 @@ use blue2th_proto::{
 };
 use futures::StreamExt;
 
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, ConfigSync};
 
 /// How long the app keeps reading the `/scan` SSE feed before stopping. The
 /// backend caps discovery on its side too; this is the client-side window.
@@ -312,16 +312,16 @@ fn config_url(base: &str) -> String {
     format!("{}/config", base.trim_end_matches('/'))
 }
 
-/// `POST {base}/config` against an explicit address — push the app's name to the
-/// backend, which adopts it as its Spotify Connect device name.
+/// `POST {base}/config` against an explicit address — push a config change to
+/// the backend, which adopts the name as its Spotify Connect device name.
 ///
 /// Addressed explicitly rather than through `backend_base_url()`: the only caller
-/// is [`activate_backend`], which must reach the backend it *just* switched to
-/// even if a concurrent switch has already moved the resolved address on.
+/// is [`sync_config`], which pushes to the entry whose change it confirms, even
+/// if a concurrent switch has already moved the resolved address on.
 ///
 /// The whole config travels as one `ConfigRequest` rather than as a growing list
 /// of positional booleans: two adjacent `bool` parameters would silently swap at
-/// a call site, and the app is the source of truth for every one of them.
+/// a call site.
 async fn set_config_at(
     base: &str,
     token: Option<&str>,
@@ -448,35 +448,8 @@ pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<
     release_at(&base, token.as_deref()).await
 }
 
-/// Push the active backend's name to it, best-effort and silent.
-///
-/// The app is the source of truth for that name, but it only reaches the backend
-/// when something sends it: a push that failed while the backend was down, or a
-/// server that restarted since, would otherwise leave the Connect device
-/// advertising a stale name. Called when the backend becomes reachable again, so
-/// a failure here is expected — it will simply be retried on the next transition,
-/// and there is no user action to prompt.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn push_active_name() {
-    let _ = push_active_config().await;
-}
-
-/// Push the active backend's whole config (name **and** settings), surfacing the
-/// failure. Used by the settings toggles, where the user is watching and deserves
-/// to be told; `push_active_name` is the same call made silently on reconnection.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn push_active_config() -> Result<(), BackendError> {
-    let settings = crate::settings::current();
-    let Some(entry) = settings.active_backend() else {
-        return Err(BackendError::new(NO_BACKEND_CONFIGURED));
-    };
-    set_config_at(&entry.url, entry.token.as_deref(), config_body(entry)).await?;
-    Ok(())
-}
-
-/// `GET {base}/config` — the active backend's configuration (#160). The browser
-/// reads it on start and after pairing, and adopts it instead of pushing its own.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+/// `GET {base}/config` — the active backend's configuration (#160): the read
+/// half of [`sync_config`].
 pub async fn fetch_config() -> Result<ServerConfig, BackendError> {
     let (client, base) = authed_client()?;
     send_json(client.get(config_url(&base)).timeout(SETTINGS_CALL_TIMEOUT)).await
@@ -486,10 +459,34 @@ pub async fn fetch_config() -> Result<ServerConfig, BackendError> {
 /// push a change the backend has not acknowledged (`POST /config`) and confirm
 /// it, otherwise read `GET /config` and adopt it. The settings are updated in
 /// place and in the process-wide cache.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn sync_config(_settings: &mut AppSettings) -> Result<(), BackendError> {
-    // Red-phase stub (#160): syncs nothing.
-    Err(BackendError::new(NO_BACKEND_CONFIGURED))
+///
+/// A change the backend refused stays pending, so it goes out at the next sync:
+/// what the phone's re-push on every reconnection used to cover, without ever
+/// overwriting what another client set since.
+pub async fn sync_config(settings: &mut AppSettings) -> Result<(), BackendError> {
+    // Owned copy: the calls below resolve the address and token from the
+    // process-wide cache, which must hold exactly these settings.
+    crate::settings::set_current(settings.clone());
+    match crate::settings::config_sync(settings) {
+        ConfigSync::Push => {
+            let (base, token) = authed_base_from(settings)?;
+            let Some(entry) = settings.active_backend() else {
+                return Err(BackendError::new(NO_BACKEND_CONFIGURED));
+            };
+            let pushed = config_body(entry);
+            // Owned copy: the body is consumed by the request, and the
+            // confirmation compares the entry against what was sent.
+            set_config_at(&base, Some(&token), pushed.clone()).await?;
+            settings.confirm_config_push(&base, &pushed);
+        },
+        ConfigSync::Read => {
+            let config = fetch_config().await?;
+            crate::settings::adopt_config(settings, &config);
+        },
+    }
+    // Owned copy: the cache keeps its own settings beyond this borrow.
+    crate::settings::set_current(settings.clone());
+    Ok(())
 }
 
 /// Everything the browser's presence post carries (#160), built on the host so
@@ -533,7 +530,8 @@ fn is_left_behind(previous: &str, next: Option<&str>) -> bool {
 }
 
 /// Switch the active backend: pause the previous one (best-effort), repoint the
-/// app, and push the new backend's name to it.
+/// app, and sync the new backend's config (#160): push a change the app holds
+/// unsent, otherwise read and adopt what the backend has.
 ///
 /// The settings page and the status-encart quick switch must both go through
 /// this, so the two ways to switch cannot drift apart. The local switch always
@@ -559,24 +557,22 @@ pub async fn activate_backend(
     // Owned copy: the cache keeps its own settings beyond this borrow.
     crate::settings::set_current(settings.clone());
 
-    // Owned copy: the borrow of `settings` must not survive the awaits below,
-    // and the address is the one to push to whatever the cache does meanwhile.
-    let target = settings
-        .active_backend()
-        .map(|b| (b.url.clone(), b.token.clone(), config_body(b)));
+    let arriving = settings.active_url();
 
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
     let mut failure = None;
     if let Some((base, token)) = previous {
-        if is_left_behind(&base, target.as_ref().map(|(url, ..)| url.as_str())) {
+        if is_left_behind(&base, arriving.as_deref()) {
             if let Err(e) = pause_at(&base, token.as_deref()).await {
                 failure = Some(e);
             }
         }
     }
-    if let Some((base, token, config)) = target {
-        if let Err(e) = set_config_at(&base, token.as_deref(), config).await {
+    // Synced rather than pushed: switching to a backend the app holds nothing
+    // unsent for must not re-impose a stale copy over another client's change.
+    if arriving.is_some() {
+        if let Err(e) = sync_config(settings).await {
             failure = Some(e);
         }
     }
@@ -1788,7 +1784,7 @@ mod tests {
     }
 
     // Criterion: the same holds for the calls that push a body — the config push
-    // is the one the settings page and the reconnection both go through.
+    // is the one every sync of a pending change goes through (#160).
     #[tokio::test]
     async fn test_the_config_push_carries_the_bearer_token() {
         let _guard = SETTINGS_GUARD.lock().await;
@@ -1798,9 +1794,12 @@ mod tests {
         )
         .await
         .expect("start the canned backend");
-        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+        let mut settings = active_with_token(&base, Some("tok-123"));
+        if let Some(salon) = settings.backends.first_mut() {
+            salon.config_pending = true;
+        }
 
-        let outcome = push_active_config().await;
+        let outcome = sync_config(&mut settings).await;
         let request = served
             .await
             .expect("join the test listener")

@@ -117,20 +117,18 @@ async fn await_new_token() {
     }
 }
 
-/// Read the active backend's config and adopt it into the settings (#160): the
-/// browser follows what the phone set instead of overwriting it. Persisted
-/// through the same path as every settings change.
-async fn adopt_backend_config(
+/// Sync the active backend's config through the one rule every client follows
+/// (#160) — push a change the backend has not acknowledged, otherwise read and
+/// adopt what it has — and publish the result to the shared signal.
+async fn sync_backend_config(
     mut app_settings: Signal<settings::AppSettings>,
 ) -> Result<(), backend::BackendError> {
-    let config = backend::fetch_config().await?;
-    // Owned copy: mutated, then written back to the shared signal.
+    // Owned copy: synced, then written back to the shared signal.
     let mut next = app_settings.peek().clone();
-    settings::adopt_config(&mut next, &config);
-    // Owned copy: the cache keeps its own settings.
-    settings::set_current(next.clone());
+    let outcome = backend::sync_config(&mut next).await;
+    // Written back whatever the outcome: a refused push keeps its pending mark.
     *app_settings.write() = next;
-    Ok(())
+    outcome
 }
 
 /// Whether the start page has already been applied: it is decided once per app
@@ -274,29 +272,19 @@ fn App() -> Element {
                 } else if reachable && *backend_gone.peek() {
                     *backend_gone.write() = false;
                 }
-                // Becoming usable again: re-assert the name the app is the source
-                // of truth for. This covers a push that failed while the backend
-                // was down, a backend (or app) that restarted since, and one just
-                // updated out of an incompatible range — otherwise the Connect
-                // device would keep advertising whatever name the server last
-                // stored.
-                //
-                // The browser does the opposite (#160): it reads the backend's
-                // config and adopts it, so it never overwrites what the phone
-                // set. This first transition is also its read on start.
+                // Becoming usable again (#160): sync the config. A change that
+                // failed while the backend was down goes out now; otherwise the
+                // app adopts what the backend holds, so it never re-imposes a
+                // stale copy over another client's change. The first transition
+                // after start is also the sync on start.
                 if reachable && mismatch.is_none() && !was_usable {
-                    match settings::config_sync_on_reconnect(settings::CLIENT_KIND) {
-                        settings::ConfigSync::Push => backend::push_active_name().await,
-                        settings::ConfigSync::Read => {
-                            // An unpaired browser has nothing to read: the
-                            // settings page already says so.
-                            if let Err(e) = adopt_backend_config(app_settings).await {
-                                if !e.is_not_paired() {
-                                    let mut background_error = spotify_ui.background_error;
-                                    *background_error.write() = Some(e.to_string());
-                                }
-                            }
-                        },
+                    // An unpaired app has nothing to sync: the settings page
+                    // already says so.
+                    if let Err(e) = sync_backend_config(app_settings).await {
+                        if !e.is_not_paired() {
+                            let mut background_error = spotify_ui.background_error;
+                            *background_error.write() = Some(e.to_string());
+                        }
                     }
                 }
                 timer::sleep(BACKEND_HEALTH_INTERVAL).await;
@@ -433,6 +421,11 @@ fn App() -> Element {
                                 Ok(_) => {
                                     settings::set_current(next.clone());
                                     *app_settings.write() = next;
+                                    // Paired: adopt the backend's config, or push
+                                    // a change still waiting for it (#160).
+                                    if let Err(e) = sync_backend_config(app_settings).await {
+                                        *background_error.write() = Some(e.to_string());
+                                    }
                                 },
                                 Err(e) => *background_error.write() = Some(e.to_string()),
                             }
@@ -1884,6 +1877,18 @@ fn AppSettingsPage() -> Element {
     // Set when a fresh pairing's `GET /config` failed: the name and the toggles
     // stay hidden until the backend's real values are known.
     let mut config_unread = use_signal(|| false);
+    // Opening the page syncs the active backend's config (#160): the toggles
+    // then show what the backend applies, not a copy another client changed.
+    use_hook(move || {
+        spawn(async move {
+            if let Err(e) = sync_backend_config(app_settings).await {
+                // Unpaired: the Pairing section already says what to do.
+                if !e.is_not_paired() {
+                    *error.write() = Some(e.to_string());
+                }
+            }
+        });
+    });
     // The browser's name field edits the active entry, the one at the origin.
     let active_name: Option<(usize, String)> = {
         let snapshot = app_settings.read();
@@ -2252,31 +2257,24 @@ fn AppSettingsPage() -> Element {
                                     // On commit (Enter, or leaving the field), not on
                                     // every keystroke: each one would be a push.
                                     onchange: move |e| {
-                                        let name = match blue2th_proto::validate_backend_name(&e.value()) {
-                                            Ok(name) => name,
-                                            Err(err) => {
-                                                *notice.write() = None;
-                                                *error.write() =
-                                                    Some(settings::SettingsError::Name(err).to_string());
-                                                return;
-                                            },
-                                        };
                                         // Owned copy: mutated, then written back to
                                         // the shared signal.
                                         let mut next = app_settings.peek().clone();
-                                        let Some(entry) = next.backends.get_mut(index) else {
+                                        if let Err(err) = next.set_name(index, &e.value()) {
+                                            *notice.write() = None;
+                                            *error.write() = Some(err.to_string());
                                             return;
-                                        };
-                                        entry.name = name;
+                                        }
                                         // Owned copy: the cache keeps its own settings.
                                         settings::set_current(next.clone());
                                         *app_settings.write() = next;
                                         let mut error = error;
                                         spawn(async move {
                                             // The backend advertises the name, so the
-                                            // edit is meaningless until it knows.
+                                            // edit is meaningless until it knows; a
+                                            // refused push stays pending (#160).
                                             *error.write() =
-                                                backend::push_active_config().await.err().map(|e| e.to_string());
+                                                sync_backend_config(app_settings).await.err().map(|e| e.to_string());
                                         });
                                     },
                                 }
@@ -2554,19 +2552,19 @@ fn AppSettingsPage() -> Element {
                                                     *notice.write() = Some(
                                                         rust_i18n::t!("app_settings.paired_ok").to_string(),
                                                     );
-                                                    // The browser shows the backend's
-                                                    // real settings, never a guess:
-                                                    // read them now (#160). The token is
-                                                    // kept whatever the read does.
-                                                    if browser {
-                                                        *config_unread.write() = true;
-                                                        match adopt_backend_config(app_settings).await {
-                                                            Ok(()) => *config_unread.write() = false,
-                                                            Err(e) => {
-                                                                *notice.write() = None;
-                                                                *error.write() = Some(e.to_string());
-                                                            },
-                                                        }
+                                                    // Paired: the backend learns the
+                                                    // typed name, or the app adopts its
+                                                    // config (#160). The browser shows
+                                                    // the backend's real settings, never
+                                                    // a guess, so it waits for this sync.
+                                                    // The token is kept whatever it does.
+                                                    *config_unread.write() = browser;
+                                                    match sync_backend_config(app_settings).await {
+                                                        Ok(()) => *config_unread.write() = false,
+                                                        Err(e) => {
+                                                            *notice.write() = None;
+                                                            *error.write() = Some(e.to_string());
+                                                        },
                                                     }
                                                 },
                                                 Err(e) => *error.write() = Some(e.to_string()),
@@ -2619,8 +2617,9 @@ fn AppSettingsPage() -> Element {
                                     let mut error = error;
                                     spawn(async move {
                                         // The backend decides the restoration, so the
-                                        // toggle is meaningless until it knows.
-                                        if let Err(e) = backend::push_active_config().await {
+                                        // toggle is meaningless until it knows; a
+                                        // refused push stays pending (#160).
+                                        if let Err(e) = sync_backend_config(app_settings).await {
                                             *error.write() = Some(e.to_string());
                                         }
                                     });
@@ -2657,8 +2656,9 @@ fn AppSettingsPage() -> Element {
                                     let mut error = error;
                                     spawn(async move {
                                         // The backend does the dialling, so the toggle
-                                        // is meaningless until it knows.
-                                        if let Err(e) = backend::push_active_config().await {
+                                        // is meaningless until it knows; a refused
+                                        // push stays pending (#160).
+                                        if let Err(e) = sync_backend_config(app_settings).await {
                                             *error.write() = Some(e.to_string());
                                         }
                                     });

@@ -37,8 +37,8 @@ pub enum PairingMethod {
     Qr,
 }
 
-/// A backend the user configured: the name the app is the source of truth for,
-/// and the address every call goes to.
+/// A backend the user configured: its name and settings, synced with the
+/// backend (#160), and the address every call goes to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendEntry {
     /// Display name, pushed to the backend as its Spotify Connect device name.
@@ -424,7 +424,8 @@ impl AppSettings {
             // Typing an address says nothing about which machine answers it; the
             // id is adopted the first time that backend is discovered or paired.
             id: None,
-            config_pending: false,
+            // The typed name is the one the backend has to learn (#160).
+            config_pending: true,
         });
         Ok(())
     }
@@ -509,6 +510,10 @@ impl AppSettings {
         // Clone: the DTO is borrowed from the discovery list, which outlives this
         // call and may still be redrawn, while the entry needs its own copy.
         self.set_backend_id(index, found.id.clone())?;
+        // The name is the one the backend announced: nothing to tell it (#160).
+        if let Some(entry) = self.backends.get_mut(index) {
+            entry.config_pending = false;
+        }
         Ok(index)
     }
 
@@ -574,6 +579,10 @@ impl AppSettings {
             .ok_or(SettingsError::Name(NameError::Empty))?;
         self.add(name, &url)?;
         let index = self.backends.len().saturating_sub(1);
+        // The link's name is the backend's own: nothing to tell it (#160).
+        if let Some(entry) = self.backends.get_mut(index) {
+            entry.config_pending = false;
+        }
         self.set_token(index, Some(token.to_string()))?;
         // The method is chosen when a backend is added, and this one was added by
         // scanning: offering the QR again is what re-pairing it will most likely
@@ -591,8 +600,8 @@ impl AppSettings {
     }
 
     /// Toggle the restore-during-playback setting of the backend at `index`.
-    /// The app is the source of truth for it, exactly as for the name, and
-    /// pushes it over `POST /config`.
+    /// The change waits as pending until the backend acknowledges it over
+    /// `POST /config` (#160).
     pub fn set_restore_during_playback(
         &mut self,
         index: usize,
@@ -602,33 +611,48 @@ impl AppSettings {
             return Err(SettingsError::UnknownBackend);
         };
         entry.restore_during_playback = enabled;
+        entry.config_pending = true;
         Ok(())
     }
 
-    /// Toggle the auto-reconnect setting of the backend at `index`. The app is
-    /// the source of truth for it, exactly as for the name, and pushes it over
-    /// `POST /config`.
+    /// Toggle the auto-reconnect setting of the backend at `index`. The change
+    /// waits as pending until the backend acknowledges it over `POST /config`
+    /// (#160).
     pub fn set_auto_reconnect(&mut self, index: usize, enabled: bool) -> Result<(), SettingsError> {
         let Some(entry) = self.backends.get_mut(index) else {
             return Err(SettingsError::UnknownBackend);
         };
         entry.auto_reconnect = enabled;
+        entry.config_pending = true;
         Ok(())
     }
 
     /// Rename the backend at `index` (#160: the browser's name field). The name
     /// goes through the shared proto validator, and the change waits as
     /// pending until the backend acknowledges it.
-    pub fn set_name(&mut self, _index: usize, _name: &str) -> Result<(), SettingsError> {
-        // Red-phase stub (#160): renames nothing.
+    pub fn set_name(&mut self, index: usize, name: &str) -> Result<(), SettingsError> {
+        let name = blue2th_proto::validate_backend_name(name).map_err(SettingsError::Name)?;
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.name = name;
+        entry.config_pending = true;
         Ok(())
     }
 
     /// Record that the backend at `url` acknowledged `pushed` (#160): its
     /// entry is no longer pending — unless it changed again meanwhile, in which
     /// case the newer change still has to go out.
-    pub fn confirm_config_push(&mut self, _url: &str, _pushed: &blue2th_proto::ConfigRequest) {
-        // Red-phase stub (#160): confirms nothing.
+    pub fn confirm_config_push(&mut self, url: &str, pushed: &blue2th_proto::ConfigRequest) {
+        let Some(entry) = self.backends.iter_mut().find(|b| b.url == url) else {
+            return;
+        };
+        if entry.name == pushed.name
+            && entry.restore_during_playback == pushed.restore_during_playback
+            && entry.auto_reconnect == pushed.auto_reconnect
+        {
+            entry.config_pending = false;
+        }
     }
 
     /// Remove the backend at `index`. Removing the active one leaves no active
@@ -723,32 +747,24 @@ pub const CLIENT_KIND: ClientKind = ClientKind::Browser;
 #[cfg(not(target_arch = "wasm32"))]
 pub const CLIENT_KIND: ClientKind = ClientKind::Phone;
 
-/// What the app does with the backend's configuration once the backend is
-/// usable again (#160).
+/// What a client does with its active backend's configuration when it syncs
+/// (#160): see [`config_sync`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSync {
-    /// Push the app's own config (`POST /config`): the phone is the source of
-    /// truth for its backend's name.
+    /// Push the entry's unsent change (`POST /config`).
     Push,
     /// Read the backend's config (`GET /config`) and adopt it.
     Read,
 }
 
-/// The config sync a client runs when its backend becomes usable again. Pure.
-pub fn config_sync_on_reconnect(kind: ClientKind) -> ConfigSync {
-    match kind {
-        ClientKind::Phone => ConfigSync::Push,
-        // The browser must not overwrite what the phone set: it follows.
-        ClientKind::Browser => ConfigSync::Read,
-    }
-}
-
 /// The config sync a client runs for its active backend (#160), the same rule
 /// on the phone and in the browser: push a change the backend has not
 /// acknowledged, and otherwise read the backend's config. Pure.
-pub fn config_sync(_settings: &AppSettings) -> ConfigSync {
-    // Red-phase stub (#160): always reads.
-    ConfigSync::Read
+pub fn config_sync(settings: &AppSettings) -> ConfigSync {
+    match settings.active_backend() {
+        Some(entry) if entry.config_pending => ConfigSync::Push,
+        _ => ConfigSync::Read,
+    }
 }
 
 /// The page the app opens on (#160).
@@ -814,7 +830,8 @@ pub fn browser_settings(stored: AppSettings, origin: &str) -> AppSettings {
 
 /// Adopt the backend's configuration into the active entry (#160): its name
 /// and both playback toggles. The token, the URL and every other entry are left
-/// alone, and `spotify_volume_lock` is not kept. Pure.
+/// alone, `spotify_volume_lock` is not kept, and an entry holding an unsent
+/// change is not touched at all. Pure.
 pub fn adopt_config(settings: &mut AppSettings, config: &blue2th_proto::ServerConfig) {
     let Some(entry) = settings
         .active
@@ -822,6 +839,10 @@ pub fn adopt_config(settings: &mut AppSettings, config: &blue2th_proto::ServerCo
     else {
         return;
     };
+    // An unsent change is the user's latest action: a read must never drop it.
+    if entry.config_pending {
+        return;
+    }
     // Owned copy: the entry keeps its own name beyond the response.
     entry.name = config.name.clone();
     entry.restore_during_playback = config.restore_during_playback;
