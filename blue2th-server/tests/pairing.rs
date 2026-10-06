@@ -37,7 +37,11 @@ fn app_with(store: AuthStore) -> axum::Router {
 /// A router whose store has a code armed at `armed_at`, plus that code.
 fn app_with_code_armed_at(armed_at: SystemTime) -> (axum::Router, String) {
     let mut store = AuthStore::with_token(TOKEN);
-    let code = store.arm_pairing(armed_at);
+    let code = store
+        .arm_pairing(1, armed_at)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     (app_with(store), code)
 }
 
@@ -118,6 +122,35 @@ async fn test_pair_with_an_already_used_code_is_unauthorised() {
         second,
         StatusCode::UNAUTHORIZED,
         "a pairing code must work exactly once"
+    );
+}
+
+// Criterion (#160): `--pair 2` pairs two clients from one start — a browser
+// and a phone. Each armed code gets the token over `POST /pair`; a third call
+// with a code already used is refused.
+#[tokio::test]
+async fn test_pair_two_armed_codes_each_get_the_token_once() {
+    let mut store = AuthStore::with_token(TOKEN);
+    let codes = store.arm_pairing(2, SystemTime::now());
+    assert_eq!(codes.len(), 2, "--pair 2 must arm two codes, got {codes:?}");
+    let browser = codes.first().cloned().unwrap_or_default();
+    let phone = codes.get(1).cloned().unwrap_or_default();
+    // Cloned: the router shares its state, so every call sees the codes the
+    // previous ones consumed.
+    let app = app_with(store);
+
+    for code in [&browser, &phone] {
+        let (status, body) = post_pair(app.clone(), code).await.expect("POST /pair");
+        assert_eq!(status, StatusCode::OK, "code {code}: {body}");
+        let parsed: PairResponse = serde_json::from_str(&body).expect("parse PairResponse");
+        assert_eq!(parsed.token, TOKEN);
+    }
+
+    let (third, _) = post_pair(app, &browser).await.expect("third POST /pair");
+    assert_eq!(
+        third,
+        StatusCode::UNAUTHORIZED,
+        "a code already used must be refused"
     );
 }
 

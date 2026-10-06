@@ -286,6 +286,61 @@ fn test_settings_page_derives_browse_availability_from_the_target() {
     );
 }
 
+// ── #160: the browser glue ───────────────────────────────────────────────────
+
+// Criterion: `web-sys` is a wasm-only direct dependency, with `Storage` for the
+// `localStorage` seam. Near-miss: `web-sys` under `[dependencies]`, which
+// builds for the browser just as well but drags it into the Android build.
+#[test]
+fn test_web_sys_is_a_wasm_only_dependency_with_storage() {
+    let manifest = manifest();
+    let shared = manifest
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .cloned()
+        .unwrap_or_default();
+    let native = target_dependencies(&manifest, NATIVE_ONLY).unwrap_or_default();
+    let wasm = target_dependencies(&manifest, WASM_ONLY);
+    let web_sys = wasm.as_ref().and_then(|t| t.get("web-sys"));
+
+    assert!(!shared.contains_key("web-sys"), "web-sys is wasm-only");
+    assert!(!native.contains_key("web-sys"), "web-sys is wasm-only");
+    assert!(
+        web_sys.is_some(),
+        "web-sys must be a dependency of [target.'{WASM_ONLY}'.dependencies]"
+    );
+    assert!(
+        strings(web_sys, "features").iter().any(|f| f == "Storage"),
+        "the settings persist to localStorage, which needs web-sys's `Storage`"
+    );
+}
+
+/// The non-comment lines of the shipped part of `relative`, joined.
+fn shipped_code(relative: &str) -> String {
+    shipped_part(relative)
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// Criterion: the browser never pushes `POST /config` on reconnection, and an
+// unpaired browser opens on `/settings`. Both policies are pure and tested in
+// `tests/browser.rs`; what no runtime test sees is whether the app asks them.
+// Near-miss: the policies defined and green while the health loop still calls
+// `push_active_name` for every client and the router always opens on `/`.
+#[test]
+fn test_app_consults_the_reconnection_and_start_page_policies() {
+    let shipped = shipped_code("src/main.rs");
+
+    for call in ["config_sync_on_reconnect(", "start_page("] {
+        assert!(
+            shipped.contains(call),
+            "main.rs must decide through settings::{call}…)"
+        );
+    }
+}
+
 // ── CI ───────────────────────────────────────────────────────────────────────
 
 /// The `web` job of `.github/workflows/ci.yml`, comment lines dropped and

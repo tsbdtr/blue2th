@@ -81,6 +81,26 @@ pub fn report_gone_blocking() {
     });
 }
 
+/// A page lifecycle event the browser build listens to (#160).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageEvent {
+    /// `load`: the page was opened or reloaded.
+    Load,
+    /// `visibilitychange` to `hidden`: the tab was switched away from.
+    Hidden,
+    /// `visibilitychange` to `visible`: the tab is on screen again.
+    Visible,
+    /// `pagehide`: the page is being left — closed, **or reloaded**.
+    PageHide,
+}
+
+/// The presence a page event reports. Pure.
+pub fn presence_for(event: PageEvent) -> ClientPresence {
+    // Red-phase stub (#160).
+    let _ = event;
+    ClientPresence::Gone
+}
+
 /// Called by `MainActivity.onStart`: the app is on screen.
 #[cfg(target_os = "android")]
 #[no_mangle]

@@ -680,6 +680,74 @@ pub fn save_blob(settings: &AppSettings) -> String {
     serde_json::to_string(settings).unwrap_or_default()
 }
 
+/// Which client this build is (#160): the Android app, or the page served to a
+/// browser. Passed to the pure policies below so the host tests can check both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    /// The Android app: settings in `SharedPreferences`, a list of backends.
+    Phone,
+    /// The browser build: settings in `localStorage`, one backend — the origin.
+    Browser,
+}
+
+/// The client this build is: [`ClientKind::Browser`] on `wasm32`,
+/// [`ClientKind::Phone`] everywhere else.
+// Red-phase stub (#160): wrong on the host.
+pub const CLIENT_KIND: ClientKind = ClientKind::Browser;
+
+/// What the app does with the backend's configuration once the backend is
+/// usable again (#160).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSync {
+    /// Push the app's own config (`POST /config`): the phone is the source of
+    /// truth for its backend's name.
+    Push,
+    /// Read the backend's config (`GET /config`) and adopt it.
+    Read,
+}
+
+/// The config sync a client runs when its backend becomes usable again. Pure.
+pub fn config_sync_on_reconnect(kind: ClientKind) -> ConfigSync {
+    // Red-phase stub (#160): the phone's answer for every client.
+    let _ = kind;
+    ConfigSync::Push
+}
+
+/// The page the app opens on (#160).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartPage {
+    /// `/`: devices, transport, now playing.
+    Home,
+    /// `/settings`: where a browser pairs.
+    Settings,
+}
+
+/// The page a client opens on, given whether its active backend holds a
+/// token. Pure.
+pub fn start_page(kind: ClientKind, paired: bool) -> StartPage {
+    // Red-phase stub (#160): always home.
+    let _ = (kind, paired);
+    StartPage::Home
+}
+
+/// The browser's settings (#160): exactly one backend, at the page `origin`,
+/// active, keeping the stored entry's token, name and toggles. An empty origin,
+/// or the literal `"null"` a `file://` page reports, yields no backend at all.
+/// Pure.
+pub fn browser_settings(stored: AppSettings, origin: &str) -> AppSettings {
+    // Red-phase stub (#160): the stored settings, untouched.
+    let _ = origin;
+    stored
+}
+
+/// Adopt the backend's configuration into the active entry (#160): its name
+/// and both playback toggles. The token, the URL and every other entry are left
+/// alone, and `spotify_volume_lock` is not kept. Pure.
+pub fn adopt_config(settings: &mut AppSettings, config: &blue2th_proto::ServerConfig) {
+    // Red-phase stub (#160): adopts nothing.
+    let _ = (settings, config);
+}
+
 /// The settings currently in memory, backing the runtime backend lookup.
 pub fn current() -> AppSettings {
     // Owned copy: the lock must never be held across an await in the HTTP paths.
