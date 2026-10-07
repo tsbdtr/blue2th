@@ -412,14 +412,17 @@ fn App() -> Element {
                     // The contract first: a token minted against a backend the
                     // app cannot talk to would be useless, and the failure has
                     // to name which machine to update.
-                    if let Err(e) = backend::check_backend_protocol(&link.url).await {
-                        *background_error.write() = Some(match e.protocol_mismatch() {
-                            Some(mismatch) => protocol_message(mismatch),
-                            None => e.to_string(),
-                        });
-                        continue;
-                    }
-                    match backend::pair(&link.url, &link.code).await {
+                    let compatible = match backend::check_backend_protocol(&link.url).await {
+                        Ok(compatible) => compatible,
+                        Err(e) => {
+                            *background_error.write() = Some(match e.protocol_mismatch() {
+                                Some(mismatch) => protocol_message(mismatch),
+                                None => e.to_string(),
+                            });
+                            continue;
+                        },
+                    };
+                    match backend::pair(&compatible, &link.code).await {
                         Ok(token) => {
                             let mut next = app_settings.peek().clone();
                             match next.upsert_from_pair_link(&link, &token) {
@@ -1955,10 +1958,7 @@ fn AppSettingsPage() -> Element {
     let mut found: Signal<Vec<blue2th_proto::DiscoveredBackend>> = use_signal(Vec::new);
     // A ROM that cannot resolve `MulticastLock` renders the button disabled
     // rather than failing on tap: the verdict is cached, so this costs no JNI.
-    let can_search = discovery::search_enabled(
-        jni_util::multicast_supported(),
-        cfg!(not(target_arch = "wasm32")),
-    );
+    let can_search = discovery::search_enabled(jni_util::multicast_supported());
     let (auto_repair, adds_backends) = {
         let snapshot = app_settings.read();
         (snapshot.auto_repair_url, snapshot.discovery_adds_backends)
@@ -2532,18 +2532,21 @@ fn AppSettingsPage() -> Element {
                                     // The contract first: pairing with a backend
                                     // this app cannot talk to spends an attempt
                                     // for a token nothing could use.
-                                    if let Err(e) = backend::check_backend_protocol(&url).await {
-                                        *pairing.write() = false;
-                                        *notice.write() = None;
-                                        *error.write() = Some(match e.protocol_mismatch() {
-                                            Some(mismatch) => protocol_message(mismatch),
-                                            None => e.to_string(),
-                                        });
-                                        return;
-                                    }
+                                    let compatible = match backend::check_backend_protocol(&url).await {
+                                        Ok(compatible) => compatible,
+                                        Err(e) => {
+                                            *pairing.write() = false;
+                                            *notice.write() = None;
+                                            *error.write() = Some(match e.protocol_mismatch() {
+                                                Some(mismatch) => protocol_message(mismatch),
+                                                None => e.to_string(),
+                                            });
+                                            return;
+                                        },
+                                    };
                                     // The one call that carries no bearer: the
                                     // app has none until this succeeds.
-                                    let outcome = backend::pair(&url, &code).await;
+                                    let outcome = backend::pair(&compatible, &code).await;
                                     *pairing.write() = false;
                                     match outcome {
                                         Ok(token) => {

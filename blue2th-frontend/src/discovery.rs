@@ -47,9 +47,16 @@ impl std::error::Error for DiscoveryError {}
 #[cfg(not(target_arch = "wasm32"))]
 pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Whether this target can browse for backends at all: the browser offers no
+/// mDNS (#159).
+const BROWSE_AVAILABLE: bool = cfg!(not(target_arch = "wasm32"));
+
 /// Whether the Search button is live, derived from the cached preflight verdict
 /// and from whether this target can browse at all.
-/// Pure, so the disabled case is testable with no JNI at all.
+///
+/// ```
+/// let _ = blue2th_frontend::discovery::search_enabled(true);
+/// ```
 ///
 /// Whether the target can browse is not the caller's to say: a call that
 /// passes it does not compile.
@@ -57,7 +64,13 @@ pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// ```compile_fail
 /// let _ = blue2th_frontend::discovery::search_enabled(true, true);
 /// ```
-pub fn search_enabled(multicast_supported: bool, browse_available: bool) -> bool {
+pub fn search_enabled(multicast_supported: bool) -> bool {
+    search_enabled_on(multicast_supported, BROWSE_AVAILABLE)
+}
+
+/// [`search_enabled`] for a given browse availability. Pure and private, so the
+/// browser's case is testable on the host and no call site can pass `true`.
+fn search_enabled_on(multicast_supported: bool, browse_available: bool) -> bool {
     multicast_supported && browse_available
 }
 
@@ -274,11 +287,11 @@ mod tests {
     #[test]
     fn test_search_enabled_follows_the_preflight_verdict() {
         assert!(
-            search_enabled(true, true),
+            search_enabled_on(true, true),
             "a capable ROM keeps the button live"
         );
         assert!(
-            !search_enabled(false, true),
+            !search_enabled_on(false, true),
             "a failed preflight disables the button rather than failing on tap"
         );
     }
@@ -290,11 +303,11 @@ mod tests {
     #[test]
     fn test_search_enabled_is_false_without_browsing_whatever_the_multicast_verdict() {
         assert!(
-            !search_enabled(true, false),
+            !search_enabled_on(true, false),
             "a target with no browse (wasm) must disable the button even though \
              multicast_supported() answers true there"
         );
-        assert!(!search_enabled(false, false));
+        assert!(!search_enabled_on(false, false));
     }
 
     // Criterion (non-nominal): the multicast lock could not be acquired — browse
