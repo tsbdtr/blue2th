@@ -324,25 +324,48 @@ fn shipped_code(relative: &str) -> String {
         .join("\n")
 }
 
+/// The text of `code` from the first `from` to the next `to` after it, or an
+/// empty string when either is missing — which no `contains` below accepts.
+fn between<'a>(code: &'a str, from: &str, to: &str) -> &'a str {
+    code.find(from)
+        .and_then(|start| {
+            let rest = code.get(start..)?;
+            rest.find(to).and_then(|end| rest.get(..end))
+        })
+        .unwrap_or_default()
+}
+
 // Criterion: every client syncs its backend's config through the one rule —
 // push only what is pending, otherwise read (#160) — and an unpaired browser
-// opens on `/settings`. Both are tested at runtime (`backend::sync_config`,
-// `tests/browser.rs`); what no runtime test sees is whether the app asks them.
-// Near-miss: the rule defined and green while the health loop still calls
-// `push_active_name` and the router always opens on `/`.
+// opens on `/settings`. Both rules are tested at runtime (`backend::sync_config`,
+// `tests/browser.rs`); what no runtime test sees is where the app asks them and
+// what it does with the answer. A call merely present somewhere is already
+// enforced by the dead-code lint, so each check is scoped to its site.
+// Near-miss: the health loop's usable transition syncing nothing (or still
+// calling `push_active_name`), and the start page computed but never followed.
 #[test]
 fn test_app_consults_the_config_sync_and_start_page_policies() {
     let shipped = shipped_code("src/main.rs");
 
-    for call in ["backend::sync_config(", "start_page("] {
-        assert!(
-            shipped.contains(call),
-            "main.rs must decide through {call}…)"
-        );
-    }
+    let usable_again = between(
+        &shipped,
+        "!was_usable",
+        "timer::sleep(BACKEND_HEALTH_INTERVAL)",
+    );
+    assert!(
+        usable_again.contains("sync_backend_config("),
+        "the backend becoming usable (start, reconnection) must sync its config, got {usable_again:?}"
+    );
     assert!(
         !shipped.contains("push_active_name("),
         "no client re-pushes its stored config on reconnection any more"
+    );
+
+    let start = between(&shipped, "start_page(", ";");
+    assert!(
+        start.contains("== settings::StartPage::Settings")
+            && start.contains("navigator.push(Route::AppSettingsPage"),
+        "the Settings start page must navigate to the settings page, got {start:?}"
     );
 }
 

@@ -1814,24 +1814,32 @@ fn test_confirm_config_push_clears_the_pending_mark() {
 
 // Criterion (guard, "a push clears only what it pushed"): an entry edited
 // again while its push was in flight stays pending, so the newer change still
-// goes out. Near-miss: clearing the mark on any acknowledgement.
+// goes out — whichever of the three pushed fields the edit touched. Near-miss:
+// clearing the mark on any acknowledgement, or comparing only some fields.
 #[test]
 fn test_confirm_config_push_keeps_a_change_made_meanwhile_pending() {
-    let mut settings = salon_pending();
-    let sent = settings
-        .backends
-        .first()
-        .map(pushed)
-        .expect("the fixture has a Salon entry");
-    if let Some(salon) = settings.backends.first_mut() {
-        // Edited after the push left: the backend acknowledged the old values.
-        salon.auto_reconnect = false;
+    for field in ["name", "restore_during_playback", "auto_reconnect"] {
+        let mut settings = salon_pending();
+        let sent = settings
+            .backends
+            .first()
+            .map(pushed)
+            .expect("the fixture has a Salon entry");
+        if let Some(salon) = settings.backends.first_mut() {
+            // Edited after the push left: the backend acknowledged the old values.
+            match field {
+                "name" => salon.name = "Lpt2".to_string(),
+                "restore_during_playback" => salon.restore_during_playback = false,
+                _ => salon.auto_reconnect = false,
+            }
+        }
+        settings.confirm_config_push("http://192.168.1.107:4000", &sent);
+        assert_eq!(
+            settings.backends.first().map(|b| b.config_pending),
+            Some(true),
+            "{field} edited meanwhile must stay pending"
+        );
     }
-    settings.confirm_config_push("http://192.168.1.107:4000", &sent);
-    assert_eq!(
-        settings.backends.first().map(|b| b.config_pending),
-        Some(true)
-    );
 }
 
 // Criterion: an acknowledgement from one backend says nothing about another.
@@ -1871,4 +1879,52 @@ fn test_a_stored_blob_without_the_field_loads_as_nothing_pending() {
         Some(false)
     );
     assert_eq!(settings::config_sync(&loaded), settings::ConfigSync::Read);
+}
+
+// Criterion (guard, "a read never overwrites a pending entry", at the app's
+// write-back): a toggle made while a read was out is newer than the read's
+// answer, and survives it. Near-miss: writing the sync's answer back
+// unconditionally, which drops the edit and its pending mark.
+#[test]
+fn test_settle_sync_keeps_an_edit_made_while_the_sync_was_out() {
+    let before = two_backends();
+    let mut synced = before.clone();
+    settings::adopt_config(&mut synced, &config_set_elsewhere());
+    let mut current = before.clone();
+    current
+        .set_auto_reconnect(0, false)
+        .expect("toggle Salon meanwhile");
+
+    let settled = settings::settle_sync(&before, synced, current.clone());
+
+    assert_eq!(
+        settled
+            .backends
+            .first()
+            .map(|b| (b.name.as_str(), b.auto_reconnect, b.config_pending)),
+        Some(("Salon", false, true)),
+        "the edit and its pending mark survive the read"
+    );
+    assert_eq!(settled, current);
+}
+
+// Criterion: with nothing changed while the sync was out, its answer is kept —
+// here the config another client left, adopted by the read.
+#[test]
+fn test_settle_sync_keeps_the_answer_when_nothing_changed_meanwhile() {
+    let before = two_backends();
+    let mut synced = before.clone();
+    settings::adopt_config(&mut synced, &config_set_elsewhere());
+
+    let settled = settings::settle_sync(&before, synced, before.clone());
+
+    assert_eq!(
+        settled.backends.first().map(|b| (
+            b.name.as_str(),
+            b.restore_during_playback,
+            b.auto_reconnect
+        )),
+        Some(("Lpt2", false, false)),
+        "the backend's config is adopted"
+    );
 }

@@ -448,44 +448,45 @@ pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<
     release_at(&base, token.as_deref()).await
 }
 
-/// `GET {base}/config` — the active backend's configuration (#160): the read
-/// half of [`sync_config`].
-pub async fn fetch_config() -> Result<ServerConfig, BackendError> {
-    let (client, base) = authed_client()?;
-    send_json(client.get(config_url(&base)).timeout(SETTINGS_CALL_TIMEOUT)).await
+/// `GET {base}/config` — the configuration of the active backend of `settings`
+/// (#160): the read half of [`sync_config`].
+///
+/// Resolved from the snapshot it is given rather than from the process-wide
+/// cache, like [`set_config_at`]: the answer is adopted into that snapshot's
+/// active entry, so it must come from that entry's backend.
+pub async fn fetch_config(settings: &AppSettings) -> Result<ServerConfig, BackendError> {
+    let (base, token) = authed_base_from(settings)?;
+    let request = bearing(reqwest::Client::new().get(config_url(&base)), Some(&token));
+    send_json(request.timeout(SETTINGS_CALL_TIMEOUT)).await
 }
 
 /// Sync the active backend's config, the same rule for every client (#160):
 /// push a change the backend has not acknowledged (`POST /config`) and confirm
-/// it, otherwise read `GET /config` and adopt it. The settings are updated in
-/// place and in the process-wide cache.
+/// it, otherwise read `GET /config` and adopt it. Only `settings` is updated:
+/// writing the process-wide cache — which is what gets persisted — is the
+/// caller's, so it can keep an edit made while this call was out.
 ///
 /// A change the backend refused stays pending, so it goes out at the next sync:
 /// what the phone's re-push on every reconnection used to cover, without ever
 /// overwriting what another client set since.
 pub async fn sync_config(settings: &mut AppSettings) -> Result<(), BackendError> {
-    // Owned copy: the calls below resolve the address and token from the
-    // process-wide cache, which must hold exactly these settings.
-    crate::settings::set_current(settings.clone());
     match crate::settings::config_sync(settings) {
         ConfigSync::Push => {
             let (base, token) = authed_base_from(settings)?;
-            let Some(entry) = settings.active_backend() else {
-                return Err(BackendError::new(NO_BACKEND_CONFIGURED));
-            };
-            let pushed = config_body(entry);
+            let pushed = settings
+                .active_backend()
+                .map(config_body)
+                .ok_or_else(|| BackendError::new(NO_BACKEND_CONFIGURED))?;
             // Owned copy: the body is consumed by the request, and the
             // confirmation compares the entry against what was sent.
             set_config_at(&base, Some(&token), pushed.clone()).await?;
             settings.confirm_config_push(&base, &pushed);
         },
         ConfigSync::Read => {
-            let config = fetch_config().await?;
+            let config = fetch_config(settings).await?;
             crate::settings::adopt_config(settings, &config);
         },
     }
-    // Owned copy: the cache keeps its own settings beyond this borrow.
-    crate::settings::set_current(settings.clone());
     Ok(())
 }
 
@@ -575,6 +576,9 @@ pub async fn activate_backend(
         if let Err(e) = sync_config(settings).await {
             failure = Some(e);
         }
+        // Owned copy: persisted, or a restart would push again a change the
+        // backend has acknowledged, over whatever another client set since.
+        crate::settings::set_current(settings.clone());
     }
     match failure {
         Some(e) => Err(e),
@@ -2488,11 +2492,11 @@ mod tests {
         let (base, served) = canned_backend("200 OK", BACKEND_CONFIG)
             .await
             .expect("start the canned backend");
-        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+        // The cache is left alone: the address comes from the snapshot.
+        let settings = active_with_token(&base, Some("tok-123"));
 
-        let outcome = fetch_config().await;
+        let outcome = fetch_config(&settings).await;
         let request = served_within_bound(served).await;
-        crate::settings::set_current(AppSettings::default());
 
         assert_eq!(
             outcome.map_err(|e| e.to_string()),
@@ -2522,11 +2526,11 @@ mod tests {
         let (base, served) = canned_backend("401 Unauthorized", "not paired")
             .await
             .expect("start the canned backend");
-        crate::settings::set_current(active_with_token(&base, Some("stale-token")));
+        // The cache is left alone: the address comes from the snapshot.
+        let settings = active_with_token(&base, Some("stale-token"));
 
-        let outcome = fetch_config().await;
+        let outcome = fetch_config(&settings).await;
         let request = served_within_bound(served).await;
-        crate::settings::set_current(AppSettings::default());
 
         assert!(
             outcome.as_ref().is_err_and(BackendError::is_not_paired),
@@ -2544,10 +2548,10 @@ mod tests {
     async fn test_fetch_config_without_a_token_fails_fast_as_not_paired() {
         let _guard = SETTINGS_GUARD.lock().await;
         // Port 1 is never listening: reaching it at all would take a timeout.
-        crate::settings::set_current(active_with_token("http://127.0.0.1:1", None));
+        // The cache is left alone: the address comes from the snapshot.
+        let settings = active_with_token("http://127.0.0.1:1", None);
 
-        let outcome = fetch_config().await;
-        crate::settings::set_current(AppSettings::default());
+        let outcome = fetch_config(&settings).await;
 
         assert!(
             outcome.as_ref().is_err_and(BackendError::is_not_paired),

@@ -119,15 +119,20 @@ async fn await_new_token() {
 
 /// Sync the active backend's config through the one rule every client follows
 /// (#160) — push a change the backend has not acknowledged, otherwise read and
-/// adopt what it has — and publish the result to the shared signal.
+/// adopt what it has — and publish the result to the cache and the shared
+/// signal, unless an edit landed meanwhile (see [`settings::settle_sync`]).
 async fn sync_backend_config(
     mut app_settings: Signal<settings::AppSettings>,
 ) -> Result<(), backend::BackendError> {
-    // Owned copy: synced, then written back to the shared signal.
-    let mut next = app_settings.peek().clone();
-    let outcome = backend::sync_config(&mut next).await;
-    // Written back whatever the outcome: a refused push keeps its pending mark.
-    *app_settings.write() = next;
+    // Owned copies: the snapshot the sync started from, and the one it updates.
+    let before = app_settings.peek().clone();
+    let mut synced = before.clone();
+    let outcome = backend::sync_config(&mut synced).await;
+    // Settled whatever the outcome: a refused push keeps its pending mark.
+    let settled = settings::settle_sync(&before, synced, app_settings.peek().clone());
+    // Owned copy: the cache keeps its own settings.
+    settings::set_current(settled.clone());
+    *app_settings.write() = settled;
     outcome
 }
 

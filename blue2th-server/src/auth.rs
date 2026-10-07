@@ -368,10 +368,16 @@ impl AuthStore {
     /// ones. Every armed code redeems once; failed attempts are counted once
     /// for all of them.
     pub fn arm_pairing(&mut self, count: u32, now: SystemTime) -> Vec<String> {
+        self.arm_codes(count, || PairingCode::mint(now))
+    }
+
+    /// [`AuthStore::arm_pairing`], drawing its codes from `mint`: the seam
+    /// through which a test hands it the same code twice.
+    fn arm_codes(&mut self, count: u32, mut mint: impl FnMut() -> PairingCode) -> Vec<String> {
         self.pairing.clear();
         self.failures = 0;
         while self.pairing.len() < count as usize {
-            let minted = PairingCode::mint(now);
+            let minted = mint();
             // Two equal codes would be one code redeemable twice.
             if self.pairing.iter().all(|c| c.code() != minted.code()) {
                 self.pairing.push(minted);
@@ -738,6 +744,20 @@ mod tests {
         }
     }
 
+    // Criterion (guard, "n **distinct** codes"): a minted code equal to one
+    // already armed is drawn again, so two codes never collapse into one code
+    // redeemable twice. Random minting never collides in a test, so the
+    // minter hands back the same code twice on purpose.
+    #[test]
+    fn test_arm_codes_draws_again_a_code_already_armed() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let mut draws = ["K7M2QX", "K7M2QX", "ABCDEF"].into_iter().cycle();
+        let codes = store.arm_codes(2, || {
+            PairingCode::armed(draws.next().unwrap_or_default(), t0() + PAIRING_TTL)
+        });
+        assert_eq!(codes, ["K7M2QX", "ABCDEF"]);
+    }
+
     // Criterion: any armed, unexpired, unconsumed code redeems for the API
     // token; redeeming one leaves the others valid. Redeemed in reverse order
     // so a store that only ever checks the first (or the last) code fails.
@@ -770,7 +790,10 @@ mod tests {
     }
 
     // Criterion: the `MAX_PAIRING_ATTEMPTS`-th failure (5) invalidates every
-    // armed code, not just one of them.
+    // armed code, not just one of them. Near-miss: a cap that retires one code
+    // per failure past it — the refusals below would then retire the rest one
+    // by one, so the store is checked empty first, and the codes are tried
+    // last one first.
     #[test]
     fn test_redeem_cap_invalidates_every_armed_code() {
         let mut store = AuthStore::with_token("stored-token-value");
@@ -778,7 +801,8 @@ mod tests {
         for _ in 0..MAX_PAIRING_ATTEMPTS {
             assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
         }
-        for code in &codes {
+        assert_eq!(store.armed(), None, "the cap leaves no code armed");
+        for code in codes.iter().rev() {
             assert_eq!(
                 store.redeem(code, t0()),
                 Err(PairError::Rejected),

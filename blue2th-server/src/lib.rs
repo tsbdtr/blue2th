@@ -316,11 +316,6 @@ const MAX_PAIR_COUNT: u32 = 10;
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
-    // A pairing window is opened whenever nobody *can* be paired — a first run,
-    // but also a store that was missing, unreadable or malformed, since the token
-    // minted in its place has just invalidated every paired client — and
-    // otherwise only when the operator asks for one. Arming a code at every
-    // restart would leave the one open door ajar for no reason.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match parse_args(&args) {
         Ok(cli) => cli,
@@ -334,8 +329,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let server_name = config::ServerName::with_store(config::name_store_path());
     let addr = resolve_bind_address(cli.bind.as_deref());
 
-    if auth_store.minted_a_new_token() || cli.pair.is_some() {
-        let codes = auth_store.arm_pairing(cli.pair.unwrap_or(1), std::time::SystemTime::now());
+    if let Some(count) = codes_to_arm(&cli, auth_store.minted_a_new_token()) {
+        let codes = auth_store.arm_pairing(count, std::time::SystemTime::now());
         tracing::info!(
             "{}",
             pairing_banners(&advertised_url(&addr), server_name.name(), &codes)
@@ -713,6 +708,18 @@ pub fn parse_args(args: &[String]) -> Result<CliOptions, CliError> {
         }
     }
     Ok(options)
+}
+
+/// How many pairing codes to arm at start, `None` for none. Pure.
+///
+/// A pairing window is opened whenever nobody *can* be paired — a first run,
+/// but also a store that was missing, unreadable or malformed, since the token
+/// minted in its place has just invalidated every paired client — and
+/// otherwise only when the operator asks for one. Arming a code at every
+/// restart would leave the one open door ajar for no reason. `--pair <n>` sets
+/// the count either way; a fresh token alone arms one.
+fn codes_to_arm(cli: &CliOptions, minted_a_new_token: bool) -> Option<u32> {
+    cli.pair.or(minted_a_new_token.then_some(1))
 }
 
 /// The best LAN IPv4 among the host's addresses: a routable, non-loopback,
@@ -1849,14 +1856,14 @@ async fn set_config(
         // Applied only once the name was accepted, so a rejected body changes
         // nothing at all.
         stored.set_restore_during_playback(req.restore_during_playback);
-        // Only the off → on edge, never every push: the app re-pushes the whole
-        // config on activation, and re-arming there would reset a running
-        // backoff ladder on each one.
+        // Only the off → on edge, never every push: every push carries the
+        // whole config, so a rename re-sends `auto_reconnect: true`, and
+        // re-arming there would reset a running backoff ladder.
         let resumed = !stored.auto_reconnect() && req.auto_reconnect;
         stored.set_auto_reconnect(req.auto_reconnect);
-        // Absent means "not mentioned", never "off": the app re-pushes its whole
-        // config on activation, and a client without the field must not undo
-        // the guard each time (#58).
+        // Absent means "not mentioned", never "off": every push carries the
+        // whole config, and a client without the field must not undo the guard
+        // each time (#58).
         if let Some(lock) = req.spotify_volume_lock {
             stored.set_spotify_volume_lock(lock);
         }
@@ -3066,6 +3073,26 @@ mod tests {
             .map(|e| e.to_string())
             .unwrap_or_default();
         assert!(message.contains("--bind"), "got {message:?}");
+    }
+
+    // Criterion: `--pair <n>` arms n codes at start, whether or not the token
+    // was just minted. Near-miss: a start that parses the count and arms one.
+    #[test]
+    fn test_codes_to_arm_follows_the_pair_count() {
+        let three = CliOptions {
+            pair: Some(3),
+            bind: None,
+        };
+        assert_eq!(codes_to_arm(&three, false), Some(3));
+        assert_eq!(codes_to_arm(&three, true), Some(3));
+    }
+
+    // Criterion: with no `--pair`, a freshly minted token arms exactly one code,
+    // and an already paired backend arms none.
+    #[test]
+    fn test_codes_to_arm_without_the_flag_depends_on_a_fresh_token() {
+        assert_eq!(codes_to_arm(&CliOptions::default(), true), Some(1));
+        assert_eq!(codes_to_arm(&CliOptions::default(), false), None);
     }
 
     // Criterion: `lan_bind_address()` prefers a non-loopback IPv4.

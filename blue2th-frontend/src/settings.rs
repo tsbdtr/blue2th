@@ -849,13 +849,31 @@ pub fn adopt_config(settings: &mut AppSettings, config: &blue2th_proto::ServerCo
     entry.auto_reconnect = config.auto_reconnect;
 }
 
+/// The settings to keep once a config sync started from `before` came back
+/// with `synced`, while the app now holds `current` (#160). Pure.
+///
+/// An edit made while the sync was out — a toggle, a rename — is newer than
+/// the sync's answer: `current` is kept, and the edit's own sync pushes it.
+/// Otherwise the sync's answer is kept. A dropped read is simply read again at
+/// the next sync, and a dropped confirmation leaves its change pending, so it
+/// goes out once more; keeping a stale answer instead would undo the edit, and
+/// a read landing over a pending change would drop it outright.
+pub fn settle_sync(before: &AppSettings, synced: AppSettings, current: AppSettings) -> AppSettings {
+    if current == *before {
+        synced
+    } else {
+        current
+    }
+}
+
 /// The settings currently in memory, backing the runtime backend lookup.
 pub fn current() -> AppSettings {
     // Owned copy: the lock must never be held across an await in the HTTP paths.
     cache().read().map(|s| s.clone()).unwrap_or_default()
 }
 
-/// Replace the in-memory settings and persist them (Android storage seam).
+/// Replace the in-memory settings and persist them (`SharedPreferences` on
+/// Android, `localStorage` in the browser).
 pub fn set_current(settings: AppSettings) {
     write_stored(&save_blob(&settings));
     if let Ok(mut guard) = cache().write() {
@@ -863,8 +881,8 @@ pub fn set_current(settings: AppSettings) {
     }
 }
 
-/// The process-wide settings cache, seeded on first use from the phone's storage
-/// (there is nothing to read off Android, so it starts empty there).
+/// The process-wide settings cache, seeded on first use from the app's storage
+/// (there is none on a host build, so it starts empty there).
 static CACHE: std::sync::OnceLock<std::sync::RwLock<AppSettings>> = std::sync::OnceLock::new();
 
 fn cache() -> &'static std::sync::RwLock<AppSettings> {

@@ -305,8 +305,8 @@ mod tests {
     }
 
     // Rule: only the edge of the lock acts. `POST /config` re-applies the
-    // stored lock on every push, and the app pushes its whole config on each
-    // activation — so an unchanged `false` must keep the remembered level and
+    // stored lock on every push, and every push carries the whole config —
+    // so an unchanged `false` must keep the remembered level and
     // a pending restore, or the next respawn would have nothing to put back.
     #[test]
     fn test_policy_reapplying_an_unchanged_lock_keeps_the_desired_level_and_the_mark() {
