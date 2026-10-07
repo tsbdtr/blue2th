@@ -26,8 +26,9 @@ use rand::Rng as _;
 /// only thing standing between the LAN and the API.
 pub const PAIRING_TTL: Duration = Duration::from_secs(300);
 
-/// How many failed attempts invalidate the armed code. The code is short, so an
-/// attempt cap is not a nicety — it is what makes it a secret at all.
+/// How many failed attempts, counted across every armed code, invalidate them
+/// all. The code is short, so an attempt cap is not a nicety — it is what makes
+/// it a secret at all.
 pub const MAX_PAIRING_ATTEMPTS: u32 = 5;
 
 /// Number of characters in a minted pairing code (short enough to type).
@@ -81,17 +82,15 @@ pub fn generate_token() -> String {
 const PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 /// A pairing code armed by the server: short, URL-safe (it rides in a deep link
-/// and is typed by hand), short-lived, one-shot and rate limited.
+/// and is typed by hand) and short-lived. [`AuthStore`] makes it one-shot and
+/// rate limited: it removes a redeemed code and counts failures across all of
+/// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingCode {
     /// The code itself.
     code: String,
     /// When it stops being accepted.
     expires_at: SystemTime,
-    /// Failed attempts so far; [`MAX_PAIRING_ATTEMPTS`] invalidate it.
-    attempts: u32,
-    /// Whether it was already exchanged for the token (one-shot).
-    consumed: bool,
 }
 
 impl PairingCode {
@@ -114,8 +113,6 @@ impl PairingCode {
         Self {
             code: code.into(),
             expires_at,
-            attempts: 0,
-            consumed: false,
         }
     }
 
@@ -128,34 +125,15 @@ impl PairingCode {
     pub fn expires_at(&self) -> SystemTime {
         self.expires_at
     }
-
-    /// Failed attempts recorded so far.
-    pub fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    /// Whether the code was already exchanged for the token.
-    pub fn is_consumed(&self) -> bool {
-        self.consumed
-    }
-
-    /// Mark the code as spent (one-shot).
-    pub fn consume(&mut self) {
-        self.consumed = true;
-    }
-
-    /// Record a failed attempt. The cap itself is applied by [`verify_code`].
-    pub fn register_failure(&mut self) {
-        self.attempts = self.attempts.saturating_add(1);
-    }
 }
 
 /// Whether `submitted` matches the armed code. Pure.
 ///
-/// Accepts only an exactly-matching, unexpired, unconsumed code whose attempt
-/// count is still under [`MAX_PAIRING_ATTEMPTS`]. Every refusal — no code armed,
-/// unknown code, expired code, spent code, attempt cap reached — returns the
-/// same [`PairError`], on purpose.
+/// Accepts only an exactly-matching, unexpired code. Every refusal — no code
+/// armed, unknown code, expired code — returns the same [`PairError`], on
+/// purpose. A spent code and the attempt cap never reach this check:
+/// [`AuthStore::redeem`] removes a redeemed code, and clears every code once
+/// [`MAX_PAIRING_ATTEMPTS`] failures add up.
 pub fn verify_code(
     stored: Option<&PairingCode>,
     submitted: &str,
@@ -165,11 +143,7 @@ pub fn verify_code(
     // from "unknown" would help an attacker enumerate.
     let stored = stored.ok_or(PairError::Rejected)?;
     let submitted = blue2th_proto::normalize_pairing_code(submitted);
-    if stored.is_consumed()
-        || stored.attempts() >= MAX_PAIRING_ATTEMPTS
-        || now >= stored.expires_at()
-        || !constant_time_eq(stored.code(), &submitted)
-    {
+    if now >= stored.expires_at() || !constant_time_eq(stored.code(), &submitted) {
         return Err(PairError::Rejected);
     }
     Ok(())
@@ -516,8 +490,6 @@ mod tests {
             "a typed code must stay alphanumeric, got {}",
             code.code()
         );
-        assert_eq!(code.attempts(), 0);
-        assert!(!code.is_consumed());
     }
 
     // Criterion: a minted code is different every time, or the "one-shot" rule
@@ -540,8 +512,7 @@ mod tests {
         assert_eq!(code.expires_at(), t0() + PAIRING_TTL);
     }
 
-    // Criterion: `verify_code` accepts an unexpired, unconsumed, exactly
-    // matching code.
+    // Criterion: `verify_code` accepts an unexpired, exactly matching code.
     #[test]
     fn test_verify_code_accepts_the_armed_code() {
         let stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
@@ -622,43 +593,6 @@ mod tests {
             ),
             Err(PairError::Rejected)
         );
-    }
-
-    // Criterion: a code is one-shot — once consumed, verifying it again fails.
-    #[test]
-    fn test_verify_code_rejects_a_consumed_code() {
-        let mut stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        stored.consume();
-        assert_eq!(
-            verify_code(Some(&stored), "K7M2QX", t0()),
-            Err(PairError::Rejected)
-        );
-    }
-
-    // Criterion: after `MAX_PAIRING_ATTEMPTS` failures the armed code is
-    // invalidated — even the right code no longer works.
-    #[test]
-    fn test_verify_code_rejects_the_right_code_once_the_attempt_cap_is_reached() {
-        let mut stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        for _ in 0..MAX_PAIRING_ATTEMPTS {
-            stored.register_failure();
-        }
-        assert_eq!(
-            verify_code(Some(&stored), "K7M2QX", t0()),
-            Err(PairError::Rejected),
-            "a short code with unlimited attempts is not a secret"
-        );
-    }
-
-    // Criterion: the cap is not tripped early — one attempt short of it, the
-    // right code is still accepted (a typo must not lock the operator out).
-    #[test]
-    fn test_verify_code_still_accepts_the_right_code_below_the_attempt_cap() {
-        let mut stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        for _ in 0..MAX_PAIRING_ATTEMPTS - 1 {
-            stored.register_failure();
-        }
-        assert_eq!(verify_code(Some(&stored), "K7M2QX", t0()), Ok(()));
     }
 
     // Criterion: `POST /pair` with a valid armed code returns the token — at the
