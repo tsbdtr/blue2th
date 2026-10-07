@@ -290,6 +290,23 @@ test_clippy_refuses_on_an_empty_target_list() {
         "the fix printed on stderr"
 }
 
+# Criterion (guard, exact target match): both names are there, but only inside
+# longer lines — the shape `rustup target list` prints without `--installed`,
+# where every target appears, installed or not. Near-miss: a substring match on
+# the full target name (`grep -qF` without `-x`), which accepts this list; the
+# two lists above carry no line containing either full name, so they cannot
+# tell it from the exact-line check.
+test_clippy_refuses_a_target_name_inside_a_longer_line() {
+    require_script
+    use_fakes 'aarch64-linux-android (installed)
+wasm32-unknown-unknown (installed)
+x86_64-unknown-linux-gnu'
+
+    assert_refused_before_cargo
+    assert_eq "rustup target add aarch64-linux-android wasm32-unknown-unknown" "$(add_hint)" \
+        "the fix printed on stderr"
+}
+
 # Criterion: rustup absent from PATH → exit 2, the message names rustup, cargo
 # is never called. Every PATH entry holding a rustup is dropped; the fake
 # cargo stays first, so a call to it would show in the log.
@@ -310,7 +327,12 @@ test_clippy_refuses_without_rustup() {
     command -v bash >/dev/null || fail "test setup: no bash left on PATH ($PATH)"
 
     assert_refused_before_cargo
-    assert_contains "$stderr" "rustup" "the refusal names rustup"
+    # Every refusal prints `rustup target add …`, so "rustup" anywhere on stderr
+    # would also accept a script that swallows the missing tool, reads an empty
+    # target list and blames the targets. The tool must be named outside that
+    # hint, and the hint — a command that cannot run here — must not be given.
+    assert_contains "${stderr//rustup target add/}" "rustup" "the refusal names rustup itself"
+    assert_eq "" "$(add_hint)" "a rustup target add hint without rustup"
 }
 
 # ── The pre-commit hook ──────────────────────────────────────────────────────
@@ -388,24 +410,9 @@ test_ci_quality_job_runs_the_clippy_script_with_both_cross_targets() {
     fi
 }
 
-# Criterion: the `web` job drops its wasm clippy — moved into `quality`, not
-# lost — but keeps `dx build (web)` and the wasm target that build needs.
-test_ci_web_job_keeps_its_build_but_drops_its_clippy() {
-    local block
-    block="$(job_block web)"
-    [[ -n "$block" ]] || fail "no web job in $workflow"
-
-    if grep -qF 'clippy (wasm)' <<<"$block"; then
-        fail "the web job still has its clippy (wasm) step"
-    fi
-    if grep -v '^[[:space:]]*#' <<<"$block" | grep -q 'cargo clippy'; then
-        fail "the web job still runs cargo clippy"
-    fi
-    grep -qE '^[[:space:]]+run: dx build --platform web --package blue2th-frontend[[:space:]]*$' <<<"$block" \
-        || fail "the web job lost its dx build (web)"
-    grep -qE '^[[:space:]]+targets:.*wasm32-unknown-unknown' <<<"$block" \
-        || fail "the web job lost the wasm32-unknown-unknown target its build needs"
-}
+# The `web` job — no clippy of its own, its `dx build (web)` and its wasm
+# target kept — is pinned in one place, blue2th-frontend/tests/web_build.rs,
+# which has owned that job since #159.
 
 # ── Documents ────────────────────────────────────────────────────────────────
 

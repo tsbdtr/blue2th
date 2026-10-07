@@ -454,10 +454,14 @@ fn test_ci_web_job_installs_the_pinned_dioxus_cli() {
 
 // Criterion: the job runs `dx build --platform web`, and no clippy of its own:
 // the wasm lint runs in the `quality` job through scripts/clippy.sh (#167).
+// Any mention counts — `cargo clippy`, a step running scripts/clippy.sh again,
+// a `clippy (wasm)` step name, the `clippy` component nothing here uses.
+// Near-miss: a web job that calls scripts/clippy.sh, which a match on
+// `cargo clippy` alone accepts.
 #[test]
 fn test_ci_web_job_runs_the_web_build_and_no_clippy() {
     let job = web_job();
-    let clippy = position(&job, |l| l.contains("cargo clippy"));
+    let clippy = position(&job, |l| l.contains("clippy"));
     let build = position(&job, |l| {
         l.contains("dx build")
             && l.contains("--platform web")

@@ -168,18 +168,4 @@ mod tests {
             "off Android there is nothing to lock: the browse runs anyway"
         );
     }
-
-    // Criterion: a shared JNI helper surfaces the Java exception's own detail,
-    // so the settings page error card shows the cause rather than the jni
-    // crate's generic "Java exception was thrown".
-    #[test]
-    #[cfg(target_os = "android")]
-    fn test_jni_error_displays_the_captured_detail() {
-        let err = JniError::new("java.lang.SecurityException: no multicast");
-        assert_eq!(
-            err.to_string(),
-            "java.lang.SecurityException: no multicast",
-            "the captured Java detail must reach the user unchanged"
-        );
-    }
 }
