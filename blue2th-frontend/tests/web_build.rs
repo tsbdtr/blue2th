@@ -8,6 +8,9 @@
 //! dropped. These assert on the manifest, the CI workflow and the shared
 //! sources instead. They cannot replace the wasm build itself — that is what the
 //! `web` CI job is for.
+//!
+//! Since #175 they also pin where the renderer comes from: the Android target,
+//! never a default feature, so no host build compiles the desktop renderer.
 
 use std::path::Path;
 
@@ -17,6 +20,39 @@ const NATIVE_ONLY: &str = "cfg(not(target_arch=\"wasm32\"))";
 
 /// The target-table key that keeps a dependency on the browser build only.
 const WASM_ONLY: &str = "cfg(target_arch=\"wasm32\")";
+
+/// The target-table key that keeps a dependency on the Android build only.
+const ANDROID_ONLY: &str = "cfg(target_os=\"android\")";
+
+/// The dioxus features that select a renderer.
+const RENDERERS: [&str; 3] = ["mobile", "desktop", "web"];
+
+/// The dependency tables of a manifest, or of one of its `[target.<key>]`.
+const DEPENDENCY_KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+/// The crates only the desktop renderer brings into a host build (#175).
+const HOST_FORBIDDEN: [&str; 9] = [
+    "wry",
+    "dioxus-desktop",
+    "webkit2gtk",
+    "gtk",
+    "soup3",
+    "javascriptcore-rs",
+    "muda",
+    "libxdo",
+    "openssl-sys",
+];
+
+/// The native packages the server build needs, and all CI installs (#175):
+/// D-Bus for bluer, PipeWire for pipewire-rs, clang and libclang for its
+/// bindgen step.
+const SERVER_PACKAGES: [&str; 5] = [
+    "pkg-config",
+    "libdbus-1-dev",
+    "libpipewire-0.3-dev",
+    "libclang-dev",
+    "clang",
+];
 
 /// Reads a file relative to the crate manifest. An unreadable file yields an
 /// empty string and fails the assertion here, rather than `panic!`.
@@ -34,11 +70,13 @@ fn read(relative: &str) -> String {
 /// The crate manifest, parsed. A parse error fails the assertion here rather
 /// than `expect`: clippy's test allowance does not reach a free function.
 fn manifest() -> toml::Table {
-    let parsed = read("Cargo.toml").parse::<toml::Table>();
-    assert!(
-        parsed.is_ok(),
-        "blue2th-frontend/Cargo.toml must parse: {parsed:?}"
-    );
+    parse("Cargo.toml")
+}
+
+/// The TOML file at `relative` to the crate manifest, parsed.
+fn parse(relative: &str) -> toml::Table {
+    let parsed = read(relative).parse::<toml::Table>();
+    assert!(parsed.is_ok(), "{relative} must parse: {parsed:?}");
     parsed.unwrap_or_default()
 }
 
@@ -97,19 +135,382 @@ fn test_dioxus_dependency_names_no_platform_feature() {
     );
 }
 
-// Criterion: `mobile = ["dioxus/mobile"]` stays the default, so the Android
-// build and every host command keep their meaning.
+// ── #175: the renderer is a property of the target ──────────────────────────
+//
+// These replace #159's `test_mobile_stays_the_default_feature`. Its guarantee,
+// "Android gets its renderer", no longer comes from a default feature: the
+// Android-only dioxus dependency carries `mobile`, and no host build sees it.
+
+/// The renderer a `[features]` entry enables directly — `dioxus/mobile`,
+/// `dioxus?/web` — or `None`. Compared on whole names, never on a substring:
+/// a feature called `web-storage` enables no renderer.
+fn renderer_of(entry: &str) -> Option<&str> {
+    let (dependency, feature) = entry.split_once('/')?;
+    (dependency.trim_end_matches('?') == "dioxus" && RENDERERS.contains(&feature))
+        .then_some(feature)
+}
+
+/// Every renderer `default` enables, walking `[features]` through every local
+/// feature it names, as `"<feature> -> dioxus/<renderer>"`. Empty for an empty
+/// or absent `default`: there, the empty list is the intended value.
+fn default_renderers(manifest: &toml::Table) -> Vec<String> {
+    let mut pending = vec!["default".to_owned()];
+    let mut seen: Vec<String> = Vec::new();
+    let mut found = Vec::new();
+    while let Some(name) = pending.pop() {
+        if seen.contains(&name) {
+            continue;
+        }
+        for entry in feature(manifest, &name).unwrap_or_default() {
+            if let Some(renderer) = renderer_of(&entry) {
+                found.push(format!("{name} -> dioxus/{renderer}"));
+            } else if feature(manifest, &entry).is_some() {
+                pending.push(entry);
+            }
+        }
+        seen.push(name);
+    }
+    found
+}
+
+/// Every dependency table of `manifest` — shared, dev and build, then each
+/// `[target.<key>]`'s — named by its path, with the target key's whitespace
+/// removed.
+fn dependency_tables(manifest: &toml::Table) -> Vec<(String, toml::Table)> {
+    let mut tables = Vec::new();
+    for kind in DEPENDENCY_KINDS {
+        if let Some(table) = manifest.get(kind).and_then(|t| t.as_table()) {
+            tables.push((kind.to_owned(), table.clone()));
+        }
+    }
+    let targets = manifest.get("target").and_then(|t| t.as_table());
+    for (key, target) in targets.into_iter().flatten() {
+        let key: String = key.chars().filter(|c| !c.is_whitespace()).collect();
+        for kind in DEPENDENCY_KINDS {
+            if let Some(table) = target.get(kind).and_then(|t| t.as_table()) {
+                tables.push((format!("target.{key}.{kind}"), table.clone()));
+            }
+        }
+    }
+    tables
+}
+
+/// Every dioxus entry of `manifest`, renamed ones included, with the path of
+/// the table that holds it.
+fn dioxus_entries(manifest: &toml::Table) -> Vec<(String, toml::Value)> {
+    dependency_tables(manifest)
+        .into_iter()
+        .flat_map(|(site, table)| {
+            table
+                .into_iter()
+                .filter(|(name, dependency)| {
+                    name == "dioxus"
+                        || dependency.get("package").and_then(|p| p.as_str()) == Some("dioxus")
+                })
+                .map(move |(_, dependency)| (site.clone(), dependency))
+        })
+        .collect()
+}
+
+/// Every place in `manifest` that enables `dioxus/mobile`: a dependency table
+/// whose dioxus entry lists `mobile`, and a `[features]` entry that enables it
+/// — or that is itself called `mobile`, whatever it enables.
+fn mobile_renderer_sites(manifest: &toml::Table) -> Vec<String> {
+    let mut sites: Vec<String> = dioxus_entries(manifest)
+        .into_iter()
+        .filter(|(_, dependency)| {
+            strings(Some(dependency), "features")
+                .iter()
+                .any(|f| f == "mobile")
+        })
+        .map(|(site, _)| site)
+        .collect();
+    let features = manifest.get("features").and_then(|f| f.as_table());
+    for name in features.into_iter().flat_map(|f| f.keys()) {
+        let enables = feature(manifest, name)
+            .unwrap_or_default()
+            .iter()
+            .any(|entry| renderer_of(entry) == Some("mobile"));
+        if name == "mobile" || enables {
+            sites.push(format!("features.{name}"));
+        }
+    }
+    sites
+}
+
+/// The path `mobile_renderer_sites` gives the one table allowed to enable the
+/// mobile renderer.
+fn android_site() -> String {
+    format!("target.{ANDROID_ONLY}.dependencies")
+}
+
+// Criterion: `[target.'cfg(target_os = "android")'.dependencies]` declares
+// `dioxus` with features `["mobile"]` — exactly, so the Android build gets its
+// renderer and nothing more.
 #[test]
-fn test_mobile_stays_the_default_feature() {
+fn test_android_target_dependency_enables_the_mobile_renderer() {
+    let manifest = manifest();
+    let android = target_dependencies(&manifest, ANDROID_ONLY);
+    let dioxus = android.as_ref().and_then(|t| t.get("dioxus"));
+
+    assert!(
+        dioxus.is_some(),
+        "dioxus must be a dependency of [target.'{ANDROID_ONLY}'.dependencies]"
+    );
+    assert_eq!(
+        strings(dioxus, "features"),
+        vec!["mobile".to_owned()],
+        "the Android dioxus entry carries the mobile renderer, and only it"
+    );
+}
+
+// Criterion: `[features]` keeps no default: `default` is empty or absent. The
+// strictest reading of "empty (or absent)": a default carrying a non-renderer
+// feature fails here too, though the transitive walk below would accept it.
+#[test]
+fn test_default_feature_set_is_empty() {
     let manifest = manifest();
 
     assert_eq!(
-        feature(&manifest, "default"),
-        Some(vec!["mobile".to_owned()])
+        feature(&manifest, "default").unwrap_or_default(),
+        Vec::<String>::new(),
+        "`default` must be empty or absent: the renderer comes from the target"
     );
+}
+
+// Criterion: no feature listed in `default`, directly or through another
+// feature, enables `dioxus/mobile`, `dioxus/desktop` or `dioxus/web`. The
+// checker's own near-misses are pinned in
+// `test_default_renderer_walk_refuses_indirect_and_non_mobile_renderers`.
+#[test]
+fn test_no_default_feature_enables_a_renderer() {
+    let manifest = manifest();
+
     assert_eq!(
-        feature(&manifest, "mobile"),
-        Some(vec!["dioxus/mobile".to_owned()])
+        default_renderers(&manifest),
+        Vec::<String>::new(),
+        "a renderer in `default` comes back into every host build"
+    );
+}
+
+// Criterion: the `[features]` table keeps `web = ["dioxus/web"]` and loses
+// `mobile`; the only dependency entry that enables `dioxus/mobile` sits under
+// exactly `cfg(target_os = "android")`. The checker's own near-misses are
+// pinned in `test_mobile_site_check_accepts_only_the_exact_android_key`.
+#[test]
+fn test_only_the_android_target_enables_the_mobile_renderer() {
+    let manifest = manifest();
+
+    assert_eq!(
+        mobile_renderer_sites(&manifest),
+        vec![android_site()],
+        "only [target.'{ANDROID_ONLY}'.dependencies] may enable dioxus/mobile, \
+         and no `mobile` feature may remain"
+    );
+}
+
+// Criterion: the dioxus version is declared once, in the workspace
+// `[workspace.dependencies]` (`dioxus = "0.7.10"`, no features there), and both
+// frontend entries are `workspace = true` and add only their features.
+// Near-miss: an Android entry with its own `version = "0.7.10"`, which builds
+// identically today and drifts on the next bump.
+#[test]
+fn test_dioxus_version_is_declared_once_in_the_workspace() {
+    let workspace = parse("../Cargo.toml");
+    let declared = workspace
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|d| d.get("dioxus"));
+    let version = declared.and_then(|d| {
+        d.as_str()
+            .or_else(|| d.get("version").and_then(|v| v.as_str()))
+    });
+    let extra: Vec<String> = declared
+        .and_then(|d| d.as_table())
+        .map(|t| t.keys().filter(|k| *k != "version").cloned().collect())
+        .unwrap_or_default();
+
+    assert_eq!(
+        version,
+        Some("0.7.10"),
+        "[workspace.dependencies] must declare dioxus 0.7.10, the version dx is pinned to"
+    );
+    assert!(
+        extra.is_empty(),
+        "the workspace dioxus carries its version only; each frontend entry adds its features, got {extra:?}"
+    );
+
+    let manifest = manifest();
+    let entries = dioxus_entries(&manifest);
+    let mut sites: Vec<String> = entries.iter().map(|(site, _)| site.clone()).collect();
+    sites.sort();
+    let mut expected = vec!["dependencies".to_owned(), android_site()];
+    expected.sort();
+    assert_eq!(
+        sites, expected,
+        "the frontend declares dioxus twice: shared (router) and Android (mobile)"
+    );
+
+    for (site, dependency) in &entries {
+        assert_eq!(
+            dependency.get("workspace").and_then(|w| w.as_bool()),
+            Some(true),
+            "the dioxus entry of [{site}] must be `workspace = true`"
+        );
+        let keys: Vec<&String> = dependency
+            .as_table()
+            .map(|t| t.keys().collect())
+            .unwrap_or_default();
+        assert!(
+            keys.iter().all(|k| *k == "workspace" || *k == "features"),
+            "the dioxus entry of [{site}] adds only its features to the workspace one, got keys {keys:?}"
+        );
+    }
+}
+
+// Pins the checker of `test_no_default_feature_enables_a_renderer` on the
+// spec's guards, since the real manifest exercises none of them once green.
+// Near-misses: `default = ["app"]` with `app = ["dioxus/mobile"]` (a check of
+// `default`'s direct entries accepts it); `default = ["web"]` (a check for
+// `mobile` alone accepts it). Accepted: an empty or absent `default`, and a
+// default naming `web-storage`, which a substring match on `web` would refuse.
+#[test]
+fn test_default_renderer_walk_refuses_indirect_and_non_mobile_renderers() {
+    let refused = [
+        "[features]\ndefault = [\"app\"]\napp = [\"dioxus/mobile\"]\n",
+        "[features]\ndefault = [\"web\"]\nweb = [\"dioxus/web\"]\n",
+        "[features]\ndefault = [\"a\"]\na = [\"b\"]\nb = [\"dioxus?/desktop\"]\n",
+        "[features]\ndefault = [\"a\"]\na = [\"a\", \"dioxus/mobile\"]\n",
+    ];
+    for fixture in refused {
+        let manifest = fixture.parse::<toml::Table>().unwrap_or_default();
+        assert!(
+            !default_renderers(&manifest).is_empty(),
+            "a renderer reached from `default` must be refused:\n{fixture}"
+        );
+    }
+
+    let accepted = [
+        "[features]\ndefault = []\nweb = [\"dioxus/web\"]\n",
+        "[features]\nweb = [\"dioxus/web\"]\n",
+        "[package]\nname = \"x\"\n",
+        "[features]\ndefault = [\"web-storage\"]\nweb-storage = [\"dep:web-sys\"]\nweb = [\"dioxus/web\"]\n",
+    ];
+    for fixture in accepted {
+        let manifest = fixture.parse::<toml::Table>().unwrap_or_default();
+        assert_eq!(
+            default_renderers(&manifest),
+            Vec::<String>::new(),
+            "no renderer is reachable from `default` here:\n{fixture}"
+        );
+    }
+}
+
+// Pins the checker of `test_only_the_android_target_enables_the_mobile_renderer`
+// on the spec's "Android exactly" guard. Near-misses: `mobile` under
+// `cfg(not(target_arch = "wasm32"))`, `cfg(unix)` or `cfg(target_os = "linux")`
+// — each still builds Android correctly, and each puts the renderer back into
+// the host build. Only the exact Android key passes, whatever its spacing.
+#[test]
+fn test_mobile_site_check_accepts_only_the_exact_android_key() {
+    let dioxus = "dioxus = { workspace = true, features = [\"mobile\"] }";
+    let refused = [
+        "cfg(not(target_arch = \"wasm32\"))",
+        "cfg(unix)",
+        "cfg(target_os = \"linux\")",
+        "cfg(any(target_os = \"android\", unix))",
+    ];
+    for key in refused {
+        let fixture = format!("[target.'{key}'.dependencies]\n{dioxus}\n");
+        let manifest = fixture.parse::<toml::Table>().unwrap_or_default();
+        assert_ne!(
+            mobile_renderer_sites(&manifest),
+            vec![android_site()],
+            "mobile under a key that includes the host must be refused:\n{fixture}"
+        );
+    }
+
+    let renamed = format!(
+        "[target.'cfg(unix)'.dependencies]\ndx = {{ package = \"dioxus\", features = [\"mobile\"] }}\n\
+         [target.'cfg(target_os = \"android\")'.dependencies]\n{dioxus}\n"
+    );
+    let feature_too = format!(
+        "[target.'cfg(target_os = \"android\")'.dependencies]\n{dioxus}\n\
+         [features]\nmobile = []\n"
+    );
+    for fixture in [renamed, feature_too] {
+        let manifest = fixture.parse::<toml::Table>().unwrap_or_default();
+        assert_ne!(
+            mobile_renderer_sites(&manifest),
+            vec![android_site()],
+            "a second site enabling mobile must be refused:\n{fixture}"
+        );
+    }
+
+    for key in ["cfg(target_os = \"android\")", "cfg(target_os=\"android\")"] {
+        let fixture = format!("[target.'{key}'.dependencies]\n{dioxus}\n");
+        let manifest = fixture.parse::<toml::Table>().unwrap_or_default();
+        assert_eq!(
+            mobile_renderer_sites(&manifest),
+            vec![android_site()],
+            "the exact Android key is the one accepted site:\n{fixture}"
+        );
+    }
+}
+
+/// The crate names of `cargo tree -p blue2th-frontend -e normal` for the host,
+/// offline. A command that fails, or prints nothing, fails the assertion here
+/// rather than reading as "no renderer".
+fn host_tree_crates() -> Vec<String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let output = std::process::Command::new(cargo)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "tree",
+            "--offline",
+            "-p",
+            "blue2th-frontend",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ])
+        .output();
+    assert!(
+        output.as_ref().is_ok_and(|o| o.status.success()),
+        "cargo tree must run offline on the host tree: {output:?}"
+    );
+    let stdout = output.map(|o| o.stdout).unwrap_or_default();
+    String::from_utf8_lossy(&stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+        .collect()
+}
+
+// Criterion: the host tree contains none of `wry`, `dioxus-desktop`,
+// `webkit2gtk`, `gtk`, `soup3`, `javascriptcore-rs`, `muda`, `libxdo`,
+// `openssl-sys`. The behavioural proof behind the manifest checks: it also
+// catches a renderer or a GTK crate arriving through another dependency. Names
+// compare whole, so `gtk` does not match `gtk-sys`. Host only: the host crates
+// are the ones `cargo test` has just compiled, so `--offline` always finds
+// them, whereas the Android-only crates may not be in a fresh clone's cache.
+#[test]
+fn test_host_tree_carries_no_desktop_renderer() {
+    let crates = host_tree_crates();
+
+    assert!(
+        crates.iter().any(|c| c == "dioxus"),
+        "the host tree must be read, and must contain dioxus: {crates:?}"
+    );
+    let found: Vec<&String> = crates
+        .iter()
+        .filter(|c| HOST_FORBIDDEN.contains(&c.as_str()))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "the host build must compile no desktop renderer, found {found:?}"
     );
 }
 
@@ -371,13 +772,19 @@ fn test_app_consults_the_config_sync_and_start_page_policies() {
 
 // ── CI ───────────────────────────────────────────────────────────────────────
 
-/// The `web` job of `.github/workflows/ci.yml`, comment lines dropped and
+/// The `web` job of `.github/workflows/ci.yml`, as `job` reads it.
+fn web_job() -> Vec<String> {
+    job("../.github/workflows/ci.yml", "web")
+}
+
+/// The job `name` of the workflow at `relative`, comment lines dropped and
 /// shell line continuations joined, one logical line per entry. Empty when the
 /// job does not exist.
-fn web_job() -> Vec<String> {
-    let workflow = read("../.github/workflows/ci.yml");
+fn job(relative: &str, name: &str) -> Vec<String> {
+    let workflow = read(relative);
+    let key = format!("{name}:");
     let mut in_jobs = false;
-    let mut in_web = false;
+    let mut in_job = false;
     let mut lines = Vec::new();
     for line in workflow.lines() {
         if line.trim_start().starts_with('#') {
@@ -386,15 +793,15 @@ fn web_job() -> Vec<String> {
         let top_level = !line.is_empty() && !line.starts_with(' ');
         if top_level {
             in_jobs = line.starts_with("jobs:");
-            in_web = false;
+            in_job = false;
             continue;
         }
         let job_key = line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':');
         if in_jobs && job_key {
-            in_web = line.trim() == "web:";
+            in_job = line.trim() == key;
             continue;
         }
-        if in_web {
+        if in_job {
             lines.push(line.to_owned());
         }
     }
@@ -489,5 +896,112 @@ fn test_ci_web_job_declares_no_permissions_of_its_own() {
     assert!(
         position(&job, |l| l.starts_with("    permissions:")).is_none(),
         "the web job must inherit the top-level `contents: read`, not widen it"
+    );
+}
+
+// ── #175: the native packages CI installs ────────────────────────────────────
+
+/// Every package the `apt-get install` lines of `job` name, options dropped,
+/// sorted and deduplicated. Every such line counts, so a second install step
+/// cannot slip a package past the first.
+fn apt_packages(job: &[String]) -> Vec<String> {
+    let mut packages: Vec<String> = job
+        .iter()
+        .filter_map(|line| line.split_once("apt-get install").map(|(_, rest)| rest))
+        .flat_map(|rest| {
+            rest.split_whitespace()
+                .filter(|token| !token.starts_with('-'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    packages.sort();
+    packages.dedup();
+    packages
+}
+
+fn server_packages() -> Vec<String> {
+    let mut packages: Vec<String> = SERVER_PACKAGES.iter().map(|p| (*p).to_owned()).collect();
+    packages.sort();
+    packages
+}
+
+// Criterion: the `quality` job's apt step installs exactly `pkg-config`,
+// `libdbus-1-dev`, `libpipewire-0.3-dev`, `libclang-dev` and `clang`. Set
+// equality: near-miss, the list with `libssl-dev` still in it, which a
+// "contains the five server packages" check accepts.
+#[test]
+fn test_ci_quality_job_installs_only_the_server_native_packages() {
+    let quality = job("../.github/workflows/ci.yml", "quality");
+
+    assert!(!quality.is_empty(), "ci.yml must have a `quality` job");
+    assert_eq!(
+        apt_packages(&quality),
+        server_packages(),
+        "the quality job installs the server's native packages, and no renderer's"
+    );
+}
+
+// Criterion: the release `server` job installs the same five packages, and its
+// list stays identical to ci.yml's. Near-miss: release.yml with one extra
+// package, which builds the server just as well.
+#[test]
+fn test_release_server_job_installs_the_same_packages_as_ci() {
+    let server = job("../.github/workflows/release.yml", "server");
+    let quality = job("../.github/workflows/ci.yml", "quality");
+
+    assert!(!server.is_empty(), "release.yml must have a `server` job");
+    assert_eq!(
+        apt_packages(&server),
+        server_packages(),
+        "the release server job installs the server's native packages only"
+    );
+    assert_eq!(
+        apt_packages(&server),
+        apt_packages(&quality),
+        "release.yml and ci.yml install the same list"
+    );
+}
+
+// Criterion: the stale mentions of the `mobile` feature and of the GTK/WebKit
+// stack are updated — the frontend manifest's dioxus comment, ci.yml's apt and
+// `web` job comments, release.yml's claim that the server build resolves the
+// frontend's host dependencies, pr-title.yml, and the two agent definitions.
+// Each phrase is the stale claim as it stood on develop @ f4f012c; a rewording
+// that keeps the claim passes, so the review still reads these comments.
+#[test]
+fn test_no_stale_mention_of_the_mobile_feature_or_the_gtk_stack_remains() {
+    let stale = [
+        ("Cargo.toml", "the crate's `mobile`"),
+        (
+            "../.github/workflows/ci.yml",
+            "dioxus-desktop -> wry on a host build",
+        ),
+        (
+            "../.github/workflows/ci.yml",
+            "dx drops the `mobile` default",
+        ),
+        (
+            "../.github/workflows/release.yml",
+            "resolves the mobile crate's host",
+        ),
+        ("../.github/workflows/pr-title.yml", "GTK/WebKit"),
+        (
+            "../.claude/agents/tdd-test-writer.md",
+            "Dioxus 0.7 `mobile`",
+        ),
+        (
+            "../.claude/agents/tdd-implementer.md",
+            "Dioxus 0.7 `mobile`",
+        ),
+    ];
+    let found: Vec<(&str, &str)> = stale
+        .into_iter()
+        .filter(|(file, phrase)| read(file).contains(phrase))
+        .collect();
+
+    assert!(
+        found.is_empty(),
+        "these still describe the `mobile` feature or the GTK/WebKit stack: {found:?}"
     );
 }
