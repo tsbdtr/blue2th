@@ -25,8 +25,11 @@ start_named() {
     (cd "$dir" && exec "$tmp/bin/$name" 60) </dev/null >/dev/null 2>&1 &
     pid=$!
     started_pids+=("$pid")
+    # `|| true`: `set -e` holds inside the trap, and a stand-in the test already
+    # stopped makes `kill` fail — which ended the test with status 1, silently,
+    # before the temporary directory was removed.
     # shellcheck disable=SC2064  # the list and $tmp are meant to expand now
-    trap "kill ${started_pids[*]} 2>/dev/null; rm -rf '$tmp'" EXIT
+    trap "kill ${started_pids[*]} 2>/dev/null || true; rm -rf '$tmp'" EXIT
     # The name changes at `exec`; until then the process is still the subshell.
     # The kernel keeps 15 characters of it.
     for _ in $(seq 50); do
