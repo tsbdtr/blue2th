@@ -43,8 +43,22 @@ rather than being noticed later.
 
 ```bash
 cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented
+scripts/clippy.sh
 cargo test --workspace
+```
+
+`scripts/clippy.sh` is the one definition of the lint. It runs `cargo clippy`
+three times — the whole workspace on the host, then `blue2th-frontend` for
+`aarch64-linux-android` and for `wasm32-unknown-unknown` (`--features web`) — each
+with `-D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic
+-W clippy::todo -W clippy::unreachable -W clippy::unimplemented`, and stops at the
+first failure. A host-only lint never sees the Android or browser code, so an item
+only one target uses reads as dead and used to collect an `allow(dead_code)`; gate
+it with `cfg` instead. The cross targets are needed once, and the script refuses
+to run (exit 2) without them — clippy does not link, so no NDK is needed:
+
+```bash
+rustup target add aarch64-linux-android wasm32-unknown-unknown
 ```
 
 `--workspace` is kept for explicitness, not for effect: since the mobile crate moved

@@ -9,15 +9,8 @@ set -euo pipefail
 echo "--- fmt ---"
 cargo fmt --check
 
-echo "--- clippy ---"
-cargo clippy --workspace --all-targets -- \
-  -D warnings \
-  -W clippy::unwrap_used \
-  -W clippy::expect_used \
-  -W clippy::panic \
-  -W clippy::todo \
-  -W clippy::unreachable \
-  -W clippy::unimplemented
+# Host, Android and wasm: the script announces each of its three runs itself.
+scripts/clippy.sh
 
 echo "--- test ---"
 cargo test --workspace
