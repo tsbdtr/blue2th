@@ -50,6 +50,13 @@ pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whether the Search button is live, derived from the cached preflight verdict
 /// and from whether this target can browse at all.
 /// Pure, so the disabled case is testable with no JNI at all.
+///
+/// Whether the target can browse is not the caller's to say: a call that
+/// passes it does not compile.
+///
+/// ```compile_fail
+/// let _ = blue2th_frontend::discovery::search_enabled(true, true);
+/// ```
 pub fn search_enabled(multicast_supported: bool, browse_available: bool) -> bool {
     multicast_supported && browse_available
 }

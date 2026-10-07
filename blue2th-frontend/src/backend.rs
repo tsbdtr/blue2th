@@ -237,6 +237,16 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// `POST {base}/pair` — exchange a short-lived pairing code for the backend's
 /// long-lived API token. The one call that carries no bearer, since the app has
 /// none yet.
+///
+/// Pairing with a backend whose wire contract was never checked does not
+/// compile: a bare URL is refused.
+///
+/// ```compile_fail
+/// # async fn demo() -> Result<(), blue2th_frontend::backend::BackendError> {
+/// let _token = blue2th_frontend::backend::pair("http://pc:8080", "K7M2QX").await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn pair(base: &str, code: &str) -> Result<String, BackendError> {
     let request = reqwest::Client::new()
         .post(pair_url(base))
