@@ -69,9 +69,10 @@ jobs:
       - uses: actions/checkout@v7
 
       # The list from ci.yml, copied verbatim; the reason for each package is
-      # there. Both jobs build the server on the same runner image, so a package
-      # missing from one list fails at link time in that job alone, with a
-      # message that says very little. Keep the two lists identical.
+      # there. Both jobs build the server on the same runner image, so they need
+      # the same packages, and a list that drifts fails only the job it sits in
+      # — here, at release time rather than on a pull request. Keep the two
+      # lists identical.
       - name: Install native dependencies
         run: |
           sudo apt-get update

@@ -10,10 +10,10 @@ name: PR title
 # a commit or closing and reopening the pull request (see #39).
 #
 # ci.yml cannot simply add `edited`: it carries `cancel-in-progress`, so every
-# edit to a title *or a description* would cancel the running build and restart a
-# job matrix that installs the D-Bus/PipeWire stack and builds the workspace for
-# three targets. This check is a checkout and a grep, so it gets its own trigger
-# and its own concurrency group.
+# edit to a title *or a description* would cancel the running build and restart
+# every ci.yml job: the D-Bus/PipeWire install, clippy for three targets, the
+# test suite and the browser build. This check is a checkout and a grep, so it
+# gets its own trigger and its own concurrency group.
 
 on:
   pull_request:

@@ -29,9 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # A bare runner does not compile this workspace: the server links native
-      # libraries, and the failure lands at link time with a message that says
-      # very little. Each package is here for the server alone:
+      # A bare runner does not compile this workspace: the server's -sys crates
+      # probe for native libraries in their build scripts, and stop the build
+      # without them. Each package is here for the server alone:
       #
       #   - libdbus-1-dev: bluer talks to BlueZ over D-Bus;
       #   - libpipewire-0.3-dev: pipewire-rs links libpipewire-0.3;

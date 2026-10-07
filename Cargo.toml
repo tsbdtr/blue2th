@@ -30,9 +30,11 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-# The app's version, declared once: the frontend names dioxus twice, once for
-# every target and once for Android with its renderer, and each entry adds only
-# its features. Kept in step with the pinned dioxus-cli.
+# dioxus is declared once, here: the frontend names it twice, for every target
+# and for Android with its renderer, and each entry adds only its features. The
+# version follows the dioxus-cli the workflows pin, because dx reads back the
+# asset symbols this library embeds in the binary, in a format the two must
+# agree on (test_every_pinned_dioxus_cli_matches_the_locked_dioxus).
 dioxus = "0.7.10"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1" }

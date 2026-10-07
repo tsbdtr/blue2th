@@ -120,8 +120,8 @@ fn feature(manifest: &toml::Table, name: &str) -> Option<Vec<String>> {
 // ── Cargo.toml ───────────────────────────────────────────────────────────────
 
 // Criterion: `dioxus = { features = ["router"] }` — no platform feature on the
-// dependency line, so `--no-default-features --features web` builds no mobile
-// renderer.
+// shared dependency line, so the browser build gets `web` alone and no host
+// build gets a renderer (#175).
 #[test]
 fn test_dioxus_dependency_names_no_platform_feature() {
     let manifest = manifest();
@@ -131,7 +131,8 @@ fn test_dioxus_dependency_names_no_platform_feature() {
     assert_eq!(
         strings(dioxus, "features"),
         vec!["router".to_owned()],
-        "the dioxus line carries `router` only; the platform comes from a crate feature"
+        "the shared dioxus line carries `router` only; the renderer comes from the \
+         Android target table or the `web` feature"
     );
 }
 
@@ -142,8 +143,8 @@ fn test_dioxus_dependency_names_no_platform_feature() {
 // Android-only dioxus dependency carries `mobile`, and no host build sees it.
 
 /// The renderer a `[features]` entry enables directly — `dioxus/mobile`,
-/// `dioxus?/web` — or `None`. Compared on whole names, never on a substring:
-/// a feature called `web-storage` enables no renderer.
+/// `dioxus?/web` — or `None`. Compared on whole names, never on a prefix:
+/// `dioxus-sdk/web` enables another crate's feature, not a dioxus renderer.
 fn renderer_of(entry: &str) -> Option<&str> {
     let (dependency, feature) = entry.split_once('/')?;
     (dependency.trim_end_matches('?') == "dioxus" && RENDERERS.contains(&feature))
@@ -368,12 +369,67 @@ fn test_dioxus_version_is_declared_once_in_the_workspace() {
     }
 }
 
+/// The versions every `dioxus-cli@<version>` names in the workflow at
+/// `relative`, comment lines dropped.
+fn dioxus_cli_pins(relative: &str) -> Vec<String> {
+    read(relative)
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .flat_map(|line| line.split("dioxus-cli@").skip(1))
+        .filter_map(|rest| rest.split_whitespace().next().map(str::to_owned))
+        .collect()
+}
+
+/// Every version of `name` that `Cargo.lock` resolves.
+fn locked_versions(name: &str) -> Vec<String> {
+    let lock = parse("../Cargo.lock");
+    lock.get("package")
+        .and_then(|p| p.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|package| package.get("name").and_then(|n| n.as_str()) == Some(name))
+        .filter_map(|package| package.get("version").and_then(|v| v.as_str()))
+        .map(str::to_owned)
+        .collect()
+}
+
+// Criterion: the workspace's dioxus is "kept in step with the pinned
+// dioxus-cli" (the comment above it in the root Cargo.toml). dx reads back the
+// asset symbols the library embeds in the binary, and names a dioxus/dioxus-cli
+// mismatch as the likely cause when it cannot. The version compared is the
+// locked one, the one compiled: `dioxus = "0.7.10"` is a caret requirement, and
+// a `cargo update` could move the lock to 0.7.11 under an unchanged manifest.
+// Near-miss: release.yml's dx bumped and ci.yml's left behind.
+#[test]
+fn test_every_pinned_dioxus_cli_matches_the_locked_dioxus() {
+    let locked = locked_versions("dioxus");
+
+    assert_eq!(
+        locked,
+        vec!["0.7.10".to_owned()],
+        "Cargo.lock resolves one dioxus, the workspace's 0.7.10"
+    );
+    for workflow in [
+        "../.github/workflows/ci.yml",
+        "../.github/workflows/release.yml",
+    ] {
+        let pins = dioxus_cli_pins(workflow);
+        assert!(!pins.is_empty(), "{workflow} must pin dioxus-cli");
+        assert!(
+            pins.iter().all(|pin| *pin == locked[0]),
+            "{workflow} pins dioxus-cli {pins:?}, the app compiles dioxus {}",
+            locked[0]
+        );
+    }
+}
+
 // Pins the checker of `test_no_default_feature_enables_a_renderer` on the
 // spec's guards, since the real manifest exercises none of them once green.
 // Near-misses: `default = ["app"]` with `app = ["dioxus/mobile"]` (a check of
 // `default`'s direct entries accepts it); `default = ["web"]` (a check for
-// `mobile` alone accepts it). Accepted: an empty or absent `default`, and a
-// default naming `web-storage`, which a substring match on `web` would refuse.
+// `mobile` alone accepts it). Accepted: an empty or absent `default`; a
+// default naming `web-storage`, which a substring match on `web` would refuse;
+// and one reaching `dioxus-sdk/web`, which a prefix match on `dioxus` would.
 #[test]
 fn test_default_renderer_walk_refuses_indirect_and_non_mobile_renderers() {
     let refused = [
@@ -395,6 +451,7 @@ fn test_default_renderer_walk_refuses_indirect_and_non_mobile_renderers() {
         "[features]\nweb = [\"dioxus/web\"]\n",
         "[package]\nname = \"x\"\n",
         "[features]\ndefault = [\"web-storage\"]\nweb-storage = [\"dep:web-sys\"]\nweb = [\"dioxus/web\"]\n",
+        "[features]\ndefault = [\"sdk\"]\nsdk = [\"dioxus-sdk/web\"]\n",
     ];
     for fixture in accepted {
         let manifest = fixture.parse::<toml::Table>().unwrap_or_default();
@@ -458,9 +515,11 @@ fn test_mobile_site_check_accepts_only_the_exact_android_key() {
     }
 }
 
-/// The crate names of `cargo tree -p blue2th-frontend -e normal` for the host,
-/// offline. A command that fails, or prints nothing, fails the assertion here
-/// rather than reading as "no renderer".
+/// The crate names of `cargo tree -p blue2th-frontend` for the host, offline,
+/// over the normal, build and dev edges: every crate `cargo test` compiles for
+/// the frontend. A command that fails fails the assertion here; one that
+/// prints nothing fails the caller's `dioxus` check, rather than reading as
+/// "no renderer".
 fn host_tree_crates() -> Vec<String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let output = std::process::Command::new(cargo)
@@ -471,7 +530,7 @@ fn host_tree_crates() -> Vec<String> {
             "-p",
             "blue2th-frontend",
             "-e",
-            "normal",
+            "normal,build,dev",
             "--prefix",
             "none",
             "--format",
@@ -924,6 +983,29 @@ fn server_packages() -> Vec<String> {
     let mut packages: Vec<String> = SERVER_PACKAGES.iter().map(|p| (*p).to_owned()).collect();
     packages.sort();
     packages
+}
+
+// Pins `apt_packages` on its own claim, which the real workflows cannot reach:
+// each job has a single install step. Near-miss: a reader that stops at the
+// first `apt-get install`, which lets a second step slip a package past the
+// set-equality checks below.
+#[test]
+fn test_apt_package_reader_counts_every_install_line() {
+    let job = [
+        "sudo apt-get update".to_owned(),
+        "sudo apt-get install -y --no-install-recommends clang pkg-config".to_owned(),
+        "sudo apt-get install -y libgtk-3-dev".to_owned(),
+    ];
+
+    assert_eq!(
+        apt_packages(&job),
+        vec![
+            "clang".to_owned(),
+            "libgtk-3-dev".to_owned(),
+            "pkg-config".to_owned()
+        ],
+        "every apt-get install line counts, options dropped"
+    );
 }
 
 // Criterion: the `quality` job's apt step installs exactly `pkg-config`,
