@@ -20,23 +20,25 @@
 
 /// A JNI failure, carrying the Java exception's own message when there was one.
 ///
-/// Only ever built on Android, where the JNI calls live; the desktop build keeps
-/// the type so the error path compiles and stays testable.
+/// Only built on Android, where the JNI calls live: elsewhere nothing could
+/// construct one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub struct JniError(String);
 
+#[cfg(target_os = "android")]
 impl std::fmt::Display for JniError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
+#[cfg(target_os = "android")]
 impl std::error::Error for JniError {}
 
+#[cfg(target_os = "android")]
 impl JniError {
     /// Wrap a message (a Java exception's `toString()`, or a Rust-side detail).
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn new(msg: impl Into<String>) -> Self {
         Self(msg.into())
     }
@@ -171,6 +173,7 @@ mod tests {
     // so the settings page error card shows the cause rather than the jni
     // crate's generic "Java exception was thrown".
     #[test]
+    #[cfg(target_os = "android")]
     fn test_jni_error_displays_the_captured_detail() {
         let err = JniError::new("java.lang.SecurityException: no multicast");
         assert_eq!(

@@ -65,10 +65,11 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
+          targets: aarch64-linux-android, wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
-      # The three commands from CLAUDE.md, verbatim. --workspace is explicit rather
+      # The three gates from CLAUDE.md, verbatim. --workspace is explicit rather
       # than load-bearing: the root is a virtual manifest since the mobile crate moved
       # into blue2th-frontend/, so a bare `cargo test` already runs every member. It
       # was load-bearing when the root was a package. Keeping it means the command
@@ -76,16 +77,12 @@ jobs:
       - name: fmt
         run: cargo fmt --check
 
+      # Host, Android and wasm (#167): code that only one target uses is gated
+      # with `cfg` rather than left as a dead-code allowance, and native-only
+      # code must be gated, not left as a wasm warning. The Android run needs
+      # no NDK: clippy does not link.
       - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets -- \
-            -D warnings \
-            -W clippy::unwrap_used \
-            -W clippy::expect_used \
-            -W clippy::panic \
-            -W clippy::todo \
-            -W clippy::unreachable \
-            -W clippy::unimplemented
+        run: scripts/clippy.sh
 
       # assets/tailwind.css is generated and untracked, but build.rs creates an
       # empty one when missing, so a fresh clone can run the tests as is.
@@ -93,9 +90,8 @@ jobs:
       - name: test
         run: cargo test --workspace
 
-  # The browser build (#159). `cargo test` and the host clippy never compile for
-  # wasm, so tokio or mdns-sd creeping back into the shared code would only be
-  # noticed here.
+  # The browser build (#159). `cargo test` never compiles for wasm; the wasm
+  # lint runs in the quality job, and this job proves the bundle still builds.
   web:
     name: "Frontend: browser build"
     runs-on: ubuntu-latest
@@ -103,12 +99,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Same pin as the quality job, for the same reason: new clippy lints.
+      # Same pin as the quality job: the bundle must build with the toolchain
+      # the lint ran on.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
           targets: wasm32-unknown-unknown
-          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -117,12 +113,6 @@ jobs:
 
       - name: Install dioxus-cli 0.7.10
         run: cargo binstall -y dioxus-cli@0.7.10
-
-      # Native-only code must be gated, not left as a wasm warning.
-      - name: clippy (wasm)
-        run: |
-          cargo clippy -p blue2th-frontend --target wasm32-unknown-unknown \
-            --no-default-features --features web -- -D warnings
 
       # No feature flags: dx drops the `mobile` default and enables `web` itself
       # for --platform web (observed with dx 0.7.10).

@@ -124,7 +124,7 @@ PENDING
 ## Constraints & Notes
 <!-- Technical constraints, edge cases to handle -->
 - Must pass `cargo test --workspace`
-- Must pass `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented`
+- Must pass `scripts/clippy.sh` (host, Android and wasm)
 - If the **mobile** layer is touched: must pass `dx build --platform android --package blue2th-frontend`
 - Mobile code follows Dioxus 0.7 patterns (no cx/Scope/use_state); `blue2th-proto` stays target-agnostic
 - PENDING

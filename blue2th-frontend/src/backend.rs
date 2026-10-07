@@ -237,7 +237,6 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// `POST {base}/pair` — exchange a short-lived pairing code for the backend's
 /// long-lived API token. The one call that carries no bearer, since the app has
 /// none yet.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn pair(base: &str, code: &str) -> Result<String, BackendError> {
     let request = reqwest::Client::new()
         .post(pair_url(base))
@@ -424,7 +423,6 @@ fn is_last_reference(remaining: &[crate::settings::BackendEntry], base: &str) ->
 /// [`activate_backend`] switches first: a backend that is slow or dead must
 /// never keep the user staring at an entry they have deleted. The remote release
 /// is best-effort on top.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<(), BackendError> {
     // Captured before the removal: afterwards the entry is gone, and its own
     // token is the only one that backend will accept.
@@ -538,7 +536,6 @@ fn is_left_behind(previous: &str, next: Option<&str>) -> bool {
 /// this, so the two ways to switch cannot drift apart. The local switch always
 /// happens: a failure talking to either backend is surfaced, never blocking —
 /// the app must never be stuck on a dead backend.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn activate_backend(
     settings: &mut AppSettings,
     index: usize,
@@ -588,7 +585,6 @@ pub async fn activate_backend(
 
 /// `GET {base}/health` against an explicit address — the settings page's `Test`
 /// action, which pings a backend that is not (yet) the active one.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
     // Bounded: a typo'd address that drops packets would otherwise leave the
     // `Test` button waiting forever with no answer either way.
@@ -647,7 +643,6 @@ fn describe(err: &reqwest::Error) -> String {
 /// paint an alive-but-unpaired backend as offline — the exact confusion the open
 /// probe exists to prevent. The bearer is still sent when there is one, so the
 /// request is identical for a paired app.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
     let settings = crate::settings::current();
     let base = base_url_from(&settings)?;
@@ -660,7 +655,6 @@ pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
 
 /// Run a backend scan: consume the `/scan` SSE feed for `SCAN_WINDOW`, collecting
 /// each discovered device (deduplicated by address).
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/scan", base.trim_end_matches('/'));
@@ -703,7 +697,6 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
 
 /// `POST {base}/devices/{address}/connect` — pair/trust/connect on the backend,
 /// returning the device's updated state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn connect_device(address: &str) -> Result<DeviceInfo, BackendError> {
     // The one place a 409 means "the speaker refused the bond": on every other
     // route it keeps saying what the backend meant by it.
@@ -714,7 +707,6 @@ pub async fn connect_device(address: &str) -> Result<DeviceInfo, BackendError> {
 
 /// `POST {base}/devices/{address}/disconnect` — disconnect on the backend,
 /// returning the device's updated state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn disconnect_device(address: &str) -> Result<DeviceInfo, BackendError> {
     post_device_action(address, "disconnect").await
 }
@@ -728,7 +720,6 @@ async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, B
 
 /// `GET {base}/devices` — the backend's paired devices and their current state.
 /// Used by the periodic poll to refresh `connected`/`rssi` without re-scanning.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/devices", base.trim_end_matches('/'));
@@ -737,25 +728,21 @@ pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
 
 /// `POST {base}/play` — start (or resume) playback on the backend, returning the
 /// new playback state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn play() -> Result<PlaybackState, BackendError> {
     post_transport("play").await
 }
 
 /// `POST {base}/pause` — pause playback, returning the new state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn pause() -> Result<PlaybackState, BackendError> {
     post_transport("pause").await
 }
 
 /// `POST {base}/stop` — stop playback, returning the new state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn stop() -> Result<PlaybackState, BackendError> {
     post_transport("stop").await
 }
 
 /// `GET {base}/playback` — the backend's current playback state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn playback_state() -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/playback", base.trim_end_matches('/'));
@@ -764,7 +751,6 @@ pub async fn playback_state() -> Result<PlaybackState, BackendError> {
 
 /// `POST {base}/volume` — set the connected speaker's PipeWire sink volume
 /// (clamped server-side to `0.0..=1.0`), returning the new state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn set_volume(level: f32) -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/volume", base.trim_end_matches('/'));
@@ -791,7 +777,6 @@ fn targets_url(base: &str) -> String {
 
 /// `POST {base}/devices/{address}/select` — select a connected speaker as a
 /// playback target, returning the updated selection state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = device_action_url(&base, address, "select");
@@ -800,7 +785,6 @@ pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> 
 
 /// `POST {base}/devices/{address}/deselect` — drop a speaker from the playback
 /// target selection, returning the updated selection state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = device_action_url(&base, address, "deselect");
@@ -809,7 +793,6 @@ pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError
 
 /// `POST {base}/devices/{address}/offset` — set a target speaker's latency offset
 /// (clamped server-side to `0..=750` ms), returning the updated selection state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = device_action_url(&base, address, "offset");
@@ -818,7 +801,6 @@ pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, B
 
 /// `GET {base}/targets` — the backend's current playback-target selection,
 /// per-speaker offsets and routing mode.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
     let url = targets_url(&base);
@@ -833,20 +815,17 @@ fn spotify_url(base: &str, action: &str) -> String {
 
 /// `POST {base}/spotify/start` — activate the Spotify source backend (spawn the
 /// `librespot` Connect device), returning its new state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn start_spotify() -> Result<SpotifyState, BackendError> {
     post_spotify("start").await
 }
 
 /// `POST {base}/spotify/stop` — deactivate the Spotify source backend (kill the
 /// subprocess), returning its new state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn stop_spotify() -> Result<SpotifyState, BackendError> {
     post_spotify("stop").await
 }
 
 /// `GET {base}/spotify/status` — the Spotify backend's current state.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "status");
@@ -854,7 +833,6 @@ pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
 }
 
 /// POST `{base}/spotify/{action}` (no body) and decode the updated `SpotifyState`.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, action);
@@ -870,7 +848,6 @@ fn now_playing_url(base: &str) -> String {
 /// with a plain-text body ("Spotify client id not configured — …", "start the
 /// Spotify backend first"), which `error_for_status` would throw away, leaving
 /// the user with a bare "503 Service Unavailable" on the phone.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 async fn backend_error_message(
     response: reqwest::Response,
 ) -> Result<reqwest::Response, BackendError> {
@@ -884,7 +861,6 @@ async fn backend_error_message(
 
 /// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
 /// (PKCE) and the CSRF `state` to echo back on callback.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "auth/url");
@@ -912,7 +888,6 @@ pub async fn spotify_auth_callback(
 }
 
 /// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "auth/status");
@@ -925,7 +900,7 @@ pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
 /// The backend cannot infer this: Android freezes a backgrounded app, so its
 /// dropped SSE feed looks exactly like a phone that is gone. Reporting keeps a
 /// background listening session alive and pauses at once on a real exit.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub async fn report_presence(presence: ClientPresence) -> Result<(), BackendError> {
     let (client, base) = authed_client()?;
     let url = format!("{}/client/presence", base.trim_end_matches('/'));
@@ -973,7 +948,6 @@ pub async fn spotify_transport(action: SpotifyAction) -> Result<(), BackendError
 
 /// POST `{base}/spotify/{action}` (no body) for a transport action; the backend
 /// replies 204 (no content) on success, so no body is decoded.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, action);
@@ -989,7 +963,6 @@ async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
 /// Subscribe to the `{base}/spotify/now-playing` SSE feed, invoking `on_event`
 /// for each `now-playing` snapshot until the stream ends or the caller drops the
 /// future. Errors talking to the backend are surfaced to the caller.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub async fn subscribe_now_playing<F>(mut on_event: F) -> Result<(), BackendError>
 where
     F: FnMut(NowPlaying),

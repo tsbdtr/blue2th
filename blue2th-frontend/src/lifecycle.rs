@@ -45,7 +45,7 @@ pub fn arm(handle: tokio::runtime::Handle) {
 
 /// How long a `Gone` report may block the activity's `onDestroy`: enough for a
 /// LAN round-trip, far short of the ANR watchdog.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "android")]
 const GONE_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Report a presence change, if the runtime is armed.
@@ -53,8 +53,7 @@ const GONE_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_milli
 /// Best-effort by design: Android may freeze the process right after `onStop`,
 /// and a report that does not make it out only costs a wider grace period on the
 /// backend — never correctness, and never a message to a user who has left.
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub fn report(presence: ClientPresence) {
     let Some(handle) = RUNTIME.get() else {
         return;
@@ -70,8 +69,7 @@ pub fn report(presence: ClientPresence) {
 /// tears the process down, so a detached task is very unlikely to ever be polled
 /// — the request would simply die with the app, which is exactly the "closing
 /// blue2th does not pause the music" symptom.
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub fn report_gone_blocking() {
     let Some(handle) = RUNTIME.get() else {
         return;

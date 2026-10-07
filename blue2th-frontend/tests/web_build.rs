@@ -411,7 +411,8 @@ fn position(job: &[String], predicate: impl Fn(&str) -> bool) -> Option<usize> {
 }
 
 // Criterion: `.github/workflows/ci.yml` has a `web` job on the pinned
-// toolchain (1.98.1) with the wasm target and clippy.
+// toolchain (1.98.1) with the wasm target. Its clippy moved to the `quality`
+// job's scripts/clippy.sh (#167), so the job no longer needs the component.
 #[test]
 fn test_ci_web_job_uses_the_pinned_toolchain_with_the_wasm_target() {
     let job = web_job();
@@ -430,12 +431,6 @@ fn test_ci_web_job_uses_the_pinned_toolchain_with_the_wasm_target() {
             && l.contains("wasm32-unknown-unknown"))
         .is_some(),
         "the web job installs the wasm32-unknown-unknown target"
-    );
-    assert!(
-        position(&job, |l| l.trim_start().starts_with("components:")
-            && l.contains("clippy"))
-        .is_some(),
-        "the web job installs clippy"
     );
 }
 
@@ -457,20 +452,12 @@ fn test_ci_web_job_installs_the_pinned_dioxus_cli() {
     );
 }
 
-// Criterion: the job runs the wasm clippy — `-p blue2th-frontend --target
-// wasm32-unknown-unknown --no-default-features --features web` with
-// `-D warnings` — then `dx build --platform web`.
+// Criterion: the job runs `dx build --platform web`, and no clippy of its own:
+// the wasm lint runs in the `quality` job through scripts/clippy.sh (#167).
 #[test]
-fn test_ci_web_job_runs_the_wasm_clippy_then_the_web_build() {
+fn test_ci_web_job_runs_the_web_build_and_no_clippy() {
     let job = web_job();
-    let clippy = position(&job, |l| {
-        l.contains("cargo clippy")
-            && l.contains("-p blue2th-frontend")
-            && l.contains("--target wasm32-unknown-unknown")
-            && l.contains("--no-default-features")
-            && l.contains("--features web")
-            && l.contains("-D warnings")
-    });
+    let clippy = position(&job, |l| l.contains("cargo clippy"));
     let build = position(&job, |l| {
         l.contains("dx build")
             && l.contains("--platform web")
@@ -478,16 +465,12 @@ fn test_ci_web_job_runs_the_wasm_clippy_then_the_web_build() {
     });
 
     assert!(
-        clippy.is_some(),
-        "the web job runs the wasm clippy with -D warnings"
+        clippy.is_none(),
+        "the wasm clippy runs in the quality job through scripts/clippy.sh, not here"
     );
     assert!(
         build.is_some(),
         "the web job runs dx build --platform web --package blue2th-frontend"
-    );
-    assert!(
-        clippy < build,
-        "the wasm clippy runs before the web build, which is the slower of the two"
     );
 }
 

@@ -68,7 +68,7 @@ call:
 ### Quality gates (run from the worktree root before committing)
 **Always** — the gates cover the whole workspace:
 - `cargo test --workspace` — all tests must pass (exit 0).
-- `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented` — no errors.
+- `scripts/clippy.sh` — no errors. It lints the host workspace, then the frontend for Android and for wasm, with the CLAUDE.md flags; exit 2 means a missing target (`rustup target add aarch64-linux-android wasm32-unknown-unknown`).
 
 **What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
 `allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`

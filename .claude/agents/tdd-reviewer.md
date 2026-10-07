@@ -122,7 +122,7 @@ call:
 ### Quality gates (run from the worktree root)
 **Always** — record baseline and re-run at the end:
 - `cargo test --workspace 2>&1` — must pass.
-- `cargo clippy --workspace --all-targets -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unreachable -W clippy::unimplemented 2>&1` — must be clean.
+- `scripts/clippy.sh 2>&1` — must be clean (host, Android and wasm, with the CLAUDE.md flags).
 
 **What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
 `allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
@@ -167,7 +167,7 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 
 ## Final Status
 - `cargo test --workspace`: <✅ N passed | ❌ failed>
-- `cargo clippy --workspace`: <✅ clean | ❌ N warnings>
+- `scripts/clippy.sh`: <✅ clean | ❌ N warnings>
 - `dx build --platform android --package blue2th-frontend`: <✅ success | ⏭️ skipped (mobile not affected) | ❌ failed>
 ```
 
