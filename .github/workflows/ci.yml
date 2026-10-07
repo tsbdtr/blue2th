@@ -29,30 +29,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # A bare runner does not compile this workspace. Two families of native
-      # libraries are needed, and the failure lands at link time with a message
-      # that says very little:
+      # A bare runner does not compile this workspace: the server's -sys crates
+      # probe for native libraries in their build scripts, and stop the build
+      # without them. Each package is here for the server alone:
       #
-      #   - the server links D-Bus (bluer) and libpipewire-0.3 (pipewire-rs),
-      #     whose bindgen step needs clang and its resource headers (#110);
-      #   - the mobile crate pulls dioxus-desktop -> wry on a host build, which
-      #     drags in the whole GTK/WebKit stack even though the app targets
-      #     Android. libxdo comes from muda (menus), libssl from tungstenite.
+      #   - libdbus-1-dev: bluer talks to BlueZ over D-Bus;
+      #   - libpipewire-0.3-dev: pipewire-rs links libpipewire-0.3;
+      #   - clang, libclang-dev: pipewire-rs generates its bindings with bindgen,
+      #     which loads libclang and needs clang's resource headers (#110);
+      #   - pkg-config: how the -sys crates' build scripts find the two libraries.
       #
-      # The pkg-config names were read from the build script output, not guessed:
-      # webkit2gtk-4.1, javascriptcoregtk-4.1, libsoup-3.0.
+      # The frontend adds nothing: its renderer is an Android-only dependency, so
+      # a host build compiles no dioxus-desktop, wry or GTK/WebKit stack (#175).
       - name: Install native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
             libdbus-1-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            libxdo-dev \
-            libssl-dev \
             libpipewire-0.3-dev \
             libclang-dev \
             clang
@@ -114,8 +108,9 @@ jobs:
       - name: Install dioxus-cli 0.7.10
         run: cargo binstall -y dioxus-cli@0.7.10
 
-      # No feature flags: dx drops the `mobile` default and enables `web` itself
-      # for --platform web (observed with dx 0.7.10).
+      # No feature flags: the crate has no default feature to drop, and dx
+      # enables `web` itself for --platform web (observed with dx 0.7.10). The
+      # Android-only dioxus entry, which carries `mobile`, is inactive on wasm.
       - name: dx build (web)
         run: dx build --platform web --package blue2th-frontend
 

@@ -16,7 +16,7 @@ Tests must **compile but FAIL** at the end of your work (red phase).
 Read the **Affected Layers** section of your prompt — only write tests for the
 layers listed there.
 
-- **mobile** — `blue2th-frontend` (Dioxus 0.7 `mobile` feature, no cx/Scope/use_state).
+- **mobile** — `blue2th-frontend` (Dioxus 0.7, renderer `mobile` on the Android target only, no cx/Scope/use_state).
   - No on-phone Bluetooth: the backend owns it. Device scanning and
     connect/disconnect are HTTP calls in `src/backend.rs`. The remaining JNI is
     `src/jni_util.rs` (multicast lock, error type `JniError`) and `src/lifecycle.rs`
