@@ -50,6 +50,9 @@ gh auth status >/dev/null 2>&1 || bail "gh is not authenticated — run: gh auth
 ROOT=$(git rev-parse --show-toplevel) || die "not inside a git repository"
 cd "$ROOT"
 
+# shellcheck source=../scripts/lib/language-servers.sh
+source "$ROOT/scripts/lib/language-servers.sh"
+
 # The whole script assumes the main checkout is on develop: it pulls into the
 # current branch further down, and deletes a branch you cannot be standing on.
 # Checked here rather than there so it fails before the first network call.
@@ -188,6 +191,11 @@ fi
 # ── Worktree and branch ──────────────────────────────────────────────────────
 
 if git worktree list --porcelain | grep -qF "worktree $WORKTREE_PATH"; then
+    # Serena's rust-analyzer for the worktree outlives the switch back to the
+    # base checkout, and its flycheck recreated target/ while git emptied the
+    # directory: the worktree was unregistered and the directory left behind.
+    stop_language_servers "$WORKTREE_PATH"
+
     # No --force, deliberately. It used to be passed "because target/ is always
     # present and untracked" — but target/ is gitignored, and `git worktree
     # remove` ignores ignored files: it was never needed. Without it, git refuses

@@ -292,6 +292,13 @@ base checkout. The check in 2 caught it; sending them one at a time avoids it.
 - Serena's tools approved without a prompt for headless agents — the
   `serena-hooks auto-approve` hook, or `mcp__serena__*` in the allow list.
 
+**The worktree's rust-analyzer outlives step 4's switch back.** Serena starts
+one per activated project and does not stop it on a switch. Left running, its
+flycheck recreated `target/` while `git worktree remove` emptied the directory,
+which left the directory behind (#160). `tdd/cleanup.sh` therefore stops the
+rust-analyzer processes working in the worktree before removing it
+(`scripts/lib/language-servers.sh`), and nothing else.
+
 **The worktree stays in Serena's registry after cleanup, and that is fine.**
 Each activation registers the worktree in `~/.serena/serena_config.yml`, and
 nothing here removes it: Serena skips a registered project whose directory is
