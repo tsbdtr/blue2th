@@ -26,8 +26,9 @@ use rand::Rng as _;
 /// only thing standing between the LAN and the API.
 pub const PAIRING_TTL: Duration = Duration::from_secs(300);
 
-/// How many failed attempts invalidate the armed code. The code is short, so an
-/// attempt cap is not a nicety — it is what makes it a secret at all.
+/// How many failed attempts, counted across every armed code, invalidate them
+/// all. The code is short, so an attempt cap is not a nicety — it is what makes
+/// it a secret at all.
 pub const MAX_PAIRING_ATTEMPTS: u32 = 5;
 
 /// Number of characters in a minted pairing code (short enough to type).
@@ -81,17 +82,15 @@ pub fn generate_token() -> String {
 const PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 /// A pairing code armed by the server: short, URL-safe (it rides in a deep link
-/// and is typed by hand), short-lived, one-shot and rate limited.
+/// and is typed by hand) and short-lived. [`AuthStore`] makes it one-shot and
+/// rate limited: it removes a redeemed code and counts failures across all of
+/// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingCode {
     /// The code itself.
     code: String,
     /// When it stops being accepted.
     expires_at: SystemTime,
-    /// Failed attempts so far; [`MAX_PAIRING_ATTEMPTS`] invalidate it.
-    attempts: u32,
-    /// Whether it was already exchanged for the token (one-shot).
-    consumed: bool,
 }
 
 impl PairingCode {
@@ -114,8 +113,6 @@ impl PairingCode {
         Self {
             code: code.into(),
             expires_at,
-            attempts: 0,
-            consumed: false,
         }
     }
 
@@ -128,34 +125,15 @@ impl PairingCode {
     pub fn expires_at(&self) -> SystemTime {
         self.expires_at
     }
-
-    /// Failed attempts recorded so far.
-    pub fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    /// Whether the code was already exchanged for the token.
-    pub fn is_consumed(&self) -> bool {
-        self.consumed
-    }
-
-    /// Mark the code as spent (one-shot).
-    pub fn consume(&mut self) {
-        self.consumed = true;
-    }
-
-    /// Record a failed attempt. The cap itself is applied by [`verify_code`].
-    pub fn register_failure(&mut self) {
-        self.attempts = self.attempts.saturating_add(1);
-    }
 }
 
 /// Whether `submitted` matches the armed code. Pure.
 ///
-/// Accepts only an exactly-matching, unexpired, unconsumed code whose attempt
-/// count is still under [`MAX_PAIRING_ATTEMPTS`]. Every refusal — no code armed,
-/// unknown code, expired code, spent code, attempt cap reached — returns the
-/// same [`PairError`], on purpose.
+/// Accepts only an exactly-matching, unexpired code. Every refusal — no code
+/// armed, unknown code, expired code — returns the same [`PairError`], on
+/// purpose. A spent code and the attempt cap never reach this check:
+/// [`AuthStore::redeem`] removes a redeemed code, and clears every code once
+/// [`MAX_PAIRING_ATTEMPTS`] failures add up.
 pub fn verify_code(
     stored: Option<&PairingCode>,
     submitted: &str,
@@ -165,11 +143,7 @@ pub fn verify_code(
     // from "unknown" would help an attacker enumerate.
     let stored = stored.ok_or(PairError::Rejected)?;
     let submitted = blue2th_proto::normalize_pairing_code(submitted);
-    if stored.is_consumed()
-        || stored.attempts() >= MAX_PAIRING_ATTEMPTS
-        || now >= stored.expires_at()
-        || !constant_time_eq(stored.code(), &submitted)
-    {
+    if now >= stored.expires_at() || !constant_time_eq(stored.code(), &submitted) {
         return Err(PairError::Rejected);
     }
     Ok(())
@@ -258,7 +232,7 @@ struct StoredToken {
     token: String,
 }
 
-/// The backend's API token and the pairing code currently armed, optionally
+/// The backend's API token and the pairing codes currently armed, optionally
 /// persisted.
 ///
 /// Following the `state_store` pattern, [`AuthStore::new`] and
@@ -268,8 +242,11 @@ struct StoredToken {
 pub struct AuthStore {
     /// The long-lived bearer token every guarded route requires.
     token: String,
-    /// The pairing code currently armed, if any.
-    pairing: Option<PairingCode>,
+    /// The pairing codes currently armed, unconsumed ones only (#160).
+    pairing: Vec<PairingCode>,
+    /// Failed redemptions since the codes were armed, counted once for all of
+    /// them: n codes must not multiply the attempts an attacker gets.
+    failures: u32,
     /// Where the token is persisted, or `None` to stay in memory only.
     store: Option<PathBuf>,
     /// Whether the token was minted rather than reloaded. A minted token
@@ -283,7 +260,8 @@ impl AuthStore {
     pub fn new() -> Self {
         Self {
             token: generate_token(),
-            pairing: None,
+            pairing: Vec::new(),
+            failures: 0,
             store: None,
             minted: true,
         }
@@ -294,7 +272,8 @@ impl AuthStore {
     pub fn with_token(token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
-            pairing: None,
+            pairing: Vec::new(),
+            failures: 0,
             store: None,
             // Handed in, not minted: nothing was invalidated.
             minted: false,
@@ -322,7 +301,8 @@ impl AuthStore {
         });
         Self {
             token,
-            pairing: None,
+            pairing: Vec::new(),
+            failures: 0,
             store,
             minted,
         }
@@ -343,9 +323,9 @@ impl AuthStore {
         &self.token
     }
 
-    /// The pairing code currently armed, if any.
+    /// The first pairing code still armed, if any.
     pub fn armed(&self) -> Option<&PairingCode> {
-        self.pairing.as_ref()
+        self.pairing.first()
     }
 
     /// Mint a new API token, persist it and return it. Every paired client must
@@ -358,40 +338,61 @@ impl AuthStore {
         &self.token
     }
 
-    /// Arm a fresh pairing code and return it, replacing any previous one.
-    pub fn arm_pairing(&mut self, now: SystemTime) -> String {
-        let minted = PairingCode::mint(now);
-        // Owned copy: the code is handed to the operator while the store keeps
-        // its own to verify against.
-        let code = minted.code().to_string();
-        self.pairing = Some(minted);
-        code
+    /// Arm `count` fresh pairing codes and return them, replacing any previous
+    /// ones. Every armed code redeems once; failed attempts are counted once
+    /// for all of them.
+    pub fn arm_pairing(&mut self, count: u32, now: SystemTime) -> Vec<String> {
+        self.arm_codes(count, || PairingCode::mint(now))
+    }
+
+    /// [`AuthStore::arm_pairing`], drawing its codes from `mint`: the seam
+    /// through which a test hands it the same code twice.
+    fn arm_codes(&mut self, count: u32, mut mint: impl FnMut() -> PairingCode) -> Vec<String> {
+        self.pairing.clear();
+        self.failures = 0;
+        while self.pairing.len() < count as usize {
+            let minted = mint();
+            // Two equal codes would be one code redeemable twice.
+            if self.pairing.iter().all(|c| c.code() != minted.code()) {
+                self.pairing.push(minted);
+            }
+        }
+        self.pairing
+            .iter()
+            // Owned copies: the codes are handed to the operator while the
+            // store keeps its own to verify against.
+            .map(|c| c.code().to_string())
+            .collect()
     }
 
     /// Exchange a submitted code for the API token.
     ///
-    /// On success the code is consumed (one-shot); on failure the attempt is
-    /// recorded, and reaching [`MAX_PAIRING_ATTEMPTS`] invalidates the armed
-    /// code. Every failure returns the same [`PairError`].
+    /// Any armed code redeems; on success that code alone is consumed
+    /// (one-shot). On failure the attempt is recorded once for all codes, and
+    /// reaching [`MAX_PAIRING_ATTEMPTS`] invalidates every armed code. Every
+    /// failure returns the same [`PairError`].
     pub fn redeem(&mut self, submitted: &str, now: SystemTime) -> Result<String, PairError> {
-        match verify_code(self.pairing.as_ref(), submitted, now) {
-            Ok(()) => {
-                if let Some(code) = self.pairing.as_mut() {
-                    // One-shot: a code that worked once must never work again.
-                    code.consume();
-                }
+        let matched = self
+            .pairing
+            .iter()
+            .position(|code| verify_code(Some(code), submitted, now).is_ok());
+        match matched {
+            Some(index) => {
+                // One-shot: a code that worked once must never work again.
+                self.pairing.remove(index);
                 Ok(self.token.clone())
             },
-            Err(err) => {
-                if let Some(code) = self.pairing.as_mut() {
-                    code.register_failure();
+            None => {
+                if !self.pairing.is_empty() {
+                    self.failures = self.failures.saturating_add(1);
                     // The cap is what makes a six-character secret viable at
-                    // all; past it the code is not merely refused, it is gone.
-                    if code.attempts() >= MAX_PAIRING_ATTEMPTS {
-                        self.pairing = None;
+                    // all; past it the codes are not merely refused, they are
+                    // gone.
+                    if self.failures >= MAX_PAIRING_ATTEMPTS {
+                        self.pairing.clear();
                     }
                 }
-                Err(err)
+                Err(PairError::Rejected)
             },
         }
     }
@@ -425,6 +426,27 @@ mod tests {
     /// wall clock.
     fn t0() -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)
+    }
+
+    /// Arm exactly one code at `t0()` and return it — the single-code start
+    /// every pre-#160 test was written against. An empty string when the store
+    /// hands back no code, which no redemption accepts.
+    fn single_code(store: &mut AuthStore) -> String {
+        let codes = store.arm_pairing(1, t0());
+        assert_eq!(codes.len(), 1, "arming one code must hand back one code");
+        codes.into_iter().next().unwrap_or_default()
+    }
+
+    /// Arm `count` codes at `t0()`, asserting the store handed back that many,
+    /// so a guard test below never passes on a store that armed fewer.
+    fn armed_codes(store: &mut AuthStore, count: u32) -> Vec<String> {
+        let codes = store.arm_pairing(count, t0());
+        assert_eq!(
+            codes.len(),
+            count as usize,
+            "--pair {count} must arm {count} codes, got {codes:?}"
+        );
+        codes
     }
 
     // Criterion: `generate_token()` yields a URL-safe token of at least 32 bytes
@@ -468,8 +490,6 @@ mod tests {
             "a typed code must stay alphanumeric, got {}",
             code.code()
         );
-        assert_eq!(code.attempts(), 0);
-        assert!(!code.is_consumed());
     }
 
     // Criterion: a minted code is different every time, or the "one-shot" rule
@@ -492,8 +512,7 @@ mod tests {
         assert_eq!(code.expires_at(), t0() + PAIRING_TTL);
     }
 
-    // Criterion: `verify_code` accepts an unexpired, unconsumed, exactly
-    // matching code.
+    // Criterion: `verify_code` accepts an unexpired, exactly matching code.
     #[test]
     fn test_verify_code_accepts_the_armed_code() {
         let stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
@@ -576,49 +595,12 @@ mod tests {
         );
     }
 
-    // Criterion: a code is one-shot — once consumed, verifying it again fails.
-    #[test]
-    fn test_verify_code_rejects_a_consumed_code() {
-        let mut stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        stored.consume();
-        assert_eq!(
-            verify_code(Some(&stored), "K7M2QX", t0()),
-            Err(PairError::Rejected)
-        );
-    }
-
-    // Criterion: after `MAX_PAIRING_ATTEMPTS` failures the armed code is
-    // invalidated — even the right code no longer works.
-    #[test]
-    fn test_verify_code_rejects_the_right_code_once_the_attempt_cap_is_reached() {
-        let mut stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        for _ in 0..MAX_PAIRING_ATTEMPTS {
-            stored.register_failure();
-        }
-        assert_eq!(
-            verify_code(Some(&stored), "K7M2QX", t0()),
-            Err(PairError::Rejected),
-            "a short code with unlimited attempts is not a secret"
-        );
-    }
-
-    // Criterion: the cap is not tripped early — one attempt short of it, the
-    // right code is still accepted (a typo must not lock the operator out).
-    #[test]
-    fn test_verify_code_still_accepts_the_right_code_below_the_attempt_cap() {
-        let mut stored = PairingCode::armed("K7M2QX", t0() + PAIRING_TTL);
-        for _ in 0..MAX_PAIRING_ATTEMPTS - 1 {
-            stored.register_failure();
-        }
-        assert_eq!(verify_code(Some(&stored), "K7M2QX", t0()), Ok(()));
-    }
-
     // Criterion: `POST /pair` with a valid armed code returns the token — at the
     // store level, redeeming returns exactly the stored token.
     #[test]
     fn test_redeem_returns_the_stored_token() {
         let mut store = AuthStore::with_token("stored-token-value");
-        let code = store.arm_pairing(t0());
+        let code = single_code(&mut store);
         assert_eq!(
             store.redeem(&code, t0()),
             Ok("stored-token-value".to_string())
@@ -630,7 +612,7 @@ mod tests {
     #[test]
     fn test_redeem_consumes_the_code_so_a_second_use_fails() {
         let mut store = AuthStore::with_token("stored-token-value");
-        let code = store.arm_pairing(t0());
+        let code = single_code(&mut store);
         assert!(store.redeem(&code, t0()).is_ok());
         assert_eq!(store.redeem(&code, t0()), Err(PairError::Rejected));
     }
@@ -640,7 +622,7 @@ mod tests {
     #[test]
     fn test_redeem_invalidates_the_code_after_the_attempt_cap() {
         let mut store = AuthStore::with_token("stored-token-value");
-        let code = store.arm_pairing(t0());
+        let code = single_code(&mut store);
         for _ in 0..MAX_PAIRING_ATTEMPTS {
             assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
         }
@@ -665,11 +647,193 @@ mod tests {
     #[test]
     fn test_arming_a_new_code_retires_the_previous_one() {
         let mut store = AuthStore::with_token("stored-token-value");
-        let first = store.arm_pairing(t0());
-        let second = store.arm_pairing(t0());
+        let first = single_code(&mut store);
+        let second = single_code(&mut store);
         assert_ne!(first, second);
         assert_eq!(store.redeem(&first, t0()), Err(PairError::Rejected));
         assert!(store.redeem(&second, t0()).is_ok());
+    }
+
+    // ---- #160: `--pair <n>` arms several codes at once ----
+
+    // Criterion: `--pair <n>` with n in 1..=10 arms n **distinct** codes — at
+    // both ends of the range.
+    #[test]
+    fn test_arm_pairing_arms_the_requested_number_of_distinct_codes() {
+        for count in [1u32, 2, 10] {
+            let mut store = AuthStore::with_token("stored-token-value");
+            let codes = armed_codes(&mut store, count);
+            let mut unique = codes.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                codes.len(),
+                "every armed code must be distinct, got {codes:?}"
+            );
+            assert!(
+                codes.iter().all(|c| c.len() == PAIRING_CODE_LEN),
+                "every armed code is a typed six-character code, got {codes:?}"
+            );
+        }
+    }
+
+    // Criterion (guard, "n **distinct** codes"): a minted code equal to one
+    // already armed is drawn again, so two codes never collapse into one code
+    // redeemable twice. Random minting never collides in a test, so the
+    // minter hands back the same code twice on purpose.
+    #[test]
+    fn test_arm_codes_draws_again_a_code_already_armed() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let mut draws = ["K7M2QX", "K7M2QX", "ABCDEF"].into_iter().cycle();
+        let codes = store.arm_codes(2, || {
+            PairingCode::armed(draws.next().unwrap_or_default(), t0() + PAIRING_TTL)
+        });
+        assert_eq!(codes, ["K7M2QX", "ABCDEF"]);
+    }
+
+    // Criterion: any armed, unexpired, unconsumed code redeems for the API
+    // token; redeeming one leaves the others valid. Redeemed in reverse order
+    // so a store that only ever checks the first (or the last) code fails.
+    #[test]
+    fn test_redeem_accepts_every_armed_code_and_one_leaves_the_others_valid() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let codes = armed_codes(&mut store, 3);
+        for code in codes.iter().rev() {
+            assert_eq!(
+                store.redeem(code, t0()),
+                Ok("stored-token-value".to_string()),
+                "code {code} of {codes:?} must redeem once"
+            );
+        }
+    }
+
+    // Criterion: each code works once — every one of them, not only the first.
+    #[test]
+    fn test_redeem_consumes_each_of_several_codes_once() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let codes = armed_codes(&mut store, 3);
+        for code in &codes {
+            assert!(store.redeem(code, t0()).is_ok(), "first use of {code}");
+            assert_eq!(
+                store.redeem(code, t0()),
+                Err(PairError::Rejected),
+                "second use of {code} must be refused"
+            );
+        }
+    }
+
+    // Criterion: the `MAX_PAIRING_ATTEMPTS`-th failure (5) invalidates every
+    // armed code, not just one of them. Near-miss: a cap that retires one code
+    // per failure past it — the refusals below would then retire the rest one
+    // by one, so the store is checked empty first, and the codes are tried
+    // last one first.
+    #[test]
+    fn test_redeem_cap_invalidates_every_armed_code() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let codes = armed_codes(&mut store, 3);
+        for _ in 0..MAX_PAIRING_ATTEMPTS {
+            assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
+        }
+        assert_eq!(store.armed(), None, "the cap leaves no code armed");
+        for code in codes.iter().rev() {
+            assert_eq!(
+                store.redeem(code, t0()),
+                Err(PairError::Rejected),
+                "{code} must be dead once the shared cap is reached"
+            );
+        }
+    }
+
+    // Criterion (guard): failed attempts are counted **once for all codes**.
+    // Near-miss: 3 failures, then a successful redemption of the first code,
+    // then 2 more failures. A per-code count that charges each failure to the
+    // first live code leaves 3 on the consumed one and 2 on the second, so no
+    // code reaches 5 and the third stays valid — only a shared counter kills
+    // the second and the third. Also pins that a success does not reset it.
+    #[test]
+    fn test_redeem_counts_failures_once_across_all_codes() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let codes = armed_codes(&mut store, 3);
+        for _ in 0..3 {
+            assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
+        }
+        let first = codes.first().cloned().unwrap_or_default();
+        assert!(store.redeem(&first, t0()).is_ok(), "{first} is still valid");
+        for _ in 0..2 {
+            assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
+        }
+        for code in codes.iter().skip(1) {
+            assert_eq!(
+                store.redeem(code, t0()),
+                Err(PairError::Rejected),
+                "five failures in total must invalidate {code}"
+            );
+        }
+    }
+
+    // Criterion (guard, the other side of the cap): one failure short of the
+    // cap leaves every code valid — the cap is 5 for the whole set. Near-miss:
+    // a cap shared out among the armed codes, or a failure charged once per
+    // armed code (3 codes x 2 failures past 5), kills them earlier.
+    #[test]
+    fn test_redeem_below_the_shared_cap_leaves_every_code_valid() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let codes = armed_codes(&mut store, 3);
+        for _ in 0..MAX_PAIRING_ATTEMPTS - 1 {
+            assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
+        }
+        for code in &codes {
+            assert!(
+                store.redeem(code, t0()).is_ok(),
+                "{code} must survive {} failures",
+                MAX_PAIRING_ATTEMPTS - 1
+            );
+        }
+    }
+
+    // Criterion: every code expires `PAIRING_TTL` after it was armed.
+    #[test]
+    fn test_each_armed_code_expires_after_the_ttl() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let codes = armed_codes(&mut store, 2);
+        let first = codes.first().cloned().unwrap_or_default();
+        let second = codes.get(1).cloned().unwrap_or_default();
+        assert!(
+            store
+                .redeem(&first, t0() + PAIRING_TTL - Duration::from_secs(1))
+                .is_ok(),
+            "a code is valid until its TTL runs out"
+        );
+        assert_eq!(
+            store.redeem(&second, t0() + PAIRING_TTL),
+            Err(PairError::Rejected),
+            "the second code expires with the TTL too"
+        );
+    }
+
+    // Criterion: arming again replaces every previously armed code, and the
+    // fresh set starts with no failure counted against it.
+    #[test]
+    fn test_arming_again_retires_every_previous_code_and_resets_the_cap() {
+        let mut store = AuthStore::with_token("stored-token-value");
+        let old = armed_codes(&mut store, 2);
+        for _ in 0..MAX_PAIRING_ATTEMPTS - 1 {
+            assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
+        }
+        let fresh = armed_codes(&mut store, 2);
+        for code in &old {
+            if !fresh.contains(code) {
+                assert_eq!(store.redeem(code, t0()), Err(PairError::Rejected));
+            }
+        }
+        // The two refused old codes and this one make 3 failures against the
+        // fresh set — under the cap only if re-arming reset it (4 + 3 = 7
+        // otherwise).
+        assert_eq!(store.redeem("AAAAAA", t0()), Err(PairError::Rejected));
+        for code in &fresh {
+            assert!(store.redeem(code, t0()).is_ok(), "fresh code {code}");
+        }
     }
 
     // Criterion: the auth token is persisted and reloaded on restart, so a

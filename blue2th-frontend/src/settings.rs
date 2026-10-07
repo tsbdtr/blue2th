@@ -37,8 +37,8 @@ pub enum PairingMethod {
     Qr,
 }
 
-/// A backend the user configured: the name the app is the source of truth for,
-/// and the address every call goes to.
+/// A backend the user configured: its name and settings, synced with the
+/// backend (#160), and the address every call goes to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendEntry {
     /// Display name, pushed to the backend as its Spotify Connect device name.
@@ -71,6 +71,13 @@ pub struct BackendEntry {
     /// entry, which keeps matching on its URL until an id is adopted.
     #[serde(default)]
     pub id: Option<String>,
+    /// Whether this entry holds a config change — its name or a playback toggle
+    /// — the backend has not acknowledged yet (#160). A client pushes only such
+    /// a change and otherwise reads the backend's config, so a stale copy never
+    /// overwrites what another client set. `serde(default)`: an entry stored
+    /// before #160 holds nothing unsent, and reads on its first sync.
+    #[serde(default)]
+    pub config_pending: bool,
 }
 
 /// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
@@ -417,6 +424,8 @@ impl AppSettings {
             // Typing an address says nothing about which machine answers it; the
             // id is adopted the first time that backend is discovered or paired.
             id: None,
+            // The typed name is the one the backend has to learn (#160).
+            config_pending: true,
         });
         Ok(())
     }
@@ -501,6 +510,10 @@ impl AppSettings {
         // Clone: the DTO is borrowed from the discovery list, which outlives this
         // call and may still be redrawn, while the entry needs its own copy.
         self.set_backend_id(index, found.id.clone())?;
+        // The name is the one the backend announced: nothing to tell it (#160).
+        if let Some(entry) = self.backends.get_mut(index) {
+            entry.config_pending = false;
+        }
         Ok(index)
     }
 
@@ -566,6 +579,10 @@ impl AppSettings {
             .ok_or(SettingsError::Name(NameError::Empty))?;
         self.add(name, &url)?;
         let index = self.backends.len().saturating_sub(1);
+        // The link's name is the backend's own: nothing to tell it (#160).
+        if let Some(entry) = self.backends.get_mut(index) {
+            entry.config_pending = false;
+        }
         self.set_token(index, Some(token.to_string()))?;
         // The method is chosen when a backend is added, and this one was added by
         // scanning: offering the QR again is what re-pairing it will most likely
@@ -583,8 +600,8 @@ impl AppSettings {
     }
 
     /// Toggle the restore-during-playback setting of the backend at `index`.
-    /// The app is the source of truth for it, exactly as for the name, and
-    /// pushes it over `POST /config`.
+    /// The change waits as pending until the backend acknowledges it over
+    /// `POST /config` (#160).
     pub fn set_restore_during_playback(
         &mut self,
         index: usize,
@@ -594,18 +611,48 @@ impl AppSettings {
             return Err(SettingsError::UnknownBackend);
         };
         entry.restore_during_playback = enabled;
+        entry.config_pending = true;
         Ok(())
     }
 
-    /// Toggle the auto-reconnect setting of the backend at `index`. The app is
-    /// the source of truth for it, exactly as for the name, and pushes it over
-    /// `POST /config`.
+    /// Toggle the auto-reconnect setting of the backend at `index`. The change
+    /// waits as pending until the backend acknowledges it over `POST /config`
+    /// (#160).
     pub fn set_auto_reconnect(&mut self, index: usize, enabled: bool) -> Result<(), SettingsError> {
         let Some(entry) = self.backends.get_mut(index) else {
             return Err(SettingsError::UnknownBackend);
         };
         entry.auto_reconnect = enabled;
+        entry.config_pending = true;
         Ok(())
+    }
+
+    /// Rename the backend at `index` (#160: the browser's name field). The name
+    /// goes through the shared proto validator, and the change waits as
+    /// pending until the backend acknowledges it.
+    pub fn set_name(&mut self, index: usize, name: &str) -> Result<(), SettingsError> {
+        let name = blue2th_proto::validate_backend_name(name).map_err(SettingsError::Name)?;
+        let Some(entry) = self.backends.get_mut(index) else {
+            return Err(SettingsError::UnknownBackend);
+        };
+        entry.name = name;
+        entry.config_pending = true;
+        Ok(())
+    }
+
+    /// Record that the backend at `url` acknowledged `pushed` (#160): its
+    /// entry is no longer pending — unless it changed again meanwhile, in which
+    /// case the newer change still has to go out.
+    pub fn confirm_config_push(&mut self, url: &str, pushed: &blue2th_proto::ConfigRequest) {
+        let Some(entry) = self.backends.iter_mut().find(|b| b.url == url) else {
+            return;
+        };
+        if entry.name == pushed.name
+            && entry.restore_during_playback == pushed.restore_during_playback
+            && entry.auto_reconnect == pushed.auto_reconnect
+        {
+            entry.config_pending = false;
+        }
     }
 
     /// Remove the backend at `index`. Removing the active one leaves no active
@@ -680,13 +727,153 @@ pub fn save_blob(settings: &AppSettings) -> String {
     serde_json::to_string(settings).unwrap_or_default()
 }
 
+/// Which client this build is (#160): the Android app, or the page served to a
+/// browser. Passed to the pure policies below so the host tests can check both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    /// The Android app: settings in `SharedPreferences`, a list of backends.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Phone,
+    /// The browser build: settings in `localStorage`, one backend — the origin.
+    Browser,
+}
+
+/// The client this build is: [`ClientKind::Browser`] on `wasm32`,
+/// [`ClientKind::Phone`] everywhere else.
+#[cfg(target_arch = "wasm32")]
+pub const CLIENT_KIND: ClientKind = ClientKind::Browser;
+/// The client this build is: [`ClientKind::Browser`] on `wasm32`,
+/// [`ClientKind::Phone`] everywhere else.
+#[cfg(not(target_arch = "wasm32"))]
+pub const CLIENT_KIND: ClientKind = ClientKind::Phone;
+
+/// What a client does with its active backend's configuration when it syncs
+/// (#160): see [`config_sync`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSync {
+    /// Push the entry's unsent change (`POST /config`).
+    Push,
+    /// Read the backend's config (`GET /config`) and adopt it.
+    Read,
+}
+
+/// The config sync a client runs for its active backend (#160), the same rule
+/// on the phone and in the browser: push a change the backend has not
+/// acknowledged, and otherwise read the backend's config. Pure.
+pub fn config_sync(settings: &AppSettings) -> ConfigSync {
+    match settings.active_backend() {
+        Some(entry) if entry.config_pending => ConfigSync::Push,
+        _ => ConfigSync::Read,
+    }
+}
+
+/// The page the app opens on (#160).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartPage {
+    /// `/`: devices, transport, now playing.
+    Home,
+    /// `/settings`: where a browser pairs.
+    Settings,
+}
+
+/// The page a client opens on, given whether its active backend holds a
+/// token. Pure.
+pub fn start_page(kind: ClientKind, paired: bool) -> StartPage {
+    match (kind, paired) {
+        // The settings page is where a browser pairs: everything else would
+        // only show "not paired".
+        (ClientKind::Browser, false) => StartPage::Settings,
+        _ => StartPage::Home,
+    }
+}
+
+/// The browser's settings (#160): exactly one backend, at the page `origin`,
+/// active, keeping the stored entry's token, name and toggles. An empty origin,
+/// or the literal `"null"` a `file://` page reports, yields no backend at all.
+/// Pure.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn browser_settings(stored: AppSettings, origin: &str) -> AppSettings {
+    // An empty origin would be a backend at an empty URL, which every call
+    // would then try to reach: no backend at all instead.
+    if origin.is_empty() || origin == "null" {
+        return AppSettings {
+            backends: Vec::new(),
+            active: None,
+            ..stored
+        };
+    }
+    let entry = stored
+        .active
+        .and_then(|i| stored.backends.get(i))
+        // Owned copy: the reduced settings own their single entry, while the
+        // stored list is dropped with every other entry.
+        .map(|kept| BackendEntry {
+            url: origin.to_string(),
+            ..kept.clone()
+        })
+        .unwrap_or_else(|| BackendEntry {
+            name: blue2th_proto::DEFAULT_BACKEND_NAME.to_string(),
+            url: origin.to_string(),
+            restore_during_playback: restore_during_playback_default(),
+            auto_reconnect: auto_reconnect_default(),
+            token: None,
+            pairing: PairingMethod::Code,
+            id: None,
+            config_pending: false,
+        });
+    AppSettings {
+        backends: vec![entry],
+        active: Some(0),
+        ..stored
+    }
+}
+
+/// Adopt the backend's configuration into the active entry (#160): its name
+/// and both playback toggles. The token, the URL and every other entry are left
+/// alone, `spotify_volume_lock` is not kept, and an entry holding an unsent
+/// change is not touched at all. Pure.
+pub fn adopt_config(settings: &mut AppSettings, config: &blue2th_proto::ServerConfig) {
+    let Some(entry) = settings
+        .active
+        .and_then(|index| settings.backends.get_mut(index))
+    else {
+        return;
+    };
+    // An unsent change is the user's latest action: a read must never drop it.
+    if entry.config_pending {
+        return;
+    }
+    // Owned copy: the entry keeps its own name beyond the response.
+    entry.name = config.name.clone();
+    entry.restore_during_playback = config.restore_during_playback;
+    entry.auto_reconnect = config.auto_reconnect;
+}
+
+/// The settings to keep once a config sync started from `before` came back
+/// with `synced`, while the app now holds `current` (#160). Pure.
+///
+/// An edit made while the sync was out — a toggle, a rename — is newer than
+/// the sync's answer: `current` is kept, and the edit's own sync pushes it.
+/// Otherwise the sync's answer is kept. A dropped read is simply read again at
+/// the next sync, and a dropped confirmation leaves its change pending, so it
+/// goes out once more; keeping a stale answer instead would undo the edit, and
+/// a read landing over a pending change would drop it outright.
+pub fn settle_sync(before: &AppSettings, synced: AppSettings, current: AppSettings) -> AppSettings {
+    if current == *before {
+        synced
+    } else {
+        current
+    }
+}
+
 /// The settings currently in memory, backing the runtime backend lookup.
 pub fn current() -> AppSettings {
     // Owned copy: the lock must never be held across an await in the HTTP paths.
     cache().read().map(|s| s.clone()).unwrap_or_default()
 }
 
-/// Replace the in-memory settings and persist them (Android storage seam).
+/// Replace the in-memory settings and persist them (`SharedPreferences` on
+/// Android, `localStorage` in the browser).
 pub fn set_current(settings: AppSettings) {
     write_stored(&save_blob(&settings));
     if let Ok(mut guard) = cache().write() {
@@ -694,12 +881,57 @@ pub fn set_current(settings: AppSettings) {
     }
 }
 
-/// The process-wide settings cache, seeded on first use from the phone's storage
-/// (there is nothing to read off Android, so it starts empty there).
+/// The process-wide settings cache, seeded on first use from the app's storage
+/// (there is none on a host build, so it starts empty there).
 static CACHE: std::sync::OnceLock<std::sync::RwLock<AppSettings>> = std::sync::OnceLock::new();
 
 fn cache() -> &'static std::sync::RwLock<AppSettings> {
-    CACHE.get_or_init(|| std::sync::RwLock::new(load(read_stored().as_deref())))
+    CACHE.get_or_init(|| std::sync::RwLock::new(initial_settings()))
+}
+
+/// The settings the app starts with: the stored blob, reduced in the browser to
+/// the one backend at the page origin.
+fn initial_settings() -> AppSettings {
+    let stored = load(read_stored().as_deref());
+    #[cfg(target_arch = "wasm32")]
+    let stored = browser_settings(stored, &page_origin());
+    stored
+}
+
+/// The page's `location.origin`, empty when it cannot be read — which
+/// [`browser_settings`] reads as "no backend".
+#[cfg(target_arch = "wasm32")]
+fn page_origin() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .unwrap_or_default()
+}
+
+/// Key of the serialized settings in the browser's `localStorage`.
+#[cfg(target_arch = "wasm32")]
+const STORAGE_KEY: &str = "blue2th.settings";
+
+/// The page's `localStorage`, or `None` when the browser refuses it (a private
+/// window, storage blocked): the accessor itself may throw.
+#[cfg(target_arch = "wasm32")]
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+/// Read the persisted blob from `localStorage`. Any failure reads as "nothing
+/// stored", which loads as empty settings rather than blocking the app.
+#[cfg(target_arch = "wasm32")]
+fn read_stored() -> Option<String> {
+    local_storage()?.get_item(STORAGE_KEY).ok().flatten()
+}
+
+/// Persist the blob to `localStorage`. A refused write (quota, storage
+/// blocked) is ignored: the in-memory cache still applies.
+#[cfg(target_arch = "wasm32")]
+fn write_stored(blob: &str) {
+    if let Some(storage) = local_storage() {
+        let _ = storage.set_item(STORAGE_KEY, blob);
+    }
 }
 
 /// Preferences file and key holding the serialized settings.
@@ -827,12 +1059,13 @@ fn write_stored(blob: &str) {
     }
 }
 
-/// No phone storage off Android: the settings live for the process only.
-#[cfg(not(target_os = "android"))]
+/// No storage off Android and the browser: the settings live for the process
+/// only.
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn read_stored() -> Option<String> {
     None
 }
 
-/// No phone storage off Android; the in-memory cache still applies.
-#[cfg(not(target_os = "android"))]
+/// No storage off Android and the browser; the in-memory cache still applies.
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn write_stored(_blob: &str) {}

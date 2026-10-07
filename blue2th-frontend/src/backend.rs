@@ -13,7 +13,7 @@ use blue2th_proto::{
 };
 use futures::StreamExt;
 
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, ConfigSync};
 
 /// How long the app keeps reading the `/scan` SSE feed before stopping. The
 /// backend caps discovery on its side too; this is the client-side window.
@@ -312,16 +312,16 @@ fn config_url(base: &str) -> String {
     format!("{}/config", base.trim_end_matches('/'))
 }
 
-/// `POST {base}/config` against an explicit address — push the app's name to the
-/// backend, which adopts it as its Spotify Connect device name.
+/// `POST {base}/config` against an explicit address — push a config change to
+/// the backend, which adopts the name as its Spotify Connect device name.
 ///
 /// Addressed explicitly rather than through `backend_base_url()`: the only caller
-/// is [`activate_backend`], which must reach the backend it *just* switched to
-/// even if a concurrent switch has already moved the resolved address on.
+/// is [`sync_config`], which pushes to the entry whose change it confirms, even
+/// if a concurrent switch has already moved the resolved address on.
 ///
 /// The whole config travels as one `ConfigRequest` rather than as a growing list
 /// of positional booleans: two adjacent `bool` parameters would silently swap at
-/// a call site, and the app is the source of truth for every one of them.
+/// a call site.
 async fn set_config_at(
     base: &str,
     token: Option<&str>,
@@ -448,30 +448,79 @@ pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<
     release_at(&base, token.as_deref()).await
 }
 
-/// Push the active backend's name to it, best-effort and silent.
+/// `GET {base}/config` — the configuration of the active backend of `settings`
+/// (#160): the read half of [`sync_config`].
 ///
-/// The app is the source of truth for that name, but it only reaches the backend
-/// when something sends it: a push that failed while the backend was down, or a
-/// server that restarted since, would otherwise leave the Connect device
-/// advertising a stale name. Called when the backend becomes reachable again, so
-/// a failure here is expected — it will simply be retried on the next transition,
-/// and there is no user action to prompt.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn push_active_name() {
-    let _ = push_active_config().await;
+/// Resolved from the snapshot it is given rather than from the process-wide
+/// cache, like [`set_config_at`]: the answer is adopted into that snapshot's
+/// active entry, so it must come from that entry's backend.
+pub async fn fetch_config(settings: &AppSettings) -> Result<ServerConfig, BackendError> {
+    let (base, token) = authed_base_from(settings)?;
+    let request = bearing(reqwest::Client::new().get(config_url(&base)), Some(&token));
+    send_json(request.timeout(SETTINGS_CALL_TIMEOUT)).await
 }
 
-/// Push the active backend's whole config (name **and** settings), surfacing the
-/// failure. Used by the settings toggles, where the user is watching and deserves
-/// to be told; `push_active_name` is the same call made silently on reconnection.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub async fn push_active_config() -> Result<(), BackendError> {
-    let settings = crate::settings::current();
-    let Some(entry) = settings.active_backend() else {
-        return Err(BackendError::new(NO_BACKEND_CONFIGURED));
-    };
-    set_config_at(&entry.url, entry.token.as_deref(), config_body(entry)).await?;
+/// Sync the active backend's config, the same rule for every client (#160):
+/// push a change the backend has not acknowledged (`POST /config`) and confirm
+/// it, otherwise read `GET /config` and adopt it. Only `settings` is updated:
+/// writing the process-wide cache — which is what gets persisted — is the
+/// caller's, so it can keep an edit made while this call was out.
+///
+/// A change the backend refused stays pending, so it goes out at the next sync:
+/// what the phone's re-push on every reconnection used to cover, without ever
+/// overwriting what another client set since.
+pub async fn sync_config(settings: &mut AppSettings) -> Result<(), BackendError> {
+    match crate::settings::config_sync(settings) {
+        ConfigSync::Push => {
+            let (base, token) = authed_base_from(settings)?;
+            let pushed = settings
+                .active_backend()
+                .map(config_body)
+                .ok_or_else(|| BackendError::new(NO_BACKEND_CONFIGURED))?;
+            // Owned copy: the body is consumed by the request, and the
+            // confirmation compares the entry against what was sent.
+            set_config_at(&base, Some(&token), pushed.clone()).await?;
+            settings.confirm_config_push(&base, &pushed);
+        },
+        ConfigSync::Read => {
+            let config = fetch_config(settings).await?;
+            crate::settings::adopt_config(settings, &config);
+        },
+    }
     Ok(())
+}
+
+/// Everything the browser's presence post carries (#160), built on the host so
+/// the wasm glue only maps it onto a `fetch` — `reqwest` has no `keepalive` on
+/// wasm, and a post sent from `pagehide` without it dies with the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresencePost {
+    /// `{base}/client/presence`.
+    pub url: String,
+    /// The `Authorization` header value: `Bearer <token>`.
+    pub authorization: String,
+    /// The JSON body, a [`PresenceRequest`].
+    pub body: String,
+    /// Whether `fetch` is asked to outlive the page (`keepalive: true`).
+    pub keepalive: bool,
+}
+
+/// The presence post for `presence` against the active backend of `settings`.
+/// Pure. Fails like every guarded call: no backend configured, or not paired.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn browser_presence_post(
+    settings: &AppSettings,
+    presence: ClientPresence,
+) -> Result<PresencePost, BackendError> {
+    let (base, token) = authed_base_from(settings)?;
+    let body = serde_json::to_string(&PresenceRequest { presence })
+        .map_err(|e| BackendError::new(e.to_string()))?;
+    Ok(PresencePost {
+        url: format!("{}/client/presence", base.trim_end_matches('/')),
+        authorization: auth_header_value(&token),
+        body,
+        keepalive: true,
+    })
 }
 
 /// Whether the backend at `previous` is really being left behind by a switch to
@@ -482,7 +531,8 @@ fn is_left_behind(previous: &str, next: Option<&str>) -> bool {
 }
 
 /// Switch the active backend: pause the previous one (best-effort), repoint the
-/// app, and push the new backend's name to it.
+/// app, and sync the new backend's config (#160): push a change the app holds
+/// unsent, otherwise read and adopt what the backend has.
 ///
 /// The settings page and the status-encart quick switch must both go through
 /// this, so the two ways to switch cannot drift apart. The local switch always
@@ -508,26 +558,27 @@ pub async fn activate_backend(
     // Owned copy: the cache keeps its own settings beyond this borrow.
     crate::settings::set_current(settings.clone());
 
-    // Owned copy: the borrow of `settings` must not survive the awaits below,
-    // and the address is the one to push to whatever the cache does meanwhile.
-    let target = settings
-        .active_backend()
-        .map(|b| (b.url.clone(), b.token.clone(), config_body(b)));
+    let arriving = settings.active_url();
 
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
     let mut failure = None;
     if let Some((base, token)) = previous {
-        if is_left_behind(&base, target.as_ref().map(|(url, ..)| url.as_str())) {
+        if is_left_behind(&base, arriving.as_deref()) {
             if let Err(e) = pause_at(&base, token.as_deref()).await {
                 failure = Some(e);
             }
         }
     }
-    if let Some((base, token, config)) = target {
-        if let Err(e) = set_config_at(&base, token.as_deref(), config).await {
+    // Synced rather than pushed: switching to a backend the app holds nothing
+    // unsent for must not re-impose a stale copy over another client's change.
+    if arriving.is_some() {
+        if let Err(e) = sync_config(settings).await {
             failure = Some(e);
         }
+        // Owned copy: persisted, or a restart would push again a change the
+        // backend has acknowledged, over whatever another client set since.
+        crate::settings::set_current(settings.clone());
     }
     match failure {
         Some(e) => Err(e),
@@ -1343,6 +1394,7 @@ mod tests {
             token: None,
             pairing: crate::settings::PairingMethod::Code,
             id: None,
+            config_pending: false,
         }
     }
 
@@ -1511,6 +1563,7 @@ mod tests {
                 pairing: PairingMethod::Code,
                 // Phase 6.6: an entry that never met a discovered service.
                 id: None,
+                config_pending: false,
             }],
             active: Some(0),
             auto_repair_url: true,
@@ -1735,7 +1788,7 @@ mod tests {
     }
 
     // Criterion: the same holds for the calls that push a body — the config push
-    // is the one the settings page and the reconnection both go through.
+    // is the one every sync of a pending change goes through (#160).
     #[tokio::test]
     async fn test_the_config_push_carries_the_bearer_token() {
         let _guard = SETTINGS_GUARD.lock().await;
@@ -1745,9 +1798,12 @@ mod tests {
         )
         .await
         .expect("start the canned backend");
-        crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+        let mut settings = active_with_token(&base, Some("tok-123"));
+        if let Some(salon) = settings.backends.first_mut() {
+            salon.config_pending = true;
+        }
 
-        let outcome = push_active_config().await;
+        let outcome = sync_config(&mut settings).await;
         let request = served
             .await
             .expect("join the test listener")
@@ -2397,5 +2453,341 @@ mod tests {
     #[test]
     fn test_auth_header_value_is_a_bearer() {
         assert_eq!(auth_header_value("tok-123"), "Bearer tok-123");
+    }
+
+    // ---- #160: the browser reads the backend's config, and reports presence ----
+
+    /// What a fresh backend's `GET /config` returns, with the two toggles set
+    /// to **different** values so a swap between them shows, and the volume
+    /// lock on so its absence downstream means something.
+    const BACKEND_CONFIG: &str = r#"{"name":"blue2th-PC","restore_during_playback":false,"auto_reconnect":true,"spotify_volume_lock":true}"#;
+
+    /// How long a test waits for the call under test to reach the canned
+    /// backend. Bounded so a client that never sends — a stub, a regression —
+    /// fails the test instead of hanging it while it holds `SETTINGS_GUARD`.
+    const SERVED_BOUND: Duration = Duration::from_secs(5);
+
+    /// The raw request the canned backend served, or why there is none: the
+    /// bound elapsed with no request sent, or the listener task failed. The
+    /// listener is aborted on a timeout, so nothing is left accepting.
+    async fn served_within_bound(
+        mut served: tokio::task::JoinHandle<Result<String, String>>,
+    ) -> Result<String, String> {
+        match tokio::time::timeout(SERVED_BOUND, &mut served).await {
+            Ok(joined) => joined.map_err(|e| format!("join the test listener: {e}"))?,
+            Err(_) => {
+                served.abort();
+                Err(format!(
+                    "no request reached the backend within {SERVED_BOUND:?}"
+                ))
+            },
+        }
+    }
+
+    // Criterion: a paired browser reads `GET /config` and gets the backend's
+    // `ServerConfig`, the bearer on the request.
+    #[tokio::test]
+    async fn test_fetch_config_reads_the_backend_config_with_the_bearer() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("200 OK", BACKEND_CONFIG)
+            .await
+            .expect("start the canned backend");
+        // The cache is left alone: the address comes from the snapshot.
+        let settings = active_with_token(&base, Some("tok-123"));
+
+        let outcome = fetch_config(&settings).await;
+        let request = served_within_bound(served).await;
+
+        assert_eq!(
+            outcome.map_err(|e| e.to_string()),
+            Ok(ServerConfig {
+                name: "blue2th-PC".to_string(),
+                restore_during_playback: false,
+                auto_reconnect: true,
+                spotify_volume_lock: true,
+            })
+        );
+        let request = request.unwrap_or_default();
+        assert!(
+            request.starts_with("GET /config "),
+            "the read is a GET on /config, got {request}"
+        );
+        assert_eq!(
+            header_value(&request, "authorization").as_deref(),
+            Some("Bearer tok-123")
+        );
+    }
+
+    // Criterion (non-nominal): a revoked token (401) on `GET /config` surfaces
+    // as "not paired", like every other route.
+    #[tokio::test]
+    async fn test_fetch_config_reports_not_paired_on_401() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("401 Unauthorized", "not paired")
+            .await
+            .expect("start the canned backend");
+        // The cache is left alone: the address comes from the snapshot.
+        let settings = active_with_token(&base, Some("stale-token"));
+
+        let outcome = fetch_config(&settings).await;
+        let request = served_within_bound(served).await;
+
+        assert!(
+            outcome.as_ref().is_err_and(BackendError::is_not_paired),
+            "got {outcome:?}"
+        );
+        assert!(
+            request.is_ok(),
+            "the 401 must come from the backend, not from a call never sent: {request:?}"
+        );
+    }
+
+    // Criterion (non-nominal): an unpaired browser does not read the config —
+    // it fails fast as "not paired", before any request.
+    #[tokio::test]
+    async fn test_fetch_config_without_a_token_fails_fast_as_not_paired() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        // Port 1 is never listening: reaching it at all would take a timeout.
+        // The cache is left alone: the address comes from the snapshot.
+        let settings = active_with_token("http://127.0.0.1:1", None);
+
+        let outcome = fetch_config(&settings).await;
+
+        assert!(
+            outcome.as_ref().is_err_and(BackendError::is_not_paired),
+            "got {outcome:?}"
+        );
+    }
+
+    // Criterion: `spotify_volume_lock` is neither shown nor sent — once the
+    // backend's config is adopted, the config the browser pushes on a user edit
+    // still leaves the lock out. The adopted name is checked too, so the test
+    // cannot pass on an adoption that did nothing.
+    #[test]
+    fn test_an_adopted_config_never_sends_the_volume_lock() {
+        let mut settings = active_with_token("http://localhost:8080", Some("tok-123"));
+        crate::settings::adopt_config(
+            &mut settings,
+            &ServerConfig {
+                name: "blue2th-PC".to_string(),
+                restore_during_playback: false,
+                auto_reconnect: true,
+                spotify_volume_lock: true,
+            },
+        );
+        let body = settings.active_backend().map(config_body);
+
+        assert_eq!(
+            body.as_ref().map(|b| b.name.as_str()),
+            Some("blue2th-PC"),
+            "the adopted name is what the next push carries"
+        );
+        assert_eq!(body.and_then(|b| b.spotify_volume_lock), None);
+    }
+
+    // Criterion (guard, empty value): an empty origin, or the literal `"null"`
+    // a `file://` page reports, yields no backend, so every call fails with "no
+    // backend configured". Near-miss: the stored blob holds a paired entry — a
+    // reduction that kept it, or that built an entry at an empty URL, would
+    // answer with a base (or "not paired") instead.
+    #[test]
+    fn test_an_unusable_origin_fails_as_no_backend_configured() {
+        for origin in ["", "null"] {
+            let stored = active_with_token("http://localhost:8080", Some("tok-123"));
+            let settings = crate::settings::browser_settings(stored, origin);
+
+            assert_eq!(
+                authed_base_from(&settings).map_err(|e| e.to_string()),
+                Err(NO_BACKEND_CONFIGURED.to_string()),
+                "origin {origin:?}"
+            );
+        }
+    }
+
+    // Criterion: browser presence posts go to `/client/presence` with the
+    // Bearer token and `keepalive: true`, the presence in the body. Two
+    // presences, so a body that ignores its argument fails.
+    #[test]
+    fn test_browser_presence_post_carries_the_bearer_and_keepalive() {
+        let settings = active_with_token("http://localhost:8080", Some("tok-123"));
+        for presence in [ClientPresence::Background, ClientPresence::Foreground] {
+            let post = browser_presence_post(&settings, presence);
+            assert!(post.is_ok(), "a paired browser posts: {post:?}");
+            let post = post.ok();
+
+            assert_eq!(
+                post.as_ref().map(|p| p.url.as_str()),
+                Some("http://localhost:8080/client/presence")
+            );
+            assert_eq!(
+                post.as_ref().map(|p| p.authorization.as_str()),
+                Some("Bearer tok-123")
+            );
+            assert_eq!(post.as_ref().map(|p| p.keepalive), Some(true));
+            assert_eq!(
+                post.and_then(|p| serde_json::from_str::<PresenceRequest>(&p.body).ok()),
+                Some(PresenceRequest { presence })
+            );
+        }
+    }
+
+    // Criterion (non-nominal): an unpaired browser posts nothing — "not
+    // paired"; with no backend at all, "no backend configured".
+    #[test]
+    fn test_browser_presence_post_fails_like_every_guarded_call() {
+        let unpaired = active_with_token("http://localhost:8080", None);
+        let outcome = browser_presence_post(&unpaired, ClientPresence::Foreground);
+        assert!(
+            outcome.as_ref().is_err_and(BackendError::is_not_paired),
+            "got {outcome:?}"
+        );
+
+        let outcome = browser_presence_post(&AppSettings::default(), ClientPresence::Foreground);
+        assert_eq!(
+            outcome.map_err(|e| e.to_string()),
+            Err(NO_BACKEND_CONFIGURED.to_string())
+        );
+    }
+
+    // ---- #160: config sync — push only what the backend has not acknowledged ----
+
+    /// What the backend answers to a push of Salon's default config.
+    const SALON_CONFIG: &str = r#"{"name":"Salon","restore_during_playback":true,"auto_reconnect":true,"spotify_volume_lock":false}"#;
+
+    // Criterion: with nothing pending, a sync **reads** `GET /config` (with the
+    // bearer) and adopts it — the phone included, which used to re-push its
+    // stored copy over what the browser had set.
+    #[tokio::test]
+    async fn test_sync_config_reads_and_adopts_when_nothing_is_pending() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("200 OK", BACKEND_CONFIG)
+            .await
+            .expect("start the canned backend");
+        let mut settings = active_with_token(&base, Some("tok-123"));
+
+        let outcome = sync_config(&mut settings).await;
+        let request = served_within_bound(served).await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert_eq!(outcome.map_err(|e| e.to_string()), Ok(()));
+        let request = request.unwrap_or_else(|e| e);
+        assert!(
+            request.starts_with("GET /config "),
+            "nothing pending: the sync reads, got {request}"
+        );
+        assert_eq!(
+            header_value(&request, "authorization").as_deref(),
+            Some("Bearer tok-123")
+        );
+        assert_eq!(
+            settings.active_backend().map(|b| (
+                b.name.as_str(),
+                b.restore_during_playback,
+                b.auto_reconnect
+            )),
+            Some(("blue2th-PC", false, true)),
+            "the backend's config is adopted"
+        );
+    }
+
+    // Criterion: a pending change is **pushed**, and the acknowledgement clears
+    // the pending mark — nothing is adopted over it.
+    #[tokio::test]
+    async fn test_sync_config_pushes_a_pending_change_and_clears_it() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("200 OK", SALON_CONFIG)
+            .await
+            .expect("start the canned backend");
+        let mut settings = active_with_token(&base, Some("tok-123"));
+        if let Some(salon) = settings.backends.first_mut() {
+            salon.config_pending = true;
+        }
+
+        let outcome = sync_config(&mut settings).await;
+        let request = served_within_bound(served).await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert_eq!(outcome.map_err(|e| e.to_string()), Ok(()));
+        let request = request.unwrap_or_else(|e| e);
+        assert!(
+            request.starts_with("POST /config "),
+            "a pending change is pushed, got {request}"
+        );
+        assert!(
+            request.contains(r#""name":"Salon""#),
+            "the push carries the entry's own name, got {request}"
+        );
+        assert_eq!(
+            settings
+                .active_backend()
+                .map(|b| (b.name.as_str(), b.config_pending)),
+            Some(("Salon", false)),
+            "acknowledged: no longer pending"
+        );
+    }
+
+    // Criterion: a push the backend refuses leaves the change pending, so it
+    // goes out at the next sync — the reason the phone used to re-push.
+    #[tokio::test]
+    async fn test_sync_config_keeps_a_change_pending_when_the_push_fails() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (base, served) = canned_backend("500 Internal Server Error", "boom")
+            .await
+            .expect("start the canned backend");
+        let mut settings = active_with_token(&base, Some("tok-123"));
+        if let Some(salon) = settings.backends.first_mut() {
+            salon.config_pending = true;
+        }
+
+        let outcome = sync_config(&mut settings).await;
+        let request = served_within_bound(served).await;
+        crate::settings::set_current(AppSettings::default());
+
+        assert!(outcome.is_err(), "the refusal is surfaced");
+        let request = request.unwrap_or_else(|e| e);
+        assert!(
+            request.starts_with("POST /config "),
+            "a pending change is pushed, got {request}"
+        );
+        assert_eq!(
+            settings.active_backend().map(|b| b.config_pending),
+            Some(true),
+            "refused: still pending"
+        );
+    }
+
+    // Criterion: activating a backend the app holds nothing unsent for **reads**
+    // its config instead of pushing the app's copy over it. Near-miss: the
+    // pre-#160 activation, which re-imposed a stale name and stale toggles.
+    #[tokio::test]
+    async fn test_activate_backend_reads_the_config_of_a_synced_backend() {
+        let _guard = SETTINGS_GUARD.lock().await;
+        let (arriving, served) = canned_backend("200 OK", BACKEND_CONFIG)
+            .await
+            .expect("start the canned backend");
+        // Leaving a backend on port 1, which is never listening: its pause is
+        // refused at once, and the arriving backend's request is what is read.
+        let mut settings = active_with_token("http://127.0.0.1:1", None);
+        settings.backends.push(crate::settings::BackendEntry {
+            token: Some("arriving-token".to_string()),
+            ..entry("Bureau", &arriving)
+        });
+
+        let _ = activate_backend(&mut settings, 1).await;
+        let request = served_within_bound(served).await;
+        crate::settings::set_current(AppSettings::default());
+
+        let request = request.unwrap_or_else(|e| e);
+        assert!(
+            request.starts_with("GET /config "),
+            "activating a synced backend reads its config, got {request}"
+        );
+        assert_eq!(
+            settings
+                .active_backend()
+                .map(|b| (b.name.as_str(), b.restore_during_playback)),
+            Some(("blue2th-PC", false)),
+            "the arriving backend's config is adopted"
+        );
     }
 }

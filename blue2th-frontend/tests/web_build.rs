@@ -286,6 +286,89 @@ fn test_settings_page_derives_browse_availability_from_the_target() {
     );
 }
 
+// ── #160: the browser glue ───────────────────────────────────────────────────
+
+// Criterion: `web-sys` is a wasm-only direct dependency, with `Storage` for the
+// `localStorage` seam. Near-miss: `web-sys` under `[dependencies]`, which
+// builds for the browser just as well but drags it into the Android build.
+#[test]
+fn test_web_sys_is_a_wasm_only_dependency_with_storage() {
+    let manifest = manifest();
+    let shared = manifest
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .cloned()
+        .unwrap_or_default();
+    let native = target_dependencies(&manifest, NATIVE_ONLY).unwrap_or_default();
+    let wasm = target_dependencies(&manifest, WASM_ONLY);
+    let web_sys = wasm.as_ref().and_then(|t| t.get("web-sys"));
+
+    assert!(!shared.contains_key("web-sys"), "web-sys is wasm-only");
+    assert!(!native.contains_key("web-sys"), "web-sys is wasm-only");
+    assert!(
+        web_sys.is_some(),
+        "web-sys must be a dependency of [target.'{WASM_ONLY}'.dependencies]"
+    );
+    assert!(
+        strings(web_sys, "features").iter().any(|f| f == "Storage"),
+        "the settings persist to localStorage, which needs web-sys's `Storage`"
+    );
+}
+
+/// The non-comment lines of the shipped part of `relative`, joined.
+fn shipped_code(relative: &str) -> String {
+    shipped_part(relative)
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The text of `code` from the first `from` to the next `to` after it, or an
+/// empty string when either is missing — which no `contains` below accepts.
+fn between<'a>(code: &'a str, from: &str, to: &str) -> &'a str {
+    code.find(from)
+        .and_then(|start| {
+            let rest = code.get(start..)?;
+            rest.find(to).and_then(|end| rest.get(..end))
+        })
+        .unwrap_or_default()
+}
+
+// Criterion: every client syncs its backend's config through the one rule —
+// push only what is pending, otherwise read (#160) — and an unpaired browser
+// opens on `/settings`. Both rules are tested at runtime (`backend::sync_config`,
+// `tests/browser.rs`); what no runtime test sees is where the app asks them and
+// what it does with the answer. A call merely present somewhere is already
+// enforced by the dead-code lint, so each check is scoped to its site.
+// Near-miss: the health loop's usable transition syncing nothing (or still
+// calling `push_active_name`), and the start page computed but never followed.
+#[test]
+fn test_app_consults_the_config_sync_and_start_page_policies() {
+    let shipped = shipped_code("src/main.rs");
+
+    let usable_again = between(
+        &shipped,
+        "!was_usable",
+        "timer::sleep(BACKEND_HEALTH_INTERVAL)",
+    );
+    assert!(
+        usable_again.contains("sync_backend_config("),
+        "the backend becoming usable (start, reconnection) must sync its config, got {usable_again:?}"
+    );
+    assert!(
+        !shipped.contains("push_active_name("),
+        "no client re-pushes its stored config on reconnection any more"
+    );
+
+    let start = between(&shipped, "start_page(", ";");
+    assert!(
+        start.contains("== settings::StartPage::Settings")
+            && start.contains("navigator.push(Route::AppSettingsPage"),
+        "the Settings start page must navigate to the settings page, got {start:?}"
+    );
+}
+
 // ── CI ───────────────────────────────────────────────────────────────────────
 
 /// The `web` job of `.github/workflows/ci.yml`, comment lines dropped and

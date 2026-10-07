@@ -41,6 +41,12 @@ Choose **How to pair** on the backend's entry:
 The code is valid for **five minutes** and works **once**; five wrong attempts
 cancel it. Run `blue2th-server --pair` on the PC for a fresh one.
 
+To pair several clients from one start — a phone and a browser, say — run
+`blue2th-server --pair <n>` with `n` from 1 to 10: the banner prints one block
+per code, numbered `1/n` to `n/n`. Each code works once and for five minutes,
+using one leaves the others valid, and the five wrong attempts are counted once
+for all of them: the fifth cancels every code.
+
 The status card on the home screen turns green, *Backend connected*, and the
 speakers can be loaded. To pair a second phone, arm a new code the same way.
 
@@ -64,8 +70,8 @@ comes into play.
 |---|---|---|
 | The search finds nothing | The phone is not on the PC's network: mobile data, a guest Wi-Fi, or a VPN carrying the app's traffic away. Or the backend is not running. | Wi-Fi settings on the phone: same network, an address in the same range as the PC. A VPN with split tunnelling must list blue2th as bypassed — **reinstalling the app drops it from that list**. On the PC, `curl http://<lan address>:4000/health`. |
 | Search finds nothing, but the address typed by hand tests fine | Multicast is filtered: the router isolates Wi-Fi clients, or the PC's firewall drops mDNS. | `sudo firewall-cmd --list-services` includes `mdns`; otherwise add it (see [`INSTALL.md`](INSTALL.md)). Typing the address is a perfectly good fallback. |
-| *Backend unreachable* with the right address | TCP 4000 is blocked on the PC, or the PC listens on another interface than the one the phone reaches. | `sudo firewall-cmd --list-ports`; the address the backend printed at start; `BLUE2TH_BIND=0.0.0.0:4000` to listen everywhere. |
+| *Backend unreachable* with the right address | TCP 4000 is blocked on the PC, or the PC listens on another interface than the one the phone reaches. | `sudo firewall-cmd --list-ports`; the address the backend printed at start; `blue2th-server --bind 0.0.0.0:4000` to listen everywhere (`BLUE2TH_BIND` is read by debug builds only). |
 | *Not paired* right after a backend restart | `auth.json` was deleted or unreadable on the PC, so the backend minted a new token and forgot every phone. | Run with `--pair` and pair again. |
-| The pairing code is refused | Expired (five minutes), already used, or cancelled by five wrong attempts. | Restart the backend with `--pair` for a new one. |
+| The pairing code is refused | Expired (five minutes), already used — by another client, when several were paired from one start — or cancelled by five wrong attempts across all armed codes. | Restart the backend with `--pair` (or `--pair <n>` for several clients) for new ones. |
 | A speaker "refused to pair" | The speaker is not in pairing mode, or is already connected to another device. | Put it in pairing mode and tap it again. |
 | Spotify signs in, but nothing plays | The Spotify account is not on the application's Development-mode allowlist, or `librespot` was never seeded. | Both steps under *Spotify* in [`INSTALL.md`](INSTALL.md). |

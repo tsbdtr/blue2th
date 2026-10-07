@@ -8,9 +8,8 @@ mod backend;
 mod deep_link;
 mod discovery;
 mod jni_util;
-// The JNI presence hooks hand work to the tokio runtime, which the browser
-// build does not have (#159).
-#[cfg(not(target_arch = "wasm32"))]
+// Presence reports: the JNI hooks on Android (their tokio half is native-only,
+// #159), the page lifecycle events in the browser (#160).
 mod lifecycle;
 mod settings;
 mod timer;
@@ -118,6 +117,31 @@ async fn await_new_token() {
     }
 }
 
+/// Sync the active backend's config through the one rule every client follows
+/// (#160) — push a change the backend has not acknowledged, otherwise read and
+/// adopt what it has — and publish the result to the cache and the shared
+/// signal, unless an edit landed meanwhile (see [`settings::settle_sync`]).
+async fn sync_backend_config(
+    mut app_settings: Signal<settings::AppSettings>,
+) -> Result<(), backend::BackendError> {
+    // Owned copies: the snapshot the sync started from, and the one it updates.
+    let before = app_settings.peek().clone();
+    let mut synced = before.clone();
+    let outcome = backend::sync_config(&mut synced).await;
+    // Settled whatever the outcome: a refused push keeps its pending mark.
+    let settled = settings::settle_sync(&before, synced, app_settings.peek().clone());
+    // Owned copy: the cache keeps its own settings.
+    settings::set_current(settled.clone());
+    *app_settings.write() = settled;
+    outcome
+}
+
+/// Whether the start page has already been applied: it is decided once per app
+/// start, not every time `Home` mounts — or going back from the settings page
+/// would bounce straight back to it.
+static START_PAGE_APPLIED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Spotify state shared across the app, provided once by [`App`]: the status
 /// card, the login dialog and the transport bar must agree on whether the
 /// librespot backend runs and whether the OAuth login is done, and the polling
@@ -193,6 +217,25 @@ fn App() -> Element {
     // were still true.
     let backend_gone: Signal<bool> = use_signal(|| false);
     use_context_provider(|| BackendGone(backend_gone));
+
+    // Settings are read once from the app's storage (the phone's, or the
+    // browser's `localStorage`) and shared from the root: every screen must
+    // agree on which backend is active. Created before the health loop, which
+    // writes the backend's config into them in the browser (#160).
+    let app_settings: Signal<settings::AppSettings> = use_signal(settings::current);
+    use_context_provider(|| SettingsState(app_settings));
+
+    // Spotify state lives at the root: the polling tasks below must survive
+    // navigation and keep feeding the card, the dialog and the transport bar.
+    let spotify_ui = SpotifyUi {
+        running: use_signal(|| false),
+        connected: use_signal(|| false),
+        now_playing: use_signal(|| None),
+        show_login: use_signal(|| false),
+        background_error: use_signal(|| None),
+    };
+    use_context_provider(|| spotify_ui);
+
     use_hook(|| {
         // Signal<bool> is Copy; the spawned task captures its own handle.
         let mut backend_online = backend_online;
@@ -234,14 +277,20 @@ fn App() -> Element {
                 } else if reachable && *backend_gone.peek() {
                     *backend_gone.write() = false;
                 }
-                // Becoming usable again: re-assert the name the app is the source
-                // of truth for. This covers a push that failed while the backend
-                // was down, a backend (or app) that restarted since, and one just
-                // updated out of an incompatible range — otherwise the Connect
-                // device would keep advertising whatever name the server last
-                // stored.
+                // Becoming usable again (#160): sync the config. A change that
+                // failed while the backend was down goes out now; otherwise the
+                // app adopts what the backend holds, so it never re-imposes a
+                // stale copy over another client's change. The first transition
+                // after start is also the sync on start.
                 if reachable && mismatch.is_none() && !was_usable {
-                    backend::push_active_name().await;
+                    // An unpaired app has nothing to sync: the settings page
+                    // already says so.
+                    if let Err(e) = sync_backend_config(app_settings).await {
+                        if !e.is_not_paired() {
+                            let mut background_error = spotify_ui.background_error;
+                            *background_error.write() = Some(e.to_string());
+                        }
+                    }
                 }
                 timer::sleep(BACKEND_HEALTH_INTERVAL).await;
             }
@@ -257,22 +306,9 @@ fn App() -> Element {
             lifecycle::arm(tokio::runtime::Handle::current());
         });
     });
-
-    // Settings are read once from the phone's storage and shared from the root:
-    // every screen must agree on which backend is active.
-    let app_settings: Signal<settings::AppSettings> = use_signal(settings::current);
-    use_context_provider(|| SettingsState(app_settings));
-
-    // Spotify state lives at the root: the polling tasks below must survive
-    // navigation and keep feeding the card, the dialog and the transport bar.
-    let spotify_ui = SpotifyUi {
-        running: use_signal(|| false),
-        connected: use_signal(|| false),
-        now_playing: use_signal(|| None),
-        show_login: use_signal(|| false),
-        background_error: use_signal(|| None),
-    };
-    use_context_provider(|| spotify_ui);
+    // The browser reports from the page's own lifecycle events instead (#160).
+    #[cfg(target_arch = "wasm32")]
+    use_hook(lifecycle::install_page_listeners);
 
     // The backend is gone: drop the Spotify state it owned. Keeping it would
     // leave the card green over a `librespot` nobody can reach any more, and the
@@ -390,6 +426,11 @@ fn App() -> Element {
                                 Ok(_) => {
                                     settings::set_current(next.clone());
                                     *app_settings.write() = next;
+                                    // Paired: adopt the backend's config, or push
+                                    // a change still waiting for it (#160).
+                                    if let Err(e) = sync_backend_config(app_settings).await {
+                                        *background_error.write() = Some(e.to_string());
+                                    }
                                 },
                                 Err(e) => *background_error.write() = Some(e.to_string()),
                             }
@@ -435,6 +476,17 @@ fn App() -> Element {
 #[component]
 fn Home() -> Element {
     use_locale();
+    let navigator = use_navigator();
+    // An unpaired browser opens where it pairs (#160); the phone stays here.
+    use_effect(move || {
+        if START_PAGE_APPLIED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let paired = settings::current().active_token().is_some();
+        if settings::start_page(settings::CLIENT_KIND, paired) == settings::StartPage::Settings {
+            navigator.push(Route::AppSettingsPage {});
+        }
+    });
 
     rsx! {
         div {
@@ -1824,6 +1876,32 @@ fn AppSettingsPage() -> Element {
     // capped, so a second tap could only ever spend an attempt and report a
     // failure for a code that in fact just worked.
     let pairing = use_signal(|| false);
+    // The browser manages exactly one backend — the page origin — and follows
+    // the backend's config rather than owning a list (#160).
+    let browser = settings::CLIENT_KIND == settings::ClientKind::Browser;
+    // Set when a fresh pairing's `GET /config` failed: the name and the toggles
+    // stay hidden until the backend's real values are known.
+    let mut config_unread = use_signal(|| false);
+    // Opening the page syncs the active backend's config (#160): the toggles
+    // then show what the backend applies, not a copy another client changed.
+    use_hook(move || {
+        spawn(async move {
+            if let Err(e) = sync_backend_config(app_settings).await {
+                // Unpaired: the Pairing section already says what to do.
+                if !e.is_not_paired() {
+                    *error.write() = Some(e.to_string());
+                }
+            }
+        });
+    });
+    // The browser's name field edits the active entry, the one at the origin.
+    let active_name: Option<(usize, String)> = {
+        let snapshot = app_settings.read();
+        snapshot
+            .active
+            // Owned name: the rsx below outlives this borrow of the signal.
+            .and_then(|i| snapshot.backends.get(i).map(|b| (i, b.name.clone())))
+    };
 
     // One read for the whole list (see `BackendStatus`): names, addresses and the
     // active index all come from the same snapshot.
@@ -1856,6 +1934,9 @@ fn AppSettingsPage() -> Element {
                 .map(|b| (i, b.url.clone(), b.pairing, b.token.is_some()))
         })
     };
+    let paired_now = active_pairing
+        .as_ref()
+        .is_some_and(|(_, _, _, paired)| *paired);
     let entries: Vec<(usize, String, String, bool)> = {
         let snapshot = app_settings.read();
         let active = snapshot.active;
@@ -1961,189 +2042,192 @@ fn AppSettingsPage() -> Element {
                 span { class: "settings-title", "{rust_i18n::t!(\"app_settings.title\")}" }
             }
 
-            div { class: "settings-section",
-                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_discovery\")}" }
+            // No mDNS in the browser, and only one backend to find (#160).
+            if !browser {
+                div { class: "settings-section",
+                    div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_discovery\")}" }
 
-                label { class: "settings-toggle",
-                    input {
-                        r#type: "checkbox",
-                        checked: auto_repair,
-                        onchange: move |e| {
-                            let mut next = app_settings.peek().clone();
-                            next.set_auto_repair_url(e.checked());
-                            // Owned copy: the cache keeps its own settings.
-                            settings::set_current(next.clone());
-                            *app_settings.write() = next;
-                        },
+                    label { class: "settings-toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: auto_repair,
+                            onchange: move |e| {
+                                let mut next = app_settings.peek().clone();
+                                next.set_auto_repair_url(e.checked());
+                                // Owned copy: the cache keeps its own settings.
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                        }
+                        span { class: "settings-toggle-label",
+                            "{rust_i18n::t!(\"app_settings.auto_repair_url\")}"
+                        }
                     }
-                    span { class: "settings-toggle-label",
-                        "{rust_i18n::t!(\"app_settings.auto_repair_url\")}"
-                    }
-                }
-                div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.auto_repair_url_hint\")}" }
+                    div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.auto_repair_url_hint\")}" }
 
-                label { class: "settings-toggle",
-                    input {
-                        r#type: "checkbox",
-                        checked: adds_backends,
-                        onchange: move |e| {
-                            let mut next = app_settings.peek().clone();
-                            next.set_discovery_adds_backends(e.checked());
-                            settings::set_current(next.clone());
-                            *app_settings.write() = next;
-                        },
+                    label { class: "settings-toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: adds_backends,
+                            onchange: move |e| {
+                                let mut next = app_settings.peek().clone();
+                                next.set_discovery_adds_backends(e.checked());
+                                settings::set_current(next.clone());
+                                *app_settings.write() = next;
+                            },
+                        }
+                        span { class: "settings-toggle-label",
+                            "{rust_i18n::t!(\"app_settings.discovery_adds_backends\")}"
+                        }
                     }
-                    span { class: "settings-toggle-label",
-                        "{rust_i18n::t!(\"app_settings.discovery_adds_backends\")}"
+                    div { class: "settings-hint",
+                        "{rust_i18n::t!(\"app_settings.discovery_adds_backends_hint\")}"
                     }
-                }
-                div { class: "settings-hint",
-                    "{rust_i18n::t!(\"app_settings.discovery_adds_backends_hint\")}"
-                }
 
-                // The search action and everything it produces live in one framed
-                // block: the two toggles above configure discovery, this is
-                // discovery itself, and the results belong to the button that
-                // fetched them.
-                div { class: "discovery-panel",
-                    button {
-                        class: "settings-action",
-                        disabled: !can_search || scanning(),
-                        onclick: move |_| {
-                            if scanning() {
-                                return;
-                            }
-                            *scanning.write() = true;
-                            *scanned.write() = true;
-                            *error.write() = None;
-                            *notice.write() = None;
-                            spawn(async move {
-                                // No mDNS in the browser (#159): the button is
-                                // disabled there, and a stray tap reports why.
-                                #[cfg(not(target_arch = "wasm32"))]
-                                let outcome = discovery::browse(discovery::BROWSE_TIMEOUT).await;
-                                #[cfg(target_arch = "wasm32")]
-                                let outcome: Result<Vec<blue2th_proto::DiscoveredBackend>, _> =
-                                    Err(discovery::DiscoveryError::Unsupported);
-                                match outcome {
-                                    Ok(services) => {
-                                        // Every change lands in one write, so a scan
-                                        // finding two moved backends redraws once.
-                                        let mut next = app_settings.peek().clone();
-                                        // A pre-6.6 entry learns the id of the machine
-                                        // answering at its address, so the *next* lease
-                                        // change repairs it instead of offering it as new.
-                                        let mut changed = next.adopt_discovered_ids(&services);
-                                        let mut repaired = false;
-                                        for service in &services {
-                                            if let settings::DiscoveryAction::Repair { index, url } =
-                                                settings::reconcile(&next, service)
-                                            {
-                                                repaired |= next.set_url(index, &url).is_ok();
-                                            }
-                                        }
-                                        changed |= repaired;
-                                        if changed {
-                                            settings::set_current(next.clone());
-                                            *app_settings.write() = next;
-                                        }
-                                        // Only a moved address is worth saying: adopting
-                                        // an id changes nothing the user can see.
-                                        if repaired {
-                                            *notice.write() = Some(
-                                                rust_i18n::t!("app_settings.address_repaired").to_string(),
-                                            );
-                                        }
-                                        *found.write() = services;
-                                    },
-                                    Err(e) => *error.write() = Some(e.to_string()),
+                    // The search action and everything it produces live in one framed
+                    // block: the two toggles above configure discovery, this is
+                    // discovery itself, and the results belong to the button that
+                    // fetched them.
+                    div { class: "discovery-panel",
+                        button {
+                            class: "settings-action",
+                            disabled: !can_search || scanning(),
+                            onclick: move |_| {
+                                if scanning() {
+                                    return;
                                 }
-                                *scanning.write() = false;
-                            });
-                        },
-                        if scanning() {
-                            "{rust_i18n::t!(\"app_settings.searching\")}"
-                        } else {
-                            "{rust_i18n::t!(\"app_settings.search_network\")}"
+                                *scanning.write() = true;
+                                *scanned.write() = true;
+                                *error.write() = None;
+                                *notice.write() = None;
+                                spawn(async move {
+                                    // No mDNS in the browser (#159): the button is
+                                    // disabled there, and a stray tap reports why.
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    let outcome = discovery::browse(discovery::BROWSE_TIMEOUT).await;
+                                    #[cfg(target_arch = "wasm32")]
+                                    let outcome: Result<Vec<blue2th_proto::DiscoveredBackend>, _> =
+                                        Err(discovery::DiscoveryError::Unsupported);
+                                    match outcome {
+                                        Ok(services) => {
+                                            // Every change lands in one write, so a scan
+                                            // finding two moved backends redraws once.
+                                            let mut next = app_settings.peek().clone();
+                                            // A pre-6.6 entry learns the id of the machine
+                                            // answering at its address, so the *next* lease
+                                            // change repairs it instead of offering it as new.
+                                            let mut changed = next.adopt_discovered_ids(&services);
+                                            let mut repaired = false;
+                                            for service in &services {
+                                                if let settings::DiscoveryAction::Repair { index, url } =
+                                                    settings::reconcile(&next, service)
+                                                {
+                                                    repaired |= next.set_url(index, &url).is_ok();
+                                                }
+                                            }
+                                            changed |= repaired;
+                                            if changed {
+                                                settings::set_current(next.clone());
+                                                *app_settings.write() = next;
+                                            }
+                                            // Only a moved address is worth saying: adopting
+                                            // an id changes nothing the user can see.
+                                            if repaired {
+                                                *notice.write() = Some(
+                                                    rust_i18n::t!("app_settings.address_repaired").to_string(),
+                                                );
+                                            }
+                                            *found.write() = services;
+                                        },
+                                        Err(e) => *error.write() = Some(e.to_string()),
+                                    }
+                                    *scanning.write() = false;
+                                });
+                            },
+                            if scanning() {
+                                "{rust_i18n::t!(\"app_settings.searching\")}"
+                            } else {
+                                "{rust_i18n::t!(\"app_settings.search_network\")}"
+                            }
                         }
-                    }
 
-                    if !can_search {
-                        div { class: "settings-hint",
-                            "{rust_i18n::t!(\"app_settings.discovery_unsupported\")}"
+                        if !can_search {
+                            div { class: "settings-hint",
+                                "{rust_i18n::t!(\"app_settings.discovery_unsupported\")}"
+                            }
                         }
-                    }
-                    // Finding nothing is a neutral state, never an error: a guest
-                    // Wi-Fi, a filtered multicast or a backend that is simply down
-                    // all look the same from here, and typing the address still
-                    // works.
-                    if scanned() && !scanning() && results.is_empty() {
-                        div { class: "settings-empty",
-                            "{rust_i18n::t!(\"app_settings.no_backend_found\")}"
+                        // Finding nothing is a neutral state, never an error: a guest
+                        // Wi-Fi, a filtered multicast or a backend that is simply down
+                        // all look the same from here, and typing the address still
+                        // works.
+                        if scanned() && !scanning() && results.is_empty() {
+                            div { class: "settings-empty",
+                                "{rust_i18n::t!(\"app_settings.no_backend_found\")}"
+                            }
                         }
-                    }
 
-                    for DiscoveryRow { service, status_title, synced, addable, confirm } in results {
-                        div { key: "{service.url}", class: "discovery-card",
-                            div { class: "discovery-card-name", "{service.name}" }
-                            div { class: "discovery-card-url", "{service.url}" }
-                            // Corner badges, overlapping the card's top edge so
-                            // they read as a mark on the card rather than a third
-                            // line competing with the name and the address. Last
-                            // in the DOM because the add button consumes
-                            // `service`, and absolutely positioned anyway, so the
-                            // order here says nothing about where they land.
-                            div { class: "discovery-card-badges",
-                                if synced {
-                                    span {
-                                        class: "discovery-synced",
-                                        title: "{status_title}",
-                                        "⟳"
+                        for DiscoveryRow { service, status_title, synced, addable, confirm } in results {
+                            div { key: "{service.url}", class: "discovery-card",
+                                div { class: "discovery-card-name", "{service.name}" }
+                                div { class: "discovery-card-url", "{service.url}" }
+                                // Corner badges, overlapping the card's top edge so
+                                // they read as a mark on the card rather than a third
+                                // line competing with the name and the address. Last
+                                // in the DOM because the add button consumes
+                                // `service`, and absolutely positioned anyway, so the
+                                // order here says nothing about where they land.
+                                div { class: "discovery-card-badges",
+                                    if synced {
+                                        span {
+                                            class: "discovery-synced",
+                                            title: "{status_title}",
+                                            "⟳"
+                                        }
+                                    }
+                                    if addable {
+                                        button {
+                                            class: "discovery-add",
+                                            // The only label this button gets: the
+                                            // glyph carries the meaning, the tooltip
+                                            // and the accessible name carry the words.
+                                            title: "{status_title}",
+                                            "aria-label": "{rust_i18n::t!(\"app_settings.add\")}",
+                                            onclick: move |_| {
+                                                let mut next = app_settings.peek().clone();
+                                                // Being found grants nothing: the entry
+                                                // is created unpaired and the code is
+                                                // still due.
+                                                match next.add_discovered(&service) {
+                                                    Ok(_) => {
+                                                        settings::set_current(next.clone());
+                                                        *app_settings.write() = next;
+                                                    },
+                                                    Err(err) => *error.write() = Some(err.to_string()),
+                                                }
+                                            },
+                                            "+"
+                                        }
                                     }
                                 }
-                                if addable {
+                                if let Some(PendingRepair { index, url, prompt }) = confirm {
                                     button {
-                                        class: "discovery-add",
-                                        // The only label this button gets: the
-                                        // glyph carries the meaning, the tooltip
-                                        // and the accessible name carry the words.
-                                        title: "{status_title}",
-                                        "aria-label": "{rust_i18n::t!(\"app_settings.add\")}",
+                                        class: "discovery-confirm",
                                         onclick: move |_| {
                                             let mut next = app_settings.peek().clone();
-                                            // Being found grants nothing: the entry
-                                            // is created unpaired and the code is
-                                            // still due.
-                                            match next.add_discovered(&service) {
-                                                Ok(_) => {
+                                            match next.set_url(index, &url) {
+                                                Ok(()) => {
                                                     settings::set_current(next.clone());
                                                     *app_settings.write() = next;
+                                                    *notice.write() = Some(
+                                                        rust_i18n::t!("app_settings.address_repaired")
+                                                            .to_string(),
+                                                    );
                                                 },
                                                 Err(err) => *error.write() = Some(err.to_string()),
                                             }
                                         },
-                                        "+"
+                                        "{prompt}"
                                     }
-                                }
-                            }
-                            if let Some(PendingRepair { index, url, prompt }) = confirm {
-                                button {
-                                    class: "discovery-confirm",
-                                    onclick: move |_| {
-                                        let mut next = app_settings.peek().clone();
-                                        match next.set_url(index, &url) {
-                                            Ok(()) => {
-                                                settings::set_current(next.clone());
-                                                *app_settings.write() = next;
-                                                *notice.write() = Some(
-                                                    rust_i18n::t!("app_settings.address_repaired")
-                                                        .to_string(),
-                                                );
-                                            },
-                                            Err(err) => *error.write() = Some(err.to_string()),
-                                        }
-                                    },
-                                    "{prompt}"
                                 }
                             }
                         }
@@ -2151,161 +2235,219 @@ fn AppSettingsPage() -> Element {
                 }
             }
 
-            div { class: "settings-section",
-                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.backends\")}" }
-
-                if entries.is_empty() {
-                    div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
-                }
-                for (index, name, url, active) in entries {
-                    div { class: if active { "backend-row active" } else { "backend-row" },
-                        div { class: "backend-row-meta",
-                            span { class: "backend-row-name", "{name}" }
-                            span { class: "backend-row-url", "{url}" }
-                        }
-                        button {
-                            class: "backend-row-action",
-                            disabled: active,
-                            onclick: move |_| {
-                                let mut error = error;
-                                let mut notice = notice;
-                                spawn(async move {
-                                    // Owned copy: mutated by the switch, then
-                                    // written back to the shared signal.
-                                    let mut next = app_settings.peek().clone();
-                                    let outcome = backend::activate_backend(&mut next, index).await;
-                                    *app_settings.write() = next;
-                                    // Feedback left over from a previous action
-                                    // would read as this one's outcome.
-                                    *notice.write() = None;
-                                    *error.write() = outcome.err().map(|e| e.to_string());
-                                });
-                            },
-                            if active {
-                                "{rust_i18n::t!(\"app_settings.active\")}"
-                            } else {
-                                "{rust_i18n::t!(\"app_settings.activate\")}"
+            // The browser's one backend: the origin, read-only, and the name the
+            // backend answers to — shown once paired and read (#160).
+            if browser {
+                div { class: "settings-section",
+                    div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_backend\")}" }
+                    // Owned copy: the rsx below outlives this render's snapshot.
+                    if let Some((_, url, _, paired)) = active_pairing.clone() {
+                        div { class: "backend-row active",
+                            div { class: "backend-row-meta",
+                                span { class: "backend-row-url", "{url}" }
                             }
                         }
-                        button {
-                            class: "backend-row-delete",
-                            title: "{rust_i18n::t!(\"app_settings.delete\")}",
-                            aria_label: "{rust_i18n::t!(\"app_settings.delete\")}",
-                            onclick: move |_| {
-                                *notice.write() = None;
-                                *error.write() = None;
-                                spawn(async move {
-                                    let mut next = app_settings.peek().clone();
-                                    // Deleting a backend that is streaming must
-                                    // quieten it and stop its Spotify source:
-                                    // forgetting it locally would leave the PC
-                                    // playing to the speakers with no way left in
-                                    // the app to stop it.
-                                    let released = backend::remove_backend(&mut next, index).await;
-                                    // The local removal happened whatever the
-                                    // remote calls did, so the list is updated
-                                    // either way.
-                                    *app_settings.write() = next;
-                                    if let Err(e) = released {
-                                        *error.write() = Some(e.to_string());
-                                    }
-                                });
-                            },
-                            "✕"
+                        if !paired {
+                            div { class: "settings-hint",
+                                "{rust_i18n::t!(\"app_settings.pair_browser_hint\")}"
+                            }
+                        } else if !config_unread() {
+                            if let Some((index, name)) = active_name {
+                                input {
+                                    class: "backend-input",
+                                    r#type: "text",
+                                    maxlength: "{blue2th_proto::MAX_BACKEND_NAME_LEN}",
+                                    placeholder: "{rust_i18n::t!(\"app_settings.name_placeholder\")}",
+                                    value: "{name}",
+                                    // On commit (Enter, or leaving the field), not on
+                                    // every keystroke: each one would be a push.
+                                    onchange: move |e| {
+                                        // Owned copy: mutated, then written back to
+                                        // the shared signal.
+                                        let mut next = app_settings.peek().clone();
+                                        if let Err(err) = next.set_name(index, &e.value()) {
+                                            *notice.write() = None;
+                                            *error.write() = Some(err.to_string());
+                                            return;
+                                        }
+                                        // Owned copy: the cache keeps its own settings.
+                                        settings::set_current(next.clone());
+                                        *app_settings.write() = next;
+                                        let mut error = error;
+                                        spawn(async move {
+                                            // The backend advertises the name, so the
+                                            // edit is meaningless until it knows; a
+                                            // refused push stays pending (#160).
+                                            *error.write() =
+                                                sync_backend_config(app_settings).await.err().map(|e| e.to_string());
+                                        });
+                                    },
+                                }
+                            }
                         }
+                    } else {
+                        div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
                     }
                 }
+            }
 
-                div { class: "backend-form",
-                    input {
-                        class: "backend-input",
-                        r#type: "text",
-                        maxlength: "{blue2th_proto::MAX_BACKEND_NAME_LEN}",
-                        placeholder: "{rust_i18n::t!(\"app_settings.name_placeholder\")}",
-                        value: "{name_draft}",
-                        oninput: move |e| *name_draft.write() = e.value(),
+            if !browser {
+                div { class: "settings-section",
+                    div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.backends\")}" }
+
+                    if entries.is_empty() {
+                        div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
                     }
-                    input {
-                        class: "backend-input",
-                        r#type: "text",
-                        placeholder: "{rust_i18n::t!(\"app_settings.url_placeholder\")}",
-                        value: "{url_draft}",
-                        oninput: move |e| *url_draft.write() = e.value(),
+                    for (index, name, url, active) in entries {
+                        div { class: if active { "backend-row active" } else { "backend-row" },
+                            div { class: "backend-row-meta",
+                                span { class: "backend-row-name", "{name}" }
+                                span { class: "backend-row-url", "{url}" }
+                            }
+                            button {
+                                class: "backend-row-action",
+                                disabled: active,
+                                onclick: move |_| {
+                                    let mut error = error;
+                                    let mut notice = notice;
+                                    spawn(async move {
+                                        // Owned copy: mutated by the switch, then
+                                        // written back to the shared signal.
+                                        let mut next = app_settings.peek().clone();
+                                        let outcome = backend::activate_backend(&mut next, index).await;
+                                        *app_settings.write() = next;
+                                        // Feedback left over from a previous action
+                                        // would read as this one's outcome.
+                                        *notice.write() = None;
+                                        *error.write() = outcome.err().map(|e| e.to_string());
+                                    });
+                                },
+                                if active {
+                                    "{rust_i18n::t!(\"app_settings.active\")}"
+                                } else {
+                                    "{rust_i18n::t!(\"app_settings.activate\")}"
+                                }
+                            }
+                            button {
+                                class: "backend-row-delete",
+                                title: "{rust_i18n::t!(\"app_settings.delete\")}",
+                                aria_label: "{rust_i18n::t!(\"app_settings.delete\")}",
+                                onclick: move |_| {
+                                    *notice.write() = None;
+                                    *error.write() = None;
+                                    spawn(async move {
+                                        let mut next = app_settings.peek().clone();
+                                        // Deleting a backend that is streaming must
+                                        // quieten it and stop its Spotify source:
+                                        // forgetting it locally would leave the PC
+                                        // playing to the speakers with no way left in
+                                        // the app to stop it.
+                                        let released = backend::remove_backend(&mut next, index).await;
+                                        // The local removal happened whatever the
+                                        // remote calls did, so the list is updated
+                                        // either way.
+                                        *app_settings.write() = next;
+                                        if let Err(e) = released {
+                                            *error.write() = Some(e.to_string());
+                                        }
+                                    });
+                                },
+                                "✕"
+                            }
+                        }
                     }
-                    div { class: "backend-form-actions",
-                        button {
-                            class: "backend-test",
-                            onclick: move |_| {
-                                let url = url_draft();
-                                let mut error = error;
-                                let mut notice = notice;
-                                spawn(async move {
-                                    // Exactly one of the two is shown: a stale
-                                    // error next to a fresh "it answered" (or the
-                                    // reverse) is unreadable.
-                                    match backend::test_backend(&url).await {
-                                        Ok(_) => {
+
+                    div { class: "backend-form",
+                        input {
+                            class: "backend-input",
+                            r#type: "text",
+                            maxlength: "{blue2th_proto::MAX_BACKEND_NAME_LEN}",
+                            placeholder: "{rust_i18n::t!(\"app_settings.name_placeholder\")}",
+                            value: "{name_draft}",
+                            oninput: move |e| *name_draft.write() = e.value(),
+                        }
+                        input {
+                            class: "backend-input",
+                            r#type: "text",
+                            placeholder: "{rust_i18n::t!(\"app_settings.url_placeholder\")}",
+                            value: "{url_draft}",
+                            oninput: move |e| *url_draft.write() = e.value(),
+                        }
+                        div { class: "backend-form-actions",
+                            button {
+                                class: "backend-test",
+                                onclick: move |_| {
+                                    let url = url_draft();
+                                    let mut error = error;
+                                    let mut notice = notice;
+                                    spawn(async move {
+                                        // Exactly one of the two is shown: a stale
+                                        // error next to a fresh "it answered" (or the
+                                        // reverse) is unreadable.
+                                        match backend::test_backend(&url).await {
+                                            Ok(_) => {
+                                                *error.write() = None;
+                                                *notice.write() = Some(
+                                                    rust_i18n::t!("app_settings.test_ok").to_string(),
+                                                );
+                                            },
+                                            Err(e) => {
+                                                *notice.write() = None;
+                                                *error.write() = Some(e.to_string());
+                                            },
+                                        }
+                                    });
+                                },
+                                "{rust_i18n::t!(\"app_settings.test\")}"
+                            }
+                            button {
+                                class: "backend-add",
+                                onclick: move |_| {
+                                    let mut next = app_settings.peek().clone();
+                                    match next.add(&name_draft(), &url_draft()) {
+                                        Ok(()) => {
+                                            let added = next.backends.len().saturating_sub(1);
+                                            // First backend added: it becomes the active
+                                            // one, or the app would still know no address.
+                                            let activating = next.active.is_none();
+                                            // Owned copy: the process-wide cache keeps
+                                            // its own settings beyond this handler.
+                                            settings::set_current(next.clone());
+                                            *app_settings.write() = next;
+                                            *name_draft.write() = String::new();
+                                            *url_draft.write() = String::new();
+                                            *notice.write() = None;
                                             *error.write() = None;
-                                            *notice.write() = Some(
-                                                rust_i18n::t!("app_settings.test_ok").to_string(),
-                                            );
+                                            if activating {
+                                                // Through the shared activation path, so
+                                                // the name reaches the backend: storing
+                                                // it locally alone left the Connect
+                                                // device advertising the old one.
+                                                let mut error = error;
+                                                spawn(async move {
+                                                    let mut next = app_settings.peek().clone();
+                                                    let outcome =
+                                                        backend::activate_backend(&mut next, added)
+                                                            .await;
+                                                    *app_settings.write() = next;
+                                                    if let Err(e) = outcome {
+                                                        *error.write() = Some(e.to_string());
+                                                    }
+                                                });
+                                            }
                                         },
                                         Err(e) => {
                                             *notice.write() = None;
                                             *error.write() = Some(e.to_string());
                                         },
                                     }
-                                });
-                            },
-                            "{rust_i18n::t!(\"app_settings.test\")}"
-                        }
-                        button {
-                            class: "backend-add",
-                            onclick: move |_| {
-                                let mut next = app_settings.peek().clone();
-                                match next.add(&name_draft(), &url_draft()) {
-                                    Ok(()) => {
-                                        let added = next.backends.len().saturating_sub(1);
-                                        // First backend added: it becomes the active
-                                        // one, or the app would still know no address.
-                                        let activating = next.active.is_none();
-                                        // Owned copy: the process-wide cache keeps
-                                        // its own settings beyond this handler.
-                                        settings::set_current(next.clone());
-                                        *app_settings.write() = next;
-                                        *name_draft.write() = String::new();
-                                        *url_draft.write() = String::new();
-                                        *notice.write() = None;
-                                        *error.write() = None;
-                                        if activating {
-                                            // Through the shared activation path, so
-                                            // the name reaches the backend: storing
-                                            // it locally alone left the Connect
-                                            // device advertising the old one.
-                                            let mut error = error;
-                                            spawn(async move {
-                                                let mut next = app_settings.peek().clone();
-                                                let outcome =
-                                                    backend::activate_backend(&mut next, added)
-                                                        .await;
-                                                *app_settings.write() = next;
-                                                if let Err(e) = outcome {
-                                                    *error.write() = Some(e.to_string());
-                                                }
-                                            });
-                                        }
-                                    },
-                                    Err(e) => {
-                                        *notice.write() = None;
-                                        *error.write() = Some(e.to_string());
-                                    },
-                                }
-                            },
-                            "{rust_i18n::t!(\"app_settings.add\")}"
+                                },
+                                "{rust_i18n::t!(\"app_settings.add\")}"
+                            }
                         }
                     }
-                }
 
+                }
             }
 
             div { class: "settings-section",
@@ -2321,40 +2463,46 @@ fn AppSettingsPage() -> Element {
                             "{rust_i18n::t!(\"app_settings.not_paired\")}"
                         }
                     }
-                    div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.pairing_method\")}" }
-                    div { class: "backend-form-actions",
-                        button {
-                            class: if method == settings::PairingMethod::Code { "backend-row-action active" } else { "backend-row-action" },
-                            onclick: move |_| {
-                                let mut next = app_settings.peek().clone();
-                                if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Code) {
-                                    *error.write() = Some(e.to_string());
-                                    return;
-                                }
-                                settings::set_current(next.clone());
-                                *app_settings.write() = next;
-                            },
-                            "{rust_i18n::t!(\"app_settings.pairing_method_code\")}"
-                        }
-                        button {
-                            class: if method == settings::PairingMethod::Qr { "backend-row-action active" } else { "backend-row-action" },
-                            onclick: move |_| {
-                                let mut next = app_settings.peek().clone();
-                                if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Qr) {
-                                    *error.write() = Some(e.to_string());
-                                    return;
-                                }
-                                settings::set_current(next.clone());
-                                *app_settings.write() = next;
-                            },
-                            "{rust_i18n::t!(\"app_settings.pairing_method_qr\")}"
+                    // The browser has no camera path back into the page: a code
+                    // is the only way to pair it (#160).
+                    if !browser {
+                        div { class: "settings-hint", "{rust_i18n::t!(\"app_settings.pairing_method\")}" }
+                        div { class: "backend-form-actions",
+                            button {
+                                class: if method == settings::PairingMethod::Code { "backend-row-action active" } else { "backend-row-action" },
+                                onclick: move |_| {
+                                    let mut next = app_settings.peek().clone();
+                                    if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Code) {
+                                        *error.write() = Some(e.to_string());
+                                        return;
+                                    }
+                                    settings::set_current(next.clone());
+                                    *app_settings.write() = next;
+                                },
+                                "{rust_i18n::t!(\"app_settings.pairing_method_code\")}"
+                            }
+                            button {
+                                class: if method == settings::PairingMethod::Qr { "backend-row-action active" } else { "backend-row-action" },
+                                onclick: move |_| {
+                                    let mut next = app_settings.peek().clone();
+                                    if let Err(e) = next.set_pairing_method(index, settings::PairingMethod::Qr) {
+                                        *error.write() = Some(e.to_string());
+                                        return;
+                                    }
+                                    settings::set_current(next.clone());
+                                    *app_settings.write() = next;
+                                },
+                                "{rust_i18n::t!(\"app_settings.pairing_method_qr\")}"
+                            }
                         }
                     }
 
-                    if method == settings::PairingMethod::Code {
+                    if browser || method == settings::PairingMethod::Code {
                         input {
                             class: "backend-input",
                             r#type: "text",
+                            // An unpaired browser opens here to type the code.
+                            autofocus: browser && !paired,
                             placeholder: "{rust_i18n::t!(\"app_settings.pairing_code_placeholder\")}",
                             value: "{code_draft}",
                             oninput: move |e| *code_draft.write() = e.value(),
@@ -2409,6 +2557,20 @@ fn AppSettingsPage() -> Element {
                                                     *notice.write() = Some(
                                                         rust_i18n::t!("app_settings.paired_ok").to_string(),
                                                     );
+                                                    // Paired: the backend learns the
+                                                    // typed name, or the app adopts its
+                                                    // config (#160). The browser shows
+                                                    // the backend's real settings, never
+                                                    // a guess, so it waits for this sync.
+                                                    // The token is kept whatever it does.
+                                                    *config_unread.write() = browser;
+                                                    match sync_backend_config(app_settings).await {
+                                                        Ok(()) => *config_unread.write() = false,
+                                                        Err(e) => {
+                                                            *notice.write() = None;
+                                                            *error.write() = Some(e.to_string());
+                                                        },
+                                                    }
                                                 },
                                                 Err(e) => *error.write() = Some(e.to_string()),
                                             }
@@ -2434,80 +2596,86 @@ fn AppSettingsPage() -> Element {
                 }
             }
 
-            div { class: "settings-section",
-                div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_playback\")}" }
+            // In the browser the toggles show the backend's real state, so they
+            // wait for a pairing and a read (#160); the Backend section says why.
+            if !browser || (paired_now && !config_unread()) {
+                div { class: "settings-section",
+                    div { class: "settings-section-title", "{rust_i18n::t!(\"app_settings.section_playback\")}" }
 
-                if let Some((index, restoring)) = active_restore {
-                    label { class: "settings-toggle",
-                        input {
-                            r#type: "checkbox",
-                            checked: restoring,
-                            onchange: move |e| {
-                                // `checked()`, like the per-device toggles: the
-                                // box's state, not its (unset) `value` attribute.
-                                let enabled = e.checked();
-                                let mut next = app_settings.peek().clone();
-                                if let Err(err) = next.set_restore_during_playback(index, enabled) {
-                                    *error.write() = Some(err.to_string());
-                                    return;
-                                }
-                                // Owned copy: the cache keeps its own settings.
-                                settings::set_current(next.clone());
-                                *app_settings.write() = next;
-                                let mut error = error;
-                                spawn(async move {
-                                    // The backend decides the restoration, so the
-                                    // toggle is meaningless until it knows.
-                                    if let Err(e) = backend::push_active_config().await {
-                                        *error.write() = Some(e.to_string());
+                    if let Some((index, restoring)) = active_restore {
+                        label { class: "settings-toggle",
+                            input {
+                                r#type: "checkbox",
+                                checked: restoring,
+                                onchange: move |e| {
+                                    // `checked()`, like the per-device toggles: the
+                                    // box's state, not its (unset) `value` attribute.
+                                    let enabled = e.checked();
+                                    let mut next = app_settings.peek().clone();
+                                    if let Err(err) = next.set_restore_during_playback(index, enabled) {
+                                        *error.write() = Some(err.to_string());
+                                        return;
                                     }
-                                });
-                            },
+                                    // Owned copy: the cache keeps its own settings.
+                                    settings::set_current(next.clone());
+                                    *app_settings.write() = next;
+                                    let mut error = error;
+                                    spawn(async move {
+                                        // The backend decides the restoration, so the
+                                        // toggle is meaningless until it knows; a
+                                        // refused push stays pending (#160).
+                                        if let Err(e) = sync_backend_config(app_settings).await {
+                                            *error.write() = Some(e.to_string());
+                                        }
+                                    });
+                                },
+                            }
+                            span { class: "settings-toggle-label",
+                                "{rust_i18n::t!(\"app_settings.restore_during_playback\")}"
+                            }
                         }
-                        span { class: "settings-toggle-label",
-                            "{rust_i18n::t!(\"app_settings.restore_during_playback\")}"
+                        div { class: "settings-hint",
+                            "{rust_i18n::t!(\"app_settings.restore_during_playback_hint\")}"
                         }
+                    } else {
+                        div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
                     }
-                    div { class: "settings-hint",
-                        "{rust_i18n::t!(\"app_settings.restore_during_playback_hint\")}"
-                    }
-                } else {
-                    div { class: "settings-empty", "{rust_i18n::t!(\"app_settings.no_backend_yet\")}" }
-                }
 
-                if let Some((index, reconnecting)) = active_auto_reconnect {
-                    label { class: "settings-toggle",
-                        input {
-                            r#type: "checkbox",
-                            checked: reconnecting,
-                            onchange: move |e| {
-                                // `checked()`, like every other toggle here: the
-                                // box's state, not its (unset) `value` attribute.
-                                let enabled = e.checked();
-                                let mut next = app_settings.peek().clone();
-                                if let Err(err) = next.set_auto_reconnect(index, enabled) {
-                                    *error.write() = Some(err.to_string());
-                                    return;
-                                }
-                                // Owned copy: the cache keeps its own settings.
-                                settings::set_current(next.clone());
-                                *app_settings.write() = next;
-                                let mut error = error;
-                                spawn(async move {
-                                    // The backend does the dialling, so the toggle
-                                    // is meaningless until it knows.
-                                    if let Err(e) = backend::push_active_config().await {
-                                        *error.write() = Some(e.to_string());
+                    if let Some((index, reconnecting)) = active_auto_reconnect {
+                        label { class: "settings-toggle",
+                            input {
+                                r#type: "checkbox",
+                                checked: reconnecting,
+                                onchange: move |e| {
+                                    // `checked()`, like every other toggle here: the
+                                    // box's state, not its (unset) `value` attribute.
+                                    let enabled = e.checked();
+                                    let mut next = app_settings.peek().clone();
+                                    if let Err(err) = next.set_auto_reconnect(index, enabled) {
+                                        *error.write() = Some(err.to_string());
+                                        return;
                                     }
-                                });
-                            },
+                                    // Owned copy: the cache keeps its own settings.
+                                    settings::set_current(next.clone());
+                                    *app_settings.write() = next;
+                                    let mut error = error;
+                                    spawn(async move {
+                                        // The backend does the dialling, so the toggle
+                                        // is meaningless until it knows; a refused
+                                        // push stays pending (#160).
+                                        if let Err(e) = sync_backend_config(app_settings).await {
+                                            *error.write() = Some(e.to_string());
+                                        }
+                                    });
+                                },
+                            }
+                            span { class: "settings-toggle-label",
+                                "{rust_i18n::t!(\"app_settings.auto_reconnect\")}"
+                            }
                         }
-                        span { class: "settings-toggle-label",
-                            "{rust_i18n::t!(\"app_settings.auto_reconnect\")}"
+                        div { class: "settings-hint",
+                            "{rust_i18n::t!(\"app_settings.auto_reconnect_hint\")}"
                         }
-                    }
-                    div { class: "settings-hint",
-                        "{rust_i18n::t!(\"app_settings.auto_reconnect_hint\")}"
                     }
                 }
             }

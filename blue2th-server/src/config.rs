@@ -2,13 +2,14 @@
 
 //! The backend's own name (phase 6.2).
 //!
-//! The app is the source of truth for the name and pushes it over `POST /config`;
-//! the server persists it so a restart keeps advertising the same Spotify Connect
-//! device — and so the Web API device lookup keeps matching the running
-//! `librespot` even before the app talks to it again.
+//! The clients — the phone and the browser — read it over `GET /config` and
+//! push a change over `POST /config`, the last action winning (#160); the server
+//! persists it so a restart keeps advertising the same Spotify Connect device —
+//! and so the Web API device lookup keeps matching the running `librespot` even
+//! before a client talks to it again.
 //!
-//! `POST /config` is unauthenticated on the LAN, so the server re-validates with
-//! the *shared* `blue2th_proto::validate_backend_name` rule rather than trusting
+//! The name comes from a client, so the server re-validates it with the
+//! *shared* `blue2th_proto::validate_backend_name` rule rather than trusting
 //! the client. Following the `state_store` pattern, `new()` is disk-free so tests
 //! never read or write the real `~/.local/state/blue2th/`.
 

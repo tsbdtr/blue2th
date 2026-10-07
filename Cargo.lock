@@ -403,6 +403,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml 0.8.23",
+ "web-sys",
 ]
 
 [[package]]
@@ -434,6 +435,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "toml 0.8.23",
  "tower",
  "tower-http 0.7.1",
  "tracing",

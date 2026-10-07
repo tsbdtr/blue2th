@@ -36,6 +36,7 @@ fn two_backends() -> AppSettings {
                 // Phase 6.6: Salon knows which machine answers it, Bureau does
                 // not (a pre-6.6 entry, matched on its URL).
                 id: Some("salon-backend-id".to_string()),
+                config_pending: false,
             },
             BackendEntry {
                 name: "Bureau".to_string(),
@@ -45,6 +46,7 @@ fn two_backends() -> AppSettings {
                 token: None,
                 pairing: PairingMethod::Qr,
                 id: None,
+                config_pending: false,
             },
         ],
         active: Some(0),
@@ -136,6 +138,8 @@ fn test_add_normalises_a_trailing_slash() {
             // Phase 6.6: typing an address says nothing about which machine
             // answers it, so no id is adopted yet.
             id: None,
+            // #160: and the typed name waits to reach the backend.
+            config_pending: true,
         })
     );
 }
@@ -1606,4 +1610,321 @@ fn test_track_probe_never_declares_a_reachable_backend_gone() {
         );
         assert_eq!(failures, 0, "a reachable probe leaves no failure behind");
     }
+}
+
+// ---- #160: config sync — push only what the backend has not acknowledged ----
+
+/// What another client left on the backend: a different name, both toggles off.
+fn config_set_elsewhere() -> blue2th_proto::ServerConfig {
+    blue2th_proto::ServerConfig {
+        name: "Lpt2".to_string(),
+        restore_during_playback: false,
+        auto_reconnect: false,
+        spotify_volume_lock: false,
+    }
+}
+
+/// The body a client pushes for `entry`, as the backend receives it.
+fn pushed(entry: &BackendEntry) -> blue2th_proto::ConfigRequest {
+    blue2th_proto::ConfigRequest {
+        name: entry.name.clone(),
+        restore_during_playback: entry.restore_during_playback,
+        auto_reconnect: entry.auto_reconnect,
+        spotify_volume_lock: None,
+    }
+}
+
+/// `two_backends()` with the active entry (Salon) holding an unsent change.
+fn salon_pending() -> AppSettings {
+    let mut settings = two_backends();
+    if let Some(salon) = settings.backends.first_mut() {
+        salon.config_pending = true;
+    }
+    settings
+}
+
+// Criterion (guard, "push only what is pending"): a backend the app holds no
+// unsent change for is **read**, whatever the client. Near-miss: the phone's
+// pre-#160 habit of re-pushing its stored copy, which overwrote what the
+// browser had set.
+#[test]
+fn test_config_sync_reads_a_backend_with_nothing_pending() {
+    assert_eq!(
+        settings::config_sync(&two_backends()),
+        settings::ConfigSync::Read
+    );
+}
+
+// Criterion (guard, "push only what is pending"): a change the backend has not
+// acknowledged is **pushed**, whatever the client. Near-miss: a browser that
+// always reads, and so drops an edit that failed while the backend was down.
+#[test]
+fn test_config_sync_pushes_a_pending_change() {
+    assert_eq!(
+        settings::config_sync(&salon_pending()),
+        settings::ConfigSync::Push
+    );
+}
+
+// Criterion: the sync concerns the **active** backend only — another entry's
+// unsent change is not a reason to push the active one's stale copy.
+#[test]
+fn test_config_sync_ignores_a_pending_change_on_another_backend() {
+    let mut settings = two_backends();
+    if let Some(bureau) = settings.backends.get_mut(1) {
+        bureau.config_pending = true;
+    }
+    assert_eq!(settings::config_sync(&settings), settings::ConfigSync::Read);
+}
+
+// Criterion: adding a backend by hand marks its typed name pending — it is the
+// one moment the phone legitimately owns the name.
+#[test]
+fn test_adding_a_backend_marks_its_typed_name_pending() {
+    let mut settings = two_backends();
+    settings
+        .add("Cuisine", "http://192.168.1.30:4000")
+        .expect("add a third backend");
+    assert_eq!(
+        settings
+            .backends
+            .last()
+            .map(|b| (b.name.as_str(), b.config_pending)),
+        Some(("Cuisine", true))
+    );
+}
+
+// Criterion: changing the restore-during-playback toggle marks it pending.
+#[test]
+fn test_toggling_restore_during_playback_marks_the_change_pending() {
+    let mut settings = two_backends();
+    settings
+        .set_restore_during_playback(0, false)
+        .expect("toggle Salon");
+    assert_eq!(
+        settings
+            .backends
+            .first()
+            .map(|b| (b.restore_during_playback, b.config_pending)),
+        Some((false, true))
+    );
+}
+
+// Criterion: changing the auto-reconnect toggle marks it pending.
+#[test]
+fn test_toggling_auto_reconnect_marks_the_change_pending() {
+    let mut settings = two_backends();
+    settings.set_auto_reconnect(0, false).expect("toggle Salon");
+    assert_eq!(
+        settings
+            .backends
+            .first()
+            .map(|b| (b.auto_reconnect, b.config_pending)),
+        Some((false, true))
+    );
+}
+
+// Criterion: renaming (the browser's name field) validates through the shared
+// proto rule, renames, and marks the change pending.
+#[test]
+fn test_set_name_renames_and_marks_the_change_pending() {
+    let mut settings = two_backends();
+    settings.set_name(0, "  Lpt2 ").expect("rename Salon");
+    assert_eq!(
+        settings
+            .backends
+            .first()
+            .map(|b| (b.name.as_str(), b.config_pending)),
+        Some(("Lpt2", true))
+    );
+}
+
+// Criterion: a name the shared rule refuses changes nothing — neither the name
+// nor the pending mark.
+#[test]
+fn test_set_name_refuses_an_empty_name_and_changes_nothing() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.set_name(0, "   "),
+        Err(SettingsError::Name(NameError::Empty))
+    );
+    assert_eq!(settings, two_backends());
+}
+
+// Criterion: renaming a backend that is not there is refused.
+#[test]
+fn test_set_name_refuses_an_unknown_backend() {
+    let mut settings = two_backends();
+    assert_eq!(
+        settings.set_name(7, "Lpt2"),
+        Err(SettingsError::UnknownBackend)
+    );
+}
+
+// Criterion: a backend learnt from discovery is not pending — its name is the
+// one the backend announced, so there is nothing to tell it.
+#[test]
+fn test_a_discovered_backend_is_not_pending() {
+    let mut settings = AppSettings::default();
+    let index = settings
+        .add_discovered(&blue2th_proto::DiscoveredBackend {
+            id: Some("cuisine-backend-id".to_string()),
+            name: "Cuisine".to_string(),
+            url: "http://192.168.1.30:4000".to_string(),
+        })
+        .expect("add the discovered backend");
+    assert_eq!(
+        settings.backends.get(index).map(|b| b.config_pending),
+        Some(false)
+    );
+}
+
+// Criterion: a backend created from a pairing link is not pending — the link's
+// name is the backend's own.
+#[test]
+fn test_a_backend_created_from_a_pair_link_is_not_pending() {
+    let mut settings = AppSettings::default();
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.30:4000", Some("Cuisine")),
+            "tok-cuisine",
+        )
+        .expect("create from the link");
+    assert_eq!(
+        settings.backends.get(index).map(|b| b.config_pending),
+        Some(false)
+    );
+}
+
+// Criterion: a push the backend acknowledged clears the pending mark.
+#[test]
+fn test_confirm_config_push_clears_the_pending_mark() {
+    let mut settings = salon_pending();
+    let sent = settings
+        .backends
+        .first()
+        .map(pushed)
+        .expect("the fixture has a Salon entry");
+    settings.confirm_config_push("http://192.168.1.107:4000", &sent);
+    assert_eq!(
+        settings.backends.first().map(|b| b.config_pending),
+        Some(false)
+    );
+}
+
+// Criterion (guard, "a push clears only what it pushed"): an entry edited
+// again while its push was in flight stays pending, so the newer change still
+// goes out — whichever of the three pushed fields the edit touched. Near-miss:
+// clearing the mark on any acknowledgement, or comparing only some fields.
+#[test]
+fn test_confirm_config_push_keeps_a_change_made_meanwhile_pending() {
+    for field in ["name", "restore_during_playback", "auto_reconnect"] {
+        let mut settings = salon_pending();
+        let sent = settings
+            .backends
+            .first()
+            .map(pushed)
+            .expect("the fixture has a Salon entry");
+        if let Some(salon) = settings.backends.first_mut() {
+            // Edited after the push left: the backend acknowledged the old values.
+            match field {
+                "name" => salon.name = "Lpt2".to_string(),
+                "restore_during_playback" => salon.restore_during_playback = false,
+                _ => salon.auto_reconnect = false,
+            }
+        }
+        settings.confirm_config_push("http://192.168.1.107:4000", &sent);
+        assert_eq!(
+            settings.backends.first().map(|b| b.config_pending),
+            Some(true),
+            "{field} edited meanwhile must stay pending"
+        );
+    }
+}
+
+// Criterion: an acknowledgement from one backend says nothing about another.
+#[test]
+fn test_confirm_config_push_from_another_backend_changes_nothing() {
+    let mut settings = salon_pending();
+    let sent = settings
+        .backends
+        .first()
+        .map(pushed)
+        .expect("the fixture has a Salon entry");
+    settings.confirm_config_push("http://192.168.1.50:4000", &sent);
+    assert_eq!(settings, salon_pending());
+}
+
+// Criterion (guard, "a read never overwrites a pending entry"): a `GET /config`
+// answer landing while a change is still unsent leaves the entry exactly as it
+// was. Near-miss: adopting unconditionally, which would silently drop the edit.
+#[test]
+fn test_adopt_config_never_overwrites_a_pending_entry() {
+    let mut settings = salon_pending();
+    settings::adopt_config(&mut settings, &config_set_elsewhere());
+    assert_eq!(settings, salon_pending());
+}
+
+// Criterion (guard, "a stored blob without the field loads as nothing
+// pending"): an install from before #160 reads on its first sync rather than
+// re-pushing its stored copy. The entry count is checked first, so a blob that
+// failed to load (and so holds nothing at all) cannot pass vacuously.
+#[test]
+fn test_a_stored_blob_without_the_field_loads_as_nothing_pending() {
+    let blob = r#"{"backends":[{"name":"Salon","url":"http://192.168.1.107:4000","token":"tok-salon"}],"active":0}"#;
+    let loaded = settings::load(Some(blob));
+    assert_eq!(loaded.backends.len(), 1, "the pre-#160 blob must load");
+    assert_eq!(
+        loaded.backends.first().map(|b| b.config_pending),
+        Some(false)
+    );
+    assert_eq!(settings::config_sync(&loaded), settings::ConfigSync::Read);
+}
+
+// Criterion (guard, "a read never overwrites a pending entry", at the app's
+// write-back): a toggle made while a read was out is newer than the read's
+// answer, and survives it. Near-miss: writing the sync's answer back
+// unconditionally, which drops the edit and its pending mark.
+#[test]
+fn test_settle_sync_keeps_an_edit_made_while_the_sync_was_out() {
+    let before = two_backends();
+    let mut synced = before.clone();
+    settings::adopt_config(&mut synced, &config_set_elsewhere());
+    let mut current = before.clone();
+    current
+        .set_auto_reconnect(0, false)
+        .expect("toggle Salon meanwhile");
+
+    let settled = settings::settle_sync(&before, synced, current.clone());
+
+    assert_eq!(
+        settled
+            .backends
+            .first()
+            .map(|b| (b.name.as_str(), b.auto_reconnect, b.config_pending)),
+        Some(("Salon", false, true)),
+        "the edit and its pending mark survive the read"
+    );
+    assert_eq!(settled, current);
+}
+
+// Criterion: with nothing changed while the sync was out, its answer is kept —
+// here the config another client left, adopted by the read.
+#[test]
+fn test_settle_sync_keeps_the_answer_when_nothing_changed_meanwhile() {
+    let before = two_backends();
+    let mut synced = before.clone();
+    settings::adopt_config(&mut synced, &config_set_elsewhere());
+
+    let settled = settings::settle_sync(&before, synced, before.clone());
+
+    assert_eq!(
+        settled.backends.first().map(|b| (
+            b.name.as_str(),
+            b.restore_during_playback,
+            b.auto_reconnect
+        )),
+        Some(("Lpt2", false, false)),
+        "the backend's config is adopted"
+    );
 }

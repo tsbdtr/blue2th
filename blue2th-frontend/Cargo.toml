@@ -34,6 +34,21 @@ mdns-sd = { workspace = true }
 # dioxus-web; only its `futures` feature is new.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-timers = { version = "0.3", features = ["futures"] }
+# The browser glue (#160): settings in `localStorage`, the backend at
+# `location.origin`, presence from the page lifecycle events, posted with a
+# `keepalive` fetch (reqwest's wasm client has none). Already in the wasm tree
+# through dioxus-web; its `wasm_bindgen` and `js_sys` re-exports spare two
+# direct dependencies.
+web-sys = { version = "0.3", features = [
+    "Document",
+    "EventTarget",
+    "Headers",
+    "Location",
+    "RequestInit",
+    "Storage",
+    "VisibilityState",
+    "Window",
+] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
