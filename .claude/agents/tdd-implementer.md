@@ -15,7 +15,7 @@ No gold-plating, no premature abstractions — just enough to go green.
 ## Workspace layers
 Read the **Affected Layers** section of your prompt — implement only in those layers.
 
-- **mobile** — `blue2th-frontend` (Dioxus 0.7 `mobile`, no cx/Scope/use_state).
+- **mobile** — `blue2th-frontend` (Dioxus 0.7, renderer `mobile` on the Android target only, no cx/Scope/use_state).
   - Drives no Bluetooth: the backend does. The app talks HTTP through
     `src/backend.rs`, and the only JNI left is `src/jni_util.rs` (multicast lock for
     mDNS) and `src/lifecycle.rs` (presence hooks). Any new JNI follows the

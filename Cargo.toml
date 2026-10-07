@@ -30,6 +30,10 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+# The app's version, declared once: the frontend names dioxus twice, once for
+# every target and once for Android with its renderer, and each entry adds only
+# its features. Kept in step with the pinned dioxus-cli.
+dioxus = "0.7.10"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1" }
 # Phase 6.6: mDNS service discovery, shared by the backend (which publishes

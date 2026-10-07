@@ -7,9 +7,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# No platform feature here: the renderer comes from the crate's `mobile` or `web`
-# feature, so `--no-default-features --features web` builds no mobile renderer.
-dioxus = { version = "0.7.10", features = ["router"] }
+# No renderer here: Android gets `mobile` from its target table below, and the
+# browser build enables the crate's `web` feature. A renderer on this line would
+# reach every host build, where `mobile` resolves to dioxus-desktop and wry and
+# needs the GTK/WebKit system libraries (#175).
+dioxus = { workspace = true, features = ["router"] }
 rust-i18n = "4"
 blue2th-proto = { path = "../blue2th-proto" }
 # No TLS backend: the backend is reached over plain HTTP on the LAN (a TLS option
@@ -50,7 +52,11 @@ web-sys = { version = "0.3", features = [
     "Window",
 ] }
 
+# The renderer is a property of the target, not a default feature: under
+# `cfg(target_os = "android")` exactly, so no host build — `cargo test`, host
+# clippy — compiles it (#175).
 [target.'cfg(target_os = "android")'.dependencies]
+dioxus = { workspace = true, features = ["mobile"] }
 jni = { version = "0.21", default-features = false }
 ndk-context = "0.1"
 
@@ -61,6 +67,4 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 
 [features]
-default = ["mobile"]
-mobile = ["dioxus/mobile"]
 web = ["dioxus/web"]
