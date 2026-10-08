@@ -1305,41 +1305,6 @@ fn test_backend_health_keeps_the_side_to_update() {
     }
 }
 
-// Criterion: mobile — **both** pairing paths (the QR deep link and the
-// hand-typed code) probe the wire contract before sending `POST /pair`, and
-// refuse to pair on a mismatch.
-//
-// Asserted on the sources rather than on behaviour: both call sites live inside
-// Dioxus components in `main.rs`, which no test here can drive. This is the same
-// guard the codebase already uses for `CorsLayer::permissive` and
-// `BLUE2TH_BACKEND_URL` — it catches the regression that matters, one path being
-// wired and the other forgotten. The exchange itself stays a manual, on-device
-// check. The needles are assembled at compile time so this file is not itself an
-// occurrence.
-#[test]
-fn test_both_pairing_paths_probe_the_protocol_before_pairing() {
-    let pair_call = concat!("backend::", "pair(");
-    let probe_call = concat!("backend::", "check_backend_protocol(");
-    let main_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
-    let source = std::fs::read_to_string(&main_rs)
-        .map_err(|e| format!("read {main_rs:?}: {e}"))
-        .expect("the app entry point must be readable");
-
-    let pairings = source.matches(pair_call).count();
-    let probes = source.matches(probe_call).count();
-
-    assert_eq!(
-        pairings, 2,
-        "the QR deep link and the typed code are the two pairing paths; \
-         found {pairings} call(s) to {pair_call}"
-    );
-    assert!(
-        probes >= pairings,
-        "every pairing path must probe the contract first: {probes} call(s) to \
-         {probe_call} for {pairings} call(s) to {pair_call}"
-    );
-}
-
 // ── The device list's permanent banners (#33, then #37) ─────────────────────
 
 // Criterion: mobile — the warning has to stay on screen. The status dot carries

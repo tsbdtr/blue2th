@@ -237,9 +237,29 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// `POST {base}/pair` — exchange a short-lived pairing code for the backend's
 /// long-lived API token. The one call that carries no bearer, since the app has
 /// none yet.
-pub async fn pair(base: &str, code: &str) -> Result<String, BackendError> {
+///
+/// It takes the [`CompatibleBackend`] that [`check_backend_protocol`] returns:
+///
+/// ```
+/// # async fn demo() -> Result<(), blue2th_frontend::backend::BackendError> {
+/// let backend = blue2th_frontend::backend::check_backend_protocol("http://pc:8080").await?;
+/// let _token = blue2th_frontend::backend::pair(&backend, "K7M2QX").await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Pairing with a backend whose wire contract was never checked does not
+/// compile: a bare URL is refused.
+///
+/// ```compile_fail
+/// # async fn demo() -> Result<(), blue2th_frontend::backend::BackendError> {
+/// let _token = blue2th_frontend::backend::pair("http://pc:8080", "K7M2QX").await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<String, BackendError> {
     let request = reqwest::Client::new()
-        .post(pair_url(base))
+        .post(pair_url(&backend.url))
         .timeout(SETTINGS_CALL_TIMEOUT)
         .json(&PairRequest {
             // Owned copy: `PairRequest` is a plain DTO built for serialization.
@@ -606,18 +626,37 @@ fn health_url(base: &str) -> String {
 /// this one is not localised: the UI reads the typed variant, not this text.
 pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
 
+/// A backend whose wire contract this app speaks, as [`check_backend_protocol`]
+/// found it at `url`.
+///
+/// Only that check builds one — the field is private — so [`pair`] cannot run
+/// against a backend nobody checked, nor against another URL than the checked one.
+///
+/// ```compile_fail
+/// let _ = blue2th_frontend::backend::CompatibleBackend {
+///     url: "http://pc:8080".to_string(),
+/// };
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub struct CompatibleBackend {
+    url: String,
+}
+
 /// Probe `GET {url}/health` and check the wire contract this app speaks against
 /// the range the backend announces.
 ///
-/// Runs before pairing and on every health poll: the phone and the PC are
-/// updated by hand at different times, so a version gap is the normal state
-/// between two updates.
-pub async fn check_backend_protocol(url: &str) -> Result<(), BackendError> {
+/// Runs before pairing: the phone and the PC are updated by hand at different
+/// times, so a version gap is the normal state between two updates, and a token
+/// minted against a backend the app cannot talk to would be useless.
+pub async fn check_backend_protocol(url: &str) -> Result<CompatibleBackend, BackendError> {
     // An unreachable backend surfaces its transport error untouched: "cannot
     // reach" must never read as "incompatible".
     let health = test_backend(url).await?;
     blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
-        .map_err(BackendError::protocol)
+        .map_err(BackendError::protocol)?;
+    Ok(CompatibleBackend {
+        url: url.to_owned(),
+    })
 }
 
 /// Flatten a `reqwest::Error` and its source chain into one string, so the
@@ -1651,8 +1690,8 @@ mod tests {
         );
         assert_eq!(
             checked.map_err(|e| e.to_string()),
-            Ok(()),
-            "a backend announcing 1..=1 serves an app speaking 1"
+            Ok(CompatibleBackend { url: base }),
+            "a backend announcing 1..=1 serves an app speaking 1, at the checked URL"
         );
     }
 
@@ -1815,7 +1854,7 @@ mod tests {
         );
     }
 
-    // Criterion: `pair(base, code)` exchanges the code for the token — and sends
+    // Criterion: `pair(backend, code)` exchanges the code for the token — and sends
     // no bearer, since the app has none yet.
     #[tokio::test]
     async fn test_pair_exchanges_the_code_for_the_token() {
@@ -1823,7 +1862,7 @@ mod tests {
             .await
             .expect("start the canned backend");
 
-        let token = pair(&base, "K7M2QX").await;
+        let token = pair(&CompatibleBackend { url: base }, "K7M2QX").await;
         let request = served
             .await
             .expect("join the test listener")
@@ -1856,7 +1895,7 @@ mod tests {
             .await
             .expect("start the canned backend");
 
-        let error = pair(&base, "AAAAAA")
+        let error = pair(&CompatibleBackend { url: base }, "AAAAAA")
             .await
             .expect_err("a refused code must not yield a token");
         let _ = served.await;

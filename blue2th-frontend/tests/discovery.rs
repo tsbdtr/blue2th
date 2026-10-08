@@ -484,25 +484,13 @@ fn test_adopting_ids_ignores_an_idless_or_malformed_service() {
 // ── The JNI/network boundary, from the outside ───────────────────────────────
 
 // Criterion: the Search button's enabled state is a pure function over the
-// cached preflight verdict — no JNI call happens to render it.
-// #159: the second argument is whether this target can browse at all.
+// cached preflight verdict — no JNI call happens to render it. The host can
+// browse, so the verdict alone decides here; the browser's case, where it
+// cannot (#159), is tested inline against `search_enabled_on`.
 #[test]
 fn test_search_button_state_derives_from_the_preflight_verdict() {
-    assert!(discovery::search_enabled(true, true));
-    assert!(!discovery::search_enabled(false, true));
-}
-
-// Criterion (#159): the Search button is disabled whenever browsing is
-// unavailable on the target, whatever the multicast verdict. Guard near-miss:
-// `(true, false)`, the wasm case — `multicast_supported()` answers true off
-// Android, so only the browse-availability guard can turn the button off.
-#[test]
-fn test_search_button_is_disabled_where_browsing_is_unavailable() {
-    assert!(
-        !discovery::search_enabled(true, false),
-        "a live multicast verdict must not enable Search on a target with no browse"
-    );
-    assert!(!discovery::search_enabled(false, false));
+    assert!(discovery::search_enabled(true));
+    assert!(!discovery::search_enabled(false));
 }
 
 // Criterion: a shared JNI helper captures the Java exception's `toString()`
