@@ -668,16 +668,6 @@ fn test_gloo_timers_is_a_wasm_only_dependency_with_futures() {
     );
 }
 
-// ── Shared sources ───────────────────────────────────────────────────────────
-
-/// The part of a source file before its `#[cfg(test)]` module: the code that
-/// ships.
-fn shipped_part(relative: &str) -> String {
-    let source = read(relative);
-    let end = source.find("#[cfg(test)]").unwrap_or(source.len());
-    source.get(..end).unwrap_or_default().to_owned()
-}
-
 // ── #160: the browser glue ───────────────────────────────────────────────────
 
 // Criterion: `web-sys` is a wasm-only direct dependency, with `Storage` for the
@@ -707,9 +697,10 @@ fn test_web_sys_is_a_wasm_only_dependency_with_storage() {
     );
 }
 
-/// The non-comment lines of the shipped part of `relative`, joined.
+/// The non-comment lines of `relative`, joined. A module's unit tests live in
+/// its sibling `tests.rs` (#172), so the whole file is the code that ships.
 fn shipped_code(relative: &str) -> String {
-    shipped_part(relative)
+    read(relative)
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
