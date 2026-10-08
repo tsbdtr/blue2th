@@ -378,7 +378,7 @@ Branch: `<BRANCH>`
 
 ## Test Files to Make Pass
 
-Read each of these files, focusing on `#[cfg(test)]` blocks and files under `tests/`:
+Read each of these files, focusing on each module's sibling `tests.rs` and files under `tests/`:
 
 <output of: git -C WORKTREE_PATH diff BASE_SHA --name-only | grep -E '\.(rs|toml)$'>
 
