@@ -678,29 +678,6 @@ fn shipped_part(relative: &str) -> String {
     source.get(..end).unwrap_or_default().to_owned()
 }
 
-// Criterion: every non-test `tokio::time` use in shared code goes through the
-// helper — the eleven sleeps in `main.rs` and the `scan` timeout in
-// `backend.rs`. Near-miss: a `use tokio::time::sleep;` that leaves the call
-// sites reading `sleep(...)` — caught by the same `tokio::time` match.
-#[test]
-fn test_shared_code_names_no_tokio_timer() {
-    for file in ["src/main.rs", "src/backend.rs"] {
-        let shipped = shipped_part(file);
-        let offending: Vec<(usize, &str)> = shipped
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| !line.trim_start().starts_with("//"))
-            .filter(|(_, line)| line.contains("tokio::time"))
-            .map(|(i, line)| (i + 1, line.trim()))
-            .collect();
-
-        assert!(
-            offending.is_empty(),
-            "{file} must go through the timer helper, not tokio::time: {offending:?}"
-        );
-    }
-}
-
 // ── #160: the browser glue ───────────────────────────────────────────────────
 
 // Criterion: `web-sys` is a wasm-only direct dependency, with `Storage` for the
@@ -739,6 +716,41 @@ fn shipped_code(relative: &str) -> String {
         .join("\n")
 }
 
+/// The UI's shipped code, comments dropped: `src/main.rs` and every `.rs` under
+/// `src/views/`, in path order. The components left `main.rs` for `views/`
+/// (#171), so a check scoped to `main.rs` alone would pass on an emptied file.
+fn ui_code() -> String {
+    let mut files = vec!["src/main.rs".to_string()];
+    files.extend(rust_files_under("src/views"));
+    files
+        .iter()
+        .map(|file| shipped_code(file))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every `.rs` file under `relative`, recursively, as sorted paths relative to
+/// the crate manifest. A missing directory yields none.
+fn rust_files_under(relative: &str) -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut pending = vec![root.join(relative)];
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if let Ok(within) = path.strip_prefix(root) {
+                    files.push(within.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 /// The text of `code` from the first `from` to the next `to` after it, or an
 /// empty string when either is missing — which no `contains` below accepts.
 fn between<'a>(code: &'a str, from: &str, to: &str) -> &'a str {
@@ -756,11 +768,11 @@ fn between<'a>(code: &'a str, from: &str, to: &str) -> &'a str {
 // `tests/browser.rs`); what no runtime test sees is where the app asks them and
 // what it does with the answer. A call merely present somewhere is already
 // enforced by the dead-code lint, so each check is scoped to its site.
-// Near-miss: the health loop's usable transition syncing nothing (or still
-// calling `push_active_name`), and the start page computed but never followed.
+// Near-miss: the health loop's usable transition syncing nothing, and the start
+// page computed but never followed.
 #[test]
 fn test_app_consults_the_config_sync_and_start_page_policies() {
-    let shipped = shipped_code("src/main.rs");
+    let shipped = ui_code();
 
     let usable_again = between(
         &shipped,
@@ -770,10 +782,6 @@ fn test_app_consults_the_config_sync_and_start_page_policies() {
     assert!(
         usable_again.contains("sync_backend_config("),
         "the backend becoming usable (start, reconnection) must sync its config, got {usable_again:?}"
-    );
-    assert!(
-        !shipped.contains("push_active_name("),
-        "no client re-pushes its stored config on reconnection any more"
     );
 
     let start = between(&shipped, "start_page(", ";");

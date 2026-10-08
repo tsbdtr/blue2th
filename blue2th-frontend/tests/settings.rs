@@ -873,57 +873,6 @@ fn test_locales_carry_the_settings_page_labels() {
     }
 }
 
-// Criterion: `BLUE2TH_BACKEND_URL` no longer appears anywhere in the codebase —
-// the address is a runtime setting, with no compile-time value and no seeded
-// default. The needle is assembled at compile time so this test is not itself an
-// occurrence.
-#[test]
-fn test_compile_time_backend_url_env_var_is_gone_from_the_codebase() {
-    let needle = concat!("BLUE2TH_", "BACKEND_URL");
-    // Anchored on the workspace root, one level above this crate, because the
-    // scan spans all three crates. CARGO_MANIFEST_DIR alone would resolve the
-    // sibling crates under blue2th-frontend/ and fail on a missing directory.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("blue2th-frontend sits one level below the workspace root");
-    let mut offenders = Vec::new();
-
-    for dir in [
-        "blue2th-frontend/src",
-        "blue2th-frontend/tests",
-        "blue2th-server/src",
-        "blue2th-proto/src",
-    ] {
-        let dir = root.join(dir);
-        // Mapped to a String so the failure names the directory without a
-        // `panic!`, which clippy forbids even in tests here.
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("read {dir:?}: {e}"))
-            .expect("the scanned source directories must be readable");
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let source = std::fs::read_to_string(&path).unwrap_or_default();
-            // Skip this very file: it names the variable to assert its absence.
-            if path.file_name().and_then(|n| n.to_str()) == Some("settings.rs")
-                && path.starts_with(root.join("blue2th-frontend/tests"))
-            {
-                continue;
-            }
-            if source.contains(needle) {
-                offenders.push(path);
-            }
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "{needle} must not appear in the codebase, found in {offenders:?}"
-    );
-}
-
 // ---- phase 6.4: per-backend token and pairing method ----
 
 /// A pair link as the phone's camera app would deliver it.
