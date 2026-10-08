@@ -719,9 +719,15 @@ fn shipped_code(relative: &str) -> String {
 /// The UI's shipped code, comments dropped: `src/main.rs` and every `.rs` under
 /// `src/views/`, in path order. The components left `main.rs` for `views/`
 /// (#171), so a check scoped to `main.rs` alone would pass on an emptied file.
+/// A module's unit tests live in its sibling `tests.rs` (#172): read as UI code,
+/// a test quoting a call would satisfy a presence check on its own.
 fn ui_code() -> String {
     let mut files = vec!["src/main.rs".to_string()];
-    files.extend(rust_files_under("src/views"));
+    files.extend(rust_files_under("src/views").into_iter().filter(|file| {
+        Path::new(file)
+            .file_name()
+            .is_none_or(|name| name != "tests.rs")
+    }));
     files
         .iter()
         .map(|file| shipped_code(file))
