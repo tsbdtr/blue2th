@@ -57,7 +57,7 @@ call:
 
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Affected Layers** and **Test Files to Make Pass** sections — read those files first
-   (focus on `#[cfg(test)]` blocks and files under each crate's `tests/`).
+   (focus on each module's sibling `tests.rs` and files under each crate's `tests/`).
 3. Read the **Acceptance Criteria** section to understand the expected behavior.
 4. Read existing source files for context before modifying them.
 5. Implement only what the tests require — nothing more, in the affected layers only.

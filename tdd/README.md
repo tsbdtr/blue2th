@@ -130,10 +130,11 @@ too (#17).
 ## Rust notes
 
 - Async tests: `#[tokio::test]`
-- Unit tests: `#[cfg(test)]` module inside the source file
+- Unit tests: the module's sibling `tests.rs` (`src/audio.rs` → `src/audio/tests.rs`,
+  `src/lib.rs` → `src/tests.rs`), declared `#[cfg(test)] mod tests;` at the end of the module
 - Integration tests: in each crate's `tests/`
 - Server route tests: `blue2th-server/tests/`, via `tower`'s `oneshot`
-- Proto: serde round-trips in `lib.rs`
+- Proto: serde round-trips in `src/tests.rs`
 - Hardware (BlueZ, PipeWire, an actual audio device) is not test-runnable. Cover the
   pure logic and leave the hardware boundary to manual testing.
 - Run with `cargo test --workspace`. The gates are the three commands in `CLAUDE.md`,

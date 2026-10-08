@@ -24,17 +24,21 @@ layers listed there.
     never recreate them.
   - `blue2th-frontend/src/` also holds the backend HTTP client (`reqwest`) and Dioxus UI/state
     (`Signal<T>`, `use_context_provider`).
-  - Unit tests → `#[cfg(test)]` in the relevant `blue2th-frontend/src/*.rs`.
+  - Unit tests → the module's sibling `tests.rs` (`src/backend.rs` → `src/backend/tests.rs`,
+    declared `#[cfg(test)] mod tests;` at the end of `backend.rs`); never an inline
+    `mod tests { … }` block — see "Unit tests live beside the module" in CLAUDE.md.
     Integration tests → `blue2th-frontend/tests/`.
 - **server** — `blue2th-server` (Axum / Tokio). Its files, and the test doubles
   that stand in for the hardware, are in the **Project Map** of your prompt.
   - Drives **BlueZ** via `bluer` and audio via PipeWire (the `pipewire` crate); exposes REST routes
     + the transport playback state machine (`audio.rs`).
-  - Unit tests → `#[cfg(test)]` in `blue2th-server/src/*.rs`. Integration/route tests →
+  - Unit tests → the module's sibling `tests.rs` (`src/audio.rs` → `src/audio/tests.rs`;
+    the crate root `src/lib.rs` → `src/tests.rs`). Integration/route tests →
     `blue2th-server/tests/` (e.g. existing `transport.rs`; route tests use `tower::ServiceExt::oneshot`).
 - **proto** — `blue2th-proto` (serde DTOs shared by mobile + server).
   - **Must stay target-agnostic**: no platform/hardware dependencies, ever.
-  - Tests → `#[cfg(test)]` in `blue2th-proto/src/lib.rs` (typically serde round-trip / JSON shape).
+  - Tests → `blue2th-proto/src/tests.rs`, declared at the end of `lib.rs` (typically serde
+    round-trip / JSON shape).
 
 ## Hardware is NOT testable in this sandbox
 BlueZ (`bluer`), the PipeWire daemon and the audio devices behind it are unavailable to

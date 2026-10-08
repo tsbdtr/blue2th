@@ -189,6 +189,30 @@ templates are dx's code, not ours.
 - No `println!` or `dbg!` in production code
 - Use owned types (`String`, `Vec<T>`) for Dioxus props; use `&str`, `&[T]` in pure functions
 
+### Unit tests live beside the module, not inside it
+
+A module's unit tests go in a sibling file, declared at the end of the module
+(#172):
+
+```
+src/
+├── audio.rs          ← ends with `#[cfg(test)] mod tests;`
+└── audio/
+    └── tests.rs      ← `use super::*;` and the tests
+```
+
+Inline, the tests outgrew the code they test — three quarters of `audio.rs` and
+`router_actor.rs` — and reading the production code meant scrolling past them.
+The test module stays a **child** of its module, so it reaches private items
+through `use super::*` and nothing becomes `pub` for a test's sake.
+
+- A crate root maps to `src/tests.rs`. `lib.rs` and `main.rs` of one package
+  would both resolve there, so only one of them carries tests.
+- A second test module keeps its own name and file (`audio/router_tests.rs`).
+- Test-support code that other modules import (`graph::fake`,
+  `router_actor::testing`) is not a test module and stays inline.
+- Never write a new `#[cfg(test)] mod tests { … }` block.
+
 ### Comments
 
 A comment explains **why**. Those age well, because a reason does not change when
