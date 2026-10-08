@@ -554,10 +554,11 @@ fn test_stop_keeps_the_configured_device_name() {
     assert_eq!(backend.device_name(), "Salon");
 }
 
-/// Everything before the `#[cfg(test)]` attribute — the code that ships.
+/// The whole of `spotify.rs`. Its tests live in this file (#172), so none of
+/// them is counted. Cutting at the first `#[cfg(test)]` used to stop at the
+/// test-only `adopt_child_for_test`, which hid every function after it.
 fn production_source() -> &'static str {
-    let source = include_str!("../spotify.rs");
-    source.split("#[cfg(test)]").next().unwrap_or_default()
+    include_str!("../spotify.rs")
 }
 
 /// Poll `child` for up to `budget`, returning its exit status once it has
@@ -620,18 +621,14 @@ fn test_spawn_bound_to_this_thread_keeps_the_child_while_the_thread_lives() {
     );
 }
 
-// Criterion (#122): `SpotifyBackend::start` spawns through the seam and
+// Criterion (#122): `SpotifyBackend::spawn_towards` spawns through the seam and
 // nothing else in this module builds a `Command` — the seam is the one place
 // the parent-death signal is set, so a second spawn site would be an
-// unprotected `librespot`. The real `start` reaches PipeWire, so the rule is
+// unprotected `librespot`. The real spawn reaches PipeWire, so the rule is
 // pinned on the source rather than exercised.
 #[test]
 fn test_start_spawns_librespot_only_through_the_bound_seam() {
     let source = production_source();
-    assert!(
-        !source.is_empty(),
-        "the production half of spotify.rs could not be isolated"
-    );
 
     let command_sites = source.matches("Command::new(").count();
     assert_eq!(
@@ -639,10 +636,10 @@ fn test_start_spawns_librespot_only_through_the_bound_seam() {
         "exactly one `Command::new(` — inside `spawn_bound_to_this_thread` — is allowed, found {command_sites}"
     );
 
-    // One definition plus at least one call site (`start`).
+    // One definition plus at least one call site (`spawn_towards`).
     let seam_uses = source.matches("spawn_bound_to_this_thread(").count();
     assert!(
         seam_uses >= 2,
-        "`start` must call `spawn_bound_to_this_thread`, found {seam_uses} mention(s) (the definition alone is 1)"
+        "`spawn_towards` must call `spawn_bound_to_this_thread`, found {seam_uses} mention(s) (the definition alone is 1)"
     );
 }
