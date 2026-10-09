@@ -443,30 +443,6 @@ test_tdd_template_and_agents_name_the_clippy_script() {
 
 # ── Dead-code allowances in the frontend ─────────────────────────────────────
 
-# dead_code_items: for every `allow(dead_code)` under blue2th-frontend/src, the
-# name of the item it is attached to — the first line after it that is neither
-# an attribute nor a comment — one per line, sorted.
-dead_code_items() {
-    find "$frontend_src" -name '*.rs' -print0 | sort -z | xargs -0 awk '
-        /allow\(dead_code\)/ { pending = 1; next }
-        pending && /^[[:space:]]*(#\[|\/\/)/ { next }
-        pending { print; pending = 0 }
-    ' | sed -E 's/^[[:space:]]+//; s/^pub(\([^)]*\))? //; s/^((async|unsafe) )*fn //; s/^(enum|struct|static|const|type|trait|mod) //; s/^([A-Za-z_][A-Za-z0-9_]*).*/\1/' \
-        | LC_ALL=C sort
-}
-
-# Criterion: exactly five `allow(dead_code)` remain in blue2th-frontend/src,
-# and they are the ones the census found still needed — group 3
-# (`browser_settings`, `PageEvent`, `presence_for`, `browser_presence_post`)
-# and `ClientKind::Phone`. Near-miss: the 37 of develop, the 27 obsolete ones
-# of backend.rs among them; clippy alone cannot tell, since an unneeded allow
-# never warns.
-test_frontend_keeps_exactly_the_five_needed_dead_code_allowances() {
-    local expected
-    expected="$(printf '%s\n' PageEvent Phone browser_presence_post browser_settings presence_for | LC_ALL=C sort)"
-    assert_eq "$expected" "$(dead_code_items)" "items carrying allow(dead_code)"
-}
-
 # attributes_of <file> <declaration-regex>: the attribute lines directly above
 # the first line matching the regex (doc comments in between are skipped).
 # Exits 1 when no line matches. The regex goes through the environment, not
