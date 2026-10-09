@@ -732,7 +732,6 @@ pub fn save_blob(settings: &AppSettings) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientKind {
     /// The Android app: settings in `SharedPreferences`, a list of backends.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Phone,
     /// The browser build: settings in `localStorage`, one backend — the origin.
     Browser,
@@ -791,7 +790,6 @@ pub fn start_page(kind: ClientKind, paired: bool) -> StartPage {
 /// active, keeping the stored entry's token, name and toggles. An empty origin,
 /// or the literal `"null"` a `file://` page reports, yields no backend at all.
 /// Pure.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn browser_settings(stored: AppSettings, origin: &str) -> AppSettings {
     // An empty origin would be a backend at an empty URL, which every call
     // would then try to reach: no backend at all instead.

@@ -2,15 +2,8 @@
 
 use dioxus::prelude::*;
 
-mod backend;
-mod deep_link;
-mod discovery;
-mod jni_util;
-// Presence reports: the JNI hooks on Android (their tokio half is native-only,
-// #159), the page lifecycle events in the browser (#160).
-mod lifecycle;
-mod settings;
-mod timer;
+use blue2th_frontend::{backend, deep_link, discovery, jni_util, lifecycle, settings, timer};
+
 mod views;
 
 use views::app::App;

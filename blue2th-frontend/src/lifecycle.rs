@@ -91,7 +91,6 @@ pub fn report_gone_blocking() {
 }
 
 /// A page lifecycle event the browser build listens to (#160).
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageEvent {
     /// `load`: the page was opened or reloaded.
@@ -105,7 +104,6 @@ pub enum PageEvent {
 }
 
 /// The presence a page event reports. Pure.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn presence_for(event: PageEvent) -> ClientPresence {
     match event {
         PageEvent::Load | PageEvent::Visible => ClientPresence::Foreground,
