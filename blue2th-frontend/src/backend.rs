@@ -525,7 +525,6 @@ pub struct PresencePost {
 
 /// The presence post for `presence` against the active backend of `settings`.
 /// Pure. Fails like every guarded call: no backend configured, or not paired.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn browser_presence_post(
     settings: &AppSettings,
     presence: ClientPresence,
