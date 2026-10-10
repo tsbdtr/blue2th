@@ -5,12 +5,33 @@
 #   blue2th-server   — the Axum/Tokio backend driving BlueZ and audio
 #   blue2th-proto    — the serde DTOs shared by both
 #
+# `xtask` is tooling, not a fourth layer: it ships nothing, depends on no project
+# crate, and is reached through `cargo check-conventions` (.cargo/config.toml).
+#
 # resolver = "2" is explicit because a virtual manifest defaults to "1", which
 # would change feature unification — notably the app's target-specific
 # `cfg(target_os = "android")` dependencies.
 [workspace]
 members = ["blue2th-frontend", "blue2th-proto", "blue2th-server", "xtask"]
 resolver = "2"
+
+# The conventions `cargo check-conventions` enforces (#180), each at a
+# clippy-style level: `allow` skips the rule, `warn` reports and passes, `deny`
+# fails. `-D warnings` turns every warning into a failure; CI passes it.
+#
+# A rule also takes a table, to leave given files alone:
+#   inline-tests = { level = "deny", exclude = ["blue2th-frontend/src/timer.rs"] }
+# Paths are exact, as `git ls-files` prints them. An exclusion that names no
+# tracked file, or a file that no longer breaks the rule, fails the check: an
+# exception nobody can see the reason for any more must not stay.
+#
+#   inline-tests — no unit-test module inline in a `src/` file; tests live in a
+#                  sibling file (#172). Test-support modules holding no #[test]
+#                  (`graph::fake`) are not test modules.
+#   spdx-header  — every tracked .rs opens with the SPDX licence line.
+[workspace.metadata.conventions]
+inline-tests = "deny"
+spdx-header = "deny"
 
 # Version, licence and publishability are properties of the *product*, not of
 # each crate: the app, the backend and the shared DTOs are built from one tag and

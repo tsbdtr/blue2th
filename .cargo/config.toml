@@ -1,3 +1,8 @@
 # Clippy lints are activated explicitly in cargo clippy commands, not here,
 # to avoid passing unknown lint names to rustc during cargo build.
 # See CLAUDE.md "Quality Commands" for the full clippy invocation.
+
+[alias]
+# The repository conventions (#180); the rules and their levels are in the root
+# Cargo.toml, under [workspace.metadata.conventions].
+check-conventions = "run --quiet --package xtask --"

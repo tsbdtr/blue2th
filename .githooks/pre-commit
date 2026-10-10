@@ -12,6 +12,10 @@ cargo fmt --check
 # Host, Android and wasm: the script announces each of its three runs itself.
 scripts/clippy.sh
 
+# Without -D warnings: a rule set to `warn` reports here and fails only in CI.
+echo "--- conventions ---"
+cargo check-conventions
+
 echo "--- test ---"
 cargo test --workspace
 
