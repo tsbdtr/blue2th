@@ -9,7 +9,7 @@
 # would change feature unification — notably the app's target-specific
 # `cfg(target_os = "android")` dependencies.
 [workspace]
-members = ["blue2th-frontend", "blue2th-proto", "blue2th-server"]
+members = ["blue2th-frontend", "blue2th-proto", "blue2th-server", "xtask"]
 resolver = "2"
 
 # Version, licence and publishability are properties of the *product*, not of
