@@ -47,7 +47,7 @@ fn run() -> Result<u8, String> {
         files.len(),
         report.entries.len()
     );
-    Ok(if report.exit_code() == 0 { 0 } else { 1 })
+    Ok(report.exit_code())
 }
 
 /// Every tracked `.rs`, as CI sees it: the index, not the directory walk, so

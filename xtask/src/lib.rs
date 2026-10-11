@@ -117,14 +117,11 @@ impl fmt::Display for ConfigError {
             ConfigError::NotATable => {
                 write!(f, "[workspace.metadata.conventions] must be a table")
             }
-            ConfigError::UnknownRule(name) => {
-                let known: Vec<&str> = Rule::ALL.iter().map(|rule| rule.name()).collect();
-                write!(
-                    f,
-                    "unknown rule `{name}`; the rules are: {}",
-                    known.join(", ")
-                )
-            }
+            ConfigError::UnknownRule(name) => write!(
+                f,
+                "unknown rule `{name}`; the rules are: {}",
+                Rule::ALL.map(Rule::name).join(", ")
+            ),
             ConfigError::InvalidRule { rule } => write!(
                 f,
                 "`{rule}` takes a level (\"allow\", \"warn\", \"deny\") or a table {{ level, exclude }}"
@@ -177,15 +174,11 @@ fn parse_rule(rule: &str, value: &toml::Value) -> Result<RuleConfig, ConfigError
             for (key, value) in table {
                 match key.as_str() {
                     "level" => {
-                        config.level = match value.as_str() {
-                            Some(level) => parse_level(rule, level)?,
-                            None => {
-                                return Err(ConfigError::UnknownLevel {
-                                    rule: rule.to_string(),
-                                    value: value.to_string(),
-                                })
-                            },
-                        }
+                        let level = value.as_str().ok_or_else(|| ConfigError::UnknownLevel {
+                            rule: rule.to_string(),
+                            value: value.to_string(),
+                        })?;
+                        config.level = parse_level(rule, level)?;
                     },
                     "exclude" => config.exclude = parse_exclude(rule, value)?,
                     _ => {
@@ -345,12 +338,9 @@ pub fn inline_tests(path: &str, content: &str) -> Result<Vec<Finding>, ParseErro
     Ok(modules.findings)
 }
 
-/// A `src` directory anywhere above the file, matched as a whole component so
-/// that `my_src/` is not one.
 fn is_under_src(path: &str) -> bool {
-    let mut components: Vec<&str> = path.split('/').collect();
-    components.pop();
-    components.contains(&"src")
+    path.rsplit_once('/')
+        .is_some_and(|(directory, _file)| directory.split('/').any(|part| part == "src"))
 }
 
 struct InlineTestModules<'a> {
@@ -468,16 +458,15 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn exit_code(&self) -> i32 {
-        if self
+    /// 0 when nothing is at `deny` (warnings pass), 1 otherwise. The "could
+    /// not check" code, 2, is the caller's: a report only exists once the
+    /// check has run.
+    pub fn exit_code(&self) -> u8 {
+        let failed = self
             .entries
             .iter()
-            .any(|entry| entry.severity == Severity::Error)
-        {
-            1
-        } else {
-            0
-        }
+            .any(|entry| entry.severity == Severity::Error);
+        u8::from(failed)
     }
 }
 
