@@ -24,6 +24,9 @@ A single **cargo workspace** with three layers (design record in `docs/ARCHITECT
 A feature may touch one, two, or all three layers. Quality commands run across the
 whole workspace; the Android NDK build runs only when the mobile layer changed.
 
+`xtask` is a fourth workspace member but not a layer: repository tooling behind
+`cargo check-conventions` (#180). It ships nothing and depends on no project crate.
+
 ### librespot stays a subprocess — never a crate
 
 `librespot` is **GPL-3.0**. The server spawns it as a child process (`librespot
@@ -44,8 +47,16 @@ rather than being noticed later.
 ```bash
 cargo fmt --check
 scripts/clippy.sh
+cargo check-conventions
 cargo test --workspace
 ```
+
+`cargo check-conventions` enforces the conventions no compiler or lint sees: the
+SPDX header and unit tests in sibling files (both below). Each rule has a level —
+`allow`, `warn`, `deny` — and optional exact-path exclusions, in
+`[workspace.metadata.conventions]` of the root `Cargo.toml`. CI runs it with
+`-D warnings`, so a rule set to `warn` still fails there. Exit 2 means the check
+could not run (bad config, no git), never that it passed.
 
 `scripts/clippy.sh` is the one definition of the lint. It runs `cargo clippy`
 three times — the whole workspace on the host, then `blue2th-frontend` for
@@ -159,8 +170,8 @@ only rebuilds the ABI it targets, so a stale sibling can look like a missing sym
 
 No copyright block, no Apache boilerplate — the full texts live in
 `LICENSE-APACHE` and `LICENSE-MIT`, and the manifests declare
-`license.workspace = true`. A new file without it fails the `licence-headers` job
-in CI.
+`license.workspace = true`. A new file without it fails `cargo check-conventions`
+(`spdx-header`), in the pre-commit hook and in the `licence-headers` CI job.
 
 The project is dual-licensed `MIT OR Apache-2.0`, the Rust ecosystem convention:
 MIT is short and familiar, Apache-2.0 carries an explicit patent grant, and the
@@ -211,7 +222,9 @@ through `use super::*` and nothing becomes `pub` for a test's sake.
 - A second test module keeps its own name and file (`audio/router_tests.rs`).
 - Test-support code that other modules import (`graph::fake`,
   `router_actor::testing`) is not a test module and stays inline.
-- Never write a new `#[cfg(test)] mod tests { … }` block.
+- Never write a new `#[cfg(test)] mod tests { … }` block. `cargo check-conventions`
+  refuses one (`inline-tests`): an inline `cfg(test)` module that holds a test
+  function. Test-support modules hold none, which is how they pass.
 
 ### Comments
 

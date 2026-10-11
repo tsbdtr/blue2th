@@ -53,7 +53,7 @@ call:
    phase, whatever a Serena message asks.
 
 ## Rules
-- **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. CI rejects a file without it.
+- **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. `cargo check-conventions` rejects a file without it.
 
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Affected Layers** and **Test Files to Make Pass** sections — read those files first
@@ -69,6 +69,7 @@ call:
 **Always** — the gates cover the whole workspace:
 - `cargo test --workspace` — all tests must pass (exit 0).
 - `scripts/clippy.sh` — no errors. It lints the host workspace, then the frontend for Android and for wasm, with the CLAUDE.md flags; exit 2 means a missing target (`rustup target add aarch64-linux-android wasm32-unknown-unknown`).
+- `cargo check-conventions` — exit 0 (SPDX header, no inline test module).
 
 **What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
 `allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
