@@ -640,12 +640,14 @@ fn bind_address(
 }
 
 /// The options the backend reads off its command line (#160).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CliOptions {
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Parser)]
+pub struct Cli {
     /// How many pairing codes `--pair [n]` asked for: `Some(1)` for a bare
     /// `--pair`, `None` when the flag is absent.
+    #[arg(long)]
     pub pair: Option<u32>,
     /// The address `--bind <host:port>` asked for, `None` when absent.
+    #[arg(long)]
     pub bind: Option<String>,
 }
 
@@ -675,8 +677,8 @@ impl std::error::Error for CliError {}
 /// Parse the backend's arguments — those **after** the program name. Pure.
 ///
 /// Unknown arguments are ignored, as they always were.
-pub fn parse_args(args: &[String]) -> Result<CliOptions, CliError> {
-    let mut options = CliOptions::default();
+pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
+    let mut options = Cli::default();
     let mut args = args.iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -718,7 +720,7 @@ pub fn parse_args(args: &[String]) -> Result<CliOptions, CliError> {
 /// otherwise only when the operator asks for one. Arming a code at every
 /// restart would leave the one open door ajar for no reason. `--pair <n>` sets
 /// the count either way; a fresh token alone arms one.
-fn codes_to_arm(cli: &CliOptions, minted_a_new_token: bool) -> Option<u32> {
+fn codes_to_arm(cli: &Cli, minted_a_new_token: bool) -> Option<u32> {
     cli.pair.or(minted_a_new_token.then_some(1))
 }
 

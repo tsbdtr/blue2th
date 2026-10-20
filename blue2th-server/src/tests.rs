@@ -445,47 +445,53 @@ fn test_bind_address_treats_an_empty_env_var_as_unset() {
     );
 }
 
-/// The arguments after the program name, owned as `std::env::args` yields
-/// them.
-fn args(list: &[&str]) -> Vec<String> {
-    list.iter().map(|a| (*a).to_string()).collect()
+/// Parse `list` as the backend's arguments. clap reads argv[0] first, so the
+/// program name is prepended here: without it the first option would become
+/// the program name and the test would fail for the wrong reason.
+fn parse_cli(list: &[&str]) -> Result<Cli, clap::Error> {
+    <Cli as clap::Parser>::try_parse_from(
+        std::iter::once("blue2th-server").chain(list.iter().copied()),
+    )
 }
 
-// Criterion: no arguments — no extra codes requested, no bind override.
-#[test]
-fn test_parse_args_without_arguments_requests_nothing() {
-    assert_eq!(parse_args(&args(&[])), Ok(CliOptions::default()));
+/// The parse, with a refusal turned into its message, so `assert_eq!` can
+/// compare it (`clap::Error` is not `PartialEq`) and a failure shows why.
+fn parsed(list: &[&str]) -> Result<Cli, String> {
+    parse_cli(list).map_err(|e| e.to_string())
 }
 
-// Criterion: unknown arguments are ignored, as they were before #160.
+/// The refusal of `list`, `None` when clap accepted it.
+fn refusal(list: &[&str]) -> Option<clap::Error> {
+    parse_cli(list).err()
+}
+
+// Criterion: no argument parses to no pairing request and no bind override.
 #[test]
-fn test_parse_args_ignores_unknown_arguments() {
+fn test_cli_without_arguments_requests_nothing() {
+    assert_eq!(parsed(&[]), Ok(Cli::default()));
+}
+
+// Criterion: `--pair` alone arms one code.
+#[test]
+fn test_cli_bare_pair_requests_one_code() {
     assert_eq!(
-        parse_args(&args(&["--verbose", "extra"])),
-        Ok(CliOptions::default())
-    );
-}
-
-// Criterion: `--pair` alone arms one code, exactly as today.
-#[test]
-fn test_parse_args_bare_pair_requests_one_code() {
-    assert_eq!(
-        parse_args(&args(&["--pair"])),
-        Ok(CliOptions {
+        parsed(&["--pair"]),
+        Ok(Cli {
             pair: Some(1),
             bind: None,
         })
     );
 }
 
-// Criterion (guard, "only 1..=10"): both ends of the range are accepted.
-// Near-miss of the refusals below.
+// Criterion (guard, "only 1..=10"): `--pair 1`, `2` and `10` arm that many.
+// Both ends are accepted, so an off-by-one range fails here while the
+// refusals below catch a range that is too wide.
 #[test]
-fn test_parse_args_pair_accepts_both_ends_of_the_range() {
+fn test_cli_pair_accepts_both_ends_of_the_range() {
     for (value, count) in [("1", 1u32), ("2", 2), ("10", 10)] {
         assert_eq!(
-            parse_args(&args(&["--pair", value])),
-            Ok(CliOptions {
+            parsed(&["--pair", value]),
+            Ok(Cli {
                 pair: Some(count),
                 bind: None,
             }),
@@ -494,97 +500,220 @@ fn test_parse_args_pair_accepts_both_ends_of_the_range() {
     }
 }
 
-// Criterion (guard, "only 1..=10"): just outside the range, negative,
-// malformed and fractional counts refuse to start. `-1` starts with a dash
-// but is not a flag: only `--…` is, so it must not read as a bare `--pair`.
+// Criterion (the `=` form): `--pair=3` arms three codes, as `--pair 3` does.
 #[test]
-fn test_parse_args_pair_refuses_a_count_outside_one_to_ten() {
-    for value in ["0", "11", "-1", "abc", "2.5"] {
-        let parsed = parse_args(&args(&["--pair", value]));
-        assert!(
-            matches!(parsed, Err(CliError::PairCount(_))),
-            "--pair {value} must refuse to start, got {parsed:?}"
+fn test_cli_pair_reads_the_equals_form() {
+    assert_eq!(
+        parsed(&["--pair=3"]),
+        Ok(Cli {
+            pair: Some(3),
+            bind: None,
+        })
+    );
+}
+
+// Criterion (guard, "only 1..=10"): `--pair 0`, `11`, `abc`, `2.5` and `-1`
+// are refused with exit code 2. Near-miss: `0` and `11` are whole numbers a
+// plain `u32` parser accepts; only the range refuses them.
+#[test]
+fn test_cli_pair_refuses_a_count_outside_one_to_ten() {
+    for value in ["0", "11", "abc", "2.5", "-1"] {
+        let code = refusal(&["--pair", value]).map(|e| e.exit_code());
+        assert_eq!(
+            code,
+            Some(2),
+            "--pair {value} must be refused with exit code 2"
         );
     }
 }
 
-// Criterion: the refusal names the accepted range, 1 to 10.
+// Criterion: the `--pair 11` refusal names `--pair` and the range `1..=10`
+// (clap 4.6.7: "invalid value '11' for '--pair [<N>]': 11 is not in 1..=10").
 #[test]
-fn test_parse_args_pair_refusal_names_the_accepted_range() {
-    let message = parse_args(&args(&["--pair", "11"]))
-        .err()
+fn test_cli_pair_refusal_names_the_accepted_range() {
+    let message = refusal(&["--pair", "11"])
         .map(|e| e.to_string())
         .unwrap_or_default();
     assert!(
-        message.contains("--pair") && message.contains("1 to 10"),
-        "the message must name --pair and the range 1 to 10, got {message:?}"
+        message.contains("--pair") && message.contains("1..=10"),
+        "the message must name --pair and the range 1..=10, got {message:?}"
     );
 }
 
-// Criterion: `--pair` followed by another flag arms one code, and the flag
-// that follows is still read.
+// Criterion (guard, "`--pair` alone never swallows the next flag"):
+// `--pair --bind 192.168.1.20:4000` arms one code and still reads the bind.
 #[test]
-fn test_parse_args_pair_followed_by_a_flag_requests_one_code() {
+fn test_cli_pair_followed_by_a_flag_requests_one_code() {
     assert_eq!(
-        parse_args(&args(&["--pair", "--bind", "192.168.1.20:4000"])),
-        Ok(CliOptions {
+        parsed(&["--pair", "--bind", "192.168.1.20:4000"]),
+        Ok(Cli {
             pair: Some(1),
             bind: Some("192.168.1.20:4000".to_string()),
         })
     );
 }
 
-// Criterion: `--bind host:port` is read, in either order with `--pair n`;
-// the count and the address are distinct values, so a swap fails.
+// Criterion: `--bind 192.168.1.20:4000` and `--pair 3` are read in either
+// order; the count and the address are distinct values, so a swap fails.
 #[test]
-fn test_parse_args_reads_bind_and_pair_in_either_order() {
-    let expected = Ok(CliOptions {
+fn test_cli_reads_bind_and_pair_in_either_order() {
+    let expected = Ok(Cli {
         pair: Some(3),
         bind: Some("192.168.1.20:4000".to_string()),
     });
     assert_eq!(
-        parse_args(&args(&["--bind", "192.168.1.20:4000", "--pair", "3"])),
+        parsed(&["--bind", "192.168.1.20:4000", "--pair", "3"]),
         expected
     );
     assert_eq!(
-        parse_args(&args(&["--pair", "3", "--bind", "192.168.1.20:4000"])),
+        parsed(&["--pair", "3", "--bind", "192.168.1.20:4000"]),
         expected
     );
 }
 
-// Criterion (guard): `--bind` with no value, an empty value, or a flag as
-// its value refuses to start. Near-miss: `--bind ""` — an empty value
-// reads like "no override" everywhere else, and would quietly fall back to
-// the LAN address; only the guard turns it into a refusal.
+// Criterion (the gap #170 closes): `--bind=0.0.0.0:4000` is read as
+// `0.0.0.0:4000`.
 #[test]
-fn test_parse_args_bind_refuses_a_missing_empty_or_flag_value() {
-    for list in [
-        &["--bind"][..],
-        &["--bind", ""][..],
-        &["--bind", "--pair"][..],
-        &["--pair", "2", "--bind"][..],
-    ] {
-        let parsed = parse_args(&args(list));
-        assert_eq!(parsed, Err(CliError::BindValue), "{list:?}");
+fn test_cli_bind_reads_the_equals_form() {
+    assert_eq!(
+        parsed(&["--bind=0.0.0.0:4000"]),
+        Ok(Cli {
+            pair: None,
+            bind: Some("0.0.0.0:4000".to_string()),
+        })
+    );
+}
+
+/// Every `--bind` the backend must refuse: no value, an empty one (both
+/// forms), a flag in its place, and `--bind` last after a valid `--pair`.
+const BIND_REFUSALS: [&[&str]; 5] = [
+    &["--bind"],
+    &["--bind", ""],
+    &["--bind="],
+    &["--bind", "--pair"],
+    &["--pair", "2", "--bind"],
+];
+
+// Criterion (guards, "an empty `--bind` is refused" and "`--bind` never takes
+// a flag as its value"): every case of `BIND_REFUSALS` is refused with exit
+// code 2. Near-misses: `--bind ""` and `--bind=` — a plain `String` parser
+// accepts both, and they would read as "no override"; `--bind --pair` — a
+// parser allowing hyphen values would take `--pair` as the address.
+#[test]
+fn test_cli_bind_refuses_a_missing_empty_or_flag_value() {
+    for list in BIND_REFUSALS {
+        let code = refusal(list).map(|e| e.exit_code());
+        assert_eq!(code, Some(2), "{list:?} must be refused with exit code 2");
     }
 }
 
-// Criterion: the `--bind` refusal names the flag, so the operator knows
-// what to fix.
+// Criterion: the `--bind` refusals name the flag, so the operator knows what
+// to fix.
 #[test]
-fn test_parse_args_bind_refusal_names_the_flag() {
-    let message = parse_args(&args(&["--bind"]))
-        .err()
+fn test_cli_bind_refusal_names_the_flag() {
+    for list in BIND_REFUSALS {
+        let message = refusal(list).map(|e| e.to_string()).unwrap_or_default();
+        assert!(message.contains("--bind"), "{list:?}: got {message:?}");
+    }
+}
+
+// Criterion (guard, "an unknown argument is refused"; inverts #160, whose
+// parser ignored unknown arguments on purpose): `--bnid x:1`, `extra` and
+// `--verbose` are refused with exit code 2, as `UnknownArgument`. Near-miss:
+// `--bnid x:1`, a typo any ignore-errors or trailing-var-arg setup accepts.
+#[test]
+fn test_cli_refuses_unknown_arguments() {
+    for list in [&["--bnid", "x:1"][..], &["extra"][..], &["--verbose"][..]] {
+        let error = refusal(list);
+        assert_eq!(
+            error.as_ref().map(|e| e.kind()),
+            Some(clap::error::ErrorKind::UnknownArgument),
+            "{list:?}"
+        );
+        assert_eq!(error.map(|e| e.exit_code()), Some(2), "{list:?}");
+    }
+}
+
+// Criterion (non-nominal: the suggestion clap's default features give): the
+// `--bnid` refusal points at `--bind`
+// (clap 4.6.7: "tip: a similar argument exists: '--bind'").
+#[test]
+fn test_cli_unknown_argument_suggests_the_close_flag() {
+    let message = refusal(&["--bnid", "x:1"])
         .map(|e| e.to_string())
         .unwrap_or_default();
-    assert!(message.contains("--bind"), "got {message:?}");
+    assert!(
+        message.contains("--bnid") && message.contains("'--bind'"),
+        "the message must name --bnid and suggest --bind, got {message:?}"
+    );
+}
+
+// Criterion (guard, "an option given twice is refused"): `--pair 2 --pair 3`,
+// `--pair --pair`, `--pair=2 --pair 3` and `--bind a:1 --bind b:2` are
+// refused with exit code 2, as `ArgumentConflict`. Near-miss:
+// `--pair 2 --pair 3`, which #160's parser and `args_override_self(true)`
+// both accept as three codes.
+#[test]
+fn test_cli_refuses_an_option_given_twice() {
+    for list in [
+        &["--pair", "2", "--pair", "3"][..],
+        &["--pair", "--pair"][..],
+        &["--pair=2", "--pair", "3"][..],
+        &["--bind", "a:1", "--bind", "b:2"][..],
+    ] {
+        let error = refusal(list);
+        assert_eq!(
+            error.as_ref().map(|e| e.kind()),
+            Some(clap::error::ErrorKind::ArgumentConflict),
+            "{list:?}"
+        );
+        assert_eq!(error.map(|e| e.exit_code()), Some(2), "{list:?}");
+    }
+}
+
+// Criterion: `--help` yields `DisplayHelp` with exit code 0, and its text
+// names `--pair` and `--bind` — as `--pair [<N>]` and `--bind <HOST:PORT>`,
+// next to `--version` (nominal scenario 3, observed with clap 4.6.7).
+#[test]
+fn test_cli_help_lists_both_options_and_exits_zero() {
+    let error = refusal(&["--help"]);
+    assert_eq!(
+        error.as_ref().map(|e| e.kind()),
+        Some(clap::error::ErrorKind::DisplayHelp)
+    );
+    assert_eq!(error.as_ref().map(|e| e.exit_code()), Some(0));
+    let text = error.map(|e| e.to_string()).unwrap_or_default();
+    for name in ["--pair [<N>]", "--bind <HOST:PORT>", "--help", "--version"] {
+        assert!(
+            text.contains(name),
+            "the help must list {name:?}, got {text:?}"
+        );
+    }
+}
+
+// Criterion: `--version` yields `DisplayVersion` with exit code 0, and prints
+// `blue2th-server <workspace version>` (nominal scenario 4).
+#[test]
+fn test_cli_version_prints_the_workspace_version_and_exits_zero() {
+    let error = refusal(&["--version"]);
+    assert_eq!(
+        error.as_ref().map(|e| e.kind()),
+        Some(clap::error::ErrorKind::DisplayVersion)
+    );
+    assert_eq!(error.as_ref().map(|e| e.exit_code()), Some(0));
+    let text = error.map(|e| e.to_string()).unwrap_or_default();
+    let expected = format!("blue2th-server {}", env!("CARGO_PKG_VERSION"));
+    assert!(
+        text.contains(&expected),
+        "expected {expected:?}, got {text:?}"
+    );
 }
 
 // Criterion: `--pair <n>` arms n codes at start, whether or not the token
 // was just minted. Near-miss: a start that parses the count and arms one.
 #[test]
 fn test_codes_to_arm_follows_the_pair_count() {
-    let three = CliOptions {
+    let three = Cli {
         pair: Some(3),
         bind: None,
     };
@@ -596,8 +725,8 @@ fn test_codes_to_arm_follows_the_pair_count() {
 // and an already paired backend arms none.
 #[test]
 fn test_codes_to_arm_without_the_flag_depends_on_a_fresh_token() {
-    assert_eq!(codes_to_arm(&CliOptions::default(), true), Some(1));
-    assert_eq!(codes_to_arm(&CliOptions::default(), false), None);
+    assert_eq!(codes_to_arm(&Cli::default(), true), Some(1));
+    assert_eq!(codes_to_arm(&Cli::default(), false), None);
 }
 
 // Criterion: `lan_bind_address()` prefers a non-loopback IPv4.
