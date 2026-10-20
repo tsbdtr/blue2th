@@ -540,6 +540,37 @@ fn test_cli_pair_refusal_names_the_accepted_range() {
     );
 }
 
+// Edge case (the empty value): `--pair=` and `--pair ""` are refused with
+// exit code 2 rather than read as a bare `--pair`, as `--bind=` is refused
+// rather than read as no override.
+#[test]
+fn test_cli_pair_refuses_an_empty_count() {
+    for list in [&["--pair="][..], &["--pair", ""][..]] {
+        let error = refusal(list);
+        assert_eq!(
+            error.as_ref().map(|e| e.kind()),
+            Some(clap::error::ErrorKind::ValueValidation),
+            "{list:?}"
+        );
+        assert_eq!(error.map(|e| e.exit_code()), Some(2), "{list:?}");
+    }
+}
+
+// The `--pair` help is a doc comment, which cannot interpolate
+// `MAX_PAIR_COUNT`, and clap does not print the range itself: the help must
+// still name the maximum the parser enforces.
+#[test]
+fn test_cli_pair_help_names_the_maximum_count() {
+    let help = refusal(&["--help"])
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    let expected = format!("at most {MAX_PAIR_COUNT})");
+    assert!(
+        help.contains(&expected),
+        "the --pair help must say {expected:?}, got {help:?}"
+    );
+}
+
 // Criterion (guard, "`--pair` alone never swallows the next flag"):
 // `--pair --bind 192.168.1.20:4000` arms one code and still reads the bind.
 #[test]

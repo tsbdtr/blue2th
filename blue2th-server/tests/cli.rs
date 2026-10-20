@@ -166,16 +166,18 @@ fn dependency_names(manifest: &toml::Table) -> BTreeSet<String> {
         .collect()
 }
 
-/// A workspace member's manifest, parsed; empty when unreadable, so the
-/// assertions fail rather than the helper.
-fn member_manifest(member: &str) -> toml::Table {
+/// A workspace member's manifest, parsed. An unreadable or unparsable one is
+/// an error rather than an empty table: an empty table depends on nothing, so
+/// "`xtask` does not depend on clap" would pass without reading `xtask`.
+fn member_manifest(member: &str) -> Result<toml::Table, String> {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join(member)
         .join("Cargo.toml");
-    let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    assert!(!raw.is_empty(), "{} must be readable", path.display());
-    raw.parse::<toml::Table>().unwrap_or_default()
+    std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|raw| raw.parse::<toml::Table>().map_err(|e| e.to_string()))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 // Criterion: `dependency_names` sees a dependency hidden in a target table or
@@ -202,12 +204,12 @@ fn test_dependency_names_reads_target_tables_and_renamed_packages() {
 #[test]
 fn test_clap_is_a_dependency_of_the_server_only() {
     assert!(
-        dependency_names(&member_manifest("blue2th-server")).contains("clap"),
+        dependency_names(&member_manifest("blue2th-server").unwrap()).contains("clap"),
         "blue2th-server must depend on clap"
     );
     for member in ["blue2th-frontend", "blue2th-proto", "xtask"] {
         assert!(
-            !dependency_names(&member_manifest(member)).contains("clap"),
+            !dependency_names(&member_manifest(member).unwrap()).contains("clap"),
             "{member} must not depend on clap"
         );
     }
