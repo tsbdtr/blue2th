@@ -648,8 +648,25 @@ pub struct Cli {
     )]
     pub pair: Option<u32>,
     /// Listen on this address instead of the automatic choice
-    #[arg(long, value_name = "HOST:PORT", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    #[arg(
+        long,
+        value_name = "HOST:PORT",
+        value_parser = clap::builder::TypedValueParser::try_map(
+            clap::builder::NonEmptyStringValueParser::new(),
+            non_blank_bind,
+        ),
+    )]
     pub bind: Option<String>,
+}
+
+/// Refuse a whitespace-only `--bind`: it passes clap's non-empty check, then
+/// fails only once the socket binds, far from the argument that caused it.
+fn non_blank_bind(value: String) -> Result<String, &'static str> {
+    if value.trim().is_empty() {
+        Err("expects an address, as <host:port>")
+    } else {
+        Ok(value)
+    }
 }
 
 /// How many pairing codes to arm at start, `None` for none. Pure.
