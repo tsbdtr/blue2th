@@ -616,20 +616,26 @@ fn test_cli_bind_reads_the_equals_form() {
 }
 
 /// Every `--bind` the backend must refuse: no value, an empty one (both
-/// forms), a flag in its place, and `--bind` last after a valid `--pair`.
-const BIND_REFUSALS: [&[&str]; 5] = [
+/// forms), a blank one (spaces, a tab, both forms), a flag in its place, and
+/// `--bind` last after a valid `--pair`.
+const BIND_REFUSALS: [&[&str]; 8] = [
     &["--bind"],
     &["--bind", ""],
     &["--bind="],
+    &["--bind", " "],
+    &["--bind", "\t"],
+    &["--bind=  "],
     &["--bind", "--pair"],
     &["--pair", "2", "--bind"],
 ];
 
-// Criterion (guards, "an empty `--bind` is refused" and "`--bind` never takes
-// a flag as its value"): every case of `BIND_REFUSALS` is refused with exit
-// code 2. Near-misses: `--bind ""` and `--bind=` — a plain `String` parser
-// accepts both, and they would read as "no override"; `--bind --pair` — a
-// parser allowing hyphen values would take `--pair` as the address.
+// Criterion (guards, "an empty or blank `--bind` is refused" and "`--bind`
+// never takes a flag as its value"): every case of `BIND_REFUSALS` is refused
+// with exit code 2. Near-misses: `--bind ""` and `--bind=` — a plain `String`
+// parser accepts both, and they would read as "no override"; `--bind " "` —
+// `NonEmptyStringValueParser` accepts it, and it only failed later, when the
+// socket bound; `--bind --pair` — a parser allowing hyphen values would take
+// `--pair` as the address.
 #[test]
 fn test_cli_bind_refuses_a_missing_empty_or_flag_value() {
     for list in BIND_REFUSALS {
