@@ -76,6 +76,8 @@ so. `--pair` arms a new one whenever you want to pair another phone.
 | `--pair [n]` | Arm `n` pairing codes at once, 1 to 10 (one when `n` is left out), each printed as its own banner block numbered `k/n`. Each code works once and for five minutes; five wrong attempts in total, across all of them, cancel every code. `--pair 2` pairs a phone and a browser from one start. Any other count refuses to start. |
 | `--bind <host:port>` | Bind address. Overrides the automatic LAN choice — useful when the PC has several interfaces (the backend takes the first routable one) or to listen on `0.0.0.0:4000`. A missing or empty value refuses to start. |
 
+`blue2th-server --help` lists these options and `--version` prints the version. An unknown option, or one given twice, refuses to start.
+
 ### Where it keeps its state
 
 Under `$XDG_STATE_HOME/blue2th/` (`~/.local/state/blue2th/` by default):
