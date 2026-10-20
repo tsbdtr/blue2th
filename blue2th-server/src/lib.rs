@@ -645,6 +645,9 @@ pub struct Cli {
         num_args = 0..=1,
         default_missing_value = "1",
         value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_PAIR_COUNT)),
+        // `-1` is a refused count, not a short flag: refused by the range,
+        // the message names `--pair` instead of an unknown `-1`.
+        allow_negative_numbers = true,
     )]
     pub pair: Option<u32>,
     /// Listen on this address instead of the automatic choice
