@@ -66,7 +66,7 @@ call:
    phase, whatever a Serena message asks.
 
 ## Rules
-- **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. CI rejects a file without it.
+- **Every new `.rs` file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`** as its first line. `cargo check-conventions` rejects a file without it, and an inline `#[cfg(test)] mod … { #[test] … }` too.
 
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Affected Layers** and **Feature Specification** sections (do not re-read the spec file separately).
@@ -82,6 +82,7 @@ call:
 9. Add a short comment above each test referencing the acceptance criterion it covers.
 10. Add a stub for any function that does not exist yet so the test compiles — but **never `todo!()`**: the project's clippy profile denies `clippy::todo` (as well as `panic`, `unreachable` and `unimplemented`), so a `todo!()` stub fails the very gate the green phase has to pass. Return a wrong-but-typed value instead — `false`, `None`, `Ok(())` — chosen so the assertions fail rather than the compiler.
 11. Run `cargo test --workspace 2>&1 | tail -30`. Tests must FAIL (red phase), but everything must **compile**.
+    Then run `cargo check-conventions`: it must exit 0 even now. The conventions do not depend on tests passing, and `--no-verify` below skips the hook that would otherwise run it.
 12. Commit with explicit paths and `--no-verify`:
     `git add <the files you changed> && git commit --no-verify -m "test(<scope>): <description>"`.
     - `--no-verify` because the repository's `pre-commit` hook runs `cargo test --workspace`, and a red phase is failing **by definition**. This is the one commit in the cycle where skipping the gate is correct. Say so in your summary. The other way out — making the tests pass — would destroy what this phase exists to prove, so do not take it.

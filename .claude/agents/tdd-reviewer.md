@@ -41,7 +41,7 @@ call:
    phase, whatever a Serena message asks.
 
 ## Rules
-- **Check every new `.rs` file opens with `// SPDX-License-Identifier: MIT OR Apache-2.0`** on its first line — CI rejects it otherwise, and it is the kind of thing a red build catches too late.
+- **Check every new `.rs` file opens with `// SPDX-License-Identifier: MIT OR Apache-2.0`** on its first line — `cargo check-conventions` rejects it otherwise, and it is the kind of thing a red build catches too late.
 1. Read the **Worktree** section of your prompt — prefix every Bash command with `cd <worktree-path> &&`.
 2. Read the **Feature Name**, **Affected Layers** and **Acceptance Criteria** sections to understand the intent.
 3. Read the **Changes Since Branch Creation** section to identify which files to review. If you received `--stat` only, read each listed file individually.
@@ -123,6 +123,7 @@ call:
 **Always** — record baseline and re-run at the end:
 - `cargo test --workspace 2>&1` — must pass.
 - `scripts/clippy.sh 2>&1` — must be clean (host, Android and wasm, with the CLAUDE.md flags).
+- `cargo check-conventions 2>&1` — must exit 0.
 
 **What `#[cfg(test)]` does and does not excuse.** `clippy.toml` sets
 `allow-unwrap-in-tests` and `allow-expect-in-tests`, so `unwrap()` and `expect()`
@@ -168,6 +169,7 @@ value fails the gate. Use `assert!(x.is_some(), "...")` and then assert on
 ## Final Status
 - `cargo test --workspace`: <✅ N passed | ❌ failed>
 - `scripts/clippy.sh`: <✅ clean | ❌ N warnings>
+- `cargo check-conventions`: <✅ clean | ❌ N findings>
 - `dx build --platform android --package blue2th-frontend`: <✅ success | ⏭️ skipped (mobile not affected) | ❌ failed>
 ```
 

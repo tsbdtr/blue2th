@@ -338,9 +338,10 @@ test_clippy_refuses_without_rustup() {
 # ── The pre-commit hook ──────────────────────────────────────────────────────
 
 # Criterion: the hook runs `cargo fmt --check`, then scripts/clippy.sh, then
+# `cargo check-conventions` without -D warnings (#180), then
 # `cargo test --workspace` — read from the calls it actually makes, run from
 # the repository root as git runs it.
-test_pre_commit_runs_fmt_clippy_script_then_test() {
+test_pre_commit_runs_fmt_clippy_script_conventions_then_test() {
     require_script
     use_fakes "$captured_targets"
 
@@ -351,6 +352,7 @@ test_pre_commit_runs_fmt_clippy_script_then_test() {
 $(call_line cargo "${host_argv[@]}")
 $(call_line cargo "${android_argv[@]}")
 $(call_line cargo "${wasm_argv[@]}")
+$(call_line cargo check-conventions)
 $(call_line cargo test --workspace)"
     assert_eq "$expected" "$(cargo_calls)" "cargo calls of the hook"
 }
