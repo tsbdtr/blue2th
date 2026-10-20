@@ -51,6 +51,12 @@ libspa = "0.10"
 # #122: `prctl(PR_SET_PDEATHSIG)` on the `librespot` child. Already in the lock
 # through `bluer`, so this adds no package.
 nix = { version = "0.29", features = ["process"] }
+# #170: the command line (`Cli`), parsed with `--help`, `--version`, the
+# `--opt=value` form and refusals of unknown or repeated options for free.
+# Default features kept: colour and "did you mean" suggestions. Not `env`: it
+# is what allows `#[arg(env = "BLUE2TH_BIND")]`, which would read the variable
+# in release builds too (#160).
+clap = { version = "4.6", features = ["derive"] }
 
 [dev-dependencies]
 # `kill`, for the shutdown tests that deliver a signal to themselves. Kept out

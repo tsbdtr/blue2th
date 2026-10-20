@@ -312,18 +312,10 @@ const BIND_ENV: &str = "BLUE2TH_BIND";
 /// The most pairing codes `--pair <n>` arms at once.
 const MAX_PAIR_COUNT: u32 = 10;
 
-/// Run the backend: initialise tracing, bind the socket and serve the router.
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// Run the backend with its parsed command line: initialise tracing, bind the
+/// socket and serve the router.
+pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
-
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let cli = match parse_args(&args) {
-        Ok(cli) => cli,
-        Err(e) => {
-            tracing::error!("{e}");
-            return Err(e.into());
-        },
-    };
 
     let mut auth_store = AuthStore::with_store(auth::auth_store_path());
     let server_name = config::ServerName::with_store(config::name_store_path());
@@ -639,75 +631,45 @@ fn bind_address(
     BindChoice { addr, warning }
 }
 
-/// The options the backend reads off its command line (#160).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CliOptions {
-    /// How many pairing codes `--pair [n]` asked for: `Some(1)` for a bare
-    /// `--pair`, `None` when the flag is absent.
+// The options the backend reads off its command line (#160), parsed by clap
+// (#170). The doc comments below are the `--help` text.
+/// The blue2th backend: plays to several Bluetooth speakers, driven from the
+/// blue2th app.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Parser)]
+#[command(name = "blue2th-server", version)]
+pub struct Cli {
+    /// Arm N pairing codes at start (1 when N is omitted, at most 10)
+    #[arg(
+        long,
+        value_name = "N",
+        num_args = 0..=1,
+        default_missing_value = "1",
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_PAIR_COUNT)),
+        // `-1` is a refused count, not a short flag: refused by the range,
+        // the message names `--pair` instead of an unknown `-1`.
+        allow_negative_numbers = true,
+    )]
     pub pair: Option<u32>,
-    /// The address `--bind <host:port>` asked for, `None` when absent.
+    /// Listen on this address instead of the automatic choice
+    #[arg(
+        long,
+        value_name = "HOST:PORT",
+        value_parser = clap::builder::TypedValueParser::try_map(
+            clap::builder::NonEmptyStringValueParser::new(),
+            non_blank_bind,
+        ),
+    )]
     pub bind: Option<String>,
 }
 
-/// Why the command line was refused. The server does not start on any of them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CliError {
-    /// `--pair` followed by something that is not a whole number in 1..=10.
-    PairCount(String),
-    /// `--bind` with no value, an empty one, or another flag in its place.
-    BindValue,
-}
-
-impl std::fmt::Display for CliError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CliError::PairCount(value) => write!(
-                f,
-                "--pair expects a number of codes from 1 to {MAX_PAIR_COUNT}, got {value:?}"
-            ),
-            CliError::BindValue => write!(f, "--bind expects an address, as <host:port>"),
-        }
+/// Refuse a whitespace-only `--bind`: it passes clap's non-empty check, then
+/// fails only once the socket binds, far from the argument that caused it.
+fn non_blank_bind(value: String) -> Result<String, &'static str> {
+    if value.trim().is_empty() {
+        Err("expects an address, as <host:port>")
+    } else {
+        Ok(value)
     }
-}
-
-impl std::error::Error for CliError {}
-
-/// Parse the backend's arguments — those **after** the program name. Pure.
-///
-/// Unknown arguments are ignored, as they always were.
-pub fn parse_args(args: &[String]) -> Result<CliOptions, CliError> {
-    let mut options = CliOptions::default();
-    let mut args = args.iter().peekable();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--pair" => {
-                // Only `--…` is a flag: `-1` is a (refused) count, not a bare
-                // `--pair` followed by something else.
-                let count = match args.next_if(|next| !next.starts_with("--")) {
-                    Some(value) => value
-                        .parse::<u32>()
-                        .ok()
-                        .filter(|n| (1..=MAX_PAIR_COUNT).contains(n))
-                        // Owned copy: the refusal outlives the argument list.
-                        .ok_or_else(|| CliError::PairCount(value.clone()))?,
-                    None => 1,
-                };
-                options.pair = Some(count);
-            },
-            "--bind" => {
-                // An empty value would read as "no override" and quietly fall
-                // back to the automatic choice: refused instead.
-                let value = args
-                    .next()
-                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
-                    .ok_or(CliError::BindValue)?;
-                // Owned copy: the options outlive the argument list.
-                options.bind = Some(value.clone());
-            },
-            _ => {},
-        }
-    }
-    Ok(options)
 }
 
 /// How many pairing codes to arm at start, `None` for none. Pure.
@@ -718,7 +680,7 @@ pub fn parse_args(args: &[String]) -> Result<CliOptions, CliError> {
 /// otherwise only when the operator asks for one. Arming a code at every
 /// restart would leave the one open door ajar for no reason. `--pair <n>` sets
 /// the count either way; a fresh token alone arms one.
-fn codes_to_arm(cli: &CliOptions, minted_a_new_token: bool) -> Option<u32> {
+fn codes_to_arm(cli: &Cli, minted_a_new_token: bool) -> Option<u32> {
     cli.pair.or(minted_a_new_token.then_some(1))
 }
 
