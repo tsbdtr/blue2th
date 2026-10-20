@@ -540,6 +540,32 @@ fn test_cli_pair_refusal_names_the_accepted_range() {
     );
 }
 
+// Criterion: a negative count is refused as an out-of-range `--pair` value —
+// `ValueValidation`, naming `--pair` and `1..=10` — not as an unknown `-1`
+// flag. Near-miss: `--pair -1` without `allow_negative_numbers` is refused
+// too, with exit code 2, but as `UnknownArgument`, a message that never
+// mentions `--pair`. `--pair -5 --bind x:1` checks the flag after it does not
+// change that.
+#[test]
+fn test_cli_pair_negative_count_refusal_names_the_option() {
+    for list in [
+        &["--pair", "-1"][..],
+        &["--pair", "-5", "--bind", "x:1"][..],
+    ] {
+        let error = refusal(list);
+        assert_eq!(
+            error.as_ref().map(|e| e.kind()),
+            Some(clap::error::ErrorKind::ValueValidation),
+            "{list:?}"
+        );
+        let message = error.map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            message.contains("--pair") && message.contains("1..=10"),
+            "{list:?}: the message must name --pair and the range 1..=10, got {message:?}"
+        );
+    }
+}
+
 // Edge case (the empty value): `--pair=` and `--pair ""` are refused with
 // exit code 2 rather than read as a bare `--pair`, as `--bind=` is refused
 // rather than read as no override.
