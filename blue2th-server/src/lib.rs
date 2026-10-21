@@ -127,6 +127,27 @@ pub struct RouteSpec {
     /// Whether the route answers without `Authorization: Bearer <token>`.
     /// Only `GET /health` and `POST /pair` may be public.
     pub public: bool,
+    /// Where the route is mounted: at the root, or under
+    /// [`blue2th_proto::API_PREFIX`] (#166). `path` stays prefix-free either way.
+    pub mount: Mount,
+}
+
+/// Where a [`RouteSpec`] is mounted in the router (#166).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mount {
+    /// Served at `path` itself — `GET /health`, which carries the version
+    /// handshake and must answer whatever contract the caller speaks.
+    Root,
+    /// Served at [`blue2th_proto::API_PREFIX`] followed by `path`.
+    Api,
+}
+
+impl RouteSpec {
+    /// The path the router serves this route at, prefix included.
+    pub fn full_path(&self) -> String {
+        // RED stub (#166): ignores the mount, the green phase applies the prefix.
+        self.path.to_string()
+    }
 }
 
 /// Every route the backend serves.
@@ -134,161 +155,193 @@ pub struct RouteSpec {
 /// The router is built **from** this table, not alongside it: an axum `Router`
 /// cannot be enumerated, so a route mounted by hand next to the table would
 /// escape the guard tests entirely. Adding a route means adding a line here.
+// RED stub (#166): every entry is `Mount::Root` until the green phase.
 pub const ROUTES: &[RouteSpec] = &[
     RouteSpec {
         method: "GET",
         path: "/health",
         public: true,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/pair",
         public: true,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/adapters",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/devices",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/connect",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/disconnect",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/select",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/deselect",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/offset",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/targets",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/scan",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/play",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/pause",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/stop",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/volume",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/playback",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/start",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/stop",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/status",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/auth/url",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/auth/callback",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/auth/status",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/play",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/pause",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/next",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/previous",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/now-playing",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/volume",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/client/presence",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "GET",
         path: "/config",
         public: false,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/config",
         public: false,
+        mount: Mount::Root,
     },
 ];
 

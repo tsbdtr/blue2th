@@ -4,16 +4,21 @@
 //! the backend actually serves.
 //!
 //! In the browser every API call goes to the page's own origin, and `dx`
-//! relays it to the backend through one `[[web.proxy]]` entry per route
-//! prefix. A route added to `ROUTES` without its proxy entry works from the
-//! phone and fails in the browser with a 404 from `dx` — nothing else would
-//! notice, since `cargo test` never runs `dx`. The table lives in this crate,
-//! so the check does too.
+//! relays it to the backend through `[[web.proxy]]` entries. Since #166 the
+//! API sits under one prefix, so the proxy is one entry for `/api` plus one
+//! per root-mounted route (`/health`). A route mounted at the root without its
+//! proxy entry works from the phone and fails in the browser with a 404 from
+//! `dx` — nothing else would notice, since `cargo test` never runs `dx`. The
+//! table lives in this crate, so the check does too.
+//!
+//! That `dx` relays the sub-paths of an entry is observed, not assumed: the
+//! pre-#166 `/spotify` entry relayed `/spotify/now-playing`.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use blue2th_server::ROUTES;
+use blue2th_proto::API_PREFIX;
+use blue2th_server::{Mount, ROUTES};
 
 /// Where `dx serve` relays the API: the backend's default port on loopback.
 const PROXY_BACKEND: &str = "http://127.0.0.1:4000";
@@ -42,34 +47,62 @@ fn proxy_backends() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The top-level prefix of every route: `/devices/{addr}/connect` → `devices`.
-fn route_prefixes() -> BTreeSet<String> {
+/// The proxy paths the mounts of `ROUTES` imply: `API_PREFIX` once for all the
+/// `Api` routes, plus the top-level segment of every `Root` route
+/// (`/health` → `/health`). Built from the mounts, never from the paths'
+/// prefixes, so the per-prefix entries this replaces are not expected.
+fn mounted_proxy_paths() -> BTreeSet<String> {
     ROUTES
         .iter()
-        .filter_map(|route| route.path.trim_start_matches('/').split('/').next())
-        .map(str::to_owned)
+        .filter_map(|route| match route.mount {
+            Mount::Api => Some(API_PREFIX.to_owned()),
+            Mount::Root => route
+                .full_path()
+                .trim_start_matches('/')
+                .split('/')
+                .next()
+                .map(|segment| format!("/{segment}")),
+        })
         .collect()
 }
 
-// Criterion: `Dioxus.toml` holds one `[[web.proxy]]` entry per top-level
-// prefix of `ROUTES`, each with backend `http://127.0.0.1:4000/<prefix>`.
-// Compared as sets both ways, so a missing prefix and a stray entry both fail.
+// Criterion: `Dioxus.toml` holds the proxy set `ROUTES`'s mounts imply — `/api`
+// once for every `Api` route, plus each `Root` route's path — at
+// `http://127.0.0.1:4000`. Compared as sets both ways (guard, "exactly"):
+// near-miss the old per-prefix entries left next to the two new ones.
 #[test]
-fn test_dioxus_proxy_covers_every_route_prefix() {
-    let expected: BTreeSet<String> = route_prefixes()
+fn test_dioxus_proxy_matches_the_route_mounts() {
+    let expected: BTreeSet<String> = mounted_proxy_paths()
         .iter()
-        .map(|prefix| format!("{PROXY_BACKEND}/{prefix}"))
+        .map(|path| format!("{PROXY_BACKEND}{path}"))
         .collect();
     let actual: BTreeSet<String> = proxy_backends().into_iter().collect();
 
-    assert!(!expected.is_empty(), "ROUTES must yield prefixes to proxy");
+    assert!(!expected.is_empty(), "ROUTES must yield paths to proxy");
     assert_eq!(
         actual, expected,
-        "one [[web.proxy]] per ROUTES prefix, at {PROXY_BACKEND}/<prefix>"
+        "one [[web.proxy]] for {API_PREFIX:?} and one per root-mounted route"
     );
 }
 
-// Criterion: exactly **one** entry per prefix. Near-miss: a duplicated entry,
+// Criterion: `Dioxus.toml` holds **exactly** two entries,
+// `http://127.0.0.1:4000/api` and `http://127.0.0.1:4000/health`, in a list
+// (not a set), so a duplicate or a stray third entry fails. Written out rather
+// than derived, so a wrong `API_PREFIX` cannot carry the derived set with it.
+#[test]
+fn test_dioxus_proxy_is_exactly_api_and_health() {
+    let mut backends = proxy_backends();
+    backends.sort();
+    assert_eq!(
+        backends,
+        vec![
+            format!("{PROXY_BACKEND}/api"),
+            format!("{PROXY_BACKEND}/health"),
+        ]
+    );
+}
+
+// Criterion: each proxy path appears **once**. Near-miss: a duplicated entry,
 // which the set comparison above folds away.
 #[test]
 fn test_dioxus_proxy_lists_each_prefix_once() {
@@ -83,7 +116,7 @@ fn test_dioxus_proxy_lists_each_prefix_once() {
     assert_eq!(
         unique.len(),
         backends.len(),
-        "a prefix proxied twice: {backends:?}"
+        "a path proxied twice: {backends:?}"
     );
 }
 

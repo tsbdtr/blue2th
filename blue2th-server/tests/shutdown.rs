@@ -189,7 +189,7 @@ async fn test_stop_sources_for_shutdown_reports_the_name_the_router_configured()
 
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/config")
+        .uri("/api/config")
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"name":"Lpt","restore_during_playback":true,"auto_reconnect":true}"#,

@@ -45,7 +45,7 @@ fn build_app() -> axum::Router {
 /// which step broke.
 async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
     let request = authorized(Request::builder())
-        .uri("/config")
+        .uri("/api/config")
         .body(Body::empty())
         .map_err(|e| format!("build request: {e}"))?;
     let response = app
@@ -65,7 +65,7 @@ async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
 async fn post_config(app: axum::Router, body: &str) -> Result<(StatusCode, String), String> {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/config")
+        .uri("/api/config")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .map_err(|e| format!("build request: {e}"))?;
@@ -158,7 +158,7 @@ async fn test_configured_name_becomes_the_spotify_connect_device_name() {
     assert_eq!(status, StatusCode::OK);
 
     let request = authorized(Request::builder())
-        .uri("/spotify/status")
+        .uri("/api/spotify/status")
         .body(Body::empty())
         .expect("build request");
     let response = app.oneshot(request).await.expect("router response");
@@ -287,10 +287,10 @@ async fn test_rejected_config_body_does_not_apply_the_restore_flag() {
 #[tokio::test]
 async fn test_transport_while_disconnected_still_returns_conflict() {
     for path in [
-        "/spotify/play",
-        "/spotify/pause",
-        "/spotify/next",
-        "/spotify/previous",
+        "/api/spotify/play",
+        "/api/spotify/pause",
+        "/api/spotify/next",
+        "/api/spotify/previous",
     ] {
         let request = authorized(Request::builder())
             .method("POST")

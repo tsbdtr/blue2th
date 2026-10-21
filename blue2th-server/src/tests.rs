@@ -161,7 +161,7 @@ async fn test_health_endpoint_announces_the_protocol_range() {
 // offsets store itself is unit-tested in `targets.rs` against a temp path.
 #[tokio::test]
 async fn test_app_builds_with_the_offsets_store_and_restores_no_selection() {
-    let request = authorized(Request::builder().uri("/targets"))
+    let request = authorized(Request::builder().uri("/api/targets"))
         .body(Body::empty())
         .expect("build request");
 
@@ -4513,4 +4513,67 @@ async fn test_confirmation_timer_sends_the_actor_no_message_while_nothing_is_arm
     settle().await;
 
     assert_eq!(*received.lock().unwrap(), Vec::new());
+}
+
+// ---- the HTTP API under `/api` (#166) ----
+
+// Criterion: server — the full path is `spec.path` for `Mount::Root` and
+// `API_PREFIX` + `spec.path` for `Mount::Api`. Synthetic specs rather than table
+// entries, so a `full_path` keyed on `"/health"` instead of on the mount fails:
+// the `Root` one here is not `/health`, and the `Api` one shares its path.
+#[test]
+fn test_full_path_follows_the_mount_not_the_path() {
+    let root = RouteSpec {
+        method: "GET",
+        path: "/status",
+        public: false,
+        mount: Mount::Root,
+    };
+    let api_health = RouteSpec {
+        method: "GET",
+        path: "/health",
+        public: true,
+        mount: Mount::Api,
+    };
+    let api_nested = RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/connect",
+        public: false,
+        mount: Mount::Api,
+    };
+    assert_eq!(root.full_path(), "/status");
+    assert_eq!(api_health.full_path(), "/api/health");
+    assert_eq!(api_nested.full_path(), "/api/devices/{addr}/connect");
+}
+
+// Criterion (guard, "only `GET /health` is `Mount::Root`"): near-miss
+// `POST /pair`, the other public route, left at the root.
+#[test]
+fn test_routes_mount_only_health_at_the_root() {
+    for spec in ROUTES {
+        let expected = if (spec.method, spec.path) == ("GET", "/health") {
+            Mount::Root
+        } else {
+            Mount::Api
+        };
+        assert_eq!(spec.mount, expected, "{} {}", spec.method, spec.path);
+    }
+}
+
+// Criterion (end to end): the router serves `GET /api/targets` with a token, and
+// no longer serves `GET /targets`. The fake graph keeps it hardware-free.
+#[tokio::test]
+async fn test_router_serves_targets_under_api_only() {
+    let at = |uri: &'static str| async move {
+        let request = authorized(Request::builder().uri(uri))
+            .body(Body::empty())
+            .expect("build request");
+        build_app()
+            .oneshot(request)
+            .await
+            .expect("router response")
+            .status()
+    };
+    assert_eq!(at("/api/targets").await, StatusCode::OK);
+    assert_eq!(at("/targets").await, StatusCode::NOT_FOUND);
 }

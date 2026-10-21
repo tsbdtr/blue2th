@@ -54,6 +54,29 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// The oldest client contract a backend built from this source still serves.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 
+/// Path prefix every backend route is mounted under, except `GET /health`,
+/// which stays at the root because it carries the version handshake (#166).
+// RED stub (#166): deliberately wrong, the green phase sets the real prefix.
+pub const API_PREFIX: &str = "";
+
+/// The URL of the API route `path` on the backend at `base`. Pure.
+///
+/// A trailing `/` on the base and a leading `/` on the path are both optional,
+/// so a base typed by hand and a `spotify/pause`-style path still join with
+/// exactly one slash on each side of the prefix:
+///
+/// ```
+/// use blue2th_proto::api_url;
+///
+/// assert_eq!(api_url("http://h:4000/", "/pair"), "http://h:4000/api/pair");
+/// assert_eq!(api_url("http://h:4000", "pair"), "http://h:4000/api/pair");
+/// assert_eq!(api_url("http://h:4000", "/pair"), "http://h:4000/api/pair");
+/// ```
+pub fn api_url(base: &str, path: &str) -> String {
+    // RED stub (#166): the pre-#166 `{base}/{path}` join, without the prefix.
+    format!("{}/{path}", base.trim_end_matches('/'))
+}
+
 /// Which of the two machines is behind, when the app and the backend cannot
 /// agree on a wire contract.
 ///

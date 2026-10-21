@@ -42,7 +42,7 @@ fn build_app() -> axum::Router {
 async fn test_spotify_start_without_target_returns_bad_request() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/spotify/start")
+        .uri("/api/spotify/start")
         .body(Body::empty())
         .expect("build request");
 
@@ -59,7 +59,7 @@ async fn test_spotify_start_without_target_returns_bad_request() {
 #[tokio::test]
 async fn test_spotify_status_on_fresh_server_is_stopped() {
     let request = authorized(Request::builder())
-        .uri("/spotify/status")
+        .uri("/api/spotify/status")
         .body(Body::empty())
         .expect("build request");
 

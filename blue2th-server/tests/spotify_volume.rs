@@ -66,7 +66,7 @@ async fn post_json(
 /// `GET /config` against `app`, returning the decoded payload.
 async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
     let request = authorized(Request::builder())
-        .uri("/config")
+        .uri("/api/config")
         .body(Body::empty())
         .map_err(|e| format!("build request: {e}"))?;
     let response = app
@@ -86,7 +86,7 @@ async fn get_config(app: axum::Router) -> Result<ServerConfig, String> {
 // state: a Disconnected backend must still say *why* the body is wrong.
 #[tokio::test]
 async fn test_post_spotify_volume_above_100_returns_bad_request() {
-    let (status, body) = post_json(build_app(), "/spotify/volume", r#"{"percent":101}"#)
+    let (status, body) = post_json(build_app(), "/api/spotify/volume", r#"{"percent":101}"#)
         .await
         .expect("POST /spotify/volume");
     assert_eq!(
@@ -106,7 +106,7 @@ async fn test_post_spotify_volume_rejects_a_malformed_body() {
         r#"{"percent":"loud"}"#,
         r#"{"percent":-1}"#,
     ] {
-        let (status, _) = post_json(build_app(), "/spotify/volume", body)
+        let (status, _) = post_json(build_app(), "/api/spotify/volume", body)
             .await
             .expect("POST /spotify/volume");
         assert_eq!(
@@ -121,7 +121,7 @@ async fn test_post_spotify_volume_rejects_a_malformed_body() {
 // exactly like `POST /spotify/play` while Disconnected.
 #[tokio::test]
 async fn test_post_spotify_volume_while_disconnected_returns_conflict() {
-    let (status, body) = post_json(build_app(), "/spotify/volume", r#"{"percent":60}"#)
+    let (status, body) = post_json(build_app(), "/api/spotify/volume", r#"{"percent":60}"#)
         .await
         .expect("POST /spotify/volume");
     assert_eq!(
@@ -140,14 +140,14 @@ async fn test_post_spotify_volume_with_the_lock_on_returns_conflict_naming_the_l
     let app = build_app();
     let (status, body) = post_json(
         app.clone(),
-        "/config",
+        "/api/config",
         r#"{"name":"Salon","spotify_volume_lock":true}"#,
     )
     .await
     .expect("POST /config");
     assert_eq!(status, StatusCode::OK, "body was {body}");
 
-    let (status, body) = post_json(app, "/spotify/volume", r#"{"percent":60}"#)
+    let (status, body) = post_json(app, "/api/spotify/volume", r#"{"percent":60}"#)
         .await
         .expect("POST /spotify/volume");
     assert_eq!(
@@ -177,7 +177,7 @@ async fn test_post_config_stores_the_spotify_volume_lock_and_get_reflects_it() {
     let app = build_app();
     let (status, body) = post_json(
         app.clone(),
-        "/config",
+        "/api/config",
         r#"{"name":"Salon","spotify_volume_lock":true}"#,
     )
     .await
@@ -199,7 +199,7 @@ async fn test_post_config_stores_the_spotify_volume_lock_and_get_reflects_it() {
 
     let (status, _) = post_json(
         app.clone(),
-        "/config",
+        "/api/config",
         r#"{"name":"Salon","spotify_volume_lock":false}"#,
     )
     .await
@@ -224,14 +224,14 @@ async fn test_post_config_without_the_lock_leaves_it_unchanged() {
     let app = build_app();
     let (status, _) = post_json(
         app.clone(),
-        "/config",
+        "/api/config",
         r#"{"name":"Salon","spotify_volume_lock":true}"#,
     )
     .await
     .expect("POST /config with the lock");
     assert_eq!(status, StatusCode::OK);
 
-    let (status, body) = post_json(app.clone(), "/config", r#"{"name":"Salon"}"#)
+    let (status, body) = post_json(app.clone(), "/api/config", r#"{"name":"Salon"}"#)
         .await
         .expect("POST /config");
     assert_eq!(
@@ -254,7 +254,7 @@ async fn test_rejected_config_body_does_not_apply_the_spotify_volume_lock() {
     let app = build_app();
     let (status, _) = post_json(
         app.clone(),
-        "/config",
+        "/api/config",
         r#"{"name":"2salon","spotify_volume_lock":true}"#,
     )
     .await

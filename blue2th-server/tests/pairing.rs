@@ -62,7 +62,7 @@ async fn post_pair(app: axum::Router, code: &str) -> Result<(StatusCode, String)
 async fn post_pair_raw(app: axum::Router, body: &str) -> Result<(StatusCode, String), String> {
     let request = Request::builder()
         .method("POST")
-        .uri("/pair")
+        .uri("/api/pair")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .map_err(|e| format!("build request: {e}"))?;
@@ -170,7 +170,10 @@ async fn test_pair_without_an_armed_code_is_unauthorised() {
 #[tokio::test]
 async fn test_pair_failures_are_indistinguishable() {
     let (armed_app, code) = app_with_code_armed_at(SystemTime::now());
-    let (_, unknown) = post_pair(armed_app, "AAAAAA").await.expect("unknown code");
+    let (unknown_status, unknown) = post_pair(armed_app, "AAAAAA").await.expect("unknown code");
+    // Pinned, so four identical 404s from an unserved route cannot pass as
+    // four indistinguishable refusals.
+    assert_eq!(unknown_status, StatusCode::UNAUTHORIZED);
 
     let (expired_app, expired_code) =
         app_with_code_armed_at(SystemTime::now() - PAIRING_TTL - Duration::from_secs(1));
@@ -221,6 +224,12 @@ async fn test_pair_with_a_malformed_body_is_a_client_error() {
     for body in ["{ not valid json }", "{}", "\"K7M2QX\""] {
         let (app, _code) = app_with_code_armed_at(SystemTime::now());
         let (status, _) = post_pair_raw(app, body).await.expect("POST /pair");
+        // A 404 is a client error too: without this, an unserved route would pass.
+        assert_ne!(
+            status,
+            StatusCode::NOT_FOUND,
+            "POST /api/pair must be served"
+        );
         assert!(
             status.is_client_error(),
             "{body} must be refused as a client error, got {status}"
