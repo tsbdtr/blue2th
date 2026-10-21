@@ -89,6 +89,19 @@ call:
       moving on. h and i said as much before this table existed, and a branch
       still shipped six tests that did not pin what they claimed (#135): a
       check nobody can audit is a check nobody runs.
+
+      **Run every mutation under a time limit, and wait for it in the
+      foreground.** A mutation can make a test hang instead of fail: a test that
+      awaits a request with no bound waits forever once the mutated code sends
+      none. So run each one as `timeout 300 cargo test …`, and restore the code
+      whatever the exit status, since a run that never returns leaves the
+      worktree mutated. Exit 124 is a result, not a failed run. Record it in the
+      table as *killed by a hang*, with the test libtest reports as "has been
+      running for over 60 seconds", and list that unbounded wait in the report.
+      Never wait on a run in the background with an `until …; do sleep …; done`
+      loop. Such a loop has no exit when the run never ends: in the #166 cycle,
+      five of them each ran into the 10-minute command limit, which cost 50 of
+      the phase's 59 minutes.
    k. **Decision functions the implementation added.** The red phase can only
       test what the spec names; a parser, a filter or a predicate that GREEN
       wrote to get there has no test by default. List the functions the
