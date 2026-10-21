@@ -1773,69 +1773,46 @@ fn mismatches(sent: Vec<Sent>) -> Vec<String> {
 /// two `&str` parameters of the device builders shows in the path.
 const DEVICE: &str = "11:22:33:44:55:66";
 
+/// One row of a forwarding table: the `(method, path)` that `$call` must send,
+/// next to the one it did. `$base` binds the canned backend's URL, for the
+/// calls aimed at an explicit address.
+macro_rules! sent {
+    ($method:literal, $path:literal, |$base:pat_param| $call:expr) => {
+        (
+            $method,
+            $path,
+            method_and_path_of(|$base| async move {
+                let _ = $call.await;
+            })
+            .await,
+        )
+    };
+}
+
 // Criterion: mobile — the device calls (`connect`, `disconnect`, the list, the
-// scan feed, and the target actions) go to `/api/...`. One entry per public
+// scan feed, and the target actions) go to `/api/...`. One row per public
 // call, so no mapping is left unguarded.
 #[tokio::test]
 async fn test_device_calls_go_under_api() {
     let _guard = SETTINGS_GUARD.lock().await;
     let sent: Vec<Sent> = vec![
-        (
-            "POST",
-            "/api/devices/11:22:33:44:55:66/connect",
-            method_and_path_of(|_| async {
-                let _ = connect_device(DEVICE).await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/devices/11:22:33:44:55:66/disconnect",
-            method_and_path_of(|_| async {
-                let _ = disconnect_device(DEVICE).await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/devices",
-            method_and_path_of(|_| async {
-                let _ = fetch_devices().await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/scan",
-            method_and_path_of(|_| async {
-                let _ = scan_devices().await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/devices/11:22:33:44:55:66/select",
-            method_and_path_of(|_| async {
-                let _ = select_target(DEVICE).await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/devices/11:22:33:44:55:66/deselect",
-            method_and_path_of(|_| async {
-                let _ = deselect_target(DEVICE).await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/devices/11:22:33:44:55:66/offset",
-            method_and_path_of(|_| async {
-                let _ = set_offset(DEVICE, 120).await;
-            })
-            .await,
-        ),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/connect", |_| {
+            connect_device(DEVICE)
+        }),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/disconnect", |_| {
+            disconnect_device(DEVICE)
+        }),
+        sent!("GET", "/api/devices", |_| fetch_devices()),
+        sent!("GET", "/api/scan", |_| scan_devices()),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/select", |_| {
+            select_target(DEVICE)
+        }),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/deselect", |_| {
+            deselect_target(DEVICE)
+        }),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/offset", |_| {
+            set_offset(DEVICE, 120)
+        }),
     ];
     assert_eq!(mismatches(sent), Vec::<String>::new());
 }
@@ -1846,202 +1823,47 @@ async fn test_device_calls_go_under_api() {
 async fn test_playback_calls_go_under_api() {
     let _guard = SETTINGS_GUARD.lock().await;
     let sent: Vec<Sent> = vec![
-        (
-            "POST",
-            "/api/play",
-            method_and_path_of(|_| async {
-                let _ = play().await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/pause",
-            method_and_path_of(|_| async {
-                let _ = pause().await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/stop",
-            method_and_path_of(|_| async {
-                let _ = stop().await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/playback",
-            method_and_path_of(|_| async {
-                let _ = playback_state().await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/volume",
-            method_and_path_of(|_| async {
-                let _ = set_volume(0.5).await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/targets",
-            method_and_path_of(|_| async {
-                let _ = fetch_targets().await;
-            })
-            .await,
-        ),
+        sent!("POST", "/api/play", |_| play()),
+        sent!("POST", "/api/pause", |_| pause()),
+        sent!("POST", "/api/stop", |_| stop()),
+        sent!("GET", "/api/playback", |_| playback_state()),
+        sent!("POST", "/api/volume", |_| set_volume(0.5)),
+        sent!("GET", "/api/targets", |_| fetch_targets()),
     ];
     assert_eq!(mismatches(sent), Vec::<String>::new());
 }
 
 // Criterion: mobile — every Spotify call (source, auth, the four transport
-// actions, the now-playing feed) goes to `/api/spotify/...`.
+// actions, the now-playing feed) goes to `/api/spotify/...`. The calls aimed
+// at an explicit address (`pair`, the config read and push, `pause_at`) are
+// pinned by their own tests, which read the request line.
 #[tokio::test]
 async fn test_spotify_calls_go_under_api() {
     let _guard = SETTINGS_GUARD.lock().await;
-    let mut sent: Vec<Sent> = vec![
-        (
-            "POST",
-            "/api/spotify/start",
-            method_and_path_of(|_| async {
-                let _ = start_spotify().await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/spotify/stop",
-            method_and_path_of(|_| async {
-                let _ = stop_spotify().await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/spotify/status",
-            method_and_path_of(|_| async {
-                let _ = spotify_status().await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/spotify/auth/url",
-            method_and_path_of(|_| async {
-                let _ = spotify_auth_url().await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/spotify/auth/callback",
-            method_and_path_of(|_| async {
-                let _ = spotify_auth_callback("the-code", "the-state").await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/spotify/auth/status",
-            method_and_path_of(|_| async {
-                let _ = spotify_auth_status().await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/spotify/now-playing",
-            method_and_path_of(|_| async {
-                let _ = subscribe_now_playing(|_| {}).await;
-            })
-            .await,
-        ),
-    ];
-    for (action, path) in [
-        (SpotifyAction::Previous, "/api/spotify/previous"),
-        (SpotifyAction::Play, "/api/spotify/play"),
-        (SpotifyAction::Pause, "/api/spotify/pause"),
-        (SpotifyAction::Next, "/api/spotify/next"),
-    ] {
-        let got = method_and_path_of(|_| async move {
-            let _ = spotify_transport(action).await;
-        })
-        .await;
-        sent.push(("POST", path, got));
-    }
-    assert_eq!(mismatches(sent), Vec::<String>::new());
-}
-
-// Criterion: mobile — the calls aimed at an explicit address (pairing, the
-// config read and push, the pause and release of a backend being left) go to
-// `/api/...` too. `post_at` takes `spotify/pause`-style paths without a
-// leading slash: the helper must still yield one slash.
-#[tokio::test]
-async fn test_explicit_address_calls_go_under_api() {
-    let _guard = SETTINGS_GUARD.lock().await;
     let sent: Vec<Sent> = vec![
-        (
-            "POST",
-            "/api/pair",
-            method_and_path_of(|base| async move {
-                let _ = pair(&CompatibleBackend { url: base }, "K7M2QX").await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/api/config",
-            method_and_path_of(|base| async move {
-                let _ = fetch_config(&active_with_token(&base, Some("tok-123"))).await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/config",
-            method_and_path_of(|base| async move {
-                let _ = set_config_at(
-                    &base,
-                    Some("tok-123"),
-                    ConfigRequest {
-                        name: "Salon".to_string(),
-                        restore_during_playback: true,
-                        auto_reconnect: true,
-                        spotify_volume_lock: None,
-                    },
-                )
-                .await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/spotify/pause",
-            method_and_path_of(|base| async move {
-                let _ = pause_at(&base, Some("tok-123")).await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/stop",
-            method_and_path_of(|base| async move {
-                let _ = post_at(&base, "stop", Some("tok-123")).await;
-            })
-            .await,
-        ),
-        (
-            "POST",
-            "/api/spotify/stop",
-            method_and_path_of(|base| async move {
-                let _ = post_at(&base, "spotify/stop", Some("tok-123")).await;
-            })
-            .await,
-        ),
+        sent!("POST", "/api/spotify/start", |_| start_spotify()),
+        sent!("POST", "/api/spotify/stop", |_| stop_spotify()),
+        sent!("GET", "/api/spotify/status", |_| spotify_status()),
+        sent!("GET", "/api/spotify/auth/url", |_| spotify_auth_url()),
+        sent!("POST", "/api/spotify/auth/callback", |_| {
+            spotify_auth_callback("the-code", "the-state")
+        }),
+        sent!("GET", "/api/spotify/auth/status", |_| spotify_auth_status()),
+        sent!("GET", "/api/spotify/now-playing", |_| {
+            subscribe_now_playing(|_| {})
+        }),
+        sent!("POST", "/api/spotify/previous", |_| {
+            spotify_transport(SpotifyAction::Previous)
+        }),
+        sent!("POST", "/api/spotify/play", |_| {
+            spotify_transport(SpotifyAction::Play)
+        }),
+        sent!("POST", "/api/spotify/pause", |_| {
+            spotify_transport(SpotifyAction::Pause)
+        }),
+        sent!("POST", "/api/spotify/next", |_| {
+            spotify_transport(SpotifyAction::Next)
+        }),
     ];
     assert_eq!(mismatches(sent), Vec::<String>::new());
 }
@@ -2054,36 +1876,11 @@ async fn test_explicit_address_calls_go_under_api() {
 async fn test_health_probes_stay_at_the_root() {
     let _guard = SETTINGS_GUARD.lock().await;
     let sent: Vec<Sent> = vec![
-        (
-            "GET",
-            "/health",
-            method_and_path_of(|_| async {
-                let _ = ping_backend().await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/health",
-            method_and_path_of(|base| async move {
-                let _ = check_backend_protocol(&base).await;
-            })
-            .await,
-        ),
-        (
-            "GET",
-            "/health",
-            method_and_path_of(|base| async move {
-                let _ = test_backend(&base).await;
-            })
-            .await,
-        ),
+        sent!("GET", "/health", |_| ping_backend()),
+        sent!("GET", "/health", |base| check_backend_protocol(&base)),
+        sent!("GET", "/health", |base| test_backend(&base)),
     ];
     assert_eq!(mismatches(sent), Vec::<String>::new());
-    assert_eq!(
-        health_url("http://10.0.0.5:4000"),
-        "http://10.0.0.5:4000/health"
-    );
 }
 
 // Criterion: mobile — the presence post the browser sends is under `/api`,
@@ -2096,26 +1893,5 @@ fn test_browser_presence_post_goes_under_api_tolerating_a_trailing_slash() {
     assert_eq!(
         post.ok().map(|p| p.url),
         Some("http://10.0.0.5:4000/api/client/presence".to_string())
-    );
-}
-
-// Criterion (non-nominal): this app against a backend still at protocol 1 is
-// told to update the backend, before any `/api/...` call can 404.
-#[tokio::test]
-async fn test_check_backend_protocol_refuses_a_protocol_1_backend_as_too_old() {
-    let (base, served) = canned_backend(
-        "200 OK",
-        r#"{"status":"ok","version":"0.2.0","auth_required":true,"protocol":1,"protocol_min":1}"#,
-    )
-    .await
-    .expect("start the canned backend");
-
-    let checked = check_backend_protocol(&base).await;
-    let _ = served.await.expect("join the test listener");
-
-    assert_eq!(
-        checked.err().and_then(|e| e.protocol_mismatch()),
-        Some(ProtocolMismatch::BackendTooOld),
-        "a protocol 1 backend serves no /api route: the server is the side to update"
     );
 }

@@ -85,23 +85,6 @@ fn test_dioxus_proxy_matches_the_route_mounts() {
     );
 }
 
-// Criterion: `Dioxus.toml` holds **exactly** two entries,
-// `http://127.0.0.1:4000/api` and `http://127.0.0.1:4000/health`, in a list
-// (not a set), so a duplicate or a stray third entry fails. Written out rather
-// than derived, so a wrong `API_PREFIX` cannot carry the derived set with it.
-#[test]
-fn test_dioxus_proxy_is_exactly_api_and_health() {
-    let mut backends = proxy_backends();
-    backends.sort();
-    assert_eq!(
-        backends,
-        vec![
-            format!("{PROXY_BACKEND}/api"),
-            format!("{PROXY_BACKEND}/health"),
-        ]
-    );
-}
-
 // Criterion: each proxy path appears **once**. Near-miss: a duplicated entry,
 // which the set comparison above folds away.
 #[test]

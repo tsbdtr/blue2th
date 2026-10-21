@@ -945,9 +945,9 @@ fn app_with_auth_and_targets(
 
 /// The handler behind one table entry.
 ///
-/// A `match` rather than a registry: it is exhaustive by construction — a spec
-/// added to `ROUTES` without a handler fails to compile here, which is the point
-/// of building the router from the table.
+/// A `match` rather than a registry. A spec added to `ROUTES` without a handler
+/// still compiles — it falls to the last arm, a 404 — and
+/// `test_every_guarded_route_accepts_a_valid_bearer` fails on it.
 fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
     match (spec.method, spec.path) {
         ("GET", "/health") => get(health),
@@ -987,8 +987,9 @@ fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
     }
 }
 
-/// Answers a table entry with no handler. Reached only if `ROUTES` gains a line
-/// without one — a 404 rather than an unguarded surprise.
+/// A 404 rather than an unguarded surprise. Two callers: the nested API router's
+/// fallback, for any unknown path under [`blue2th_proto::API_PREFIX`] (#166), and
+/// the last arm of [`route_handler`], for a `ROUTES` entry with no handler.
 async fn unknown_route() -> StatusCode {
     StatusCode::NOT_FOUND
 }

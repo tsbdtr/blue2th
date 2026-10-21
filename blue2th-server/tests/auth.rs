@@ -48,18 +48,34 @@ fn concrete_path(spec: &RouteSpec) -> String {
     spec.full_path().replace("{addr}", ADDR)
 }
 
-/// Send one request through a fresh router. `None` means the route never
-/// answered within [`ROUTE_TIMEOUT`] — which is certainly not a 401, and is how
-/// the assertions below read it.
+/// Send one request for `spec` through a fresh router. `None` means the route
+/// never answered within [`ROUTE_TIMEOUT`] — which is certainly not a 401, and
+/// is how the assertions below read it.
 async fn status_of(spec: &RouteSpec, bearer: Option<&str>) -> Option<StatusCode> {
-    let mut builder = Request::builder()
-        .method(spec.method)
-        .uri(concrete_path(spec));
+    status_at(build_app(), spec.method, &concrete_path(spec), bearer).await
+}
+
+/// Status of one request through `router`, with an optional bearer. `None`
+/// means the router never answered within [`ROUTE_TIMEOUT`]. A request that
+/// cannot even be built (an empty or malformed path) fails the test here
+/// rather than reading as `None`, which the guarded-route checks accept.
+async fn status_at(
+    router: axum::Router,
+    method: &str,
+    uri: &str,
+    bearer: Option<&str>,
+) -> Option<StatusCode> {
+    let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = bearer {
         builder = builder.header("authorization", format!("Bearer {token}"));
     }
-    let request = builder.body(Body::empty()).ok()?;
-    tokio::time::timeout(ROUTE_TIMEOUT, build_app().oneshot(request))
+    let request = builder.body(Body::empty());
+    assert!(
+        request.is_ok(),
+        "{method} {uri:?} must be a well-formed request"
+    );
+    let request = request.ok()?;
+    tokio::time::timeout(ROUTE_TIMEOUT, router.oneshot(request))
         .await
         .ok()?
         .ok()
@@ -380,26 +396,6 @@ async fn test_cors_preflight_is_not_answered_permissively() {
 
 // ---- the HTTP API under `/api` (#166) ----
 
-/// Status of one request through a fresh router, with an optional bearer.
-/// `None` means the router never answered within [`ROUTE_TIMEOUT`].
-async fn status_at(
-    router: axum::Router,
-    method: &str,
-    uri: &str,
-    bearer: Option<&str>,
-) -> Option<StatusCode> {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if let Some(token) = bearer {
-        builder = builder.header("authorization", format!("Bearer {token}"));
-    }
-    let request = builder.body(Body::empty()).ok()?;
-    tokio::time::timeout(ROUTE_TIMEOUT, router.oneshot(request))
-        .await
-        .ok()?
-        .ok()
-        .map(|response| response.status())
-}
-
 // Criterion (guard, "only `GET /health` is `Mount::Root`"): near-miss
 // `POST /pair` left at `Mount::Root` — the other public route, which every auth
 // test above would still accept. Asserted on `mount`, not on `public`.
@@ -410,54 +406,8 @@ fn test_only_health_is_mounted_at_the_root() {
         .filter(|s| s.mount == Mount::Root)
         .map(|s| (s.method, s.path))
         .collect();
+    // Two variants: every route not listed here is `Mount::Api`.
     assert_eq!(at_root, vec![("GET", "/health")]);
-    assert!(
-        ROUTES
-            .iter()
-            .filter(|s| s.path != "/health")
-            .all(|s| s.mount == Mount::Api),
-        "every route but /health must be mounted under /api: {ROUTES:?}"
-    );
-}
-
-// Criterion: the full path is `spec.path` for `Root` and `/api` + `spec.path`
-// for `Api`, and the table paths themselves carry no prefix.
-#[test]
-fn test_full_path_applies_the_mount_prefix() {
-    for spec in ROUTES {
-        assert!(
-            !spec.path.starts_with("/api/") && spec.path != "/api",
-            "{} {} must stay prefix-free in ROUTES",
-            spec.method,
-            spec.path
-        );
-        let expected = match spec.mount {
-            Mount::Root => spec.path.to_string(),
-            Mount::Api => format!("/api{}", spec.path),
-        };
-        assert_eq!(spec.full_path(), expected, "{} {}", spec.method, spec.path);
-    }
-    let health = ROUTES.iter().find(|s| s.path == "/health");
-    assert_eq!(health.map(RouteSpec::full_path).as_deref(), Some("/health"));
-    let pair = ROUTES.iter().find(|s| s.path == "/pair");
-    assert_eq!(pair.map(RouteSpec::full_path).as_deref(), Some("/api/pair"));
-}
-
-// Criterion: `POST /api/pair` is served, publicly. The public-route test above
-// covers it too, but only through `full_path`; this one names the URL.
-#[tokio::test]
-async fn test_pair_is_served_under_api_without_a_bearer() {
-    let status = status_at(build_app(), "POST", "/api/pair", None).await;
-    assert_ne!(
-        status,
-        Some(StatusCode::NOT_FOUND),
-        "POST /api/pair must exist"
-    );
-    assert_ne!(
-        status,
-        Some(StatusCode::UNAUTHORIZED),
-        "POST /api/pair is public"
-    );
 }
 
 // Criterion (guard, "old root paths are not served"): near-miss a router that

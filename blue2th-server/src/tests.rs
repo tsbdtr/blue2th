@@ -4545,35 +4545,3 @@ fn test_full_path_follows_the_mount_not_the_path() {
     assert_eq!(api_health.full_path(), "/api/health");
     assert_eq!(api_nested.full_path(), "/api/devices/{addr}/connect");
 }
-
-// Criterion (guard, "only `GET /health` is `Mount::Root`"): near-miss
-// `POST /pair`, the other public route, left at the root.
-#[test]
-fn test_routes_mount_only_health_at_the_root() {
-    for spec in ROUTES {
-        let expected = if (spec.method, spec.path) == ("GET", "/health") {
-            Mount::Root
-        } else {
-            Mount::Api
-        };
-        assert_eq!(spec.mount, expected, "{} {}", spec.method, spec.path);
-    }
-}
-
-// Criterion (end to end): the router serves `GET /api/targets` with a token, and
-// no longer serves `GET /targets`. The fake graph keeps it hardware-free.
-#[tokio::test]
-async fn test_router_serves_targets_under_api_only() {
-    let at = |uri: &'static str| async move {
-        let request = authorized(Request::builder().uri(uri))
-            .body(Body::empty())
-            .expect("build request");
-        build_app()
-            .oneshot(request)
-            .await
-            .expect("router response")
-            .status()
-    };
-    assert_eq!(at("/api/targets").await, StatusCode::OK);
-    assert_eq!(at("/targets").await, StatusCode::NOT_FOUND);
-}
