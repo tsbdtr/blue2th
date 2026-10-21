@@ -156,60 +156,19 @@ fn request_body(raw: &[u8]) -> Option<String> {
     (body.len() >= length).then(|| body[..length].to_string())
 }
 
-/// Run one `set_config_at` against a throwaway loopback listener and return
-/// the JSON body it pushed. No real backend, no hardware: the point is what
-/// goes on the wire.
+/// Run one `set_config_at` against a canned backend and return the JSON body
+/// it pushed. No real backend, no hardware: the point is what goes on the wire.
 async fn captured_config_push(
     name: &str,
     restore_during_playback: bool,
     auto_reconnect: bool,
 ) -> Result<serde_json::Value, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("bind the test listener: {e}"))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| format!("read the test listener address: {e}"))?;
-
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| format!("accept: {e}"))?;
-        let mut raw = Vec::new();
-        let mut chunk = [0u8; 1024];
-        let body = loop {
-            match request_body(&raw) {
-                Some(body) => break body,
-                None => {
-                    let read = stream
-                        .read(&mut chunk)
-                        .await
-                        .map_err(|e| format!("read the request: {e}"))?;
-                    if read == 0 {
-                        return Err("the client closed before sending a body".to_string());
-                    }
-                    raw.extend_from_slice(&chunk[..read]);
-                },
-            }
-        };
-        // A well-formed `ServerConfig` so the client's decode step succeeds.
-        let payload = r#"{"name":"Salon","restore_during_playback":true,"auto_reconnect":true}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{payload}",
-            payload.len()
-        );
-        stream
-            .write_all(response.as_bytes())
-            .await
-            .map_err(|e| format!("write the response: {e}"))?;
-        let _ = stream.flush().await;
-        Ok::<String, String>(body)
-    });
-
-    let base = format!("http://{addr}");
+    // A well-formed `ServerConfig` so the client's decode step succeeds.
+    let (base, served) = canned_backend(
+        "200 OK",
+        r#"{"name":"Salon","restore_during_playback":true,"auto_reconnect":true}"#,
+    )
+    .await?;
     // No token: this fixture reads the *body* the push sends, and the canned
     // listener answers whatever the header says.
     let pushed = set_config_at(
@@ -224,10 +183,10 @@ async fn captured_config_push(
         },
     )
     .await;
-    let body = server
-        .await
-        .map_err(|e| format!("join the test listener: {e}"))??;
+    let request = served.within_bound().await?;
     pushed.map_err(|e| format!("set_config_at: {e}"))?;
+    let body = request_body(request.as_bytes())
+        .ok_or_else(|| format!("the pushed request carries no body: {request}"))?;
     serde_json::from_str(&body).map_err(|e| format!("parse the pushed body ({body}): {e}"))
 }
 
@@ -541,7 +500,7 @@ fn header_value(raw: &str, name: &str) -> Option<String> {
 async fn canned_backend(
     status_line: &'static str,
     payload: &'static str,
-) -> Result<(String, tokio::task::JoinHandle<Result<String, String>>), String> {
+) -> Result<(String, Served), String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -585,7 +544,7 @@ async fn canned_backend(
         Ok::<String, String>(request)
     });
 
-    Ok((format!("http://{addr}"), handle))
+    Ok((format!("http://{addr}"), Served(handle)))
 }
 
 // ---- backend protocol compatibility check (#33) ----
@@ -608,7 +567,10 @@ async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
     .expect("start the canned backend");
 
     let checked = check_backend_protocol(&base).await;
-    let _ = served.await.expect("join the test listener");
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
 
     assert_eq!(
         blue2th_proto::PROTOCOL_VERSION,
@@ -634,7 +596,10 @@ async fn test_check_backend_protocol_refuses_a_backend_that_is_too_old() {
     .expect("start the canned backend");
 
     let checked = check_backend_protocol(&base).await;
-    let _ = served.await.expect("join the test listener");
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
 
     assert_eq!(
         checked.err().and_then(|e| e.protocol_mismatch()),
@@ -655,7 +620,10 @@ async fn test_check_backend_protocol_refuses_a_backend_that_is_too_new() {
     .expect("start the canned backend");
 
     let checked = check_backend_protocol(&base).await;
-    let _ = served.await.expect("join the test listener");
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
 
     assert_eq!(
         checked.err().and_then(|e| e.protocol_mismatch()),
@@ -674,7 +642,10 @@ async fn test_check_backend_protocol_reads_a_payload_without_the_fields_as_too_o
         .expect("start the canned backend");
 
     let checked = check_backend_protocol(&base).await;
-    let _ = served.await.expect("join the test listener");
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
 
     assert_eq!(
         checked.err().and_then(|e| e.protocol_mismatch()),
@@ -712,10 +683,7 @@ async fn test_backend_calls_carry_the_bearer_token() {
     crate::settings::set_current(active_with_token(&base, Some("tok-123")));
 
     let outcome = fetch_targets().await;
-    let request = served
-        .await
-        .expect("join the test listener")
-        .expect("serve one request");
+    let request = served.within_bound().await.expect("serve one request");
     crate::settings::set_current(AppSettings::default());
 
     assert!(outcome.is_ok(), "the call must succeed: {outcome:?}");
@@ -743,10 +711,7 @@ async fn test_the_config_push_carries_the_bearer_token() {
     }
 
     let outcome = sync_config(&mut settings).await;
-    let request = served
-        .await
-        .expect("join the test listener")
-        .expect("serve one request");
+    let request = served.within_bound().await.expect("serve one request");
     crate::settings::set_current(AppSettings::default());
 
     assert!(outcome.is_ok(), "the push must succeed: {outcome:?}");
@@ -790,10 +755,7 @@ async fn test_pair_exchanges_the_code_for_the_token() {
         .expect("start the canned backend");
 
     let token = pair(&CompatibleBackend { url: base }, "K7M2QX").await;
-    let request = served
-        .await
-        .expect("join the test listener")
-        .expect("serve one request");
+    let request = served.within_bound().await.expect("serve one request");
 
     assert_eq!(
         token.map_err(|e| e.to_string()),
@@ -825,7 +787,10 @@ async fn test_pair_with_a_refused_code_reports_not_paired() {
     let error = pair(&CompatibleBackend { url: base }, "AAAAAA")
         .await
         .expect_err("a refused code must not yield a token");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
 
     assert!(error.is_not_paired(), "got {error}");
 }
@@ -844,7 +809,10 @@ async fn test_now_playing_subscription_reports_not_paired_on_401() {
     let error = subscribe_now_playing(|_| {})
         .await
         .expect_err("a 401 must end the subscription");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
     crate::settings::set_current(AppSettings::default());
 
     assert!(error.is_not_paired(), "got {error}");
@@ -865,10 +833,7 @@ async fn test_ping_backend_reaches_health_without_a_token() {
     crate::settings::set_current(active_with_token(&base, None));
 
     let health = ping_backend().await;
-    let request = served
-        .await
-        .expect("join the test listener")
-        .expect("serve one request");
+    let request = served.within_bound().await.expect("serve one request");
     crate::settings::set_current(AppSettings::default());
 
     assert_eq!(
@@ -897,10 +862,7 @@ async fn test_ping_backend_carries_the_bearer_once_paired() {
     crate::settings::set_current(active_with_token(&base, Some("tok-123")));
 
     let health = ping_backend().await;
-    let request = served
-        .await
-        .expect("join the test listener")
-        .expect("serve one request");
+    let request = served.within_bound().await.expect("serve one request");
     crate::settings::set_current(AppSettings::default());
 
     assert!(health.is_ok(), "the probe must succeed: {health:?}");
@@ -924,7 +886,10 @@ async fn test_a_plain_call_reports_not_paired_on_401() {
     let error = fetch_targets()
         .await
         .expect_err("a revoked token must not yield a selection");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
     crate::settings::set_current(AppSettings::default());
 
     assert!(error.is_not_paired(), "got {error}");
@@ -944,7 +909,10 @@ async fn test_scan_reports_not_paired_on_401() {
     let error = scan_devices()
         .await
         .expect_err("a 401 must end the scan feed");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
     crate::settings::set_current(AppSettings::default());
 
     assert!(error.is_not_paired(), "got {error}");
@@ -1238,7 +1206,10 @@ async fn test_connect_device_reports_a_pairing_failure_on_409() {
     let error = connect_device("AA:BB:CC:DD:EE:FF")
         .await
         .expect_err("a refused bond must not yield a device");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
     crate::settings::set_current(AppSettings::default());
 
     assert!(
@@ -1260,7 +1231,10 @@ async fn test_play_does_not_report_a_pairing_failure_on_409() {
     let error = play()
         .await
         .expect_err("a 409 must not yield a playback state");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
     crate::settings::set_current(AppSettings::default());
 
     assert!(
@@ -1286,7 +1260,10 @@ async fn test_disconnect_device_does_not_report_a_pairing_failure_on_409() {
     let error = disconnect_device("AA:BB:CC:DD:EE:FF")
         .await
         .expect_err("a 409 must not yield a device");
-    let _ = served.await;
+    served
+        .within_bound()
+        .await
+        .expect("the call must reach the canned backend");
     crate::settings::set_current(AppSettings::default());
 
     assert!(
@@ -1317,10 +1294,7 @@ async fn test_activate_backend_pauses_the_previous_one_with_its_own_token() {
     // Fails on the arriving backend (port 2 is never listening); the pause on
     // the one being left is what this test reads.
     let _ = activate_backend(&mut settings, 1).await;
-    let request = served
-        .await
-        .expect("join the test listener")
-        .expect("serve one request");
+    let request = served.within_bound().await.expect("serve one request");
     crate::settings::set_current(AppSettings::default());
 
     assert!(
@@ -1403,22 +1377,37 @@ const BACKEND_CONFIG: &str = r#"{"name":"blue2th-PC","restore_during_playback":f
 /// How long a test waits for the call under test to reach the canned
 /// backend. Bounded so a client that never sends — a stub, a regression —
 /// fails the test instead of hanging it while it holds `SETTINGS_GUARD`.
-const SERVED_BOUND: Duration = Duration::from_secs(5);
+///
+/// Short on purpose. Every test waits only once the call under test has
+/// returned, so by then the request is already sent or never will be. A long
+/// bound buys nothing, and it adds up in a mutation run: the forwarding tables
+/// wait once per row, one after the other behind `SETTINGS_GUARD`.
+const SERVED_BOUND: Duration = Duration::from_secs(1);
 
-/// The raw request the canned backend served, or why there is none: the
-/// bound elapsed with no request sent, or the listener task failed. The
-/// listener is aborted on a timeout, so nothing is left accepting.
-async fn served_within_bound(
-    mut served: tokio::task::JoinHandle<Result<String, String>>,
-) -> Result<String, String> {
-    match tokio::time::timeout(SERVED_BOUND, &mut served).await {
-        Ok(joined) => joined.map_err(|e| format!("join the test listener: {e}"))?,
-        Err(_) => {
-            served.abort();
-            Err(format!(
-                "no request reached the backend within {SERVED_BOUND:?}"
-            ))
-        },
+/// The one request a canned backend serves, behind the only way to read it:
+/// [`Served::within_bound`].
+///
+/// Deliberately not a `Future`, nor `IntoFuture`: a bare `served.await` does
+/// not compile, so no test can wait on the listener without a bound. Unbounded,
+/// a client that never sends left the listener on `accept()` forever, and the
+/// test hung instead of failing — holding `SETTINGS_GUARD` while it did (#191).
+#[derive(Debug)]
+struct Served(tokio::task::JoinHandle<Result<String, String>>);
+
+impl Served {
+    /// The raw request the canned backend served, or why there is none: the
+    /// bound elapsed with no request sent, or the listener task failed. The
+    /// listener is aborted on a timeout, so nothing is left accepting.
+    async fn within_bound(mut self) -> Result<String, String> {
+        match tokio::time::timeout(SERVED_BOUND, &mut self.0).await {
+            Ok(joined) => joined.map_err(|e| format!("join the test listener: {e}"))?,
+            Err(_) => {
+                self.0.abort();
+                Err(format!(
+                    "no request reached the backend within {SERVED_BOUND:?}"
+                ))
+            },
+        }
     }
 }
 
@@ -1434,7 +1423,7 @@ async fn test_fetch_config_reads_the_backend_config_with_the_bearer() {
     let settings = active_with_token(&base, Some("tok-123"));
 
     let outcome = fetch_config(&settings).await;
-    let request = served_within_bound(served).await;
+    let request = served.within_bound().await;
 
     assert_eq!(
         outcome.map_err(|e| e.to_string()),
@@ -1468,7 +1457,7 @@ async fn test_fetch_config_reports_not_paired_on_401() {
     let settings = active_with_token(&base, Some("stale-token"));
 
     let outcome = fetch_config(&settings).await;
-    let request = served_within_bound(served).await;
+    let request = served.within_bound().await;
 
     assert!(
         outcome.as_ref().is_err_and(BackendError::is_not_paired),
@@ -1604,7 +1593,7 @@ async fn test_sync_config_reads_and_adopts_when_nothing_is_pending() {
     let mut settings = active_with_token(&base, Some("tok-123"));
 
     let outcome = sync_config(&mut settings).await;
-    let request = served_within_bound(served).await;
+    let request = served.within_bound().await;
     crate::settings::set_current(AppSettings::default());
 
     assert_eq!(outcome.map_err(|e| e.to_string()), Ok(()));
@@ -1642,7 +1631,7 @@ async fn test_sync_config_pushes_a_pending_change_and_clears_it() {
     }
 
     let outcome = sync_config(&mut settings).await;
-    let request = served_within_bound(served).await;
+    let request = served.within_bound().await;
     crate::settings::set_current(AppSettings::default());
 
     assert_eq!(outcome.map_err(|e| e.to_string()), Ok(()));
@@ -1678,7 +1667,7 @@ async fn test_sync_config_keeps_a_change_pending_when_the_push_fails() {
     }
 
     let outcome = sync_config(&mut settings).await;
-    let request = served_within_bound(served).await;
+    let request = served.within_bound().await;
     crate::settings::set_current(AppSettings::default());
 
     assert!(outcome.is_err(), "the refusal is surfaced");
@@ -1712,7 +1701,7 @@ async fn test_activate_backend_reads_the_config_of_a_synced_backend() {
     });
 
     let _ = activate_backend(&mut settings, 1).await;
-    let request = served_within_bound(served).await;
+    let request = served.within_bound().await;
     crate::settings::set_current(AppSettings::default());
 
     let request = request.unwrap_or_else(|e| e);
@@ -1747,7 +1736,7 @@ where
     };
     crate::settings::set_current(active_with_token(&base, Some("tok-123")));
     call(base).await;
-    let request = served_within_bound(served).await.unwrap_or_else(|e| e);
+    let request = served.within_bound().await.unwrap_or_else(|e| e);
     crate::settings::set_current(AppSettings::default());
 
     let mut words = request.lines().next().unwrap_or_default().split(' ');
