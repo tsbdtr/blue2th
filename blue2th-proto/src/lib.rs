@@ -49,15 +49,14 @@ pub struct HealthStatus {
 /// Bumped whenever the HTTP surface changes in a way an older peer cannot
 /// follow. Compiled into both sides, so the comparison never depends on what a
 /// payload claims about itself.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The oldest client contract a backend built from this source still serves.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
 
 /// Path prefix every backend route is mounted under, except `GET /health`,
 /// which stays at the root because it carries the version handshake (#166).
-// RED stub (#166): deliberately wrong, the green phase sets the real prefix.
-pub const API_PREFIX: &str = "";
+pub const API_PREFIX: &str = "/api";
 
 /// The URL of the API route `path` on the backend at `base`. Pure.
 ///
@@ -73,8 +72,11 @@ pub const API_PREFIX: &str = "";
 /// assert_eq!(api_url("http://h:4000", "/pair"), "http://h:4000/api/pair");
 /// ```
 pub fn api_url(base: &str, path: &str) -> String {
-    // RED stub (#166): the pre-#166 `{base}/{path}` join, without the prefix.
-    format!("{}/{path}", base.trim_end_matches('/'))
+    format!(
+        "{}{API_PREFIX}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 /// Which of the two machines is behind, when the app and the backend cannot
