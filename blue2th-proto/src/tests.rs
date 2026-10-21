@@ -802,12 +802,13 @@ fn test_default_backend_name_satisfies_the_validator() {
 // ---- backend protocol compatibility check (#33) ----
 
 // Criterion: proto — `PROTOCOL_VERSION` and `MIN_SUPPORTED_PROTOCOL_VERSION`
-// exist and are both `1`, and `HealthStatus::ok()` fills the range from them
-// so a backend cannot forget to announce it.
+// exist and are both `2` since the API moved under `/api` (#166), and
+// `HealthStatus::ok()` fills the range from them so a backend cannot forget
+// to announce it.
 #[test]
 fn test_health_status_announces_the_compiled_protocol_range() {
-    assert_eq!(PROTOCOL_VERSION, 1);
-    assert_eq!(MIN_SUPPORTED_PROTOCOL_VERSION, 1);
+    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(MIN_SUPPORTED_PROTOCOL_VERSION, 2);
 
     let status = HealthStatus::ok("0.1.0");
     assert_eq!(
@@ -1254,5 +1255,85 @@ fn test_parse_pair_link_accepts_a_nameless_link_and_ignores_extras() {
             name: None,
             code: SAMPLE_CODE.to_string(),
         })
+    );
+}
+
+// ---- the HTTP API under `/api` (#166) ----
+
+// Criterion: proto — `API_PREFIX == "/api"`.
+#[test]
+fn test_api_prefix_is_slash_api() {
+    assert_eq!(API_PREFIX, "/api");
+}
+
+// Criterion: proto — an app at protocol 1 against the backend built from this
+// source (a v2 `HealthStatus`) is told to update the app: `BackendTooNew`.
+#[test]
+fn test_check_protocol_refuses_a_protocol_1_client_against_this_backend() {
+    let current = HealthStatus::ok("0.3.0");
+    assert_eq!(
+        check_protocol(&current, 1),
+        Err(ProtocolMismatch::BackendTooNew)
+    );
+}
+
+// Criterion: proto — this app (protocol 2) against a v1 backend
+// (`protocol: 1, protocol_min: 1`) is told to update the backend:
+// `BackendTooOld`. Checked with the compiled constant, not a literal `2`, so the
+// test is about what this build sends.
+#[test]
+fn test_check_protocol_refuses_this_client_against_a_protocol_1_backend() {
+    let old = HealthStatus {
+        status: "ok".to_string(),
+        version: "0.2.0".to_string(),
+        auth_required: true,
+        protocol: 1,
+        protocol_min: 1,
+    };
+    assert_eq!(
+        check_protocol(&old, PROTOCOL_VERSION),
+        Err(ProtocolMismatch::BackendTooOld)
+    );
+}
+
+// Criterion: proto — `api_url(base, path)` is `{base}/api/{path}`.
+#[test]
+fn test_api_url_joins_base_prefix_and_path() {
+    assert_eq!(api_url("http://h:4000", "/pair"), "http://h:4000/api/pair");
+}
+
+// Criterion (non-nominal): a base with a trailing slash yields one slash.
+#[test]
+fn test_api_url_tolerates_a_trailing_slash_on_the_base() {
+    assert_eq!(api_url("http://h:4000/", "/pair"), "http://h:4000/api/pair");
+    assert_eq!(
+        api_url("http://10.0.0.5:4000/", "/pair"),
+        "http://10.0.0.5:4000/api/pair"
+    );
+}
+
+// Criterion (guard, "tolerates a path without its leading slash"): near-miss
+// `format!("{base}{API_PREFIX}{path}")`, which passes every `/…` caller and
+// yields `http://h:4000/apipair` for `"pair"`.
+#[test]
+fn test_api_url_tolerates_a_path_without_its_leading_slash() {
+    assert_eq!(api_url("http://h:4000", "pair"), "http://h:4000/api/pair");
+    assert_eq!(
+        api_url("http://h:4000", "spotify/pause"),
+        "http://h:4000/api/spotify/pause"
+    );
+    assert_eq!(
+        api_url("http://h:4000", "spotify/pause"),
+        api_url("http://h:4000", "/spotify/pause"),
+        "with or without the leading slash, one URL"
+    );
+}
+
+// Criterion: proto — a multi-segment path keeps its inner slashes as they are.
+#[test]
+fn test_api_url_keeps_a_nested_path() {
+    assert_eq!(
+        api_url("http://h:4000", "/devices/AA:BB:CC:DD:EE:FF/connect"),
+        "http://h:4000/api/devices/AA:BB:CC:DD:EE:FF/connect"
     );
 }

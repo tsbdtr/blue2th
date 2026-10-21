@@ -33,7 +33,7 @@ fn build_app() -> axum::Router {
 async fn test_post_client_presence_foreground_returns_no_content() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/client/presence")
+        .uri("/api/client/presence")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"presence":"foreground"}"#))
         .expect("build request");
@@ -48,7 +48,7 @@ async fn test_post_client_presence_foreground_returns_no_content() {
 async fn test_post_client_presence_background_returns_no_content() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/client/presence")
+        .uri("/api/client/presence")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"presence":"background"}"#))
         .expect("build request");

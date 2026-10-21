@@ -7,15 +7,16 @@
 use std::time::Duration;
 
 use blue2th_proto::{
-    AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo, HealthStatus,
-    NowPlaying, OffsetRequest, PairRequest, PairResponse, PlaybackState, PresenceRequest,
-    ProtocolMismatch, ServerConfig, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
+    api_url, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
+    HealthStatus, NowPlaying, OffsetRequest, PairRequest, PairResponse, PlaybackState,
+    PresenceRequest, ProtocolMismatch, ServerConfig, SpotifyAuthState, SpotifyState, TargetsState,
+    VolumeRequest,
 };
 use futures::StreamExt;
 
 use crate::settings::{AppSettings, ConfigSync};
 
-/// How long the app keeps reading the `/scan` SSE feed before stopping. The
+/// How long the app keeps reading the `/api/scan` SSE feed before stopping. The
 /// backend caps discovery on its side too; this is the client-side window.
 const SCAN_WINDOW: Duration = Duration::from_secs(8);
 
@@ -130,7 +131,7 @@ impl BackendError {
     /// only there — means the speaker refused the Bluetooth bond. Pure.
     ///
     /// Applied by `connect_device` alone, so no other route can set the flag: a
-    /// `409` from `/spotify/play` while disconnected keeps meaning what it says.
+    /// `409` from `/api/spotify/play` while disconnected keeps meaning what it says.
     /// A [`BackendError::not_paired`] passes through untouched — a 401 on the
     /// connect route is still "pair the app with the backend".
     fn pairing_failure_if_conflict(self) -> Self {
@@ -183,9 +184,9 @@ fn status_line(status: u16) -> String {
     format!("HTTP {status}")
 }
 
-/// Build the `{base}/pair` URL, tolerating a trailing slash on the base.
+/// Build the `{base}/api/pair` URL, tolerating a trailing slash on the base.
 fn pair_url(base: &str) -> String {
-    format!("{}/pair", base.trim_end_matches('/'))
+    api_url(base, "pair")
 }
 
 /// The `Authorization` header value carrying `token`.
@@ -234,7 +235,7 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
     Ok((base, token))
 }
 
-/// `POST {base}/pair` — exchange a short-lived pairing code for the backend's
+/// `POST {base}/api/pair` — exchange a short-lived pairing code for the backend's
 /// long-lived API token. The one call that carries no bearer, since the app has
 /// none yet.
 ///
@@ -326,12 +327,12 @@ fn base_url_from(settings: &AppSettings) -> Result<String, BackendError> {
         .ok_or_else(|| BackendError::new(NO_BACKEND_CONFIGURED))
 }
 
-/// Build the `{base}/config` URL, tolerating a trailing slash on the base.
+/// Build the `{base}/api/config` URL, tolerating a trailing slash on the base.
 fn config_url(base: &str) -> String {
-    format!("{}/config", base.trim_end_matches('/'))
+    api_url(base, "config")
 }
 
-/// `POST {base}/config` against an explicit address — push a config change to
+/// `POST {base}/api/config` against an explicit address — push a config change to
 /// the backend, which adopts the name as its Spotify Connect device name.
 ///
 /// Addressed explicitly rather than through `backend_base_url()`: the only caller
@@ -379,7 +380,7 @@ fn bearing(request: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::Re
     }
 }
 
-/// `POST {base}/spotify/pause` against an explicit address — used to quieten the
+/// `POST {base}/api/spotify/pause` against an explicit address — used to quieten the
 /// backend being left behind, which is no longer the one the settings resolve to.
 ///
 /// It carries *that* backend's token: the guard applies here like anywhere else,
@@ -388,11 +389,11 @@ async fn pause_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
     post_at(base, "spotify/pause", token).await
 }
 
-/// `POST {base}/{path}` against an explicit address, carrying *that* backend's
+/// `POST {base}/api/{path}` against an explicit address, carrying *that* backend's
 /// token. The body-less counterpart of [`set_config_at`], for the calls aimed at
 /// a backend the app is leaving rather than the one it resolves to.
 async fn post_at(base: &str, path: &str, token: Option<&str>) -> Result<(), BackendError> {
-    let url = format!("{}/{path}", base.trim_end_matches('/'));
+    let url = api_url(base, path);
     let response = bearing(reqwest::Client::new().post(&url), token)
         .timeout(SETTINGS_CALL_TIMEOUT)
         .send()
@@ -466,7 +467,7 @@ pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<
     release_at(&base, token.as_deref()).await
 }
 
-/// `GET {base}/config` — the configuration of the active backend of `settings`
+/// `GET {base}/api/config` — the configuration of the active backend of `settings`
 /// (#160): the read half of [`sync_config`].
 ///
 /// Resolved from the snapshot it is given rather than from the process-wide
@@ -513,7 +514,7 @@ pub async fn sync_config(settings: &mut AppSettings) -> Result<(), BackendError>
 /// wasm, and a post sent from `pagehide` without it dies with the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresencePost {
-    /// `{base}/client/presence`.
+    /// `{base}/api/client/presence`.
     pub url: String,
     /// The `Authorization` header value: `Bearer <token>`.
     pub authorization: String,
@@ -533,7 +534,7 @@ pub fn browser_presence_post(
     let body = serde_json::to_string(&PresenceRequest { presence })
         .map_err(|e| BackendError::new(e.to_string()))?;
     Ok(PresencePost {
-        url: format!("{}/client/presence", base.trim_end_matches('/')),
+        url: api_url(&base, "client/presence"),
         authorization: auth_header_value(&token),
         body,
         keepalive: true,
@@ -691,11 +692,11 @@ pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
     send_json(request).await
 }
 
-/// Run a backend scan: consume the `/scan` SSE feed for `SCAN_WINDOW`, collecting
+/// Run a backend scan: consume the `/api/scan` SSE feed for `SCAN_WINDOW`, collecting
 /// each discovered device (deduplicated by address).
 pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/scan", base.trim_end_matches('/'));
+    let url = api_url(&base, "scan");
     let response = client
         .get(&url)
         .send()
@@ -733,7 +734,7 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     Ok(found)
 }
 
-/// `POST {base}/devices/{address}/connect` — pair/trust/connect on the backend,
+/// `POST {base}/api/devices/{address}/connect` — pair/trust/connect on the backend,
 /// returning the device's updated state.
 pub async fn connect_device(address: &str) -> Result<DeviceInfo, BackendError> {
     // The one place a 409 means "the speaker refused the bond": on every other
@@ -743,77 +744,77 @@ pub async fn connect_device(address: &str) -> Result<DeviceInfo, BackendError> {
         .map_err(BackendError::pairing_failure_if_conflict)
 }
 
-/// `POST {base}/devices/{address}/disconnect` — disconnect on the backend,
+/// `POST {base}/api/devices/{address}/disconnect` — disconnect on the backend,
 /// returning the device's updated state.
 pub async fn disconnect_device(address: &str) -> Result<DeviceInfo, BackendError> {
     post_device_action(address, "disconnect").await
 }
 
-/// POST `{base}/devices/{address}/{action}` and decode the updated `DeviceInfo`.
+/// POST `{base}/api/devices/{address}/{action}` and decode the updated `DeviceInfo`.
 async fn post_device_action(address: &str, action: &str) -> Result<DeviceInfo, BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/devices/{address}/{action}", base.trim_end_matches('/'));
+    let url = api_url(&base, &format!("devices/{address}/{action}"));
     send_json(client.post(&url)).await
 }
 
-/// `GET {base}/devices` — the backend's paired devices and their current state.
+/// `GET {base}/api/devices` — the backend's paired devices and their current state.
 /// Used by the periodic poll to refresh `connected`/`rssi` without re-scanning.
 pub async fn fetch_devices() -> Result<Vec<DeviceInfo>, BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/devices", base.trim_end_matches('/'));
+    let url = api_url(&base, "devices");
     send_json(client.get(&url)).await
 }
 
-/// `POST {base}/play` — start (or resume) playback on the backend, returning the
+/// `POST {base}/api/play` — start (or resume) playback on the backend, returning the
 /// new playback state.
 pub async fn play() -> Result<PlaybackState, BackendError> {
     post_transport("play").await
 }
 
-/// `POST {base}/pause` — pause playback, returning the new state.
+/// `POST {base}/api/pause` — pause playback, returning the new state.
 pub async fn pause() -> Result<PlaybackState, BackendError> {
     post_transport("pause").await
 }
 
-/// `POST {base}/stop` — stop playback, returning the new state.
+/// `POST {base}/api/stop` — stop playback, returning the new state.
 pub async fn stop() -> Result<PlaybackState, BackendError> {
     post_transport("stop").await
 }
 
-/// `GET {base}/playback` — the backend's current playback state.
+/// `GET {base}/api/playback` — the backend's current playback state.
 pub async fn playback_state() -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/playback", base.trim_end_matches('/'));
+    let url = api_url(&base, "playback");
     send_json(client.get(&url)).await
 }
 
-/// `POST {base}/volume` — set the connected speaker's PipeWire sink volume
+/// `POST {base}/api/volume` — set the connected speaker's PipeWire sink volume
 /// (clamped server-side to `0.0..=1.0`), returning the new state.
 pub async fn set_volume(level: f32) -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/volume", base.trim_end_matches('/'));
+    let url = api_url(&base, "volume");
     send_json(client.post(&url).json(&VolumeRequest { level })).await
 }
 
-/// POST `{base}/{action}` (no body) and decode the updated `PlaybackState`.
+/// POST `{base}/api/{action}` (no body) and decode the updated `PlaybackState`.
 async fn post_transport(action: &str) -> Result<PlaybackState, BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/{action}", base.trim_end_matches('/'));
+    let url = api_url(&base, action);
     send_json(client.post(&url)).await
 }
 
-/// Build the `{base}/devices/{address}/{action}` URL for a target action
+/// Build the `{base}/api/devices/{address}/{action}` URL for a target action
 /// (`select`/`deselect`/`offset`), tolerating a trailing slash on the base.
 fn device_action_url(base: &str, address: &str, action: &str) -> String {
-    format!("{}/devices/{address}/{action}", base.trim_end_matches('/'))
+    api_url(base, &format!("devices/{address}/{action}"))
 }
 
-/// Build the `{base}/targets` URL, tolerating a trailing slash on the base.
+/// Build the `{base}/api/targets` URL, tolerating a trailing slash on the base.
 fn targets_url(base: &str) -> String {
-    format!("{}/targets", base.trim_end_matches('/'))
+    api_url(base, "targets")
 }
 
-/// `POST {base}/devices/{address}/select` — select a connected speaker as a
+/// `POST {base}/api/devices/{address}/select` — select a connected speaker as a
 /// playback target, returning the updated selection state.
 pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
@@ -821,7 +822,7 @@ pub async fn select_target(address: &str) -> Result<TargetsState, BackendError> 
     send_json(client.post(&url)).await
 }
 
-/// `POST {base}/devices/{address}/deselect` — drop a speaker from the playback
+/// `POST {base}/api/devices/{address}/deselect` — drop a speaker from the playback
 /// target selection, returning the updated selection state.
 pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
@@ -829,7 +830,7 @@ pub async fn deselect_target(address: &str) -> Result<TargetsState, BackendError
     send_json(client.post(&url)).await
 }
 
-/// `POST {base}/devices/{address}/offset` — set a target speaker's latency offset
+/// `POST {base}/api/devices/{address}/offset` — set a target speaker's latency offset
 /// (clamped server-side to `0..=750` ms), returning the updated selection state.
 pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
@@ -837,7 +838,7 @@ pub async fn set_offset(address: &str, offset_ms: u32) -> Result<TargetsState, B
     send_json(client.post(&url).json(&OffsetRequest { offset_ms })).await
 }
 
-/// `GET {base}/targets` — the backend's current playback-target selection,
+/// `GET {base}/api/targets` — the backend's current playback-target selection,
 /// per-speaker offsets and routing mode.
 pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
     let (client, base) = authed_client()?;
@@ -845,41 +846,41 @@ pub async fn fetch_targets() -> Result<TargetsState, BackendError> {
     send_json(client.get(&url)).await
 }
 
-/// Build the `{base}/spotify/{action}` URL for a Spotify backend action
+/// Build the `{base}/api/spotify/{action}` URL for a Spotify backend action
 /// (`start`/`stop`/`status`), tolerating a trailing slash on the base.
 fn spotify_url(base: &str, action: &str) -> String {
-    format!("{}/spotify/{action}", base.trim_end_matches('/'))
+    api_url(base, &format!("spotify/{action}"))
 }
 
-/// `POST {base}/spotify/start` — activate the Spotify source backend (spawn the
+/// `POST {base}/api/spotify/start` — activate the Spotify source backend (spawn the
 /// `librespot` Connect device), returning its new state.
 pub async fn start_spotify() -> Result<SpotifyState, BackendError> {
     post_spotify("start").await
 }
 
-/// `POST {base}/spotify/stop` — deactivate the Spotify source backend (kill the
+/// `POST {base}/api/spotify/stop` — deactivate the Spotify source backend (kill the
 /// subprocess), returning its new state.
 pub async fn stop_spotify() -> Result<SpotifyState, BackendError> {
     post_spotify("stop").await
 }
 
-/// `GET {base}/spotify/status` — the Spotify backend's current state.
+/// `GET {base}/api/spotify/status` — the Spotify backend's current state.
 pub async fn spotify_status() -> Result<SpotifyState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "status");
     send_json(client.get(&url)).await
 }
 
-/// POST `{base}/spotify/{action}` (no body) and decode the updated `SpotifyState`.
+/// POST `{base}/api/spotify/{action}` (no body) and decode the updated `SpotifyState`.
 async fn post_spotify(action: &str) -> Result<SpotifyState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, action);
     send_json(client.post(&url)).await
 }
 
-/// Build the `{base}/spotify/now-playing` SSE URL, tolerating a trailing slash.
+/// Build the `{base}/api/spotify/now-playing` SSE URL, tolerating a trailing slash.
 fn now_playing_url(base: &str) -> String {
-    format!("{}/spotify/now-playing", base.trim_end_matches('/'))
+    api_url(base, "spotify/now-playing")
 }
 
 /// Surface the backend's own message for a failed response. `AppError` replies
@@ -897,7 +898,7 @@ async fn backend_error_message(
     Err(backend_error_for(status.as_u16(), &body))
 }
 
-/// `GET {base}/spotify/auth/url` — ask the backend for a Spotify authorize URL
+/// `GET {base}/api/spotify/auth/url` — ask the backend for a Spotify authorize URL
 /// (PKCE) and the CSRF `state` to echo back on callback.
 pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
     let (client, base) = authed_client()?;
@@ -905,7 +906,7 @@ pub async fn spotify_auth_url() -> Result<AuthUrlResponse, BackendError> {
     send_json(client.get(&url)).await
 }
 
-/// `POST {base}/spotify/auth/callback` — hand the backend the authorization
+/// `POST {base}/api/spotify/auth/callback` — hand the backend the authorization
 /// `code` (and CSRF `state`) captured from the custom-scheme redirect.
 ///
 /// Invoked from the root deep-link poll in `App`, which consumes the
@@ -925,14 +926,14 @@ pub async fn spotify_auth_callback(
     .await
 }
 
-/// `GET {base}/spotify/auth/status` — the current auth state (Connected/Disconnected).
+/// `GET {base}/api/spotify/auth/status` — the current auth state (Connected/Disconnected).
 pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
     let (client, base) = authed_client()?;
     let url = spotify_url(&base, "auth/status");
     send_json(client.get(&url)).await
 }
 
-/// `POST {base}/client/presence` — tell the backend whether the app is on screen,
+/// `POST {base}/api/client/presence` — tell the backend whether the app is on screen,
 /// backgrounded or closing.
 ///
 /// The backend cannot infer this: Android freezes a backgrounded app, so its
@@ -941,7 +942,7 @@ pub async fn spotify_auth_status() -> Result<SpotifyAuthState, BackendError> {
 #[cfg(target_os = "android")]
 pub async fn report_presence(presence: ClientPresence) -> Result<(), BackendError> {
     let (client, base) = authed_client()?;
-    let url = format!("{}/client/presence", base.trim_end_matches('/'));
+    let url = api_url(&base, "client/presence");
     let response = client
         .post(&url)
         .json(&PresenceRequest { presence })
@@ -967,7 +968,7 @@ pub enum SpotifyAction {
 }
 
 impl SpotifyAction {
-    /// The `/spotify/{…}` path segment this action posts to.
+    /// The `/api/spotify/{…}` path segment this action posts to.
     fn path(self) -> &'static str {
         match self {
             SpotifyAction::Previous => "previous",
@@ -978,13 +979,13 @@ impl SpotifyAction {
     }
 }
 
-/// `POST {base}/spotify/{action}` — drive playback through the Web API, which the
+/// `POST {base}/api/spotify/{action}` — drive playback through the Web API, which the
 /// server applies to the `blue2th-PC` Connect device.
 pub async fn spotify_transport(action: SpotifyAction) -> Result<(), BackendError> {
     post_spotify_transport(action.path()).await
 }
 
-/// POST `{base}/spotify/{action}` (no body) for a transport action; the backend
+/// POST `{base}/api/spotify/{action}` (no body) for a transport action; the backend
 /// replies 204 (no content) on success, so no body is decoded.
 async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
     let (client, base) = authed_client()?;
@@ -998,7 +999,7 @@ async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
     Ok(())
 }
 
-/// Subscribe to the `{base}/spotify/now-playing` SSE feed, invoking `on_event`
+/// Subscribe to the `{base}/api/spotify/now-playing` SSE feed, invoking `on_event`
 /// for each `now-playing` snapshot until the stream ends or the caller drops the
 /// future. Errors talking to the backend are surfaced to the caller.
 pub async fn subscribe_now_playing<F>(mut on_event: F) -> Result<(), BackendError>

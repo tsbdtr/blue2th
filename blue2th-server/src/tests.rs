@@ -161,7 +161,7 @@ async fn test_health_endpoint_announces_the_protocol_range() {
 // offsets store itself is unit-tested in `targets.rs` against a temp path.
 #[tokio::test]
 async fn test_app_builds_with_the_offsets_store_and_restores_no_selection() {
-    let request = authorized(Request::builder().uri("/targets"))
+    let request = authorized(Request::builder().uri("/api/targets"))
         .body(Body::empty())
         .expect("build request");
 
@@ -4513,4 +4513,35 @@ async fn test_confirmation_timer_sends_the_actor_no_message_while_nothing_is_arm
     settle().await;
 
     assert_eq!(*received.lock().unwrap(), Vec::new());
+}
+
+// ---- the HTTP API under `/api` (#166) ----
+
+// Criterion: server — the full path is `spec.path` for `Mount::Root` and
+// `API_PREFIX` + `spec.path` for `Mount::Api`. Synthetic specs rather than table
+// entries, so a `full_path` keyed on `"/health"` instead of on the mount fails:
+// the `Root` one here is not `/health`, and the `Api` one shares its path.
+#[test]
+fn test_full_path_follows_the_mount_not_the_path() {
+    let root = RouteSpec {
+        method: "GET",
+        path: "/status",
+        public: false,
+        mount: Mount::Root,
+    };
+    let api_health = RouteSpec {
+        method: "GET",
+        path: "/health",
+        public: true,
+        mount: Mount::Api,
+    };
+    let api_nested = RouteSpec {
+        method: "POST",
+        path: "/devices/{addr}/connect",
+        public: false,
+        mount: Mount::Api,
+    };
+    assert_eq!(root.full_path(), "/status");
+    assert_eq!(api_health.full_path(), "/api/health");
+    assert_eq!(api_nested.full_path(), "/api/devices/{addr}/connect");
 }

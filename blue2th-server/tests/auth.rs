@@ -19,7 +19,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use blue2th_proto::HealthStatus;
-use blue2th_server::{auth::AuthStore, spotify_auth::SpotifyAuth, RouteSpec, ROUTES};
+use blue2th_server::{auth::AuthStore, spotify_auth::SpotifyAuth, Mount, RouteSpec, ROUTES};
 use tower::ServiceExt; // for `oneshot`
 
 /// The API token these tests pair with (in memory only).
@@ -42,23 +42,40 @@ fn build_app() -> axum::Router {
     )
 }
 
-/// The concrete path a route spec is exercised on.
+/// The concrete path a route spec is exercised on: its **full** path, the
+/// mount prefix included (#166), with `{addr}` filled in.
 fn concrete_path(spec: &RouteSpec) -> String {
-    spec.path.replace("{addr}", ADDR)
+    spec.full_path().replace("{addr}", ADDR)
 }
 
-/// Send one request through a fresh router. `None` means the route never
-/// answered within [`ROUTE_TIMEOUT`] — which is certainly not a 401, and is how
-/// the assertions below read it.
+/// Send one request for `spec` through a fresh router. `None` means the route
+/// never answered within [`ROUTE_TIMEOUT`] — which is certainly not a 401, and
+/// is how the assertions below read it.
 async fn status_of(spec: &RouteSpec, bearer: Option<&str>) -> Option<StatusCode> {
-    let mut builder = Request::builder()
-        .method(spec.method)
-        .uri(concrete_path(spec));
+    status_at(build_app(), spec.method, &concrete_path(spec), bearer).await
+}
+
+/// Status of one request through `router`, with an optional bearer. `None`
+/// means the router never answered within [`ROUTE_TIMEOUT`]. A request that
+/// cannot even be built (an empty or malformed path) fails the test here
+/// rather than reading as `None`, which the guarded-route checks accept.
+async fn status_at(
+    router: axum::Router,
+    method: &str,
+    uri: &str,
+    bearer: Option<&str>,
+) -> Option<StatusCode> {
+    let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = bearer {
         builder = builder.header("authorization", format!("Bearer {token}"));
     }
-    let request = builder.body(Body::empty()).ok()?;
-    tokio::time::timeout(ROUTE_TIMEOUT, build_app().oneshot(request))
+    let request = builder.body(Body::empty());
+    assert!(
+        request.is_ok(),
+        "{method} {uri:?} must be a well-formed request"
+    );
+    let request = request.ok()?;
+    tokio::time::timeout(ROUTE_TIMEOUT, router.oneshot(request))
         .await
         .ok()?
         .ok()
@@ -80,7 +97,7 @@ async fn test_every_guarded_route_rejects_a_missing_bearer() {
             Some(StatusCode::UNAUTHORIZED),
             "{} {} must be refused without a bearer",
             spec.method,
-            spec.path
+            spec.full_path()
         );
     }
 }
@@ -99,7 +116,7 @@ async fn test_every_guarded_route_rejects_a_wrong_bearer() {
             Some(StatusCode::UNAUTHORIZED),
             "{} {} must be refused with a wrong bearer",
             spec.method,
-            spec.path
+            spec.full_path()
         );
     }
 }
@@ -120,21 +137,21 @@ async fn test_every_guarded_route_accepts_a_valid_bearer() {
             Some(StatusCode::UNAUTHORIZED),
             "{} {} must be allowed with the right bearer",
             spec.method,
-            spec.path
+            spec.full_path()
         );
         assert_ne!(
             status,
             Some(StatusCode::NOT_FOUND),
             "{} {} is in ROUTES but the router does not serve it",
             spec.method,
-            spec.path
+            spec.full_path()
         );
         assert_ne!(
             status,
             Some(StatusCode::METHOD_NOT_ALLOWED),
             "{} {} is in ROUTES with a method the router does not accept",
             spec.method,
-            spec.path
+            spec.full_path()
         );
     }
 }
@@ -155,14 +172,14 @@ async fn test_public_routes_answer_without_a_bearer() {
             Some(StatusCode::UNAUTHORIZED),
             "{} {} is public and must answer without a bearer",
             spec.method,
-            spec.path
+            spec.full_path()
         );
         assert_ne!(
             status,
             Some(StatusCode::NOT_FOUND),
             "{} {} is in ROUTES but the router does not serve it",
             spec.method,
-            spec.path
+            spec.full_path()
         );
     }
 }
@@ -181,51 +198,54 @@ fn test_only_health_and_pair_are_public() {
 
 // Criterion: the route table is the single source of truth — it must name every
 // route the backend serves today, or the guard tests above would pass while
-// leaving real routes unchecked (an empty table passes them vacuously).
+// leaving real routes unchecked (an empty table passes them vacuously). Since
+// #166 it also pins each entry's mount: the paths stay prefix-free, and only
+// `GET /health` sits at the root.
 #[test]
 fn test_route_table_lists_every_route_the_backend_serves() {
-    let expected: &[(&str, &str, bool)] = &[
-        ("GET", "/health", true),
-        ("POST", "/pair", true),
-        ("GET", "/adapters", false),
-        ("GET", "/devices", false),
-        ("POST", "/devices/{addr}/connect", false),
-        ("POST", "/devices/{addr}/disconnect", false),
-        ("POST", "/devices/{addr}/select", false),
-        ("POST", "/devices/{addr}/deselect", false),
-        ("POST", "/devices/{addr}/offset", false),
-        ("GET", "/targets", false),
-        ("GET", "/scan", false),
-        ("POST", "/play", false),
-        ("POST", "/pause", false),
-        ("POST", "/stop", false),
-        ("POST", "/volume", false),
-        ("GET", "/playback", false),
-        ("POST", "/spotify/start", false),
-        ("POST", "/spotify/stop", false),
-        ("GET", "/spotify/status", false),
-        ("GET", "/spotify/auth/url", false),
-        ("POST", "/spotify/auth/callback", false),
-        ("GET", "/spotify/auth/status", false),
-        ("POST", "/spotify/play", false),
-        ("POST", "/spotify/pause", false),
-        ("POST", "/spotify/next", false),
-        ("POST", "/spotify/previous", false),
-        ("GET", "/spotify/now-playing", false),
-        ("POST", "/spotify/volume", false),
-        ("POST", "/client/presence", false),
-        ("GET", "/config", false),
-        ("POST", "/config", false),
+    use Mount::{Api, Root};
+    let expected: &[(&str, &str, bool, Mount)] = &[
+        ("GET", "/health", true, Root),
+        ("POST", "/pair", true, Api),
+        ("GET", "/adapters", false, Api),
+        ("GET", "/devices", false, Api),
+        ("POST", "/devices/{addr}/connect", false, Api),
+        ("POST", "/devices/{addr}/disconnect", false, Api),
+        ("POST", "/devices/{addr}/select", false, Api),
+        ("POST", "/devices/{addr}/deselect", false, Api),
+        ("POST", "/devices/{addr}/offset", false, Api),
+        ("GET", "/targets", false, Api),
+        ("GET", "/scan", false, Api),
+        ("POST", "/play", false, Api),
+        ("POST", "/pause", false, Api),
+        ("POST", "/stop", false, Api),
+        ("POST", "/volume", false, Api),
+        ("GET", "/playback", false, Api),
+        ("POST", "/spotify/start", false, Api),
+        ("POST", "/spotify/stop", false, Api),
+        ("GET", "/spotify/status", false, Api),
+        ("GET", "/spotify/auth/url", false, Api),
+        ("POST", "/spotify/auth/callback", false, Api),
+        ("GET", "/spotify/auth/status", false, Api),
+        ("POST", "/spotify/play", false, Api),
+        ("POST", "/spotify/pause", false, Api),
+        ("POST", "/spotify/next", false, Api),
+        ("POST", "/spotify/previous", false, Api),
+        ("GET", "/spotify/now-playing", false, Api),
+        ("POST", "/spotify/volume", false, Api),
+        ("POST", "/client/presence", false, Api),
+        ("GET", "/config", false, Api),
+        ("POST", "/config", false, Api),
     ];
 
-    for (method, path, public) in expected {
+    for (method, path, public, mount) in expected {
         let listed = ROUTES
             .iter()
             .find(|s| s.method == *method && s.path == *path);
         assert_eq!(
-            listed.map(|s| s.public),
-            Some(*public),
-            "{method} {path} must be listed in ROUTES with public={public}"
+            listed.map(|s| (s.public, s.mount)),
+            Some((*public, *mount)),
+            "{method} {path} must be listed in ROUTES with public={public}, mount={mount:?}"
         );
     }
     assert_eq!(
@@ -358,7 +378,7 @@ async fn test_no_cors_header_is_granted_to_a_foreign_origin() {
 async fn test_cors_preflight_is_not_answered_permissively() {
     let request = Request::builder()
         .method("OPTIONS")
-        .uri("/play")
+        .uri("/api/play")
         .header("origin", "https://evil.example")
         .header("access-control-request-method", "POST")
         .body(Body::empty())
@@ -371,5 +391,116 @@ async fn test_cors_preflight_is_not_answered_permissively() {
             .is_none(),
         "the preflight must not bless the origin, got {:?}",
         response.headers()
+    );
+}
+
+// ---- the HTTP API under `/api` (#166) ----
+
+// Criterion (guard, "only `GET /health` is `Mount::Root`"): near-miss
+// `POST /pair` left at `Mount::Root` — the other public route, which every auth
+// test above would still accept. Asserted on `mount`, not on `public`.
+#[test]
+fn test_only_health_is_mounted_at_the_root() {
+    let at_root: Vec<(&str, &str)> = ROUTES
+        .iter()
+        .filter(|s| s.mount == Mount::Root)
+        .map(|s| (s.method, s.path))
+        .collect();
+    // Two variants: every route not listed here is `Mount::Api`.
+    assert_eq!(at_root, vec![("GET", "/health")]);
+}
+
+// Criterion (guard, "old root paths are not served"): near-miss a router that
+// mounts the table both at the root and under `/api` — every `/api/...` test
+// stays green, and only a request at the old root path catches it. Without a
+// bearer: a double mount would answer 401 there, which is not 404 either, and a
+// guarded handler (`/play`, `/devices`) never runs — none reaches the audio
+// graph or BlueZ, whatever the router does.
+#[tokio::test]
+async fn test_old_root_paths_are_no_longer_served() {
+    for (method, uri) in [
+        ("GET", "/devices"),
+        ("GET", "/targets"),
+        ("POST", "/play"),
+        ("GET", "/config"),
+        ("GET", "/spotify/now-playing"),
+    ] {
+        assert_eq!(
+            status_at(build_app(), method, uri, None).await,
+            Some(StatusCode::NOT_FOUND),
+            "{method} {uri} must not be served at the root any more"
+        );
+    }
+}
+
+// Criterion (guard, the public near-miss): `POST /pair` at the root → 404. A
+// `Mount::Root` left on it would answer here without a token.
+#[tokio::test]
+async fn test_pair_at_the_root_is_not_found() {
+    assert_eq!(
+        status_at(build_app(), "POST", "/pair", None).await,
+        Some(StatusCode::NOT_FOUND)
+    );
+}
+
+// Criterion (guard, "`/health` is not under `/api`"): near-miss the double mount
+// restricted to health. `/health` itself still answers 200 at the root.
+#[tokio::test]
+async fn test_health_is_not_served_under_api() {
+    assert_eq!(
+        status_at(build_app(), "GET", "/api/health", None).await,
+        Some(StatusCode::NOT_FOUND),
+        "health exists only at the root"
+    );
+    assert_eq!(
+        status_at(build_app(), "GET", "/health", None).await,
+        Some(StatusCode::OK)
+    );
+}
+
+// Criterion: an unknown path under `/api` — `/api/nope`, `/api`, `/api/` — is a
+// 404, with or without a token, and never a 401: the guard is per route.
+#[tokio::test]
+async fn test_unknown_paths_under_api_are_not_found_with_or_without_a_token() {
+    for uri in ["/api/nope", "/api", "/api/"] {
+        for bearer in [None, Some(TOKEN), Some("not-the-token")] {
+            assert_eq!(
+                status_at(build_app(), "GET", uri, bearer).await,
+                Some(StatusCode::NOT_FOUND),
+                "GET {uri} with bearer {bearer:?} must be a 404"
+            );
+        }
+    }
+}
+
+// Criterion (guard, "the nested router has its own fallback"): near-miss an
+// inner router without `.fallback(unknown_route)`, indistinguishable from the
+// right one while the outer router has no fallback either. So the outer router
+// is given a 200 fallback here (standing in for the page from #161): an
+// unknown path under `/api` must still be the nested router's 404.
+#[tokio::test]
+async fn test_unknown_path_under_api_uses_the_nested_fallback() {
+    let with_outer_fallback = || build_app().fallback(|| async { StatusCode::OK });
+    assert_eq!(
+        status_at(with_outer_fallback(), "GET", "/api/nope", None).await,
+        Some(StatusCode::NOT_FOUND),
+        "the nested router must answer its own unknown paths"
+    );
+    assert_eq!(
+        status_at(
+            with_outer_fallback(),
+            "GET",
+            "/api/devices/nope/deeper",
+            Some(TOKEN)
+        )
+        .await,
+        Some(StatusCode::NOT_FOUND),
+        "a deeper unknown path under /api is the nested router's too"
+    );
+    // Control: the outer fallback is really installed, so the 404s above are
+    // the nested router's and not an accident of the setup.
+    assert_eq!(
+        status_at(with_outer_fallback(), "GET", "/not-the-api", None).await,
+        Some(StatusCode::OK)
     );
 }

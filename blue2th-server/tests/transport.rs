@@ -38,7 +38,7 @@ fn build_app() -> axum::Router {
 #[tokio::test]
 async fn test_playback_endpoint_returns_state() {
     let request = authorized(Request::builder())
-        .uri("/playback")
+        .uri("/api/playback")
         .body(Body::empty())
         .expect("build request");
 
@@ -57,12 +57,18 @@ async fn test_playback_endpoint_returns_state() {
 async fn test_volume_endpoint_rejects_malformed_body() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/volume")
+        .uri("/api/volume")
         .header("content-type", "application/json")
         .body(Body::from("{ not valid json }"))
         .expect("build request");
 
     let response = build_app().oneshot(request).await.expect("router response");
+    // A 404 is a client error too: without this, an unserved route would pass.
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "POST /api/volume must be served"
+    );
     assert!(
         response.status().is_client_error(),
         "expected 4xx for malformed body, got {}",
@@ -75,11 +81,17 @@ async fn test_volume_endpoint_rejects_malformed_body() {
 async fn test_play_without_connected_speaker_returns_client_error() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/play")
+        .uri("/api/play")
         .body(Body::empty())
         .expect("build request");
 
     let response = build_app().oneshot(request).await.expect("router response");
+    // A 404 is a client error too: without this, an unserved route would pass.
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "POST /api/play must be served"
+    );
     assert!(
         response.status().is_client_error(),
         "expected 4xx when no speaker connected, got {}",
@@ -161,7 +173,7 @@ async fn test_deselect_last_speaker_empties_the_selection() {
     let app = build_app();
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/devices/AA:BB:CC:DD:EE:FF/deselect")
+        .uri("/api/devices/AA:BB:CC:DD:EE:FF/deselect")
         .body(Body::empty())
         .expect("build request");
 

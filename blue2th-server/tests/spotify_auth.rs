@@ -45,7 +45,7 @@ fn build_app() -> axum::Router {
 #[tokio::test]
 async fn test_spotify_auth_url_without_client_id_is_unavailable() {
     let request = authorized(Request::builder())
-        .uri("/spotify/auth/url")
+        .uri("/api/spotify/auth/url")
         .body(Body::empty())
         .expect("build request");
 
@@ -107,7 +107,7 @@ fn test_spotify_auth_url_with_blank_client_id_is_rejected() {
 #[tokio::test]
 async fn test_spotify_auth_status_on_fresh_server_is_disconnected() {
     let request = authorized(Request::builder())
-        .uri("/spotify/auth/status")
+        .uri("/api/spotify/auth/status")
         .body(Body::empty())
         .expect("build request");
 
@@ -127,7 +127,7 @@ async fn test_spotify_auth_status_on_fresh_server_is_disconnected() {
 async fn test_spotify_auth_callback_missing_code_returns_bad_request() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/spotify/auth/callback")
+        .uri("/api/spotify/auth/callback")
         .header("content-type", "application/json")
         // No `code` field: malformed callback body.
         .body(Body::from(r#"{"state":"csrf-abc"}"#))
@@ -148,7 +148,7 @@ async fn test_spotify_auth_callback_missing_code_returns_bad_request() {
 async fn test_spotify_play_while_disconnected_returns_conflict() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri("/spotify/play")
+        .uri("/api/spotify/play")
         .body(Body::empty())
         .expect("build request");
 
@@ -167,7 +167,7 @@ async fn test_spotify_transport_actions_while_disconnected_return_conflict() {
     for action in ["pause", "next", "previous"] {
         let request = authorized(Request::builder())
             .method("POST")
-            .uri(format!("/spotify/{action}"))
+            .uri(format!("/api/spotify/{action}"))
             .body(Body::empty())
             .expect("build request");
 

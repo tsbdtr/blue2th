@@ -127,6 +127,29 @@ pub struct RouteSpec {
     /// Whether the route answers without `Authorization: Bearer <token>`.
     /// Only `GET /health` and `POST /pair` may be public.
     pub public: bool,
+    /// Where the route is mounted: at the root, or under
+    /// [`blue2th_proto::API_PREFIX`] (#166). `path` stays prefix-free either way.
+    pub mount: Mount,
+}
+
+/// Where a [`RouteSpec`] is mounted in the router (#166).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mount {
+    /// Served at `path` itself — `GET /health`, which carries the version
+    /// handshake and must answer whatever contract the caller speaks.
+    Root,
+    /// Served at [`blue2th_proto::API_PREFIX`] followed by `path`.
+    Api,
+}
+
+impl RouteSpec {
+    /// The path the router serves this route at, prefix included.
+    pub fn full_path(&self) -> String {
+        match self.mount {
+            Mount::Root => self.path.to_string(),
+            Mount::Api => format!("{}{}", blue2th_proto::API_PREFIX, self.path),
+        }
+    }
 }
 
 /// Every route the backend serves.
@@ -139,156 +162,187 @@ pub const ROUTES: &[RouteSpec] = &[
         method: "GET",
         path: "/health",
         public: true,
+        mount: Mount::Root,
     },
     RouteSpec {
         method: "POST",
         path: "/pair",
         public: true,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/adapters",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/devices",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/connect",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/disconnect",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/select",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/deselect",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/devices/{addr}/offset",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/targets",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/scan",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/play",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/pause",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/stop",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/volume",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/playback",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/start",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/stop",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/status",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/auth/url",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/auth/callback",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/auth/status",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/play",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/pause",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/next",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/previous",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/spotify/now-playing",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/spotify/volume",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/client/presence",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "GET",
         path: "/config",
         public: false,
+        mount: Mount::Api,
     },
     RouteSpec {
         method: "POST",
         path: "/config",
         public: false,
+        mount: Mount::Api,
     },
 ];
 
@@ -862,6 +916,9 @@ fn app_with_auth_and_targets(
     // so a route can only exist here by being listed — and by declaring whether
     // it is public.
     let mut router = Router::new();
+    // The nested router answers its own unknown paths: a fallback on the outer
+    // router (a web page, #161) must never answer under the API prefix.
+    let mut api = Router::new().fallback(unknown_route);
     for spec in ROUTES {
         let handler = route_handler(spec);
         let handler = if spec.public {
@@ -872,8 +929,12 @@ fn app_with_auth_and_targets(
                 require_bearer,
             ))
         };
-        router = router.route(spec.path, handler);
+        match spec.mount {
+            Mount::Root => router = router.route(spec.path, handler),
+            Mount::Api => api = api.route(spec.path, handler),
+        }
     }
+    let router = router.nest(blue2th_proto::API_PREFIX, api);
     // No CORS layer at all. The permissive one this replaces answered the
     // preflight for any web page the user happened to open, which made a LAN
     // service reachable from the internet by proxy. The app is not a browser.
@@ -884,9 +945,9 @@ fn app_with_auth_and_targets(
 
 /// The handler behind one table entry.
 ///
-/// A `match` rather than a registry: it is exhaustive by construction — a spec
-/// added to `ROUTES` without a handler fails to compile here, which is the point
-/// of building the router from the table.
+/// A `match` rather than a registry. A spec added to `ROUTES` without a handler
+/// still compiles — it falls to the last arm, a 404 — and
+/// `test_every_guarded_route_accepts_a_valid_bearer` fails on it.
 fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
     match (spec.method, spec.path) {
         ("GET", "/health") => get(health),
@@ -926,8 +987,9 @@ fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
     }
 }
 
-/// Answers a table entry with no handler. Reached only if `ROUTES` gains a line
-/// without one — a 404 rather than an unguarded surprise.
+/// A 404 rather than an unguarded surprise. Two callers: the nested API router's
+/// fallback, for any unknown path under [`blue2th_proto::API_PREFIX`] (#166), and
+/// the last arm of [`route_handler`], for a `ROUTES` entry with no handler.
 async fn unknown_route() -> StatusCode {
     StatusCode::NOT_FOUND
 }

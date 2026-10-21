@@ -82,14 +82,19 @@ below. `--bind <host:port>` overrides the address in every build; `BLUE2TH_BIND`
 does too, below `--bind`, in debug builds only; with neither, the first routable
 LAN address, and `0.0.0.0:4000` when there is none.
 
+Every route sits under the `/api` prefix (`blue2th_proto::API_PREFIX`, #166)
+except `GET /health`, which stays at the root: it carries the version
+handshake, so it must answer whatever contract the caller speaks. An unknown
+path under `/api` answers 404, without a token.
+
 | Area | Routes |
 |---|---|
-| Liveness and pairing | `GET /health`, `POST /pair` |
-| Bluetooth | `GET /adapters`, `GET /devices`, `GET /scan` (SSE), `POST /devices/{addr}/connect` and `/disconnect` |
-| Playback targets | `POST /devices/{addr}/select` and `/deselect`, `POST /devices/{addr}/offset`, `GET /targets` |
-| Local transport | `POST /play`, `/pause`, `/stop`, `/volume`; `GET /playback` |
-| Spotify | `/spotify/start`, `/stop`, `/status`; `/spotify/auth/url`, `/auth/callback`, `/auth/status`; `/spotify/play`, `/pause`, `/next`, `/previous`, `/volume`; `GET /spotify/now-playing` (SSE) |
-| Client | `POST /client/presence`, `GET` and `POST /config` |
+| Liveness and pairing | `GET /health`, `POST /api/pair` |
+| Bluetooth | `GET /api/adapters`, `GET /api/devices`, `GET /api/scan` (SSE), `POST /api/devices/{addr}/connect` and `/disconnect` |
+| Playback targets | `POST /api/devices/{addr}/select` and `/deselect`, `POST /api/devices/{addr}/offset`, `GET /api/targets` |
+| Local transport | `POST /api/play`, `/api/pause`, `/api/stop`, `/api/volume`; `GET /api/playback` |
+| Spotify | `/api/spotify/start`, `/stop`, `/status`; `/api/spotify/auth/url`, `/auth/callback`, `/auth/status`; `/api/spotify/play`, `/pause`, `/next`, `/previous`, `/volume`; `GET /api/spotify/now-playing` (SSE) |
+| Client | `POST /api/client/presence`, `GET` and `POST /api/config` |
 
 ### Authentication and pairing
 
@@ -97,7 +102,7 @@ Every route requires `Authorization: Bearer <token>`, with two exceptions that
 exist for a reason each. `GET /health` is open so that a phone holding a wrong
 or missing token reads the backend as *not paired* rather than *offline* — the
 two states are fixed differently, and an open probe is what tells them apart.
-`POST /pair` is open because it is how a phone gets a token in the first place.
+`POST /api/pair` is open because it is how a phone gets a token in the first place.
 
 Pairing is therefore the one door, and everything rests on the code behind it
 being short-lived, one-shot and rate-limited: a six-character code with
@@ -194,7 +199,7 @@ addresses the user asked to play on — from the live selection: losing a
 speaker's radio prunes the latter and leaves the former alone, so a returning
 speaker is re-selected without the user pressing anything, and only an explicit
 deselect clears the intent. Routing is rebuilt only when the selection actually
-moved, because the reconciliation runs on every `/devices` poll and tearing the
+moved, because the reconciliation runs on every `/api/devices` poll and tearing the
 PipeWire graph down every couple of seconds would cut the audio.
 
 ### The router is the graph thread's actor
@@ -214,7 +219,7 @@ The wait is bounded for a request and unbounded for a background task:
   it, 300 ms after it was sent (#146): taken out of the queue later, it is not
   run. Every graph call of a started message shares one deadline, 1.6 s after
   its start, and the handler stops waiting after 2 s (#145). In both cases the
-  request answers 503 "the audio graph is not answering" — `GET /playback`
+  request answers 503 "the audio graph is not answering" — `GET /api/playback`
   answers the commanded level and `audio_graph: unresponsive` — and nothing
   reaches the graph for it afterwards: a message whose caller left is skipped.
   A started message whose graph call the daemon leaves unanswered until that
@@ -227,7 +232,7 @@ The wait is bounded for a request and unbounded for a background task:
 The queue coalesces only what is safe to. Identical volume reads waiting
 together are answered by the one read that ran, and a volume set is superseded
 by a later one naming every one of its sinks: it is not applied, and
-`POST /volume` answers 200 with the current playback state. Routing messages
+`POST /api/volume` answers 200 with the current playback state. Routing messages
 are never merged. A selection change is applied by a single background
 applier, which stamps the selection it read with a routing generation; a
 message whose stamp is outdated when it starts is not run, so the graph only
@@ -313,16 +318,16 @@ pushed to the phone over SSE.
 
 The backend owns the Connect level too (#58). `librespot` applies that level
 before PipeWire sees a sample, so it is a separate control from the local
-`/volume`: the poll reads it from `/me/player` into now-playing's
-`volume_percent`, and `POST /spotify/volume` writes it through the Web API,
+`/api/volume`: the poll reads it from `/me/player` into now-playing's
+`volume_percent`, and `POST /api/spotify/volume` writes it through the Web API,
 targeting the backend's own device. Every `librespot` start is
 `--initial-volume 100`, so a respawn — a re-routing, a rename, a fresh
-`/spotify/start` — snaps the level back to full scale; the start marks the
+`/api/spotify/start` — snaps the level back to full scale; the start marks the
 respawn, and the policy in `spotify_volume.rs` writes the last chosen level
 back at the next poll, keeping the mark until the write succeeds. Without a
 mark, a level seen changing is a choice made in some client and is adopted, not
 fought. The `spotify_volume_lock` setting pins the level to 100 instead:
-`POST /spotify/volume` is refused with a 409 that names the lock, and the poll
+`POST /api/spotify/volume` is refused with a 409 that names the lock, and the poll
 re-asserts 100 whenever it sees anything else. The app's own bar for that level
 is #120's.
 
@@ -344,7 +349,7 @@ so that connection is the heartbeat, with no extra traffic.
 
 Losing it is ambiguous on its own, because Android freezes a backgrounded app,
 which drops the connection while the user is deliberately listening. So the app
-reports what it is doing through `POST /client/presence`, from the activity's
+reports what it is doing through `POST /api/client/presence`, from the activity's
 lifecycle hooks (`onStart`, `onStop`, and `onTaskRemoved` in a small service,
 the only reliable signal for a swipe out of recents), and the grace period
 follows: short in the foreground, where only a crash can cut the feed; long —
@@ -365,7 +370,7 @@ card and the settings page cannot drift apart. Unconfigured means unconfigured:
 with no backend, calls fail fast instead of timing out against localhost.
 
 Each entry's name is pushed to its backend, which adopts it. Three per-backend
-settings travel over `/config`: whether a returning speaker is reintegrated
+settings travel over `/api/config`: whether a returning speaker is reintegrated
 mid-playback (it can move the target sink and respawn `librespot`), whether the
 backend dials remembered speakers, and the backend's name.
 

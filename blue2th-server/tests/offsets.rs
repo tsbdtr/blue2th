@@ -55,7 +55,7 @@ async fn targets_state(response: axum::response::Response) -> Result<TargetsStat
 async fn test_offset_route_still_returns_targets_state() {
     let request = authorized(Request::builder())
         .method("POST")
-        .uri(format!("/devices/{ADDR}/offset"))
+        .uri(format!("/api/devices/{ADDR}/offset"))
         .header("content-type", "application/json")
         .body(Body::from(r#"{"offset_ms":750}"#))
         .expect("build request");
@@ -74,7 +74,7 @@ async fn test_offset_route_on_unselected_speaker_reports_empty_selection() {
 
     let offset_request = authorized(Request::builder())
         .method("POST")
-        .uri(format!("/devices/{ADDR}/offset"))
+        .uri(format!("/api/devices/{ADDR}/offset"))
         .header("content-type", "application/json")
         .body(Body::from(r#"{"offset_ms":500}"#))
         .expect("build request");
@@ -86,7 +86,7 @@ async fn test_offset_route_on_unselected_speaker_reports_empty_selection() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let targets_request = authorized(Request::builder())
-        .uri("/targets")
+        .uri("/api/targets")
         .body(Body::empty())
         .expect("build request");
     let response = app.oneshot(targets_request).await.expect("router response");

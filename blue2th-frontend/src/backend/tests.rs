@@ -97,11 +97,11 @@ async fn test_ping_backend_without_a_configured_backend_fails_fast() {
 fn test_config_url_appends_path() {
     assert_eq!(
         config_url("http://10.0.0.5:4000"),
-        "http://10.0.0.5:4000/config"
+        "http://10.0.0.5:4000/api/config"
     );
     assert_eq!(
         config_url("http://10.0.0.5:4000/"),
-        "http://10.0.0.5:4000/config"
+        "http://10.0.0.5:4000/api/config"
     );
 }
 
@@ -378,7 +378,7 @@ fn test_sse_device_payload_ignores_non_device_and_comments() {
 fn test_device_action_url_builds_select_path() {
     assert_eq!(
         device_action_url("http://10.0.0.5:4000", "AA:BB:CC:DD:EE:FF", "select"),
-        "http://10.0.0.5:4000/devices/AA:BB:CC:DD:EE:FF/select"
+        "http://10.0.0.5:4000/api/devices/AA:BB:CC:DD:EE:FF/select"
     );
 }
 
@@ -388,7 +388,7 @@ fn test_device_action_url_builds_select_path() {
 fn test_device_action_url_builds_deselect_path() {
     assert_eq!(
         device_action_url("http://10.0.0.5:4000", "AA:BB:CC:DD:EE:FF", "deselect"),
-        "http://10.0.0.5:4000/devices/AA:BB:CC:DD:EE:FF/deselect"
+        "http://10.0.0.5:4000/api/devices/AA:BB:CC:DD:EE:FF/deselect"
     );
 }
 
@@ -398,7 +398,7 @@ fn test_device_action_url_builds_deselect_path() {
 fn test_device_action_url_builds_offset_path_tolerating_trailing_slash() {
     assert_eq!(
         device_action_url("http://10.0.0.5:4000/", "AA:BB:CC:DD:EE:FF", "offset"),
-        "http://10.0.0.5:4000/devices/AA:BB:CC:DD:EE:FF/offset"
+        "http://10.0.0.5:4000/api/devices/AA:BB:CC:DD:EE:FF/offset"
     );
 }
 
@@ -408,11 +408,11 @@ fn test_device_action_url_builds_offset_path_tolerating_trailing_slash() {
 fn test_targets_url_appends_path() {
     assert_eq!(
         targets_url("http://10.0.0.5:4000"),
-        "http://10.0.0.5:4000/targets"
+        "http://10.0.0.5:4000/api/targets"
     );
     assert_eq!(
         targets_url("http://10.0.0.5:4000/"),
-        "http://10.0.0.5:4000/targets"
+        "http://10.0.0.5:4000/api/targets"
     );
 }
 
@@ -422,7 +422,7 @@ fn test_targets_url_appends_path() {
 fn test_spotify_url_builds_start_path() {
     assert_eq!(
         spotify_url("http://10.0.0.5:4000", "start"),
-        "http://10.0.0.5:4000/spotify/start"
+        "http://10.0.0.5:4000/api/spotify/start"
     );
 }
 
@@ -432,7 +432,7 @@ fn test_spotify_url_builds_start_path() {
 fn test_spotify_url_builds_stop_path_tolerating_trailing_slash() {
     assert_eq!(
         spotify_url("http://10.0.0.5:4000/", "stop"),
-        "http://10.0.0.5:4000/spotify/stop"
+        "http://10.0.0.5:4000/api/spotify/stop"
     );
 }
 
@@ -442,7 +442,7 @@ fn test_spotify_url_builds_stop_path_tolerating_trailing_slash() {
 fn test_spotify_url_builds_status_path() {
     assert_eq!(
         spotify_url("http://10.0.0.5:4000", "status"),
-        "http://10.0.0.5:4000/spotify/status"
+        "http://10.0.0.5:4000/api/spotify/status"
     );
 }
 
@@ -452,11 +452,11 @@ fn test_spotify_url_builds_status_path() {
 fn test_now_playing_url_appends_path() {
     assert_eq!(
         now_playing_url("http://10.0.0.5:4000"),
-        "http://10.0.0.5:4000/spotify/now-playing"
+        "http://10.0.0.5:4000/api/spotify/now-playing"
     );
     assert_eq!(
         now_playing_url("http://10.0.0.5:4000/"),
-        "http://10.0.0.5:4000/spotify/now-playing"
+        "http://10.0.0.5:4000/api/spotify/now-playing"
     );
 }
 
@@ -598,10 +598,11 @@ async fn canned_backend(
 // backend whose announced range contains this app's `PROTOCOL_VERSION`.
 #[tokio::test]
 async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
-    // Range 1..=1, matching `PROTOCOL_VERSION` at the time of writing.
+    // Range 2..=2, matching `PROTOCOL_VERSION` since the API moved under
+    // `/api` (#166).
     let (base, served) = canned_backend(
         "200 OK",
-        r#"{"status":"ok","version":"0.1.0","protocol":1,"protocol_min":1}"#,
+        r#"{"status":"ok","version":"0.1.0","protocol":2,"protocol_min":2}"#,
     )
     .await
     .expect("start the canned backend");
@@ -611,13 +612,13 @@ async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
 
     assert_eq!(
         blue2th_proto::PROTOCOL_VERSION,
-        1,
-        "the canned payload above is written for contract 1"
+        2,
+        "the canned payload above is written for contract 2"
     );
     assert_eq!(
         checked.map_err(|e| e.to_string()),
         Ok(CompatibleBackend { url: base }),
-        "a backend announcing 1..=1 serves an app speaking 1, at the checked URL"
+        "a backend announcing 2..=2 serves an app speaking 2, at the checked URL"
     );
 }
 
@@ -799,8 +800,8 @@ async fn test_pair_exchanges_the_code_for_the_token() {
         Ok("api-token-value".to_string())
     );
     assert!(
-        request.starts_with("POST /pair "),
-        "the exchange must POST /pair, got {request}"
+        request.starts_with("POST /api/pair "),
+        "the exchange must POST /api/pair, got {request}"
     );
     assert!(
         request.contains("K7M2QX"),
@@ -1323,7 +1324,7 @@ async fn test_activate_backend_pauses_the_previous_one_with_its_own_token() {
     crate::settings::set_current(AppSettings::default());
 
     assert!(
-        request.starts_with("POST /spotify/pause "),
+        request.starts_with("POST /api/spotify/pause "),
         "the backend being left must be paused, got {request}"
     );
     assert_eq!(
@@ -1371,17 +1372,17 @@ fn test_authed_base_from_without_an_active_backend_is_unconfigured() {
     );
 }
 
-// Criterion: the pairing exchange posts to `{base}/pair`, tolerating a
+// Criterion: the pairing exchange posts to `{base}/api/pair` (#166), tolerating a
 // trailing slash on the base like every other URL builder here.
 #[test]
 fn test_pair_url_appends_path() {
     assert_eq!(
         pair_url("http://10.0.0.5:4000"),
-        "http://10.0.0.5:4000/pair"
+        "http://10.0.0.5:4000/api/pair"
     );
     assert_eq!(
         pair_url("http://10.0.0.5:4000/"),
-        "http://10.0.0.5:4000/pair"
+        "http://10.0.0.5:4000/api/pair"
     );
 }
 
@@ -1446,7 +1447,7 @@ async fn test_fetch_config_reads_the_backend_config_with_the_bearer() {
     );
     let request = request.unwrap_or_default();
     assert!(
-        request.starts_with("GET /config "),
+        request.starts_with("GET /api/config "),
         "the read is a GET on /config, got {request}"
     );
     assert_eq!(
@@ -1541,7 +1542,7 @@ fn test_an_unusable_origin_fails_as_no_backend_configured() {
     }
 }
 
-// Criterion: browser presence posts go to `/client/presence` with the
+// Criterion: browser presence posts go to `/api/client/presence` with the
 // Bearer token and `keepalive: true`, the presence in the body. Two
 // presences, so a body that ignores its argument fails.
 #[test]
@@ -1554,7 +1555,7 @@ fn test_browser_presence_post_carries_the_bearer_and_keepalive() {
 
         assert_eq!(
             post.as_ref().map(|p| p.url.as_str()),
-            Some("http://localhost:8080/client/presence")
+            Some("http://localhost:8080/api/client/presence")
         );
         assert_eq!(
             post.as_ref().map(|p| p.authorization.as_str()),
@@ -1609,7 +1610,7 @@ async fn test_sync_config_reads_and_adopts_when_nothing_is_pending() {
     assert_eq!(outcome.map_err(|e| e.to_string()), Ok(()));
     let request = request.unwrap_or_else(|e| e);
     assert!(
-        request.starts_with("GET /config "),
+        request.starts_with("GET /api/config "),
         "nothing pending: the sync reads, got {request}"
     );
     assert_eq!(
@@ -1647,7 +1648,7 @@ async fn test_sync_config_pushes_a_pending_change_and_clears_it() {
     assert_eq!(outcome.map_err(|e| e.to_string()), Ok(()));
     let request = request.unwrap_or_else(|e| e);
     assert!(
-        request.starts_with("POST /config "),
+        request.starts_with("POST /api/config "),
         "a pending change is pushed, got {request}"
     );
     assert!(
@@ -1683,7 +1684,7 @@ async fn test_sync_config_keeps_a_change_pending_when_the_push_fails() {
     assert!(outcome.is_err(), "the refusal is surfaced");
     let request = request.unwrap_or_else(|e| e);
     assert!(
-        request.starts_with("POST /config "),
+        request.starts_with("POST /api/config "),
         "a pending change is pushed, got {request}"
     );
     assert_eq!(
@@ -1716,7 +1717,7 @@ async fn test_activate_backend_reads_the_config_of_a_synced_backend() {
 
     let request = request.unwrap_or_else(|e| e);
     assert!(
-        request.starts_with("GET /config "),
+        request.starts_with("GET /api/config "),
         "activating a synced backend reads its config, got {request}"
     );
     assert_eq!(
@@ -1725,5 +1726,172 @@ async fn test_activate_backend_reads_the_config_of_a_synced_backend() {
             .map(|b| (b.name.as_str(), b.restore_during_playback)),
         Some(("blue2th-PC", false)),
         "the arriving backend's config is adopted"
+    );
+}
+
+// ---- #166: every API call goes under `/api`, `/health` stays at the root ----
+
+/// The `(method, path)` of the one request `call` sends to a canned backend
+/// that answers `200 OK` with `{}`, with the active entry paired. The reply
+/// need not decode: only what goes on the wire is read. The caller holds
+/// [`SETTINGS_GUARD`]; the settings are left empty behind.
+async fn method_and_path_of<F, Fut>(call: F) -> (String, String)
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let started = canned_backend("200 OK", "{}").await;
+    assert!(started.is_ok(), "start the canned backend: {started:?}");
+    let Ok((base, served)) = started else {
+        return (String::new(), String::new());
+    };
+    crate::settings::set_current(active_with_token(&base, Some("tok-123")));
+    call(base).await;
+    let request = served_within_bound(served).await.unwrap_or_else(|e| e);
+    crate::settings::set_current(AppSettings::default());
+
+    let mut words = request.lines().next().unwrap_or_default().split(' ');
+    (
+        words.next().unwrap_or_default().to_string(),
+        words.next().unwrap_or_default().to_string(),
+    )
+}
+
+/// One entry of a forwarding table: what the call must send, and what it did.
+type Sent = (&'static str, &'static str, (String, String));
+
+/// The entries whose request differs from the expected `(method, path)`. Every
+/// entry is run before the assertion, so one failure names them all.
+fn mismatches(sent: Vec<Sent>) -> Vec<String> {
+    sent.into_iter()
+        .filter(|(method, path, got)| (got.0.as_str(), got.1.as_str()) != (*method, *path))
+        .map(|(method, path, got)| format!("expected {method} {path}, sent {} {}", got.0, got.1))
+        .collect()
+}
+
+/// A device address no action name can be confused with, so a swap of the
+/// two `&str` parameters of the device builders shows in the path.
+const DEVICE: &str = "11:22:33:44:55:66";
+
+/// One row of a forwarding table: the `(method, path)` that `$call` must send,
+/// next to the one it did. `$base` binds the canned backend's URL, for the
+/// calls aimed at an explicit address.
+macro_rules! sent {
+    ($method:literal, $path:literal, |$base:pat_param| $call:expr) => {
+        (
+            $method,
+            $path,
+            method_and_path_of(|$base| async move {
+                let _ = $call.await;
+            })
+            .await,
+        )
+    };
+}
+
+// Criterion: mobile — the device calls (`connect`, `disconnect`, the list, the
+// scan feed, and the target actions) go to `/api/...`. One row per public
+// call, so no mapping is left unguarded.
+#[tokio::test]
+async fn test_device_calls_go_under_api() {
+    let _guard = SETTINGS_GUARD.lock().await;
+    let sent: Vec<Sent> = vec![
+        sent!("POST", "/api/devices/11:22:33:44:55:66/connect", |_| {
+            connect_device(DEVICE)
+        }),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/disconnect", |_| {
+            disconnect_device(DEVICE)
+        }),
+        sent!("GET", "/api/devices", |_| fetch_devices()),
+        sent!("GET", "/api/scan", |_| scan_devices()),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/select", |_| {
+            select_target(DEVICE)
+        }),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/deselect", |_| {
+            deselect_target(DEVICE)
+        }),
+        sent!("POST", "/api/devices/11:22:33:44:55:66/offset", |_| {
+            set_offset(DEVICE, 120)
+        }),
+    ];
+    assert_eq!(mismatches(sent), Vec::<String>::new());
+}
+
+// Criterion: mobile — the playback calls (transport, state, volume, targets)
+// go to `/api/...`.
+#[tokio::test]
+async fn test_playback_calls_go_under_api() {
+    let _guard = SETTINGS_GUARD.lock().await;
+    let sent: Vec<Sent> = vec![
+        sent!("POST", "/api/play", |_| play()),
+        sent!("POST", "/api/pause", |_| pause()),
+        sent!("POST", "/api/stop", |_| stop()),
+        sent!("GET", "/api/playback", |_| playback_state()),
+        sent!("POST", "/api/volume", |_| set_volume(0.5)),
+        sent!("GET", "/api/targets", |_| fetch_targets()),
+    ];
+    assert_eq!(mismatches(sent), Vec::<String>::new());
+}
+
+// Criterion: mobile — every Spotify call (source, auth, the four transport
+// actions, the now-playing feed) goes to `/api/spotify/...`. The calls aimed
+// at an explicit address (`pair`, the config read and push, `pause_at`) are
+// pinned by their own tests, which read the request line.
+#[tokio::test]
+async fn test_spotify_calls_go_under_api() {
+    let _guard = SETTINGS_GUARD.lock().await;
+    let sent: Vec<Sent> = vec![
+        sent!("POST", "/api/spotify/start", |_| start_spotify()),
+        sent!("POST", "/api/spotify/stop", |_| stop_spotify()),
+        sent!("GET", "/api/spotify/status", |_| spotify_status()),
+        sent!("GET", "/api/spotify/auth/url", |_| spotify_auth_url()),
+        sent!("POST", "/api/spotify/auth/callback", |_| {
+            spotify_auth_callback("the-code", "the-state")
+        }),
+        sent!("GET", "/api/spotify/auth/status", |_| spotify_auth_status()),
+        sent!("GET", "/api/spotify/now-playing", |_| {
+            subscribe_now_playing(|_| {})
+        }),
+        sent!("POST", "/api/spotify/previous", |_| {
+            spotify_transport(SpotifyAction::Previous)
+        }),
+        sent!("POST", "/api/spotify/play", |_| {
+            spotify_transport(SpotifyAction::Play)
+        }),
+        sent!("POST", "/api/spotify/pause", |_| {
+            spotify_transport(SpotifyAction::Pause)
+        }),
+        sent!("POST", "/api/spotify/next", |_| {
+            spotify_transport(SpotifyAction::Next)
+        }),
+    ];
+    assert_eq!(mismatches(sent), Vec::<String>::new());
+}
+
+// Criterion (guard, "every builder **except** `health_url`"): the three health
+// probes still `GET /health` at the root. Near-miss: `health_url` moved onto
+// `api_url` with the rest — every other call would be right, and this is the
+// only one that would 404 against the new backend.
+#[tokio::test]
+async fn test_health_probes_stay_at_the_root() {
+    let _guard = SETTINGS_GUARD.lock().await;
+    let sent: Vec<Sent> = vec![
+        sent!("GET", "/health", |_| ping_backend()),
+        sent!("GET", "/health", |base| check_backend_protocol(&base)),
+        sent!("GET", "/health", |base| test_backend(&base)),
+    ];
+    assert_eq!(mismatches(sent), Vec::<String>::new());
+}
+
+// Criterion: mobile — the presence post the browser sends is under `/api`,
+// tolerating a trailing slash on the base. (The Android `report_presence` is
+// `cfg(target_os = "android")` and cannot run on the host.)
+#[test]
+fn test_browser_presence_post_goes_under_api_tolerating_a_trailing_slash() {
+    let settings = active_with_token("http://10.0.0.5:4000/", Some("tok-123"));
+    let post = browser_presence_post(&settings, ClientPresence::Foreground);
+    assert_eq!(
+        post.ok().map(|p| p.url),
+        Some("http://10.0.0.5:4000/api/client/presence".to_string())
     );
 }
