@@ -601,3 +601,31 @@ fn test_auth_store_authorises_its_own_token_only() {
     assert!(!store.authorises(Some("Bearer other")));
     assert!(!store.authorises(None));
 }
+
+// Criterion (#194): after the first write of the token store (minted at start) into a missing state
+// directory, that directory is `700` — created by `state_store::ensure_state_dir`,
+// not `create_dir_all` under the umask (`755`). An explicit path: never
+// `XDG_STATE_HOME`.
+#[test]
+fn test_auth_store_first_write_creates_the_state_dir_700() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root =
+        std::env::temp_dir().join(format!("blue2th-test-auth-dir-mode-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create the scratch root");
+    let dir = root.join("blue2th");
+    let path = dir.join(TOKEN_STORE_FILE);
+
+    let _store = AuthStore::with_store(Some(path.clone()));
+
+    let mode = std::fs::metadata(&dir)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777);
+    assert_eq!(
+        mode,
+        Some(0o700),
+        "got {:?}",
+        mode.map(|m| format!("{m:o}"))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

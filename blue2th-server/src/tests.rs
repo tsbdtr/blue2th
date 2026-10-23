@@ -471,6 +471,36 @@ fn test_cli_without_arguments_requests_nothing() {
     assert_eq!(parsed(&[]), Ok(Cli::default()));
 }
 
+// Criterion (#194): `Cli` accepts `--skip-state-permissions-check`, a `bool`
+// that sets only itself; without it, `false`.
+#[test]
+fn test_cli_skip_state_permissions_check_sets_the_flag() {
+    assert_eq!(
+        parsed(&["--skip-state-permissions-check"]),
+        Ok(Cli {
+            pair: None,
+            bind: None,
+            skip_state_permissions_check: true,
+        })
+    );
+    assert_eq!(
+        parsed(&["--pair", "2"]).map(|cli| cli.skip_state_permissions_check),
+        Ok(false)
+    );
+}
+
+// Criterion (#194): `--help` lists `--skip-state-permissions-check`.
+#[test]
+fn test_cli_help_lists_the_skip_state_permissions_check_flag() {
+    let help = <Cli as clap::CommandFactory>::command()
+        .render_long_help()
+        .to_string();
+    assert!(
+        help.contains("--skip-state-permissions-check"),
+        "the help must list the flag: {help}"
+    );
+}
+
 // Criterion: `--pair` alone arms one code.
 #[test]
 fn test_cli_bare_pair_requests_one_code() {
@@ -479,6 +509,7 @@ fn test_cli_bare_pair_requests_one_code() {
         Ok(Cli {
             pair: Some(1),
             bind: None,
+            skip_state_permissions_check: false,
         })
     );
 }
@@ -494,6 +525,7 @@ fn test_cli_pair_accepts_both_ends_of_the_range() {
             Ok(Cli {
                 pair: Some(count),
                 bind: None,
+                skip_state_permissions_check: false,
             }),
             "--pair {value}"
         );
@@ -508,6 +540,7 @@ fn test_cli_pair_reads_the_equals_form() {
         Ok(Cli {
             pair: Some(3),
             bind: None,
+            skip_state_permissions_check: false,
         })
     );
 }
@@ -606,6 +639,7 @@ fn test_cli_pair_followed_by_a_flag_requests_one_code() {
         Ok(Cli {
             pair: Some(1),
             bind: Some("192.168.1.20:4000".to_string()),
+            skip_state_permissions_check: false,
         })
     );
 }
@@ -617,6 +651,7 @@ fn test_cli_reads_bind_and_pair_in_either_order() {
     let expected = Ok(Cli {
         pair: Some(3),
         bind: Some("192.168.1.20:4000".to_string()),
+        skip_state_permissions_check: false,
     });
     assert_eq!(
         parsed(&["--bind", "192.168.1.20:4000", "--pair", "3"]),
@@ -637,6 +672,7 @@ fn test_cli_bind_reads_the_equals_form() {
         Ok(Cli {
             pair: None,
             bind: Some("0.0.0.0:4000".to_string()),
+            skip_state_permissions_check: false,
         })
     );
 }
@@ -779,6 +815,7 @@ fn test_codes_to_arm_follows_the_pair_count() {
     let three = Cli {
         pair: Some(3),
         bind: None,
+        skip_state_permissions_check: false,
     };
     assert_eq!(codes_to_arm(&three, false), Some(3));
     assert_eq!(codes_to_arm(&three, true), Some(3));

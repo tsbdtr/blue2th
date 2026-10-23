@@ -714,6 +714,10 @@ pub struct Cli {
         ),
     )]
     pub bind: Option<String>,
+    /// Start even when the state directory is open to group or others, or
+    /// belongs to another user
+    #[arg(skip)]
+    pub skip_state_permissions_check: bool,
 }
 
 /// Refuse a whitespace-only `--bind`: it passes clap's non-empty check, then
