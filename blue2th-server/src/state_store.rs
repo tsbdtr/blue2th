@@ -13,15 +13,16 @@
 //! the single place that does it. The directory's creation and its start-up
 //! check (#194) take explicit paths, and are tested in `state_store/tests.rs`.
 
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
 /// Directory scoping every blue2th state file, under the user's state home.
 const APP_DIR: &str = "blue2th";
 
-/// Path of an app-scoped state file: `$XDG_STATE_HOME/blue2th/<file>`, falling
-/// back to `~/.local/state/blue2th/<file>`. `None` when neither variable is set
-/// (or both are blank), in which case the caller simply stays in memory only.
-pub(crate) fn state_store_path(file: &str) -> Option<PathBuf> {
+/// The app-scoped state directory: `$XDG_STATE_HOME/blue2th`, falling back to
+/// `~/.local/state/blue2th`. `None` when neither variable is set (or both are
+/// blank), in which case the backend simply stays in memory only.
+pub(crate) fn state_dir() -> Option<PathBuf> {
     let base = std::env::var("XDG_STATE_HOME")
         .ok()
         .filter(|p| !p.trim().is_empty())
@@ -31,14 +32,22 @@ pub(crate) fn state_store_path(file: &str) -> Option<PathBuf> {
                 .filter(|h| !h.trim().is_empty())
                 .map(|h| format!("{h}/.local/state"))
         })?;
-    Some(PathBuf::from(base).join(APP_DIR).join(file))
+    Some(PathBuf::from(base).join(APP_DIR))
+}
+
+/// Path of an app-scoped state file: `<state_dir>/<file>`. `None` when there
+/// is no state directory, in which case the caller simply stays in memory only.
+pub(crate) fn state_store_path(file: &str) -> Option<PathBuf> {
+    state_dir().map(|dir| dir.join(file))
 }
 
 /// Create the state directory `dir`, and any missing parent, `0700` (#194):
 /// the one place a store creates it. An existing directory keeps its mode.
-pub(crate) fn ensure_state_dir(_dir: &Path) -> std::io::Result<()> {
-    // RED stub (#194): the green phase replaces it.
-    Err(std::io::Error::other("ensure_state_dir is not implemented"))
+pub(crate) fn ensure_state_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
 }
 
 /// What the start-up check found at the state directory's path.
@@ -72,24 +81,58 @@ impl std::error::Error for StateDirRefusal {}
 
 /// The verdict on what was `found` at `dir`, for a backend running as `euid`.
 /// Pure: the file system is read by `check_state_dir`.
-pub(crate) fn judge_state_dir(
-    _dir: &Path,
-    _found: Found,
-    _euid: u32,
-) -> Result<(), StateDirRefusal> {
-    // RED stub (#194): the green phase replaces it.
-    Err(StateDirRefusal {
-        message: String::new(),
-    })
+pub(crate) fn judge_state_dir(dir: &Path, found: Found, euid: u32) -> Result<(), StateDirRefusal> {
+    let path = shell_quoted(dir);
+    let message = match found {
+        Found::Missing => return Ok(()),
+        Found::NotADirectory => {
+            format!("the state directory {path} is not a directory; refusing to start")
+        },
+        Found::Uninspectable(error) => {
+            format!("cannot inspect the state directory {path}: {error}; refusing to start")
+        },
+        Found::Directory { mode, uid } => {
+            let permissions = mode & 0o777;
+            let too_open = permissions & 0o077 != 0;
+            let foreign = uid != euid;
+            if !too_open && !foreign {
+                return Ok(());
+            }
+            let mut fixes = Vec::new();
+            if foreign {
+                fixes.push(format!("sudo chown {euid} {path}"));
+            }
+            if too_open {
+                fixes.push(format!("chmod 700 {path}"));
+            }
+            format!(
+                "the state directory {path} (mode {permissions:o}, owner uid {uid}) must be \
+                 mode 700 and owned by uid {euid}; refusing to start. Fix it with: {}",
+                fixes.join(" && ")
+            )
+        },
+    };
+    Err(StateDirRefusal { message })
+}
+
+/// `dir` single-quoted for a shell, a `'` inside it written `'\''`.
+fn shell_quoted(dir: &Path) -> String {
+    format!("'{}'", dir.to_string_lossy().replace('\'', r"'\''"))
 }
 
 /// Inspect `dir` (following a symbolic link) and judge it against the
 /// effective uid.
-pub(crate) fn check_state_dir(_dir: &Path) -> Result<(), StateDirRefusal> {
-    // RED stub (#194): the green phase replaces it.
-    Err(StateDirRefusal {
-        message: String::new(),
-    })
+pub(crate) fn check_state_dir(dir: &Path) -> Result<(), StateDirRefusal> {
+    let found = match std::fs::metadata(dir) {
+        Ok(metadata) if metadata.is_dir() => Found::Directory {
+            mode: std::os::unix::fs::MetadataExt::mode(&metadata),
+            uid: std::os::unix::fs::MetadataExt::uid(&metadata),
+        },
+        Ok(_) => Found::NotADirectory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Found::Missing,
+        Err(error) => Found::Uninspectable(error),
+    };
+    judge_state_dir(dir, found, nix::unistd::geteuid().as_raw())
 }
 
 /// What `run` does about the state directory at start.
@@ -104,10 +147,15 @@ pub(crate) enum StartupCheck<'a> {
 }
 
 /// The start-up decision over the flag and the state directory. Pure.
-pub(crate) fn startup_check(_skip: bool, _state_dir: Option<&Path>) -> StartupCheck<'_> {
-    // RED stub (#194): the green phase replaces it.
-    StartupCheck::Skip {
-        warning: String::new(),
+pub(crate) fn startup_check(skip: bool, state_dir: Option<&Path>) -> StartupCheck<'_> {
+    match (skip, state_dir) {
+        (true, _) => StartupCheck::Skip {
+            warning: "--skip-state-permissions-check is set: the state directory's mode and \
+                      owner are not checked, and its tokens may be readable by other users"
+                .to_string(),
+        },
+        (false, Some(dir)) => StartupCheck::Check(dir),
+        (false, None) => StartupCheck::Nothing,
     }
 }
 

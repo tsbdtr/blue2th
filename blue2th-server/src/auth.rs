@@ -208,7 +208,7 @@ fn persist_token(path: &Path, token: &str) {
 
 fn write_token(path: &Path, token: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::state_store::ensure_state_dir(parent)?;
     }
     let body = serde_json::to_string(&StoredToken {
         // Owned copy: the on-disk shape is serialized from its own value.

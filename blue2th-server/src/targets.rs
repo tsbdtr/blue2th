@@ -193,7 +193,7 @@ fn save_store(
     intended: &[String],
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::state_store::ensure_state_dir(parent)?;
     }
     let stored = StoredTargets {
         // Owned copies: the on-disk shape is serialized from its own values.

@@ -371,6 +371,19 @@ const MAX_PAIR_COUNT: u32 = 10;
 pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
+    // #194: before any store reads or writes its file.
+    let state_dir = state_store::state_dir();
+    match state_store::startup_check(cli.skip_state_permissions_check, state_dir.as_deref()) {
+        state_store::StartupCheck::Check(dir) => {
+            if let Err(refusal) = state_store::check_state_dir(dir) {
+                tracing::error!("{refusal}");
+                return Err(refusal.into());
+            }
+        },
+        state_store::StartupCheck::Skip { warning } => tracing::warn!("{warning}"),
+        state_store::StartupCheck::Nothing => {},
+    }
+
     let mut auth_store = AuthStore::with_store(auth::auth_store_path());
     let server_name = config::ServerName::with_store(config::name_store_path());
     let addr = resolve_bind_address(cli.bind.as_deref());
@@ -716,7 +729,7 @@ pub struct Cli {
     pub bind: Option<String>,
     /// Start even when the state directory is open to group or others, or
     /// belongs to another user
-    #[arg(skip)]
+    #[arg(long)]
     pub skip_state_permissions_check: bool,
 }
 
