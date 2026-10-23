@@ -2,9 +2,12 @@
 
 //! Where the backend keeps its small pieces of persistent state.
 //!
-//! The Spotify refresh token (`spotify_auth.rs`) and the remembered speaker
-//! offsets (`targets.rs`) both live under the same app-scoped state directory,
-//! so the XDG resolution rules live here once rather than in each store.
+//! The API's bearer token (`auth.rs`), the backend's name and settings
+//! (`config.rs`), its identity (`identity.rs`), the Spotify refresh token
+//! (`spotify_auth.rs`) and the remembered speaker offsets (`targets.rs`) all
+//! live under the same app-scoped state directory, so the XDG resolution
+//! rules, the directory's creation and its start-up check live here once
+//! rather than in each store.
 //!
 //! The XDG resolution is deliberately untested here: asserting the fallback
 //! order means mutating `XDG_STATE_HOME`/`HOME`, which is process-wide and
@@ -66,9 +69,17 @@ pub(crate) enum Found {
 
 /// Why the backend refuses to start on its state directory. Its `Display` is
 /// the whole message the user reads, the fixing command(s) included.
-#[derive(Debug)]
 pub(crate) struct StateDirRefusal {
     message: String,
+}
+
+/// The message, as `Display` writes it: `main` returns the refusal through
+/// `Result<(), Box<dyn Error>>`, whose error the runtime prints with `Debug` —
+/// a derived one would put a `StateDirRefusal { message: … }` dump on stderr.
+impl std::fmt::Debug for StateDirRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 impl std::fmt::Display for StateDirRefusal {
@@ -92,7 +103,9 @@ pub(crate) fn judge_state_dir(dir: &Path, found: Found, euid: u32) -> Result<(),
             format!("cannot inspect the state directory {path}: {error}; refusing to start")
         },
         Found::Directory { mode, uid } => {
-            let permissions = mode & 0o777;
+            // The type bits dropped, the setuid/setgid/sticky ones kept: the
+            // mode as `stat -c %a` prints it.
+            let permissions = mode & 0o7777;
             let too_open = permissions & 0o077 != 0;
             let foreign = uid != euid;
             if !too_open && !foreign {
@@ -106,8 +119,8 @@ pub(crate) fn judge_state_dir(dir: &Path, found: Found, euid: u32) -> Result<(),
                 fixes.push(format!("chmod 700 {path}"));
             }
             format!(
-                "the state directory {path} (mode {permissions:o}, owner uid {uid}) must be \
-                 mode 700 and owned by uid {euid}; refusing to start. Fix it with: {}",
+                "the state directory {path} (mode {permissions:o}, owner uid {uid}) must grant \
+                 nothing to group or others and be owned by uid {euid}; refusing to start. Fix it with: {}",
                 fixes.join(" && ")
             )
         },

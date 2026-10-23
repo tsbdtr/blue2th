@@ -227,6 +227,89 @@ fn test_judge_state_dir_gives_chown_then_chmod_when_both_are_wrong() {
     assert!(has_number(&message, "2002"), "the owner: {message:?}");
 }
 
+// Requested at manual verification (#194): the refusal states the rule the
+// check applies — nothing for group or others — and not "must be mode 700",
+// which is false: `500` passes.
+#[test]
+fn test_judge_state_dir_refusal_states_nothing_to_group_or_others_not_mode_700() {
+    let message = refusal(
+        DIR,
+        Found::Directory {
+            mode: S_IFDIR | 0o755,
+            uid: EUID,
+        },
+        EUID,
+    )
+    .unwrap_or_default();
+    assert!(
+        message.contains("nothing to group or others"),
+        "the rule the check applies: {message:?}"
+    );
+    assert!(
+        !message.contains("must be mode 700"),
+        "500 passes too, so 700 is not the rule: {message:?}"
+    );
+}
+
+// Criterion: the mode is printed as `stat -c %a` prints it, which keeps the
+// setgid bit: `2755`, not `755`. And `chmod 700` leaves a setgid directory at
+// `2700` (observed: GNU coreutils keeps a directory's setgid bit on a numeric
+// mode), which grants nothing to group or others, so it passes.
+#[test]
+fn test_judge_state_dir_prints_a_setgid_mode_as_stat_does_and_passes_2700() {
+    let message = refusal(
+        DIR,
+        Found::Directory {
+            mode: S_IFDIR | 0o2755,
+            uid: EUID,
+        },
+        EUID,
+    )
+    .unwrap_or_default();
+    assert!(
+        has_number(&message, "2755"),
+        "the mode as 2755: {message:?}"
+    );
+    assert!(
+        message.contains(&format!("chmod 700 {}", quoted(DIR))),
+        "the fixing command: {message:?}"
+    );
+
+    let fixed = refusal(
+        DIR,
+        Found::Directory {
+            mode: S_IFDIR | 0o2700,
+            uid: EUID,
+        },
+        EUID,
+    );
+    assert_eq!(fixed, None, "2700 grants nothing to group or others");
+}
+
+// Requested at manual verification (#194): `main` prints a returned error with
+// `Debug`, so a refusal's `Debug` is its message — the same text as `Display`,
+// not a `StateDirRefusal { message: … }` dump.
+#[test]
+fn test_state_dir_refusal_debug_is_its_message() {
+    let refused = judge_state_dir(
+        Path::new(DIR),
+        Found::Directory {
+            mode: S_IFDIR | 0o755,
+            uid: EUID,
+        },
+        EUID,
+    );
+    let debug = refused.as_ref().err().map(|r| format!("{r:?}"));
+    let display = refused.as_ref().err().map(|r| r.to_string());
+    assert!(
+        debug
+            .as_deref()
+            .is_some_and(|d| d.contains(&format!("chmod 700 {}", quoted(DIR)))),
+        "the Debug carries the fixing command: {debug:?}"
+    );
+    assert_eq!(debug, display);
+}
+
 // Criterion: a missing path passes — a first start, which the first store
 // write creates `0700`.
 #[test]
@@ -370,9 +453,12 @@ fn test_check_state_dir_refuses_a_real_755_directory() {
         message.contains(&format!("chmod 700 {}", quoted(&path))),
         "{message:?}"
     );
-    assert!(has_number(&message, "755"), "the mode: {message:?}");
+    // The scratch path carries `755` and the pid: the numbers are looked for
+    // in the rest of the message.
+    let rest = message.replace(&quoted(&path), "");
+    assert!(has_number(&rest, "755"), "the mode: {message:?}");
     assert!(
-        has_number(&message, &owner.to_string()),
+        has_number(&rest, &owner.to_string()),
         "the owner: {message:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -417,8 +503,9 @@ fn test_check_state_dir_refuses_a_link_to_a_755_directory() {
         message.contains(&format!("chmod 700 {}", quoted(&path))),
         "{message:?}"
     );
+    // The scratch path carries `755`: the mode is looked for in the rest.
     assert!(
-        has_number(&message, "755"),
+        has_number(&message.replace(&quoted(&path), ""), "755"),
         "the target's mode: {message:?}"
     );
     let _ = std::fs::remove_dir_all(&root);

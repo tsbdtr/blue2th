@@ -219,6 +219,33 @@ fn test_binary_refuses_a_755_state_dir_before_any_store_writes() {
     );
 }
 
+// Requested at manual verification (#194): `main` returns the refusal, and
+// prints it on stderr with `Debug`. That line reads as the message itself —
+// the fixing command included — and not as a `StateDirRefusal { … }` dump.
+#[test]
+fn test_binary_refusal_on_stderr_is_the_message_not_a_debug_dump() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut fix = String::new();
+    let run = run_binary_prepared("state-dir-755-stderr", &[], |dir| {
+        let state_dir = dir.join("state").join("blue2th");
+        fix = format!("chmod 700 '{}'", state_dir.display());
+        std::fs::create_dir_all(&state_dir)?;
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o755))
+    })
+    .unwrap();
+    assert_eq!(run.code, Some(1), "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains(&fix),
+        "stderr must give {fix:?}, got {:?}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("StateDirRefusal {"),
+        "no Debug dump on stderr: {:?}",
+        run.stderr
+    );
+}
+
 /// The names of every crate `manifest` depends on, in any dependency table
 /// (`dependencies`, `dev-dependencies`, `build-dependencies`, and their
 /// `[target.'cfg(…)'.…]` forms), under the package's real name when an entry
