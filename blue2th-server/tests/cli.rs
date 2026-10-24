@@ -36,6 +36,9 @@ struct Run {
     /// (`$XDG_STATE_HOME/blue2th`), read before the per-test directory is
     /// removed. Empty when that directory does not exist.
     state_files: BTreeSet<String>,
+    /// The bytes of `tls-key.pem` in the state directory, read before the
+    /// per-test directory is removed; `None` when there is none (#195).
+    tls_key: Option<Vec<u8>>,
 }
 
 /// Run the built binary with `args`, in an environment isolated under a
@@ -53,12 +56,23 @@ fn run_binary_prepared(
     args: &[&str],
     prepare: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<Run> {
+    run_binary_with_env(test_name, args, &[], prepare)
+}
+
+/// `run_binary_prepared`, with `env` set on the child on top of the isolated
+/// environment (#195: `BLUE2TH_PLAIN_HTTP`).
+fn run_binary_with_env(
+    test_name: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<Run> {
     let dir = std::env::temp_dir().join(format!("blue2th-cli-{test_name}-{}", std::process::id()));
     // A leftover from an interrupted run would be reused otherwise.
     let _ = std::fs::remove_dir_all(&dir);
     let run = std::fs::create_dir_all(&dir)
         .and_then(|()| prepare(&dir))
-        .and_then(|()| run_in(&dir, args));
+        .and_then(|()| run_in(&dir, args, env));
     let _ = std::fs::remove_dir_all(&dir);
     run
 }
@@ -79,7 +93,7 @@ fn entry_names(dir: &Path) -> std::io::Result<BTreeSet<String>> {
 ///
 /// The output goes to files rather than pipes: a grandchild (librespot) that
 /// inherits a pipe would keep a reader blocked after the child is gone.
-fn run_in(dir: &Path, args: &[&str]) -> std::io::Result<Run> {
+fn run_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> std::io::Result<Run> {
     let out_path = dir.join("stdout");
     let err_path = dir.join("stderr");
     let mut child = Command::new(env!("CARGO_BIN_EXE_blue2th-server"))
@@ -90,6 +104,9 @@ fn run_in(dir: &Path, args: &[&str]) -> std::io::Result<Run> {
         // A debug build reads it; an inherited one would move a server started
         // by mistake onto the developer's chosen interface.
         .env_remove("BLUE2TH_BIND")
+        // #195: an inherited one would turn a debug run into the plain mode.
+        .env_remove("BLUE2TH_PLAIN_HTTP")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(File::create(&out_path)?)
         .stderr(File::create(&err_path)?)
@@ -119,6 +136,7 @@ fn run_in(dir: &Path, args: &[&str]) -> std::io::Result<Run> {
         stdout: std::fs::read_to_string(&out_path)?,
         stderr: std::fs::read_to_string(&err_path)?,
         state_files: entry_names(&dir.join("state").join("blue2th"))?,
+        tls_key: std::fs::read(dir.join("state").join("blue2th").join("tls-key.pem")).ok(),
     })
 }
 
@@ -243,6 +261,100 @@ fn test_binary_refusal_on_stderr_is_the_message_not_a_debug_dump() {
         !run.stderr.contains("StateDirRefusal {"),
         "no Debug dump on stderr: {:?}",
         run.stderr
+    );
+}
+
+/// Lay out `state/blue2th` at `700` under `dir`, holding `tls-key.pem` with
+/// `body`, and return the key's path.
+fn state_dir_with_key(dir: &Path, body: &str) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let state_dir = dir.join("state").join("blue2th");
+    std::fs::create_dir_all(&state_dir)?;
+    std::fs::set_permissions(dir.join("state"), std::fs::Permissions::from_mode(0o700))?;
+    std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700))?;
+    let key = state_dir.join("tls-key.pem");
+    std::fs::write(&key, body)?;
+    Ok(key)
+}
+
+// Criterion (#195, key), guard: a malformed `tls-key.pem` refuses the start
+// before `AuthStore::with_store`: exit 1 before the deadline, the message
+// names the path and says to delete it, no `auth.json` or certificate is
+// written, and the key is byte for byte what it was. Near-miss: the key check
+// placed after `AuthStore::with_store`, which still refuses but has already
+// minted and written `auth.json`.
+#[test]
+fn test_binary_refuses_a_malformed_tls_key_before_any_store_writes() {
+    let mut key_path = String::new();
+    let run = run_binary_prepared("tls-key-malformed", &[], |dir| {
+        key_path = state_dir_with_key(dir, "not a key")?.display().to_string();
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        !run.timed_out,
+        "a malformed key must be refused before the {DEADLINE:?} deadline, not start the server; stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.code,
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    let output = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        output.contains(&key_path) && output.contains("delete"),
+        "the refusal names {key_path} and says to delete it, got {output:?}"
+    );
+    assert_eq!(
+        run.state_files,
+        BTreeSet::from(["tls-key.pem".to_string()]),
+        "nothing but the untouched key may be in the state directory"
+    );
+    assert_eq!(
+        run.tls_key.as_deref(),
+        Some(b"not a key".as_slice()),
+        "the key is byte for byte unchanged"
+    );
+}
+
+// Criterion (#195, plain mode): `BLUE2TH_PLAIN_HTTP=1` in a debug build with a
+// non-loopback `--bind` refuses to start, before anything is written: exit 1
+// before the deadline, the message names the address and the loopback rule,
+// and the state directory holds no file. `192.0.2.1` (TEST-NET-1) is never a
+// local address, so a server that starts anyway cannot reach a real LAN.
+#[test]
+fn test_binary_in_plain_mode_refuses_a_non_loopback_bind_before_any_store_writes() {
+    let run = run_binary_with_env(
+        "plain-non-loopback",
+        &["--bind", "192.0.2.1:4000"],
+        &[("BLUE2TH_PLAIN_HTTP", "1")],
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert!(
+        !run.timed_out,
+        "the refusal must come before the {DEADLINE:?} deadline; stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.code,
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    let output = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        output.contains("192.0.2.1:4000") && output.contains("loopback"),
+        "the refusal names the address and the loopback rule, got {output:?}"
+    );
+    assert!(
+        run.state_files.is_empty(),
+        "no store may write before the refusal: {:?}",
+        run.state_files
     );
 }
 

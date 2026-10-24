@@ -802,13 +802,13 @@ fn test_default_backend_name_satisfies_the_validator() {
 // ---- backend protocol compatibility check (#33) ----
 
 // Criterion: proto — `PROTOCOL_VERSION` and `MIN_SUPPORTED_PROTOCOL_VERSION`
-// exist and are both `2` since the API moved under `/api` (#166), and
-// `HealthStatus::ok()` fills the range from them so a backend cannot forget
-// to announce it.
+// exist and are both `3` since the API moved to TLS (#195; `2` since it moved
+// under `/api`, #166), and `HealthStatus::ok()` fills the range from them so a
+// backend cannot forget to announce it.
 #[test]
 fn test_health_status_announces_the_compiled_protocol_range() {
-    assert_eq!(PROTOCOL_VERSION, 2);
-    assert_eq!(MIN_SUPPORTED_PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
+    assert_eq!(MIN_SUPPORTED_PROTOCOL_VERSION, 3);
 
     let status = HealthStatus::ok("0.1.0");
     assert_eq!(

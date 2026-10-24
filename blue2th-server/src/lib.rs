@@ -43,6 +43,7 @@ pub mod config;
 pub mod graph;
 pub mod graph_pw;
 pub mod identity;
+pub mod listener;
 pub mod reconnect;
 mod router_actor;
 pub mod router_handle;
@@ -51,6 +52,7 @@ pub mod spotify_auth;
 pub mod spotify_volume;
 mod state_store;
 pub mod targets;
+pub mod tls;
 pub mod tone;
 pub mod watchdog;
 
@@ -406,6 +408,7 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         preferred_lan_ipv4(&host_ipv4_addresses()),
         identity.id(),
         server_name.name(),
+        Scheme::Http,
     );
     let _mdns = advertise(&record);
 
@@ -532,24 +535,34 @@ fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
 /// The address to advertise in the pairing QR, resolving the host's LAN address
 /// itself. See [`advertised_url_from`] for the rule.
 fn advertised_url(bind_addr: &str) -> String {
-    advertised_url_from(bind_addr, preferred_lan_ipv4(&host_ipv4_addresses()))
+    advertised_url_from(
+        bind_addr,
+        preferred_lan_ipv4(&host_ipv4_addresses()),
+        Scheme::Http,
+    )
 }
 
-/// Pick the URL a pairing QR should carry for a backend bound to `bind_addr`.
-/// Pure, so the wildcard cases are testable without the host's interfaces.
-///
-/// A backend bound to every interface has no address of its own to hand out, so
-/// the detected LAN one is used: a QR carrying `0.0.0.0` would pair the phone
-/// with nothing. With no LAN address detected either, the bind address is
-/// advertised as-is — a QR that cannot work is still better than none, since the
-/// operator can read the code off the same banner and type it.
-fn advertised_url_from(bind_addr: &str, detected: Option<std::net::Ipv4Addr>) -> String {
+fn advertised_url_from(
+    bind_addr: &str,
+    detected: Option<std::net::Ipv4Addr>,
+    _scheme: Scheme,
+) -> String {
     match advertised_endpoint_from(bind_addr, detected) {
         Some((host, port)) => format!("http://{host}:{port}"),
         // No host/port pair to resolve (no port at all, or one that is not a
         // number): the bind address is advertised verbatim, as before.
         None => format!("http://{bind_addr}"),
     }
+}
+
+/// The scheme the backend is reached with (#195): TLS, or the debug-only
+/// plain mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scheme {
+    /// The API is served over TLS.
+    Https,
+    /// The plain, loopback-only development mode.
+    Http,
 }
 
 /// The host and TCP port a backend bound to `bind_addr` should be reached at, or
@@ -584,29 +597,59 @@ pub struct AdvertisedService {
     /// when the bind address has no numeric port, which is nothing an mDNS
     /// record could announce.
     pub endpoint: Option<(String, u16)>,
+    /// The host name the record announces (#195), `<label>.local.`.
+    pub host_name: String,
     /// TXT records, keyed by the shared `blue2th_proto` TXT keys.
     pub txt: Vec<(String, String)>,
 }
 
-/// Build the mDNS record for a backend bound to `bind_addr`. Pure, so the
-/// wildcard-bind case is testable without the host's interfaces or a network.
-///
-/// The URL goes through [`advertised_url_from`] — the same rule the pairing QR
-/// uses — so a wildcard bind announces the LAN address rather than `0.0.0.0`,
-/// which no phone could ever call.
 fn advertised_service_from(
     bind_addr: &str,
     detected: Option<std::net::Ipv4Addr>,
     id: &str,
     name: &str,
+    scheme: Scheme,
 ) -> AdvertisedService {
     AdvertisedService {
-        url: advertised_url_from(bind_addr, detected),
+        url: advertised_url_from(bind_addr, detected, scheme),
         endpoint: advertised_endpoint_from(bind_addr, detected),
+        host_name: String::new(),
         txt: vec![
             (blue2th_proto::TXT_KEY_ID.to_string(), id.to_string()),
             (blue2th_proto::TXT_KEY_NAME.to_string(), name.to_string()),
         ],
+    }
+}
+
+/// Whether a start must mint a new API token (#195), from whether the TLS key
+/// was generated at this start and whether `AuthStore` minted its token.
+fn must_rotate_token(_key_minted: bool, _token_minted: bool) -> bool {
+    false
+}
+
+/// The line logged when [`must_rotate_token`] rotated the token.
+fn token_rotation_notice() -> String {
+    String::new()
+}
+
+/// The warning logged on an mDNS `NameChange` from `original` to `new`.
+fn name_change_warning(_original: &str, _new: &str) -> String {
+    String::new()
+}
+
+/// Which `NameChange` events earn a warning (#195).
+#[derive(Default)]
+struct NameChangeWarnings;
+
+impl NameChangeWarnings {
+    /// The warning to log for one rename of `original` to `new`, if any.
+    fn warning_for(
+        &mut self,
+        _rr_type: mdns_sd::RRType,
+        original: &str,
+        new: &str,
+    ) -> Option<String> {
+        Some(name_change_warning(original, new))
     }
 }
 
