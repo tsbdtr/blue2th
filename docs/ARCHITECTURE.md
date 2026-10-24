@@ -24,7 +24,7 @@ The phone never carries audio.
 ```
  blue2th-frontend (Dioxus / Android)        Spotify Web API
    remote UI, Spotify OAuth   ─────────────▶  play / transfer / volume
-        │  HTTP + SSE                              │
+        │  HTTPS + SSE                             │
         ▼                                          ▼
  blue2th-server (Rust / Axum, Linux PC)      Spotify servers
    - bluer     → BlueZ (pair, connect A2DP)        │ direct stream
@@ -96,6 +96,70 @@ path under `/api` answers 404, without a token.
 | Spotify | `/api/spotify/start`, `/stop`, `/status`; `/api/spotify/auth/url`, `/auth/callback`, `/auth/status`; `/api/spotify/play`, `/pause`, `/next`, `/previous`, `/volume`; `GET /api/spotify/now-playing` (SSE) |
 | Client | `POST /api/client/presence`, `GET` and `POST /api/config` |
 
+The API is served over TLS (#195), on that same address and port. There is one
+listener, and each connection is dispatched on its first byte: a TLS handshake
+record goes to the full router, anything else to a small plain-HTTP router. One
+port rather than a second listener, because the callers that still speak plain
+HTTP must get an answer that tells them what to do, not a refused connection:
+an app paired before TLS, and a browser on a typed `http://` address. The plain
+side therefore answers three things and runs nothing else:
+
+- `GET /health`, reduced to the protocol range and a placeholder version, so
+  that an app too old to speak TLS reads the backend as *update the app* rather
+  than *unreachable*, and the release version stays off the clear side;
+- a permanent redirect to the same path over `https://` for any other `GET`
+  outside `/api`, which is what a browser needs;
+- `426 Upgrade Required` under `/api` and for every other method, answered
+  without reading the token: the plain router holds no API handler, so a
+  command sent in clear is never run, whatever it carries.
+
+### TLS: a self-signed certificate on a persistent key
+
+Of the options surveyed in #193, one fits a backend on a home LAN:
+
+- a public certificate for a private address needs a domain, and the
+  infrastructure to prove it owns it;
+- a private CA has to be installed on every device, and an Android app ignores
+  a user-installed CA unless it opts in;
+- encryption at the application layer cannot protect a browser, whose page and
+  script arrive in clear, and costs every request and every stream;
+- TLS with a pre-shared key has no browser support;
+- a **self-signed certificate, pinned by the app**, needs nothing from anyone.
+
+The app's pin (#196) is the SHA-256 of the certificate's public key, not of the
+certificate: a certificate is reissued whenever it stops describing the
+backend, and a reissue keeps the key, so the pin still matches and no phone has
+to pair again. The key is an ECDSA P-256 key in the state directory, generated
+once.
+
+The certificate is kept on disk and reissued **at start only**. A browser ties
+the exception its user accepted to the certificate, so a certificate that
+changed on every start would warn on every start; and the listener is bound
+once, so there is no running server to hand a new one to. A start reissues it,
+on the same key, when it is missing or unreadable, when it certifies another
+key, when its IP address or its `.local` name is not the backend's any more,
+when it is close to expiry, and when it is not valid yet (the clock moved
+back). Each reissue logs its reason, and that a browser will warn again.
+
+A key file that exists but cannot be read or parsed **refuses the start**
+instead of being replaced: it may be recoverable, and an overwritten one is
+not. The refusal says how to start over: delete it, after which every client
+must pair again. A key generated next to an existing `auth.json` also mints a
+new token, since that token predates TLS and travelled in clear.
+
+A browser holds no pin. It warns once per certificate, and the fingerprint the
+backend logs at every start is the only check its user can make before
+accepting. That line is printed whether or not a code is armed, since a browser
+can meet a new certificate on any start.
+
+**Plain HTTP for development.** `BLUE2TH_PLAIN_HTTP=1` serves the whole router
+in plain HTTP, as before TLS, with no key, no certificate and no token rotation.
+It exists because the `dx serve` proxy of dx 0.7.10 speaks no TLS, so the
+browser development loop of #160 needs a plain backend. It is read by debug
+builds only, and binds a loopback IP address only: the token travels in clear
+in this mode, and loopback keeps it on the machine. Any other value, or the
+variable in a release build, is ignored with a warning, and TLS is served.
+
 ### Authentication and pairing
 
 Every route requires `Authorization: Bearer <token>`, with two exceptions that
@@ -108,13 +172,16 @@ Pairing is therefore the one door, and everything rests on the code behind it
 being short-lived, one-shot and rate-limited: a six-character code with
 unlimited attempts is not a secret. The code is armed on a first run, whenever
 the token store is missing or unreadable (a fresh token has just invalidated
-every phone, so someone must be able to pair again), and otherwise only on
+every phone, so someone must be able to pair again), when a new TLS key replaced
+a token that travelled in clear (the same reason), and otherwise only on
 `--pair`. It lives five minutes, works once, and five failed attempts cancel
 it. Every refusal reads the same, so the route cannot be used to enumerate. The
 code reaches the phone typed by hand, or as a QR carrying a `blue2th://pair`
 deep link with the address, the name and the code in one scan.
 
-The token is persisted `0600` on the PC and per backend on the phone. A `401`
+The token, the code and the commands they authorise travel inside TLS: the
+plain side of the listener never reads a token. The token is persisted `0600`
+on the PC and per backend on the phone. A `401`
 surfaces in the app as *not paired*, distinct from a backend that cannot be
 reached at all.
 
@@ -129,6 +196,16 @@ otherwise filters multicast frames to save power. A known backend found at a new
 address is repaired in place, token and local name kept; an unknown one is
 offered for the normal pairing flow. Discovery announces, it never
 authenticates.
+
+The announced host name is `blue2th-<hash of the id>.local` (#195), and it is
+the name the certificate carries. It is derived from the id because the id is
+base64url, whose `_` and upper case a host label cannot carry, and because the
+machine's own name is already claimed on the LAN by avahi. Two backends that
+announce the same host name hold the same id — a copied state directory, most
+likely — so `mdns-sd`'s conflict rename of that name is logged as a warning
+that says so. The certificate is not reissued for it: the derived name is still
+the backend's. A rename of the instance name, `blue2th` on every backend, says
+nothing of the kind and is not logged.
 
 ### Protocol version
 
@@ -405,3 +482,12 @@ is compared; both rules, and the defects that taught them, are in `CLAUDE.md`.
   at once, where the `pactl`-era modules outlived it (#78).
 - **Background listening on Android** rests on presence reports and a grace
   period rather than a foreground service.
+- **The certificate is reissued at start only.** A backend running for more
+  than a year serves an expired certificate until it restarts: a browser says
+  so, the app does not care, since it checks the key. And a browser warns again
+  after every reissue, a new LAN address included.
+- **A host-name conflict is seen at start-up only.** `mdns-sd` 0.21.5 detects a
+  conflict while it probes its own names, so it is the backend that starts
+  second that renames, and logs the warning; one already announcing never
+  does. A responder that does not defend its name against a probe triggers no
+  conflict at all.

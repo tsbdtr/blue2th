@@ -358,6 +358,50 @@ fn test_binary_in_plain_mode_refuses_a_non_loopback_bind_before_any_store_writes
     );
 }
 
+// Criterion (#195, key; plain mode): the two refusals #195 adds reach stderr
+// as their message, as the state directory's does (#194), and not as a
+// `KeyRefusal { … }` or `StartRefusal("…")` dump. Stderr alone: the log line
+// on stdout carries the message whatever `Debug` prints.
+#[test]
+fn test_binary_tls_refusals_on_stderr_are_the_message_not_a_debug_dump() {
+    let mut key_path = String::new();
+    let key = run_binary_prepared("tls-key-malformed-stderr", &[], |dir| {
+        key_path = state_dir_with_key(dir, "not a key")?.display().to_string();
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(key.code, Some(1), "stdout: {}", key.stdout);
+    assert!(
+        key.stderr.contains(&key_path) && key.stderr.contains("delete"),
+        "stderr must name {key_path} and say to delete it, got {:?}",
+        key.stderr
+    );
+    assert!(
+        !key.stderr.contains("KeyRefusal"),
+        "no Debug dump on stderr: {:?}",
+        key.stderr
+    );
+
+    let bind = run_binary_with_env(
+        "plain-non-loopback-stderr",
+        &["--bind", "192.0.2.1:4000"],
+        &[("BLUE2TH_PLAIN_HTTP", "1")],
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(bind.code, Some(1), "stdout: {}", bind.stdout);
+    assert!(
+        bind.stderr.contains("192.0.2.1:4000 is not one"),
+        "stderr must carry the refusal itself, got {:?}",
+        bind.stderr
+    );
+    assert!(
+        !bind.stderr.contains("StartRefusal"),
+        "no Debug dump on stderr: {:?}",
+        bind.stderr
+    );
+}
+
 /// The names of every crate `manifest` depends on, in any dependency table
 /// (`dependencies`, `dev-dependencies`, `build-dependencies`, and their
 /// `[target.'cfg(…)'.…]` forms), under the package's real name when an entry

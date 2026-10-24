@@ -410,16 +410,15 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // #195: the key before `AuthStore`, so that a refused key mints no token.
-    let key = if plain.enabled {
-        None
-    } else {
-        match tls::load_or_create_key(state_store::state_store_path(tls::KEY_FILE).as_deref()) {
-            Ok(outcome) => Some(outcome),
-            Err(refusal) => {
-                tracing::error!("{refusal}");
-                return Err(refusal.into());
-            },
-        }
+    let key = match startup_tls_key(
+        plain.enabled,
+        state_store::state_store_path(tls::KEY_FILE).as_deref(),
+    ) {
+        Ok(key) => key,
+        Err(refusal) => {
+            tracing::error!("{refusal}");
+            return Err(refusal.into());
+        },
     };
 
     let mut auth_store = AuthStore::with_store(auth::auth_store_path());
@@ -472,8 +471,9 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Published before the router takes ownership of the name, and held for the
-    // whole run: dropping the daemon would withdraw the announcement.
+    // Published before the router takes ownership of the name. Dropping the
+    // handle would not withdraw it: `mdns-sd` 0.21.5 implements no `Drop`, and
+    // its thread announces until `shutdown`, so the record lasts the process.
     let record =
         advertised_service_from(&addr, detected, identity.id(), server_name.name(), scheme);
     let _mdns = advertise(&record);
@@ -560,8 +560,7 @@ pub async fn stop_sources_for_shutdown(state: &AppState) -> SpotifyState {
     spotify.stop().unwrap_or_else(|_| spotify.poll_liveness())
 }
 
-/// Publish `record` as `_blue2th._tcp.local.`, returning the daemon that must be
-/// kept alive for the announcement to stand.
+/// Publish `record` as `_blue2th._tcp.local.`, returning the daemon's handle.
 ///
 /// Best effort by design: a host with no usable multicast interface still serves
 /// its API perfectly well, and the pairing QR plus manual entry remain the way
@@ -595,8 +594,15 @@ fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
             port,
             &properties[..],
         )?;
+        // Watched before the record is registered: the registration starts
+        // the probe that detects a conflict, and the daemon runs commands in
+        // order, so the monitor is in place before any report. A monitor that
+        // cannot be set up costs the warning, never the announcement.
+        match daemon.monitor() {
+            Ok(events) => watch_name_changes(events),
+            Err(e) => tracing::warn!("cannot watch mDNS name conflicts ({e})"),
+        }
         daemon.register(info)?;
-        watch_name_changes(daemon.monitor()?);
         Ok(daemon)
     };
 
@@ -614,6 +620,19 @@ fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
             None
         },
     }
+}
+
+/// The TLS key of this start (#195), from the key file at `path`: none in the
+/// plain mode, which reads and writes no key, so that it never mints a key,
+/// a certificate or a token rotation behind a development run.
+fn startup_tls_key(
+    plain: bool,
+    path: Option<&std::path::Path>,
+) -> Result<Option<tls::KeyOutcome>, tls::KeyRefusal> {
+    if plain {
+        return Ok(None);
+    }
+    tls::load_or_create_key(path).map(Some)
 }
 
 /// The IP address the certificate carries for a backend bound to `bind_addr`:
@@ -655,8 +674,11 @@ impl std::error::Error for StartRefusal {}
 /// [`NameChangeWarnings`] sorts them. A rename is logged and nothing more: the
 /// certificate keeps the derived name.
 ///
-/// The monitor channel is blocking, so it is read on a thread of its own, which
-/// ends when the daemon is dropped and the channel closes.
+/// The monitor channel is blocking, so it is read on a thread of its own. That
+/// thread lasts as long as the process: the daemon's own thread holds the
+/// sending end until `ServiceDaemon::shutdown`, which nothing calls, and a
+/// dropped `ServiceDaemon` does not stop it (`mdns-sd` 0.21.5 implements no
+/// `Drop`).
 fn watch_name_changes(events: mdns_sd::Receiver<mdns_sd::DaemonEvent>) {
     let spawned = std::thread::Builder::new()
         .name("mdns-monitor".to_string())

@@ -109,7 +109,7 @@ sudo firewall-cmd --add-port=4000/tcp --add-service=mdns --permanent
 sudo firewall-cmd --reload
 ```
 
-From the PC itself, `curl http://<lan address>:4000/health` must answer a JSON
+From the PC itself, `curl -k https://<lan address>:4000/health` must answer a JSON
 status. If it does and the phone still cannot reach it, the path between them
 is the problem, not the backend — see the troubleshooting table in
 [`PAIRING.md`](PAIRING.md).

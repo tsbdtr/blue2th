@@ -220,6 +220,36 @@ fn test_load_or_create_key_leftover_0644_temp_file_still_gives_a_0600_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// Criterion (key): the leftover temporary file is removed, not written
+// through. A leftover that is a symlink must not carry the key to where it
+// points. Near-miss: `create(true).truncate(true)` on the leftover, followed
+// by the same `set_permissions`, ends `0600` like the code under test — the
+// mode alone cannot tell them apart — but writes the key into the target and
+// renames the symlink onto `tls-key.pem`.
+#[test]
+fn test_load_or_create_key_leftover_symlink_temp_file_is_not_written_through() {
+    let dir = scratch("key-leftover-symlink");
+    let path = dir.join("tls-key.pem");
+    let target = dir.join("elsewhere");
+    std::fs::write(&target, "not yours").expect("write the target");
+    std::os::unix::fs::symlink(&target, dir.join("tls-key.pem.tmp")).expect("plant the symlink");
+
+    let outcome = load_or_create_key(Some(&path)).expect("a missing key is generated");
+
+    assert!(outcome.minted && outcome.persisted);
+    assert_eq!(
+        std::fs::read(&target).ok(),
+        Some(b"not yours".to_vec()),
+        "the symlink's target is untouched"
+    );
+    assert!(
+        std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()),
+        "tls-key.pem is a regular file, not the leftover symlink"
+    );
+    assert_eq!(mode_of(&path), Some(0o600));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // Criterion (key): an existing valid key is loaded unchanged, `minted = false`.
 #[test]
 fn test_load_or_create_key_reloads_an_existing_key_unchanged() {
@@ -434,6 +464,25 @@ fn test_reissue_reason_not_yet_valid_reissues() {
 
     assert_eq!(reason_for(&future), Some(ReissueReason::NotYetValid));
     assert_eq!(reason_for(&fresh), None);
+}
+
+// Criterion (certificate): an expired certificate is reissued at any `now`,
+// including one so late that `now + 30 days` no longer fits in a
+// `SystemTime`. Near-miss: an expiry check written as `now.checked_add(30
+// days)?` answers `None` there, which reads as "reuse".
+#[test]
+fn test_reissue_reason_an_expired_certificate_reissues_even_at_the_end_of_time() {
+    let late = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(i64::MAX as u64) - DAY);
+    assert!(late.is_some(), "this platform represents the instant");
+    assert!(
+        late.and_then(|t| t.checked_add(30 * DAY)).is_none(),
+        "the fixture is the overflow case"
+    );
+    let stored = healthy();
+    assert_eq!(
+        late.and_then(|now| reissue_reason(Some(&stored), SPKI, Some(lan()), NAME, now)),
+        Some(ReissueReason::ExpiringSoon)
+    );
 }
 
 // Criterion (certificate): every reissue logs its reason and that the browser
@@ -675,6 +724,28 @@ fn test_issue_certificate_twice_on_one_key_keeps_the_spki() {
     let second = parse_cert_facts(&second.pem).map(|f| f.spki);
     assert!(first.is_some());
     assert_eq!(first, second);
+}
+
+// Criterion (certificate): two issuances on one key carry two serial numbers.
+// Same issuer, same serial is a certificate Firefox refuses outright, and
+// `rcgen` derives the serial from the key when none is set (rcgen 0.14.10,
+// `src/certificate.rs`), so a reissue would repeat it.
+#[test]
+fn test_issue_certificate_twice_on_one_key_gives_two_serials() {
+    let key = p256();
+    let serial_of = |cert: &IssuedCert| {
+        x509_parser::parse_x509_certificate(&cert.der)
+            .ok()
+            .map(|(_, c)| c.raw_serial().to_vec())
+    };
+    let first = issue_certificate(&key, Some(lan()), NAME, t0()).expect("issue");
+    let second = issue_certificate(&key, Some(lan()), NAME, t0()).expect("issue");
+    let (first, second) = (serial_of(&first), serial_of(&second));
+    assert!(
+        first.as_ref().is_some_and(|s| !s.is_empty()),
+        "the issued DER carries a serial, got {first:?}"
+    );
+    assert_ne!(first, second, "a reissue on one key needs a new serial");
 }
 
 // ---- load_or_issue_certificate ----

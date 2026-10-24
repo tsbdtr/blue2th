@@ -4812,3 +4812,103 @@ fn test_name_change_warnings_warn_again_for_a_new_host_name() {
         Some(name_change_warning(HOST, third))
     );
 }
+
+// Criterion (URL scheme / certificate): the certificate's IP is the advertised
+// host when that is an IP literal other than the wildcard — the detected LAN
+// address in place of `0.0.0.0` or `[::]`, an explicit `--bind` IP, a bracketed
+// IPv6 one — and none for a host name, a bind with no port, or a wildcard with
+// no LAN address detected. Near-miss: `0.0.0.0` parses as an `IpAddr`, so only
+// the unspecified check keeps it off the certificate.
+#[test]
+fn test_certificate_ip_is_the_advertised_ip_literal_and_never_the_wildcard() {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let lan = Some(Ipv4Addr::new(192, 168, 1, 107));
+    let lan_ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 107)));
+    assert_eq!(certificate_ip(DEFAULT_BIND, lan), lan_ip);
+    assert_eq!(certificate_ip("[::]:4000", lan), lan_ip);
+    assert_eq!(
+        certificate_ip("10.1.2.3:4321", lan),
+        Some(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))),
+        "an explicit --bind IP wins over the detected one"
+    );
+    assert_eq!(
+        certificate_ip("[::1]:4000", None),
+        Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+        "a bracketed IPv6 bind is an IP literal"
+    );
+    for (bind, detected) in [
+        ("localhost:4000", lan),
+        ("no-port-here", lan),
+        (DEFAULT_BIND, None),
+        ("[::]:4000", None),
+    ] {
+        assert_eq!(
+            certificate_ip(bind, detected),
+            None,
+            "{bind} with {detected:?} carries no IP"
+        );
+    }
+}
+
+/// A per-test directory under the system temp dir, `0700` like the state
+/// directory. Never the real state directory.
+fn tls_scratch(name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("blue2th-test-lib-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the scratch dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod 700");
+    dir
+}
+
+// Criterion (plain mode): the plain mode reads and writes no key file. A
+// malformed key, which refuses a TLS start, is not even read: the start goes
+// on with no key, and the file is byte for byte what it was. Near-miss: the
+// same file in TLS mode refuses.
+#[test]
+fn test_startup_tls_key_in_plain_mode_reads_no_key_file() {
+    let dir = tls_scratch("plain-key-malformed");
+    let path = dir.join(tls::KEY_FILE);
+    std::fs::write(&path, "not a key").expect("store a malformed key");
+
+    assert!(
+        startup_tls_key(false, Some(&path)).is_err(),
+        "the near-miss: in TLS mode the malformed key refuses the start"
+    );
+    let plain = startup_tls_key(true, Some(&path));
+    assert!(
+        matches!(plain, Ok(None)),
+        "the plain mode starts with no key"
+    );
+    assert_eq!(
+        std::fs::read(&path).ok(),
+        Some(b"not a key".to_vec()),
+        "the file is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Criterion (plain mode): with no key on disk, the plain mode generates none
+// and writes nothing; TLS mode generates and writes one, so no token is
+// rotated behind a development run.
+#[test]
+fn test_startup_tls_key_in_plain_mode_writes_no_key_file() {
+    let dir = tls_scratch("plain-key-missing");
+    let path = dir.join(tls::KEY_FILE);
+
+    assert!(matches!(startup_tls_key(true, Some(&path)), Ok(None)));
+    assert!(
+        std::fs::read_dir(&dir)
+            .map(|mut it| it.next().is_none())
+            .unwrap_or(false),
+        "the plain mode wrote nothing in the state directory"
+    );
+
+    let tls_key = startup_tls_key(false, Some(&path));
+    assert!(
+        matches!(&tls_key, Ok(Some(key)) if key.minted && key.persisted),
+        "the near-miss: TLS mode generates and writes the key"
+    );
+    assert!(path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

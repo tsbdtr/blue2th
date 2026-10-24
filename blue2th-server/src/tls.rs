@@ -243,10 +243,7 @@ fn parse_pem_certificate(pem: &str) -> Option<(CertFacts, Vec<u8>)> {
         not_after: system_time_of(cert.validity().not_after.timestamp())?,
         spki: cert.public_key().raw.to_vec(),
     };
-    // `cert` borrows `block.contents`, so the DER is copied out of its own
-    // buffer rather than moved.
-    let der = block.contents.clone();
-    Some((facts, der))
+    Some((facts, block.contents))
 }
 
 /// The instant `seconds` after (or before) the Unix epoch.
@@ -295,11 +292,12 @@ pub fn reissue_reason(
     if stored.not_before > now {
         return Some(ReissueReason::NotYetValid);
     }
-    let renew_at = now.checked_add(RENEW_BEFORE)?;
-    if stored.not_after <= renew_at {
-        return Some(ReissueReason::ExpiringSoon);
+    // What is left, rather than `now + RENEW_BEFORE`: that sum can overflow,
+    // and an overflow must not read as "reuse".
+    match stored.not_after.duration_since(now) {
+        Ok(left) if left > RENEW_BEFORE => None,
+        _ => Some(ReissueReason::ExpiringSoon),
     }
-    None
 }
 
 /// Issue a self-signed certificate on `key` for `ip` and the DNS name `name`.
