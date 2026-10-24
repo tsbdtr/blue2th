@@ -8,6 +8,7 @@
 //! `docs/ARCHITECTURE.md`.
 
 use std::{
+    collections::HashSet,
     convert::Infallible,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -386,30 +387,95 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         state_store::StartupCheck::Nothing => {},
     }
 
+    // #195: the plain mode and its address are settled before any store reads
+    // or writes its file, so that a refused address writes nothing.
+    let plain = listener::plain_http_choice(
+        std::env::var(listener::PLAIN_HTTP_ENV).ok().as_deref(),
+        cfg!(debug_assertions),
+    );
+    if let Some(warning) = &plain.warning {
+        tracing::warn!("{warning}");
+    }
+    let (addr, scheme) = if plain.enabled {
+        let env_bind = std::env::var(BIND_ENV).ok();
+        match listener::plain_bind(cli.bind.as_deref(), env_bind.as_deref()) {
+            Ok(addr) => (addr, Scheme::Http),
+            Err(refusal) => {
+                tracing::error!("{refusal}");
+                return Err(Box::new(StartRefusal(refusal)));
+            },
+        }
+    } else {
+        (resolve_bind_address(cli.bind.as_deref()), Scheme::Https)
+    };
+
+    // #195: the key before `AuthStore`, so that a refused key mints no token.
+    let key = if plain.enabled {
+        None
+    } else {
+        match tls::load_or_create_key(state_store::state_store_path(tls::KEY_FILE).as_deref()) {
+            Ok(outcome) => Some(outcome),
+            Err(refusal) => {
+                tracing::error!("{refusal}");
+                return Err(refusal.into());
+            },
+        }
+    };
+
     let mut auth_store = AuthStore::with_store(auth::auth_store_path());
+    if key
+        .as_ref()
+        .is_some_and(|key| must_rotate_token(key.minted, auth_store.minted_a_new_token()))
+    {
+        auth_store.rotate_token();
+        tracing::warn!("{}", token_rotation_notice());
+    }
     let server_name = config::ServerName::with_store(config::name_store_path());
-    let addr = resolve_bind_address(cli.bind.as_deref());
+    let identity = identity::BackendIdentity::with_store(identity::identity_store_path());
+    let detected = preferred_lan_ipv4(&host_ipv4_addresses());
+
+    let tls_config = match &key {
+        Some(key) => {
+            let issued = tls::load_or_issue_certificate(
+                state_store::state_store_path(tls::CERT_FILE).as_deref(),
+                &key.key,
+                certificate_ip(&addr, detected),
+                &format!("{}.local", tls::local_host_label(identity.id())),
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(reason) = issued.reissued {
+                tracing::info!("{}", tls::reissue_message(reason));
+            }
+            Some((tls::server_config(&issued.cert, &key.key)?, issued.cert))
+        },
+        None => None,
+    };
 
     if let Some(count) = codes_to_arm(&cli, auth_store.minted_a_new_token()) {
         let codes = auth_store.arm_pairing(count, std::time::SystemTime::now());
         tracing::info!(
             "{}",
-            pairing_banners(&advertised_url(&addr), server_name.name(), &codes)
+            pairing_banners(
+                &advertised_url_from(&addr, detected, scheme),
+                server_name.name(),
+                &codes
+            )
         );
     } else {
         tracing::info!("this backend is already paired; run with --pair to arm a new code");
     }
+    // At every start, codes armed or not: a browser user needs it on any.
+    if let Some((_, cert)) = &tls_config {
+        tracing::info!(
+            "TLS certificate SHA-256 fingerprint: {}",
+            tls::certificate_fingerprint(&cert.der)
+        );
+    }
 
     // Published before the router takes ownership of the name, and held for the
     // whole run: dropping the daemon would withdraw the announcement.
-    let identity = identity::BackendIdentity::with_store(identity::identity_store_path());
-    let record = advertised_service_from(
-        &addr,
-        preferred_lan_ipv4(&host_ipv4_addresses()),
-        identity.id(),
-        server_name.name(),
-        Scheme::Http,
-    );
+    let record =
+        advertised_service_from(&addr, detected, identity.id(), server_name.name(), scheme);
     let _mdns = advertise(&record);
 
     // The registry's speaker sink events drive the branch repair (#80).
@@ -427,8 +493,25 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     spawn_confirmation_timer(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("blue2th-server listening on http://{addr}");
+    tracing::info!("blue2th-server listening on {}://{addr}", scheme.as_str());
 
+    if let Some((config, _)) = tls_config {
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+        listener::serve(
+            listener,
+            router,
+            listener::plain_router(),
+            acceptor,
+            listener::Limits::PRODUCTION,
+            shutdown_signal(),
+        )
+        .await?;
+        tracing::info!("shutting down: stopping the Spotify source");
+        stop_sources_for_shutdown(&state).await;
+        return Ok(());
+    }
+
+    // The plain mode serves the whole router as before #195.
     // No graceful drain: the SSE streams never end, so waiting on the open
     // connections would wait forever. The serve future is simply dropped once
     // the signal wins, and the sources are stopped before returning.
@@ -507,12 +590,13 @@ fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
             // The instance name is cosmetic: the app matches on the TXT id, so a
             // rename never makes the machine look like a different one.
             "blue2th",
-            &format!("{host}.local."),
+            &record.host_name,
             host.as_str(),
             port,
             &properties[..],
         )?;
         daemon.register(info)?;
+        watch_name_changes(daemon.monitor()?);
         Ok(daemon)
     };
 
@@ -532,26 +616,87 @@ fn advertise(record: &AdvertisedService) -> Option<mdns_sd::ServiceDaemon> {
     }
 }
 
-/// The address to advertise in the pairing QR, resolving the host's LAN address
-/// itself. See [`advertised_url_from`] for the rule.
-fn advertised_url(bind_addr: &str) -> String {
-    advertised_url_from(
-        bind_addr,
-        preferred_lan_ipv4(&host_ipv4_addresses()),
-        Scheme::Http,
-    )
+/// The IP address the certificate carries for a backend bound to `bind_addr`:
+/// the advertised host when it is an IP literal other than the wildcard, and
+/// none otherwise (a host name such as `localhost`, or no LAN address found).
+fn certificate_ip(
+    bind_addr: &str,
+    detected: Option<std::net::Ipv4Addr>,
+) -> Option<std::net::IpAddr> {
+    let (host, _) = advertised_endpoint_from(bind_addr, detected)?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
+    host.parse::<std::net::IpAddr>()
+        .ok()
+        .filter(|ip| !ip.is_unspecified())
 }
 
+/// A start refused with a message, printed as the message itself when `main`
+/// returns it: the runtime prints a returned error with `Debug`.
+struct StartRefusal(String);
+
+impl std::fmt::Debug for StartRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::Display for StartRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StartRefusal {}
+
+/// Log the host-name renames the mDNS daemon makes on a conflict (#195), as
+/// [`NameChangeWarnings`] sorts them. A rename is logged and nothing more: the
+/// certificate keeps the derived name.
+///
+/// The monitor channel is blocking, so it is read on a thread of its own, which
+/// ends when the daemon is dropped and the channel closes.
+fn watch_name_changes(events: mdns_sd::Receiver<mdns_sd::DaemonEvent>) {
+    let spawned = std::thread::Builder::new()
+        .name("mdns-monitor".to_string())
+        .spawn(move || {
+            let mut warnings = NameChangeWarnings::default();
+            while let Ok(event) = events.recv() {
+                if let mdns_sd::DaemonEvent::NameChange(change) = event {
+                    if let Some(warning) =
+                        warnings.warning_for(change.rr_type, &change.original, &change.new_name)
+                    {
+                        tracing::warn!("{warning}");
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("cannot watch mDNS name conflicts ({e})");
+    }
+}
+
+/// Pick the URL a pairing QR should carry for a backend bound to `bind_addr`
+/// and reached with `scheme`. Pure, so the wildcard cases are testable without
+/// the host's interfaces.
+///
+/// A backend bound to every interface has no address of its own to hand out, so
+/// the detected LAN one is used: a QR carrying `0.0.0.0` would pair the phone
+/// with nothing. With no LAN address detected either, the bind address is
+/// advertised as-is — a QR that cannot work is still better than none, since the
+/// operator can read the code off the same banner and type it.
 fn advertised_url_from(
     bind_addr: &str,
     detected: Option<std::net::Ipv4Addr>,
-    _scheme: Scheme,
+    scheme: Scheme,
 ) -> String {
+    let scheme = scheme.as_str();
     match advertised_endpoint_from(bind_addr, detected) {
-        Some((host, port)) => format!("http://{host}:{port}"),
+        Some((host, port)) => format!("{scheme}://{host}:{port}"),
         // No host/port pair to resolve (no port at all, or one that is not a
         // number): the bind address is advertised verbatim, as before.
-        None => format!("http://{bind_addr}"),
+        None => format!("{scheme}://{bind_addr}"),
     }
 }
 
@@ -563,6 +708,16 @@ pub enum Scheme {
     Https,
     /// The plain, loopback-only development mode.
     Http,
+}
+
+impl Scheme {
+    /// The scheme as a URL spells it.
+    fn as_str(self) -> &'static str {
+        match self {
+            Scheme::Https => "https",
+            Scheme::Http => "http",
+        }
+    }
 }
 
 /// The host and TCP port a backend bound to `bind_addr` should be reached at, or
@@ -603,6 +758,12 @@ pub struct AdvertisedService {
     pub txt: Vec<(String, String)>,
 }
 
+/// Build the mDNS record for a backend bound to `bind_addr`. Pure, so the
+/// wildcard-bind case is testable without the host's interfaces or a network.
+///
+/// The URL goes through [`advertised_url_from`] — the same rule the pairing QR
+/// uses — so a wildcard bind announces the LAN address rather than `0.0.0.0`,
+/// which no phone could ever call.
 fn advertised_service_from(
     bind_addr: &str,
     detected: Option<std::net::Ipv4Addr>,
@@ -613,7 +774,7 @@ fn advertised_service_from(
     AdvertisedService {
         url: advertised_url_from(bind_addr, detected, scheme),
         endpoint: advertised_endpoint_from(bind_addr, detected),
-        host_name: String::new(),
+        host_name: format!("{}.local.", tls::local_host_label(id)),
         txt: vec![
             (blue2th_proto::TXT_KEY_ID.to_string(), id.to_string()),
             (blue2th_proto::TXT_KEY_NAME.to_string(), name.to_string()),
@@ -623,33 +784,54 @@ fn advertised_service_from(
 
 /// Whether a start must mint a new API token (#195), from whether the TLS key
 /// was generated at this start and whether `AuthStore` minted its token.
-fn must_rotate_token(_key_minted: bool, _token_minted: bool) -> bool {
-    false
+///
+/// A key generated next to a reloaded token means the token predates TLS and
+/// travelled in clear. A token `AuthStore` minted itself is already fresh.
+fn must_rotate_token(key_minted: bool, token_minted: bool) -> bool {
+    key_minted && !token_minted
 }
 
 /// The line logged when [`must_rotate_token`] rotated the token.
 fn token_rotation_notice() -> String {
-    String::new()
+    "a new TLS key was generated, so the API token was replaced: every client \
+     paired before must pair again"
+        .to_string()
 }
 
 /// The warning logged on an mDNS `NameChange` from `original` to `new`.
-fn name_change_warning(_original: &str, _new: &str) -> String {
-    String::new()
+fn name_change_warning(original: &str, new: &str) -> String {
+    format!(
+        "mDNS name conflict: {original} is announced as {new} instead. Probably \
+         another backend publishing the same id, e.g. a copy of this state directory"
+    )
 }
 
 /// Which `NameChange` events earn a warning (#195).
+///
+/// Only a host-name rename does: the host name is derived from the id, so a
+/// conflict on it means another backend publishes the same id. The instance
+/// name `blue2th` is the same on every backend, so two distinct backends on one
+/// LAN conflict on it. `mdns-sd` reports a rename once per interface and per
+/// record type, so each (old, new) pair warns once.
 #[derive(Default)]
-struct NameChangeWarnings;
+struct NameChangeWarnings {
+    warned: HashSet<(String, String)>,
+}
 
 impl NameChangeWarnings {
     /// The warning to log for one rename of `original` to `new`, if any.
     fn warning_for(
         &mut self,
-        _rr_type: mdns_sd::RRType,
+        rr_type: mdns_sd::RRType,
         original: &str,
         new: &str,
     ) -> Option<String> {
-        Some(name_change_warning(original, new))
+        if !matches!(rr_type, mdns_sd::RRType::A | mdns_sd::RRType::AAAA) {
+            return None;
+        }
+        self.warned
+            .insert((original.to_string(), new.to_string()))
+            .then(|| name_change_warning(original, new))
     }
 }
 

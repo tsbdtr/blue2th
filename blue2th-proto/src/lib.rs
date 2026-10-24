@@ -49,10 +49,10 @@ pub struct HealthStatus {
 /// Bumped whenever the HTTP surface changes in a way an older peer cannot
 /// follow. Compiled into both sides, so the comparison never depends on what a
 /// payload claims about itself.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The oldest client contract a backend built from this source still serves.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 3;
 
 /// Path prefix every backend route is mounted under, except `GET /health`,
 /// which stays at the root because it carries the version handshake (#166).
