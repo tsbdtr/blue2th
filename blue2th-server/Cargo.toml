@@ -50,7 +50,9 @@ pipewire = { version = "0.10", features = ["v0_3_44"] }
 libspa = "0.10"
 # #122: `prctl(PR_SET_PDEATHSIG)` on the `librespot` child. Already in the lock
 # through `bluer`, so this adds no package.
-nix = { version = "0.29", features = ["process"] }
+# #194: `user`, for `geteuid` in the state directory's start-up check. A
+# feature of the same crate: no new package either.
+nix = { version = "0.29", features = ["process", "user"] }
 # #170: the command line (`Cli`), parsed with `--help`, `--version`, the
 # `--opt=value` form and refusals of unknown or repeated options for free.
 # Default features kept: colour and "did you mean" suggestions. Not `env`: it

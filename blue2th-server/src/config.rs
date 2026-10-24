@@ -59,7 +59,7 @@ fn save_config(
     spotify_volume_lock: bool,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::state_store::ensure_state_dir(parent)?;
     }
     let body = serde_json::to_string(&ServerConfig {
         // Owned copy: `ServerConfig` is a plain DTO built for serialization.

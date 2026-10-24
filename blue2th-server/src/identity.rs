@@ -73,7 +73,7 @@ fn persist_id(path: &Path, id: &str) {
 
 fn write_id(path: &Path, id: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::state_store::ensure_state_dir(parent)?;
     }
     let body = serde_json::to_string(&StoredId {
         // Owned copy: the on-disk shape is serialized from its own value.

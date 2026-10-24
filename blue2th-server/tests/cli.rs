@@ -32,18 +32,46 @@ struct Run {
     timed_out: bool,
     stdout: String,
     stderr: String,
+    /// The names of the files left in the state directory
+    /// (`$XDG_STATE_HOME/blue2th`), read before the per-test directory is
+    /// removed. Empty when that directory does not exist.
+    state_files: BTreeSet<String>,
 }
 
 /// Run the built binary with `args`, in an environment isolated under a
 /// directory unique to `test_name`, removed before returning — on an error
 /// too.
 fn run_binary(test_name: &str, args: &[&str]) -> std::io::Result<Run> {
+    run_binary_prepared(test_name, args, |_| Ok(()))
+}
+
+/// `run_binary`, with `prepare` run on the per-test directory between its
+/// creation and the spawn — to lay out a state directory the binary finds at
+/// start (#194).
+fn run_binary_prepared(
+    test_name: &str,
+    args: &[&str],
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<Run> {
     let dir = std::env::temp_dir().join(format!("blue2th-cli-{test_name}-{}", std::process::id()));
     // A leftover from an interrupted run would be reused otherwise.
     let _ = std::fs::remove_dir_all(&dir);
-    let run = std::fs::create_dir_all(&dir).and_then(|()| run_in(&dir, args));
+    let run = std::fs::create_dir_all(&dir)
+        .and_then(|()| prepare(&dir))
+        .and_then(|()| run_in(&dir, args));
     let _ = std::fs::remove_dir_all(&dir);
     run
+}
+
+/// The names of the entries in `dir`, empty when it does not exist.
+fn entry_names(dir: &Path) -> std::io::Result<BTreeSet<String>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Run the built binary with `args`, with `dir` as its home, state and cache,
@@ -90,6 +118,7 @@ fn run_in(dir: &Path, args: &[&str]) -> std::io::Result<Run> {
         timed_out: status.is_none(),
         stdout: std::fs::read_to_string(&out_path)?,
         stderr: std::fs::read_to_string(&err_path)?,
+        state_files: entry_names(&dir.join("state").join("blue2th"))?,
     })
 }
 
@@ -135,6 +164,84 @@ fn test_binary_pair_out_of_range_exits_two_with_clap_s_message() {
     assert!(
         !run.stderr.contains("ErrorInner"),
         "stderr must be clap's message, not its Debug dump: {:?}",
+        run.stderr
+    );
+}
+
+// Criterion (#194): the binary started on a pre-created `state/blue2th` at
+// `755` exits 1 before the deadline, logs the refusal at `ERROR` on stdout
+// (tracing's `fmt()` writes there) with `chmod 700 '<path>'`, and leaves no
+// file in the state directory. Guard ("before any store"): near-miss is the
+// check placed after `AuthStore::with_store`, which still refuses but has
+// already minted and written `auth.json`.
+#[test]
+fn test_binary_refuses_a_755_state_dir_before_any_store_writes() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut fix = String::new();
+    let run = run_binary_prepared("state-dir-755", &[], |dir| {
+        let state_dir = dir.join("state").join("blue2th");
+        fix = format!("chmod 700 '{}'", state_dir.display());
+        std::fs::create_dir_all(&state_dir)?;
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o755))
+    })
+    .unwrap();
+    assert!(
+        !run.timed_out,
+        "a 755 state directory must be refused before the {DEADLINE:?} deadline, not start the server; stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.code,
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout.contains("ERROR"),
+        "the refusal is logged at ERROR, got {:?}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains(&fix),
+        "stdout must give {fix:?}, got {:?}",
+        run.stdout
+    );
+    assert!(
+        !run.state_files.contains("auth.json"),
+        "no token may be written before the check: {:?}",
+        run.state_files
+    );
+    assert!(
+        run.state_files.is_empty(),
+        "no store may write before the check: {:?}",
+        run.state_files
+    );
+}
+
+// Requested at manual verification (#194): `main` returns the refusal, and
+// prints it on stderr with `Debug`. That line reads as the message itself —
+// the fixing command included — and not as a `StateDirRefusal { … }` dump.
+#[test]
+fn test_binary_refusal_on_stderr_is_the_message_not_a_debug_dump() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut fix = String::new();
+    let run = run_binary_prepared("state-dir-755-stderr", &[], |dir| {
+        let state_dir = dir.join("state").join("blue2th");
+        fix = format!("chmod 700 '{}'", state_dir.display());
+        std::fs::create_dir_all(&state_dir)?;
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o755))
+    })
+    .unwrap();
+    assert_eq!(run.code, Some(1), "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains(&fix),
+        "stderr must give {fix:?}, got {:?}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("StateDirRefusal {"),
+        "no Debug dump on stderr: {:?}",
         run.stderr
     );
 }

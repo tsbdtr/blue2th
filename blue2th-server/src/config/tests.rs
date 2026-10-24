@@ -430,3 +430,31 @@ fn test_name_store_path_is_app_scoped() {
         );
     }
 }
+
+// Criterion (#194): after the first write of the name store into a missing state
+// directory, that directory is `700` — created by `state_store::ensure_state_dir`,
+// not `create_dir_all` under the umask (`755`). An explicit path: never
+// `XDG_STATE_HOME`.
+#[test]
+fn test_save_config_creates_a_missing_state_dir_700() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root =
+        std::env::temp_dir().join(format!("blue2th-test-name-dir-mode-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create the scratch root");
+    let dir = root.join("blue2th");
+    let path = dir.join("name.json");
+
+    save_config(&path, "studio", true, true, false).expect("save the config");
+
+    let mode = std::fs::metadata(&dir)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777);
+    assert_eq!(
+        mode,
+        Some(0o700),
+        "got {:?}",
+        mode.map(|m| format!("{m:o}"))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

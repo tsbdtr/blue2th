@@ -246,7 +246,7 @@ fn load_refresh_token(path: Option<&std::path::Path>) -> Option<String> {
 /// to the caller, which logs them: losing persistence must never break playback.
 fn save_refresh_token(path: &std::path::Path, refresh_token: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::state_store::ensure_state_dir(parent)?;
     }
     let body = serde_json::json!({ "refresh_token": refresh_token }).to_string();
     std::fs::write(path, body)?;
