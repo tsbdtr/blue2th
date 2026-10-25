@@ -23,14 +23,10 @@ pub(crate) async fn sync_backend_config(
     outcome
 }
 
-/// The address the app contacts for `raw`, as typed or stored (#196): the
-/// scheme of this build on the phone; the browser's own origin untouched, since
-/// the page reaches its backend wherever the page itself came from.
-fn contacted_url(raw: &str, browser: bool) -> Result<String, settings::SettingsError> {
-    if browser {
-        return settings::normalise_url(raw);
-    }
-    settings::typed_backend_url(raw, cfg!(debug_assertions))
+/// The address this build contacts for `raw`, as typed or stored (#196): see
+/// [`settings::contacted_url`].
+fn contacted_url(raw: &str) -> Result<String, settings::SettingsError> {
+    settings::contacted_url(raw, settings::CLIENT_KIND, cfg!(debug_assertions))
 }
 
 /// One row of the discovery list (phase 6.6): a service the browse found, ready
@@ -588,7 +584,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                     let mut error = error;
                                     let mut notice = notice;
                                     // The address the app would store (#196).
-                                    let url = match contacted_url(&url_draft(), browser) {
+                                    let url = match contacted_url(&url_draft()) {
                                         Ok(url) => url,
                                         Err(e) => {
                                             *notice.write() = None;
@@ -622,7 +618,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                 onclick: move |_| {
                                     let mut next = app_settings.peek().clone();
                                     // The scheme of this build first (#196).
-                                    let added = contacted_url(&url_draft(), browser)
+                                    let added = contacted_url(&url_draft())
                                         .and_then(|url| next.add(&name_draft(), &url));
                                     match added {
                                         Ok(()) => {
@@ -748,7 +744,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                 // given the scheme of this build — an entry
                                 // stored as `http://` is paired over `https://`
                                 // in a release build, and rewritten so (#196).
-                                let url = match contacted_url(&url, browser) {
+                                let url = match contacted_url(&url) {
                                     Ok(url) => url,
                                     Err(e) => {
                                         *notice.write() = None;

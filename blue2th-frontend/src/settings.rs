@@ -81,7 +81,8 @@ pub struct BackendEntry {
     /// The SHA-256 of the backend's public key (its SPKI), as 64 lower-case hex
     /// characters, set at pairing (#196). Every TLS handshake with that backend
     /// must present this key. `serde(default)`: an entry stored before #196
-    /// loads with no pin, and reads as not paired until paired again.
+    /// loads with no pin; see [`entry_paired`] for what that entry reads as on
+    /// each target and build.
     #[serde(default)]
     pub pin: Option<String>,
 }
@@ -345,6 +346,18 @@ pub fn typed_backend_url(raw: &str, debug: bool) -> Result<String, SettingsError
         None => format!("https://{trimmed}"),
     };
     normalise_url(&with_scheme)
+}
+
+/// The address a client contacts for `raw`, as typed or stored (#196). Pure.
+///
+/// The phone gives it the scheme of the build, through [`typed_backend_url`].
+/// The browser keeps it as [`normalise_url`] does: its page reaches the backend
+/// wherever the page itself came from, and its own `fetch` does the TLS.
+pub fn contacted_url(raw: &str, kind: ClientKind, debug: bool) -> Result<String, SettingsError> {
+    match kind {
+        ClientKind::Browser => normalise_url(raw),
+        ClientKind::Phone => typed_backend_url(raw, debug),
+    }
 }
 
 /// Whether the now-playing feed, parked on an identity change while `refused`

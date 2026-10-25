@@ -612,22 +612,17 @@ async fn test_every_call_refuses_another_key_as_identity_changed() {
 
 // ---- The calls aimed at the backend being left ----
 
-/// Switch from a TLS backend presenting `key`, whose entry is pinned to
-/// `leaving_pin`, to an entry nothing answers: what each connection to the
-/// backend being left came to.
-async fn switch_away(key: &TestKey, leaving_pin: &str) -> Vec<Seen> {
+/// Switch from a TLS backend presenting `key`, whose entry holds `leaving_pin`,
+/// to an entry nothing answers: what each connection to the backend being left
+/// came to.
+async fn switch_away(key: &TestKey, leaving_pin: Option<&str>) -> Vec<Seen> {
     let Some(leaving) = backend_presenting(key, 1, "{}").await else {
         return Vec::new();
     };
     let arriving = TestKey::generate().map(|k| k.pin_hex()).unwrap_or_default();
     let mut settings = AppSettings {
         backends: vec![
-            entry(
-                "Salon",
-                &leaving.url,
-                Some("leaving-token"),
-                Some(leaving_pin),
-            ),
+            entry("Salon", &leaving.url, Some("leaving-token"), leaving_pin),
             // Port 1: the sync with the backend switched to fails at once; the
             // pause of the one being left is what these tests read.
             entry(
@@ -654,7 +649,7 @@ async fn test_activate_backend_pauses_the_previous_backend_through_its_own_pin()
     let _guard = SETTINGS_GUARD.lock().await;
     let key = TestKey::generate().expect("generate a key");
 
-    let requests: Vec<String> = switch_away(&key, &key.pin_hex())
+    let requests: Vec<String> = switch_away(&key, Some(&key.pin_hex()))
         .await
         .into_iter()
         .filter_map(Result::ok)
@@ -680,12 +675,39 @@ async fn test_activate_backend_sends_nothing_to_a_previous_backend_with_another_
     let _guard = SETTINGS_GUARD.lock().await;
     let key = TestKey::generate().expect("generate a key");
 
-    let seen = switch_away(&key, &one_digit_off(&key.pin_hex())).await;
+    let seen = switch_away(&key, Some(&one_digit_off(&key.pin_hex()))).await;
 
     assert_eq!(
         seen.iter().map(Result::is_ok).collect::<Vec<_>>(),
         vec![false],
         "one handshake, attempted and refused: {seen:?}"
+    );
+}
+
+// Criterion (guard, the token never travels unverified): the pause sent to a
+// backend being left whose `https://` entry holds a token but no pin — an
+// HTTP-era entry a discovery repair moved to `https://` — goes out unpinned,
+// so it carries no `Authorization`. Near-miss: credentials built from the
+// entry's token whenever it has one, which every test above passes, since each
+// of their entries holds a pin.
+#[tokio::test]
+async fn test_activate_backend_sends_no_token_to_a_previous_backend_without_a_pin() {
+    let _guard = SETTINGS_GUARD.lock().await;
+    let key = TestKey::generate().expect("generate a key");
+
+    let requests: Vec<String> = switch_away(&key, None)
+        .await
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| (method_and_path(r), header_value(r, "authorization")))
+            .collect::<Vec<_>>(),
+        vec![(("POST".to_string(), "/api/spotify/pause".to_string()), None)],
+        "the pause reaches the unpinned backend, without the token"
     );
 }
 

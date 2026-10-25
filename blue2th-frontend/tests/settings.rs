@@ -2115,6 +2115,32 @@ fn test_typed_backend_url_gives_the_scheme_for_the_build() {
     assert_eq!(wrong, Vec::<String>::new());
 }
 
+// Criterion: the browser build is unchanged — the address it contacts is the
+// stored one, normalised as before, whatever the build; the phone's goes
+// through the scheme of its build. Near-miss: one rule for both clients, which
+// turns a release browser's plain `http://` origin into an `https://` address
+// nothing serves.
+#[test]
+fn test_contacted_url_gives_the_build_scheme_on_the_phone_only() {
+    use settings::ClientKind::{Browser, Phone};
+    assert_eq!(
+        [
+            settings::contacted_url("http://pc:4000", Browser, false),
+            settings::contacted_url("http://pc:4000/", Browser, true),
+            settings::contacted_url("http://pc:4000", Phone, false),
+            settings::contacted_url("http://127.0.0.1:4000", Phone, true),
+            settings::contacted_url("pc:4000", Phone, false),
+        ],
+        [
+            Ok("http://pc:4000".to_string()),
+            Ok("http://pc:4000".to_string()),
+            Ok("https://pc:4000".to_string()),
+            Ok("http://127.0.0.1:4000".to_string()),
+            Ok("https://pc:4000".to_string()),
+        ]
+    );
+}
+
 // Criterion (guard, the repair keeps the pin): a discovery repair, applied
 // through `set_url`, moves the address and keeps the pin and the token — the
 // backend reissued its certificate for the new IP on the same key. Near-miss:
@@ -2274,6 +2300,52 @@ fn test_upsert_from_pair_link_updates_an_http_era_entry_in_place() {
     );
 }
 
+// Criterion (guard, the empty value is a wildcard): the HTTP-era match is on
+// the whole host and port. Near-misses, listed before the HTTP-era entry so a
+// match on anything less picks them first: another host on the same port, and
+// the same host on another port. A scheme-stripping helper that answered the
+// empty string would match the first entry of every list.
+#[test]
+fn test_upsert_from_pair_link_matches_an_http_era_entry_by_host_and_port_only() {
+    let other_host = BackendEntry {
+        name: "Bureau".to_string(),
+        ..pinned_entry("http://192.168.1.42:4000", Some("bureau-token"), None)
+    };
+    let other_port = BackendEntry {
+        name: "Cuisine".to_string(),
+        ..pinned_entry("http://192.168.1.107:4001", Some("cuisine-token"), None)
+    };
+    let http_era = pinned_entry("http://192.168.1.107:4000", Some("http-era-token"), None);
+    let mut settings = holding(vec![other_host.clone(), other_port.clone(), http_era]);
+
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("https://192.168.1.107:4000", Some("blue2th-PC")),
+            "new-token",
+            Some(PIN),
+        )
+        .expect("the HTTP-era entry must be updated");
+
+    assert_eq!(index, 2, "the entry at the same host and port");
+    assert_eq!(
+        settings
+            .backends
+            .iter()
+            .map(|b| (b.name.as_str(), b.url.as_str(), b.token.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Bureau", "http://192.168.1.42:4000", Some("bureau-token")),
+            (
+                "Cuisine",
+                "http://192.168.1.107:4001",
+                Some("cuisine-token")
+            ),
+            ("Salon", "https://192.168.1.107:4000", Some("new-token")),
+        ],
+        "the near-misses are left as they were"
+    );
+}
+
 // Criterion: the active entry's pin, like its token, follows the active entry.
 #[test]
 fn test_active_pin_follows_the_active_backend() {
@@ -2322,6 +2394,16 @@ fn test_identity_park_lifts_on_a_new_pin_another_backend_or_a_new_address_only()
     if let Some(salon) = repaired.backends.first_mut() {
         salon.url = "https://192.168.1.150:4000".to_string();
     }
+    // Another entry for the same machine — `add` refuses a second name, not a
+    // second address — holding the same pin: only the active index tells the
+    // switch apart. Near-miss: comparing the address and the pin alone.
+    let mut twin = refused.clone();
+    twin.backends.push(BackendEntry {
+        name: "Salon bis".to_string(),
+        ..pinned_entry("https://192.168.1.107:4000", Some("twin-token"), Some(PIN))
+    });
+    let mut switched_to_twin = twin.clone();
+    switched_to_twin.active = Some(2);
 
     assert_eq!(
         [
@@ -2330,8 +2412,10 @@ fn test_identity_park_lifts_on_a_new_pin_another_backend_or_a_new_address_only()
             settings::identity_park_lifted(&refused, &switched),
             settings::identity_park_lifted(&refused, &token_only),
             settings::identity_park_lifted(&refused, &repaired),
+            settings::identity_park_lifted(&twin, &switched_to_twin),
         ],
-        [false, true, true, false, true],
-        "(unchanged, paired again, switched, token only, address repaired)"
+        [false, true, true, false, true, true],
+        "(unchanged, paired again, switched, token only, address repaired, \
+         switched to a twin entry)"
     );
 }

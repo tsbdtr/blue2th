@@ -465,3 +465,6 @@ pub(crate) fn App() -> Element {
         Router::<Route> {}
     }
 }
+
+#[cfg(test)]
+mod tests;
