@@ -37,6 +37,7 @@ fn two_backends() -> AppSettings {
                 // not (a pre-6.6 entry, matched on its URL).
                 id: Some("salon-backend-id".to_string()),
                 config_pending: false,
+                pin: None,
             },
             BackendEntry {
                 name: "Bureau".to_string(),
@@ -47,6 +48,7 @@ fn two_backends() -> AppSettings {
                 pairing: PairingMethod::Qr,
                 id: None,
                 config_pending: false,
+                pin: None,
             },
         ],
         active: Some(0),
@@ -140,6 +142,8 @@ fn test_add_normalises_a_trailing_slash() {
             id: None,
             // #160: and the typed name waits to reach the backend.
             config_pending: true,
+            // #196: and no key is pinned before the first pairing.
+            pin: None,
         })
     );
 }
@@ -968,14 +972,14 @@ fn test_set_pairing_method_on_an_unknown_backend_is_refused() {
 fn test_set_token_stores_and_clears_the_token() {
     let mut settings = two_backends();
     settings
-        .set_token(1, Some("bureau-token".to_string()))
+        .set_token(1, Some("bureau-token".to_string()), None)
         .expect("store the paired token");
     assert_eq!(
         settings.backends.get(1).and_then(|b| b.token.clone()),
         Some("bureau-token".to_string())
     );
 
-    settings.set_token(1, None).expect("clear the token");
+    settings.set_token(1, None, None).expect("clear the token");
     assert_eq!(settings.backends.get(1).and_then(|b| b.token.clone()), None);
 }
 
@@ -984,7 +988,7 @@ fn test_set_token_stores_and_clears_the_token() {
 fn test_set_token_on_an_unknown_backend_is_refused() {
     let mut settings = two_backends();
     assert_eq!(
-        settings.set_token(9, Some("token".to_string())),
+        settings.set_token(9, Some("token".to_string()), None),
         Err(SettingsError::UnknownBackend)
     );
     assert_eq!(settings, two_backends(), "nothing may have changed");
@@ -1016,6 +1020,7 @@ fn test_upsert_from_pair_link_creates_and_activates_the_backend() {
         .upsert_from_pair_link(
             &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
             "api-token",
+            None,
         )
         .expect("a scanned link must create the backend");
 
@@ -1041,6 +1046,7 @@ fn test_upsert_from_pair_link_records_the_qr_as_the_new_backend_method() {
         .upsert_from_pair_link(
             &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
             "api-token",
+            None,
         )
         .expect("a scanned link must create the backend");
     assert_eq!(
@@ -1058,6 +1064,7 @@ fn test_upsert_from_pair_link_keeps_the_method_of_a_known_backend() {
         .upsert_from_pair_link(
             &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
             "fresh-token",
+            None,
         )
         .expect("a known URL must be updated");
     assert_eq!(
@@ -1077,6 +1084,7 @@ fn test_upsert_from_pair_link_updates_a_known_url_without_touching_its_name() {
         .upsert_from_pair_link(
             &pair_link("http://192.168.1.107:4000", Some("blue2th-PC")),
             "fresh-token",
+            None,
         )
         .expect("a known URL must be updated");
 
@@ -1097,6 +1105,7 @@ fn test_upsert_from_pair_link_matches_a_known_url_across_a_trailing_slash() {
         .upsert_from_pair_link(
             &pair_link("http://192.168.1.107:4000/", Some("blue2th-PC")),
             "fresh-token",
+            None,
         )
         .expect("a trailing slash must not create a second entry");
     assert_eq!(settings.backends.len(), 2);
@@ -1108,7 +1117,11 @@ fn test_upsert_from_pair_link_matches_a_known_url_across_a_trailing_slash() {
 fn test_upsert_from_pair_link_refuses_a_malformed_url_and_stores_nothing() {
     let mut settings = AppSettings::default();
     assert_eq!(
-        settings.upsert_from_pair_link(&pair_link("192.168.1.107:4000", Some("blue2th-PC")), "t"),
+        settings.upsert_from_pair_link(
+            &pair_link("192.168.1.107:4000", Some("blue2th-PC")),
+            "t",
+            None
+        ),
         Err(SettingsError::MalformedUrl)
     );
     assert!(settings.backends.is_empty());
@@ -1122,7 +1135,7 @@ fn test_upsert_from_pair_link_refuses_a_malformed_url_and_stores_nothing() {
 fn test_upsert_from_pair_link_refuses_to_create_a_nameless_backend() {
     let mut settings = AppSettings::default();
     assert_eq!(
-        settings.upsert_from_pair_link(&pair_link("http://192.168.1.107:4000", None), "t"),
+        settings.upsert_from_pair_link(&pair_link("http://192.168.1.107:4000", None), "t", None),
         Err(SettingsError::Name(NameError::Empty))
     );
     assert!(settings.backends.is_empty());
@@ -1134,7 +1147,11 @@ fn test_upsert_from_pair_link_refuses_to_create_a_nameless_backend() {
 fn test_upsert_from_pair_link_accepts_a_nameless_link_for_a_known_url() {
     let mut settings = two_backends();
     let index = settings
-        .upsert_from_pair_link(&pair_link("http://192.168.1.107:4000", None), "fresh-token")
+        .upsert_from_pair_link(
+            &pair_link("http://192.168.1.107:4000", None),
+            "fresh-token",
+            None,
+        )
         .expect("a known URL needs no name");
     assert_eq!(index, 0);
     assert_eq!(
@@ -1154,7 +1171,11 @@ fn test_upsert_from_pair_link_accepts_a_nameless_link_for_a_known_url() {
 fn test_upsert_from_pair_link_refuses_a_name_another_backend_already_uses() {
     let mut settings = two_backends();
     assert_eq!(
-        settings.upsert_from_pair_link(&pair_link("http://10.0.0.9:4000", Some("Salon")), "t"),
+        settings.upsert_from_pair_link(
+            &pair_link("http://10.0.0.9:4000", Some("Salon")),
+            "t",
+            None
+        ),
         Err(SettingsError::DuplicateName)
     );
     assert_eq!(settings, two_backends(), "nothing may have changed");
@@ -1168,11 +1189,11 @@ fn test_upsert_from_pair_link_refuses_a_name_another_backend_already_uses() {
 #[test]
 fn test_backend_health_separates_unpaired_from_ready() {
     assert_eq!(
-        settings::backend_health(true, true, None),
+        settings::backend_health(true, true, None, false),
         settings::BackendHealth::Ready
     );
     assert_eq!(
-        settings::backend_health(true, false, None),
+        settings::backend_health(true, false, None, false),
         settings::BackendHealth::Unpaired,
         "reachable but tokenless is the in-between state, not a working one"
     );
@@ -1184,7 +1205,7 @@ fn test_backend_health_separates_unpaired_from_ready() {
 fn test_backend_health_reports_offline_whatever_the_pairing() {
     for paired in [true, false] {
         assert_eq!(
-            settings::backend_health(false, paired, None),
+            settings::backend_health(false, paired, None, false),
             settings::BackendHealth::Offline,
             "an unreachable backend is offline whether or not a token is held"
         );
@@ -1198,7 +1219,7 @@ fn test_backend_health_with_nothing_configured_is_offline() {
     let empty = AppSettings::default();
     assert_eq!(empty.active_token(), None);
     assert_eq!(
-        settings::backend_health(false, empty.active_token().is_some(), None),
+        settings::backend_health(false, empty.active_token().is_some(), None, false),
         settings::BackendHealth::Offline
     );
 }
@@ -1209,12 +1230,12 @@ fn test_backend_health_with_nothing_configured_is_offline() {
 #[test]
 fn test_backend_health_reports_incompatible_over_unpaired() {
     assert_eq!(
-        settings::backend_health(true, false, Some(ProtocolMismatch::BackendTooOld)),
+        settings::backend_health(true, false, Some(ProtocolMismatch::BackendTooOld), false),
         settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooOld),
         "an incompatible backend is not merely an unpaired one"
     );
     assert_eq!(
-        settings::backend_health(true, true, Some(ProtocolMismatch::BackendTooNew)),
+        settings::backend_health(true, true, Some(ProtocolMismatch::BackendTooNew), false),
         settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooNew),
         "a token changes nothing while the two ends cannot talk"
     );
@@ -1230,7 +1251,7 @@ fn test_backend_health_reports_offline_over_incompatible() {
             ProtocolMismatch::BackendTooNew,
         ] {
             assert_eq!(
-                settings::backend_health(false, paired, Some(mismatch)),
+                settings::backend_health(false, paired, Some(mismatch), false),
                 settings::BackendHealth::Offline,
                 "unreachable outranks incompatible, whatever was last seen"
             );
@@ -1247,7 +1268,7 @@ fn test_backend_health_keeps_the_side_to_update() {
         ProtocolMismatch::BackendTooNew,
     ] {
         assert_eq!(
-            settings::backend_health(true, true, Some(mismatch)),
+            settings::backend_health(true, true, Some(mismatch), false),
             settings::BackendHealth::Incompatible(mismatch),
             "the side to update must survive the classification"
         );
@@ -1327,7 +1348,7 @@ fn test_unpaired_and_incompatible_banners_never_render_together() {
         ProtocolMismatch::BackendTooOld,
         ProtocolMismatch::BackendTooNew,
     ] {
-        let health = settings::backend_health(true, false, Some(mismatch));
+        let health = settings::backend_health(true, false, Some(mismatch), false);
         assert_eq!(
             health,
             settings::BackendHealth::Incompatible(mismatch),
@@ -1702,6 +1723,7 @@ fn test_a_backend_created_from_a_pair_link_is_not_pending() {
         .upsert_from_pair_link(
             &pair_link("http://192.168.1.30:4000", Some("Cuisine")),
             "tok-cuisine",
+            None,
         )
         .expect("create from the link");
     assert_eq!(
@@ -1840,5 +1862,476 @@ fn test_settle_sync_keeps_the_answer_when_nothing_changed_meanwhile() {
         )),
         Some(("Lpt2", false, false)),
         "the backend's config is adopted"
+    );
+}
+
+// ── #196: the pin, the paired rule, the identity-changed state ──────────────
+
+/// A well-formed pin: 64 lower-case hex characters.
+const PIN: &str = "8db8a1c2d3e4f5061728394a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e";
+
+/// Another well-formed pin, for a key that replaced the first one.
+const NEW_PIN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// One entry at `url`, holding `token` and `pin`. Built by hand, like
+/// `two_backends`.
+fn pinned_entry(url: &str, token: Option<&str>, pin: Option<&str>) -> BackendEntry {
+    BackendEntry {
+        name: "Salon".to_string(),
+        url: url.to_string(),
+        restore_during_playback: true,
+        auto_reconnect: true,
+        token: token.map(str::to_string),
+        pairing: PairingMethod::Code,
+        id: Some("salon-backend-id".to_string()),
+        config_pending: false,
+        pin: pin.map(str::to_string),
+    }
+}
+
+/// Settings holding `entries`, the first one active.
+fn holding(entries: Vec<BackendEntry>) -> AppSettings {
+    AppSettings {
+        backends: entries,
+        active: Some(0),
+        auto_repair_url: true,
+        discovery_adds_backends: true,
+    }
+}
+
+// Criterion: the pin lives in `BackendEntry` with `serde(default)`, so a blob
+// stored before #196 loads — with no pin, and its token kept.
+#[test]
+fn test_a_blob_without_a_pin_loads_with_no_pin() {
+    let blob = r#"{"backends":[{"name":"Salon","url":"http://192.168.1.107:4000","token":"salon-token"}],"active":0}"#;
+    let loaded = settings::load(Some(blob));
+    assert_eq!(
+        loaded
+            .backends
+            .first()
+            .map(|b| (b.pin.clone(), b.token.as_deref())),
+        Some((None, Some("salon-token")))
+    );
+}
+
+// Criterion: the pin survives the blob round-trip, per backend.
+#[test]
+fn test_the_pin_round_trips_through_the_blob() {
+    let stored = holding(vec![
+        pinned_entry("https://192.168.1.107:4000", Some("salon-token"), Some(PIN)),
+        BackendEntry {
+            name: "Bureau".to_string(),
+            ..pinned_entry("https://192.168.1.42:4000", None, None)
+        },
+    ]);
+    assert_eq!(settings::load(Some(&settings::save_blob(&stored))), stored);
+}
+
+/// `(kind, debug, url, token, pin, paired)`: one case of the paired rule.
+type PairedCase = (
+    settings::ClientKind,
+    bool,
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+    bool,
+);
+
+// Criterion: an entry is paired by a pure function of the entry and the build
+// — native release: a valid pin, a token and an `https://` URL; native debug:
+// the same, or an `http://` URL with a token; browser: a token.
+//
+// Guards, each the near-miss of one rule:
+// - release, `http://` with a token and no pin → not paired, while debug pairs
+//   the same entry (`BLUE2TH_PLAIN_HTTP`) — a rule that forgets the build
+//   accepts one of the two;
+// - release, `http://` with a token *and* a valid pin → not paired: the pin
+//   does not stand in for the scheme;
+// - an empty pin, and a 63-digit one, → not paired: `pin.is_some()` takes
+//   them for pins, and the empty value is a wildcard (CLAUDE.md);
+// - debug, `https://` with a token and no pin → not paired: debug relaxes the
+//   scheme, never the pin of a TLS entry;
+// - the browser pairs on the token alone, whatever the scheme or the pin.
+#[test]
+fn test_entry_paired_follows_the_target_the_scheme_the_token_and_the_pin() {
+    use settings::ClientKind::{Browser, Phone};
+    let short = &PIN[..63];
+    let cases: Vec<PairedCase> = vec![
+        // Native release.
+        (Phone, false, "https://pc:4000", Some("t"), Some(PIN), true),
+        (Phone, false, "https://pc:4000", None, Some(PIN), false),
+        (Phone, false, "https://pc:4000", Some("t"), None, false),
+        (Phone, false, "https://pc:4000", Some("t"), Some(""), false),
+        (
+            Phone,
+            false,
+            "https://pc:4000",
+            Some("t"),
+            Some(short),
+            false,
+        ),
+        (Phone, false, "http://pc:4000", Some("t"), None, false),
+        (Phone, false, "http://pc:4000", Some("t"), Some(PIN), false),
+        // Native debug.
+        (Phone, true, "https://pc:4000", Some("t"), Some(PIN), true),
+        (Phone, true, "http://pc:4000", Some("t"), None, true),
+        (Phone, true, "http://pc:4000", None, None, false),
+        (Phone, true, "https://pc:4000", Some("t"), None, false),
+        (Phone, true, "https://pc:4000", Some("t"), Some(""), false),
+        // Browser: the token, as today.
+        (Browser, false, "http://pc:4000", Some("t"), None, true),
+        (Browser, false, "https://pc:4000", Some("t"), None, true),
+        (Browser, true, "http://pc:4000", Some("t"), None, true),
+        (Browser, false, "https://pc:4000", None, Some(PIN), false),
+    ];
+
+    let wrong: Vec<String> = cases
+        .into_iter()
+        .filter_map(|(kind, debug, url, token, pin, paired)| {
+            let entry = pinned_entry(url, token, pin);
+            let got = settings::entry_paired(&entry, kind, debug);
+            (got != paired).then(|| {
+                format!("{kind:?} debug={debug} {url} token={token:?} pin={pin:?}: expected {paired}, got {got}")
+            })
+        })
+        .collect();
+    assert_eq!(wrong, Vec::<String>::new());
+}
+
+// Criterion: `BackendHealth::IdentityChanged` outranks every other state — an
+// identity change is only known from a handshake that happened, and nothing
+// else was compared. Every combination of the other inputs, so no branch of
+// the ranking can shadow it.
+#[test]
+fn test_backend_health_ranks_an_identity_change_above_everything() {
+    let mut wrong = Vec::new();
+    for online in [false, true] {
+        for paired in [false, true] {
+            for mismatch in [
+                None,
+                Some(ProtocolMismatch::BackendTooOld),
+                Some(ProtocolMismatch::BackendTooNew),
+            ] {
+                let health = settings::backend_health(online, paired, mismatch, true);
+                if health != settings::BackendHealth::IdentityChanged {
+                    wrong.push(format!(
+                        "online={online} paired={paired} {mismatch:?}: {health:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert_eq!(wrong, Vec::<String>::new());
+}
+
+// Criterion: without an identity change the ranking is today's — the flag
+// changes nothing it is not set for. Near-miss: a ranking that reads the flag
+// as "offline".
+#[test]
+fn test_backend_health_without_an_identity_change_is_unchanged() {
+    assert_eq!(
+        [
+            settings::backend_health(false, true, None, false),
+            settings::backend_health(true, true, Some(ProtocolMismatch::BackendTooOld), false),
+            settings::backend_health(true, false, None, false),
+            settings::backend_health(true, true, None, false),
+        ],
+        [
+            settings::BackendHealth::Offline,
+            settings::BackendHealth::Incompatible(ProtocolMismatch::BackendTooOld),
+            settings::BackendHealth::Unpaired,
+            settings::BackendHealth::Ready,
+        ]
+    );
+}
+
+// Criterion: the device list carries a notice of its own for an identity
+// change — not the unpaired one, whose wording says "never paired".
+#[test]
+fn test_device_list_notice_names_an_identity_change() {
+    assert_eq!(
+        settings::device_list_notice(settings::BackendHealth::IdentityChanged),
+        Some(settings::DeviceListNotice::IdentityChanged)
+    );
+}
+
+// Criterion: a backend whose identity changed accepts no action: its key is no
+// longer the one the token was granted to.
+#[test]
+fn test_backend_actionable_blocks_a_backend_whose_identity_changed() {
+    assert!(!settings::backend_actionable(
+        settings::BackendHealth::IdentityChanged
+    ));
+}
+
+/// `(raw, debug, expected)`: one typed address.
+type TypedCase = (&'static str, bool, Result<&'static str, SettingsError>);
+
+// Criterion: a typed address gets its scheme from a pure function of the text
+// and the build — none → `https://`; `http://` → `https://` in release, kept
+// in debug; `https://` kept — then goes through `normalise_url` as today.
+//
+// Guards: `HTTP://pc` in release becomes `https://` (a case-sensitive match
+// keeps it `http`); the scheme comes out lower-case whatever its case in, so
+// the paired rule's `https://` reads it. Pinned reading: `HTTPS://` and
+// `HTTP://` are written back lower-case — the spec matches the scheme
+// case-insensitively and says nothing of its case on the way out.
+#[test]
+fn test_typed_backend_url_gives_the_scheme_for_the_build() {
+    let cases: Vec<TypedCase> = vec![
+        // Release.
+        ("pc:4000", false, Ok("https://pc:4000")),
+        (
+            "  192.168.1.107:4000/  ",
+            false,
+            Ok("https://192.168.1.107:4000"),
+        ),
+        ("http://pc:4000", false, Ok("https://pc:4000")),
+        ("HTTP://pc:4000", false, Ok("https://pc:4000")),
+        ("https://pc:4000/", false, Ok("https://pc:4000")),
+        ("HTTPS://pc:4000", false, Ok("https://pc:4000")),
+        // Debug: `http://` is kept, for a `BLUE2TH_PLAIN_HTTP` backend.
+        ("pc:4000", true, Ok("https://pc:4000")),
+        ("http://127.0.0.1:4000", true, Ok("http://127.0.0.1:4000")),
+        ("HTTP://127.0.0.1:4000", true, Ok("http://127.0.0.1:4000")),
+        ("https://pc:4000", true, Ok("https://pc:4000")),
+        // Refused as today, in both builds.
+        ("", false, Err(SettingsError::MalformedUrl)),
+        ("   ", true, Err(SettingsError::MalformedUrl)),
+        ("pc 4000", false, Err(SettingsError::MalformedUrl)),
+        ("http://", false, Err(SettingsError::MalformedUrl)),
+        ("https://:4000", true, Err(SettingsError::MalformedUrl)),
+    ];
+
+    let wrong: Vec<String> = cases
+        .into_iter()
+        .filter_map(|(raw, debug, expected)| {
+            let got = settings::typed_backend_url(raw, debug);
+            let expected = expected.map(str::to_string);
+            (got != expected)
+                .then(|| format!("{raw:?} debug={debug}: expected {expected:?}, got {got:?}"))
+        })
+        .collect();
+    assert_eq!(wrong, Vec::<String>::new());
+}
+
+// Criterion (guard, the repair keeps the pin): a discovery repair, applied
+// through `set_url`, moves the address and keeps the pin and the token — the
+// backend reissued its certificate for the new IP on the same key. Near-miss:
+// a repair that rebuilds the entry from the discovered service, which carries
+// no pin.
+#[test]
+fn test_set_url_keeps_the_pin_and_the_token() {
+    let mut settings = holding(vec![pinned_entry(
+        "https://192.168.1.107:4000",
+        Some("salon-token"),
+        Some(PIN),
+    )]);
+    let moved = blue2th_proto::DiscoveredBackend {
+        name: "blue2th-PC".to_string(),
+        url: "https://192.168.1.200:4000".to_string(),
+        id: Some("salon-backend-id".to_string()),
+    };
+    let action = settings::reconcile(&settings, &moved);
+    assert_eq!(
+        action,
+        settings::DiscoveryAction::Repair {
+            index: 0,
+            url: "https://192.168.1.200:4000".to_string()
+        }
+    );
+
+    settings
+        .set_url(0, "https://192.168.1.200:4000")
+        .expect("apply the repair");
+
+    assert_eq!(
+        settings
+            .backends
+            .first()
+            .map(|b| (b.url.as_str(), b.token.as_deref(), b.pin.as_deref())),
+        Some(("https://192.168.1.200:4000", Some("salon-token"), Some(PIN)))
+    );
+}
+
+// Criterion: the code path stores the token **and** the pin of the pairing in
+// the entry; clearing clears both.
+#[test]
+fn test_set_token_stores_the_pin_beside_the_token() {
+    let mut settings = two_backends();
+    settings
+        .set_token(1, Some("bureau-token".to_string()), Some(PIN.to_string()))
+        .expect("store the pairing");
+    assert_eq!(
+        settings
+            .backends
+            .get(1)
+            .map(|b| (b.token.as_deref(), b.pin.as_deref())),
+        Some((Some("bureau-token"), Some(PIN)))
+    );
+
+    settings
+        .set_token(1, None, None)
+        .expect("clear the pairing");
+    assert_eq!(
+        settings
+            .backends
+            .get(1)
+            .map(|b| (b.token.clone(), b.pin.clone())),
+        Some((None, None))
+    );
+}
+
+// Criterion: the QR path stores the pin with the token, on a created entry…
+#[test]
+fn test_upsert_from_pair_link_stores_the_pin_of_a_new_backend() {
+    let mut settings = AppSettings::default();
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("https://192.168.1.107:4000", Some("blue2th-PC")),
+            "api-token",
+            Some(PIN),
+        )
+        .expect("a scanned link must create the backend");
+    assert_eq!(
+        settings.backends.get(index).map(|b| (
+            b.url.as_str(),
+            b.token.as_deref(),
+            b.pin.as_deref()
+        )),
+        Some(("https://192.168.1.107:4000", Some("api-token"), Some(PIN)))
+    );
+}
+
+// Criterion: …and replaces the pin of a known one — pairing again after an
+// identity change replaces the pin, the token and the URL of the same entry.
+#[test]
+fn test_upsert_from_pair_link_replaces_the_pin_of_a_known_backend() {
+    let mut settings = holding(vec![pinned_entry(
+        "https://192.168.1.107:4000",
+        Some("old-token"),
+        Some(PIN),
+    )]);
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("https://192.168.1.107:4000", Some("blue2th-PC")),
+            "new-token",
+            Some(NEW_PIN),
+        )
+        .expect("a known backend must be updated");
+    assert_eq!(index, 0);
+    assert_eq!(settings.backends.len(), 1, "no duplicate entry");
+    assert_eq!(
+        settings
+            .backends
+            .first()
+            .map(|b| (b.name.as_str(), b.token.as_deref(), b.pin.as_deref())),
+        Some(("Salon", Some("new-token"), Some(NEW_PIN)))
+    );
+}
+
+// Criterion (non-nominal, an HTTP-era install): the QR — `https://` since #195
+// — updates the entry stored as `http://` at the same host and port rather than
+// creating a second one, and rewrites its URL to `https://`. Pinned reading:
+// the spec says "matched by id", but neither the pairing link nor `/pair`
+// carries an id, so the same machine is recognised by its host and port
+// whatever the scheme; the outcome, not the mechanism, is what this pins.
+// Near-miss: matching on the whole URL, which misses the entry and — the link
+// carrying the backend's own name — creates a duplicate machine under it.
+#[test]
+fn test_upsert_from_pair_link_updates_an_http_era_entry_in_place() {
+    let mut settings = holding(vec![pinned_entry(
+        "http://192.168.1.107:4000",
+        Some("http-era-token"),
+        None,
+    )]);
+    let index = settings
+        .upsert_from_pair_link(
+            &pair_link("https://192.168.1.107:4000", Some("blue2th-PC")),
+            "new-token",
+            Some(PIN),
+        )
+        .expect("the HTTP-era entry must be updated");
+    assert_eq!(index, 0);
+    assert_eq!(
+        settings.backends.len(),
+        1,
+        "no second entry for the same machine"
+    );
+    assert_eq!(
+        settings.backends.first().map(|b| (
+            b.name.as_str(),
+            b.url.as_str(),
+            b.token.as_deref(),
+            b.pin.as_deref()
+        )),
+        Some((
+            "Salon",
+            "https://192.168.1.107:4000",
+            Some("new-token"),
+            Some(PIN)
+        ))
+    );
+}
+
+// Criterion: the active entry's pin, like its token, follows the active entry.
+#[test]
+fn test_active_pin_follows_the_active_backend() {
+    let mut settings = holding(vec![
+        pinned_entry("https://192.168.1.107:4000", Some("t"), Some(PIN)),
+        BackendEntry {
+            name: "Bureau".to_string(),
+            ..pinned_entry("https://192.168.1.42:4000", Some("t"), Some(NEW_PIN))
+        },
+    ]);
+    assert_eq!(settings.active_pin().as_deref(), Some(PIN));
+    settings.activate(1).expect("switch to Bureau");
+    assert_eq!(settings.active_pin().as_deref(), Some(NEW_PIN));
+    assert_eq!(AppSettings::default().active_pin(), None);
+}
+
+// Criterion: the now-playing feed, parked on an identity change, resumes when
+// the active entry's pin changes (paired again), another entry becomes active,
+// or the active entry's address changes (a discovery repair: the machine moved,
+// and another one answered at the old address) — and only then. Guard: a
+// token that changed while the pin and the address did not keeps it parked.
+// Near-miss: reusing the 401 park (`await_new_token`), which compares the
+// token and would retry the refused handshake.
+#[test]
+fn test_identity_park_lifts_on_a_new_pin_another_backend_or_a_new_address_only() {
+    let refused = holding(vec![
+        pinned_entry("https://192.168.1.107:4000", Some("salon-token"), Some(PIN)),
+        BackendEntry {
+            name: "Bureau".to_string(),
+            ..pinned_entry("https://192.168.1.42:4000", Some("t"), Some(NEW_PIN))
+        },
+    ]);
+
+    let mut paired_again = refused.clone();
+    if let Some(salon) = paired_again.backends.first_mut() {
+        salon.pin = Some(NEW_PIN.to_string());
+        salon.token = Some("fresh-token".to_string());
+    }
+    let mut switched = refused.clone();
+    switched.active = Some(1);
+    let mut token_only = refused.clone();
+    if let Some(salon) = token_only.backends.first_mut() {
+        salon.token = Some("fresh-token".to_string());
+    }
+    let mut repaired = refused.clone();
+    if let Some(salon) = repaired.backends.first_mut() {
+        salon.url = "https://192.168.1.150:4000".to_string();
+    }
+
+    assert_eq!(
+        [
+            settings::identity_park_lifted(&refused, &refused),
+            settings::identity_park_lifted(&refused, &paired_again),
+            settings::identity_park_lifted(&refused, &switched),
+            settings::identity_park_lifted(&refused, &token_only),
+            settings::identity_park_lifted(&refused, &repaired),
+        ],
+        [false, true, true, false, true],
+        "(unchanged, paired again, switched, token only, address repaired)"
     );
 }

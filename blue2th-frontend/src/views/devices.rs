@@ -627,7 +627,8 @@ pub(crate) fn BackendScan() -> Element {
                     "{rust_i18n::t!(\"server.not_paired\")}"
                 }
             },
-            None => rsx! {},
+            // RED (#196): the identity-changed banner is the green phase's.
+            Some(settings::DeviceListNotice::IdentityChanged) | None => rsx! {},
         }
         button {
             class: "{btn_class}",

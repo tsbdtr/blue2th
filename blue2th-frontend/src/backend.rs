@@ -38,6 +38,10 @@ pub struct BackendError {
     /// the status mapping. Kept apart from `not_paired`, which is about this app
     /// and its backend: the two are different failures with different remedies.
     pairing_failed: bool,
+    /// Whether the backend presented a key other than the one pinned for it
+    /// (#196). Typed like `not_paired`: an identity change is neither an
+    /// unreachable backend nor an unpaired one.
+    identity_changed: bool,
     /// The status the backend answered, when this failure came from a response.
     /// Retained, not interpreted: a status only acquires a meaning where a route
     /// gives it one.
@@ -51,6 +55,7 @@ impl BackendError {
             not_paired: false,
             mismatch: None,
             pairing_failed: false,
+            identity_changed: false,
             status: None,
         }
     }
@@ -63,6 +68,7 @@ impl BackendError {
             not_paired: false,
             mismatch: Some(mismatch),
             pairing_failed: false,
+            identity_changed: false,
             status: None,
         }
     }
@@ -82,6 +88,7 @@ impl BackendError {
             not_paired: true,
             mismatch: None,
             pairing_failed: false,
+            identity_changed: false,
             status: None,
         }
     }
@@ -103,6 +110,7 @@ impl BackendError {
             not_paired: false,
             mismatch: None,
             pairing_failed: true,
+            identity_changed: false,
             status: None,
         }
     }
@@ -112,6 +120,19 @@ impl BackendError {
     /// mode and tap again.
     pub fn is_pairing_failed(&self) -> bool {
         self.pairing_failed
+    }
+
+    /// The typed "this backend's identity changed" failure: its TLS handshake
+    /// presented a key other than the one pinned at pairing (#196).
+    pub fn identity_changed() -> Self {
+        // RED stub (#196): the flag is the green phase's.
+        Self::new(IDENTITY_CHANGED)
+    }
+
+    /// Whether this failure is a refused key — pair again — rather than an
+    /// unreachable backend.
+    pub fn is_identity_changed(&self) -> bool {
+        self.identity_changed
     }
 
     /// The HTTP status the backend answered, when this failure came from a
@@ -167,6 +188,10 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 /// Message carried by every call made while the active backend has no token, or
 /// answered 401 (phase 6.4).
 pub const NOT_PAIRED: &str = "not paired";
+
+/// Message carried by a refused backend key (#196). The screens show a
+/// localised message instead, read from the typed flag.
+pub const IDENTITY_CHANGED: &str = "backend identity changed";
 
 /// Fallback message for a refused Bluetooth pairing carried by a response with
 /// no body. The screen shows the localised `device.pairing_failed` instead; this
@@ -244,7 +269,7 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// ```
 /// # async fn demo() -> Result<(), blue2th_frontend::backend::BackendError> {
 /// let backend = blue2th_frontend::backend::check_backend_protocol("http://pc:8080").await?;
-/// let _token = blue2th_frontend::backend::pair(&backend, "K7M2QX").await?;
+/// let _paired = blue2th_frontend::backend::pair(&backend, "K7M2QX").await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -258,7 +283,7 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// # Ok(())
 /// # }
 /// ```
-pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<String, BackendError> {
+pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<Paired, BackendError> {
     let request = reqwest::Client::new()
         .post(pair_url(&backend.url))
         .timeout(SETTINGS_CALL_TIMEOUT)
@@ -267,7 +292,22 @@ pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<String, Bac
             code: code.to_string(),
         });
     let granted: PairResponse = send_json(request).await?;
-    Ok(granted.token)
+    // RED stub (#196): the pin of the checked handshake is the green phase's.
+    Ok(Paired {
+        token: granted.token,
+        pin: None,
+    })
+}
+
+/// What a pairing yields (#196): the backend's API token, and the pin of the
+/// key its handshakes presented — `None` over plain `http://` and in the
+/// browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paired {
+    /// The long-lived API token.
+    pub token: String,
+    /// The SPKI pin, 64 lower-case hex characters.
+    pub pin: Option<String>,
 }
 
 /// How long a settings-page call waits before giving up.
@@ -605,7 +645,7 @@ pub async fn activate_backend(
 
 /// `GET {base}/health` against an explicit address — the settings page's `Test`
 /// action, which pings a backend that is not (yet) the active one.
-pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
+pub async fn test_backend(url: &str, _pin: Option<&str>) -> Result<HealthStatus, BackendError> {
     // Bounded: a typo'd address that drops packets would otherwise leave the
     // `Test` button waiting forever with no answer either way.
     send_json(
@@ -640,6 +680,9 @@ pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
 #[derive(Debug, PartialEq, Eq)]
 pub struct CompatibleBackend {
     url: String,
+    /// The pin of the key the `/health` handshake presented (#196): `None`
+    /// over plain `http://` and in the browser.
+    pin: Option<String>,
 }
 
 /// Probe `GET {url}/health` and check the wire contract this app speaks against
@@ -651,11 +694,13 @@ pub struct CompatibleBackend {
 pub async fn check_backend_protocol(url: &str) -> Result<CompatibleBackend, BackendError> {
     // An unreachable backend surfaces its transport error untouched: "cannot
     // reach" must never read as "incompatible".
-    let health = test_backend(url).await?;
+    let health = test_backend(url, None).await?;
     blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
         .map_err(BackendError::protocol)?;
     Ok(CompatibleBackend {
         url: url.to_owned(),
+        // RED stub (#196): the recorded key is the green phase's.
+        pin: None,
     })
 }
 
@@ -690,6 +735,28 @@ pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
         request = request.header(reqwest::header::AUTHORIZATION, auth_header_value(&token));
     }
     send_json(request).await
+}
+
+/// What one `/health` probe says about the active backend (#196), as the
+/// probe loop folds it into the status dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeVerdict {
+    /// The probe answered: the backend is reachable.
+    pub reachable: bool,
+    /// The wire contract it announced, when this app does not speak it.
+    pub mismatch: Option<ProtocolMismatch>,
+    /// Its handshake presented a key other than the pinned one.
+    pub identity_changed: bool,
+}
+
+/// Read one probe's outcome. Pure.
+pub fn probe_verdict(_probe: &Result<HealthStatus, BackendError>) -> ProbeVerdict {
+    // RED stub (#196).
+    ProbeVerdict {
+        reachable: false,
+        mismatch: None,
+        identity_changed: false,
+    }
 }
 
 /// Run a backend scan: consume the `/api/scan` SSE feed for `SCAN_WINDOW`, collecting
@@ -1073,3 +1140,8 @@ fn sse_device_payload(block: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests;
+
+// #196: the calls over a real TLS handshake, against a loopback backend with
+// a certificate made for the test. Native only, like the `tls` module.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tls_tests;

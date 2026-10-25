@@ -16,6 +16,14 @@
 # dead-code allowances no target can do without.
 # Sourced by scripts/tests/run.sh; each test_* runs in its own subshell.
 #
+# Since #196 the Android run also needs the NDK's C compiler: `ring`'s build
+# script compiles C for the target. The script resolves the NDK —
+# ANDROID_NDK_HOME when set and non-empty, otherwise the highest version under
+# $ANDROID_HOME/ndk/ — and hands cargo
+#   CC_aarch64_linux_android=<ndk>/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+#   AR_aarch64_linux_android=<ndk>/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+# With no NDK it exits 2 before any cargo call, naming what is missing.
+#
 # `cargo` and `rustup` are fakes put first on PATH: neither a real lint nor the
 # real toolchain list is ever reached. Each fake appends its argv to
 # $tmp/calls.log, one call per line, every argument in angle brackets so a
@@ -71,6 +79,7 @@ install_fake_cargo() {
 #!/usr/bin/env bash
 { printf 'cargo'; printf ' <%s>' "$@"; printf '\n'; } >>"$FAKE_DIR/calls.log"
 pwd -P >>"$FAKE_DIR/cargo-cwd.log"
+printf 'CC=<%s> AR=<%s>\n' "${CC_aarch64_linux_android-}" "${AR_aarch64_linux_android-}" >>"$FAKE_DIR/cargo-env.log"
 fails_on=""
 [[ -f "$FAKE_DIR/cargo-fails-on" ]] && fails_on="$(cat "$FAKE_DIR/cargo-fails-on")"
 if [[ -n "$fails_on" ]]; then
@@ -110,12 +119,39 @@ FAKE
     chmod +x "$tmp/bin/rustup"
 }
 
-# use_fakes <installed-targets>: both fakes, first on PATH.
+# use_fakes <installed-targets>: both fakes, first on PATH, and an NDK at
+# $tmp/ndk named by ANDROID_NDK_HOME — the machine's own ANDROID_HOME is
+# dropped, so no test depends on what the dev PC or the runner has installed.
 use_fakes() {
     install_fake_cargo
     install_fake_rustup "$1"
     export FAKE_DIR="$tmp"
     export PATH="$tmp/bin:$PATH"
+    mkdir -p "$tmp/ndk"
+    export ANDROID_NDK_HOME="$tmp/ndk"
+    unset ANDROID_HOME
+}
+
+# make_ndks <sdk> <version...>: an SDK directory holding those NDK versions.
+make_ndks() {
+    local sdk="$1"
+    shift
+    local version
+    for version in "$@"; do
+        mkdir -p "$sdk/ndk/$version/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    done
+}
+
+# ndk_env <ndk>: the environment line the fake cargo logs for a run given the
+# NDK at <ndk>.
+ndk_env() {
+    local bin="$1/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    printf 'CC=<%s> AR=<%s>' "$bin/aarch64-linux-android24-clang" "$bin/llvm-ar"
+}
+
+# android_env: what the fake cargo saw on the Android run, the second call.
+android_env() {
+    sed -n 2p "$tmp/cargo-env.log" 2>/dev/null || true
 }
 
 # require_script: the script must exist and be executable before any assertion
@@ -314,6 +350,9 @@ test_clippy_refuses_without_rustup() {
     require_script
     install_fake_cargo
     export FAKE_DIR="$tmp"
+    # An NDK is there (#196): only rustup is missing.
+    mkdir -p "$tmp/ndk"
+    export ANDROID_NDK_HOME="$tmp/ndk"
 
     local dir kept="" entries
     IFS=: read -ra entries <<<"$PATH"
@@ -493,4 +532,144 @@ test_android_only_items_are_gated_not_allowed() {
     has_android_cfg "$fn_attrs" || has_android_cfg "$impl_attrs" \
         || fail "JniError::new is not gated by #[cfg(target_os = \"android\")]"
     [[ "$fn_attrs" != *dead_code* ]] || fail "JniError::new still carries a dead_code allowance: $fn_attrs"
+}
+
+# ── The NDK (#196) ───────────────────────────────────────────────────────────
+
+# Criterion: the Android run gets the NDK's compiler and archiver for
+# aarch64-linux-android, API 24 (the app's minSdk), from ANDROID_NDK_HOME.
+# Without them `ring`'s build script fails with `failed to find tool
+# "aarch64-linux-android-clang"` (observed 2026-10-25, NDK 30.0.14904198).
+test_clippy_gives_cargo_the_ndk_compiler_for_the_android_run() {
+    require_script
+    use_fakes "$captured_targets"
+
+    assert_succeeds "$script"
+
+    assert_eq "$(ndk_env "$tmp/ndk")" "$(android_env)" "the Android run's CC/AR"
+}
+
+# Criterion (guard, "the highest version"): ANDROID_NDK_HOME unset, the NDK is
+# the highest version under $ANDROID_HOME/ndk/. 27.2.12479018 is release.yml's,
+# 30.0.14904198 the dev PC's; 9.0.1 and 30.0.9 are synthetic near-misses —
+# a plain `sort` ranks "9.0.1" above "30…", and "30.0.9" above "30.0.14904198".
+test_clippy_takes_the_highest_ndk_under_android_home() {
+    require_script
+    use_fakes "$captured_targets"
+    unset ANDROID_NDK_HOME
+    make_ndks "$tmp/sdk" 9.0.1 27.2.12479018 30.0.14904198 30.0.9
+    export ANDROID_HOME="$tmp/sdk"
+
+    assert_succeeds "$script"
+
+    assert_eq "$(ndk_env "$tmp/sdk/ndk/30.0.14904198")" "$(android_env)" "the Android run's CC/AR"
+}
+
+# Criterion: ANDROID_NDK_HOME wins over ANDROID_HOME. Near-miss: a script that
+# looks under ANDROID_HOME first, which finds a valid NDK here too.
+test_clippy_prefers_android_ndk_home_over_android_home() {
+    require_script
+    use_fakes "$captured_targets"
+    make_ndks "$tmp/sdk" 30.0.14904198
+    export ANDROID_HOME="$tmp/sdk"
+
+    assert_succeeds "$script"
+
+    assert_eq "$(ndk_env "$tmp/ndk")" "$(android_env)" "the Android run's CC/AR"
+}
+
+# Criterion (guard, the empty value): an empty ANDROID_NDK_HOME is no NDK, so
+# the one under ANDROID_HOME is used. Near-miss: a set-but-empty check
+# (`[[ -v … ]]`), which builds "/toolchains/…" from the empty value.
+test_clippy_treats_an_empty_android_ndk_home_as_unset() {
+    require_script
+    use_fakes "$captured_targets"
+    export ANDROID_NDK_HOME=""
+    make_ndks "$tmp/sdk" 30.0.14904198
+    export ANDROID_HOME="$tmp/sdk"
+
+    assert_succeeds "$script"
+
+    assert_eq "$(ndk_env "$tmp/sdk/ndk/30.0.14904198")" "$(android_env)" "the Android run's CC/AR"
+}
+
+# Criterion: with neither variable, exit 2 before any cargo call, the message
+# naming what is missing — like a missing target.
+test_clippy_refuses_without_an_ndk() {
+    require_script
+    use_fakes "$captured_targets"
+    unset ANDROID_NDK_HOME
+
+    assert_refused_before_cargo
+    assert_contains "$stderr" "ANDROID_NDK_HOME" "the refusal names the variable to set"
+}
+
+# Criterion (guard, the empty value): ANDROID_HOME holds an empty ndk/ — no
+# version at all is no NDK, not "$ANDROID_HOME/ndk/". Near-miss: a `ls | sort
+# | tail -1` that yields the empty string and builds a path from it.
+test_clippy_refuses_when_android_home_holds_no_ndk() {
+    require_script
+    use_fakes "$captured_targets"
+    unset ANDROID_NDK_HOME
+    mkdir -p "$tmp/sdk/ndk"
+    export ANDROID_HOME="$tmp/sdk"
+
+    assert_refused_before_cargo
+    assert_contains "$stderr" "ANDROID_NDK_HOME" "the refusal names the variable to set"
+}
+
+# Criterion: the script's header no longer claims the Android run needs no
+# NDK — it does, since `ring`.
+test_clippy_header_no_longer_says_no_ndk_is_needed() {
+    local header
+    header="$(grep '^#' "$script")"
+    [[ -n "$header" ]] || fail "no comment in $script"
+    if grep -qi 'no NDK' <<<"$header"; then
+        fail "the header still says no NDK is needed: $(grep -i 'no NDK' <<<"$header")"
+    fi
+}
+
+# Criterion: the CI `quality` job installs the NDK — release.yml's
+# 27.2.12479018, through sdkmanager — and points ANDROID_NDK_HOME at it before
+# the lint runs. Near-miss: the step placed after `scripts/clippy.sh`, which a
+# "contains" check accepts.
+test_ci_quality_job_installs_the_ndk_before_the_lint() {
+    local block install_at home_at lint_at
+    block="$(job_block quality | grep -v '^[[:space:]]*#')"
+    [[ -n "$block" ]] || fail "no quality job in $workflow"
+
+    install_at="$(grep -nE 'sdkmanager .*--install.*"ndk;27\.2\.12479018"' <<<"$block" | head -1 | cut -d: -f1 || true)"
+    home_at="$(grep -nE 'ANDROID_NDK_HOME.*27\.2\.12479018' <<<"$block" | head -1 | cut -d: -f1 || true)"
+    lint_at="$(grep -nE '^[[:space:]]+run: (\./)?scripts/clippy\.sh[[:space:]]*$' <<<"$block" | head -1 | cut -d: -f1 || true)"
+    [[ -n "$install_at" ]] || fail "the quality job never installs ndk;27.2.12479018 with sdkmanager"
+    [[ -n "$home_at" ]] || fail "the quality job never sets ANDROID_NDK_HOME to the installed NDK"
+    [[ -n "$lint_at" ]] || fail "the quality job never runs scripts/clippy.sh"
+    ((install_at < lint_at && home_at < lint_at)) \
+        || fail "the NDK must be in place before the lint (install $install_at, home $home_at, lint $lint_at)"
+}
+
+# Criterion: the quality job's comments no longer say the Android lint needs
+# no NDK.
+test_ci_quality_job_no_longer_says_the_lint_needs_no_ndk() {
+    local block
+    block="$(job_block quality)"
+    [[ -n "$block" ]] || fail "no quality job in $workflow"
+    if grep -qi 'no NDK' <<<"$block"; then
+        fail "the quality job still says: $(grep -i 'no NDK' <<<"$block")"
+    fi
+}
+
+# Criterion: CLAUDE.md's Quality Commands say the Android lint needs the NDK,
+# and no longer that it does not.
+test_claude_md_says_the_android_lint_needs_the_ndk() {
+    local section
+    section="$(awk '/^## Quality Commands/ { inside = 1; next } inside && /^## / { exit } inside { print }' \
+        "$REPO_ROOT/CLAUDE.md")"
+    [[ -n "$section" ]] || fail "CLAUDE.md has no Quality Commands section"
+
+    if grep -qi 'no NDK' <<<"$section"; then
+        fail "Quality Commands still say: $(grep -i 'no NDK' <<<"$section")"
+    fi
+    [[ "$section" == *"ANDROID_NDK_HOME"* ]] \
+        || fail "Quality Commands never say how the lint finds the NDK (ANDROID_NDK_HOME)"
 }

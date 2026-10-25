@@ -66,5 +66,16 @@ tokio = { version = "1", features = ["full"] }
 # lockfile through rust-i18n-support, so the lockfile gains no crate.
 toml = "0.8"
 
+# #196: the loopback TLS backend the pinning tests talk to — a certificate made
+# per test (`rcgen`), served by `rustls` through `tokio-rustls`, all on `ring`,
+# never `aws_lc_rs`; `sha2` computes the expected pin on the test's side, apart
+# from the code under test. All four already in the lock through the server.
+# Native only, like the `tls` module they test.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+sha2 = "0.10"
+
 [features]
 web = ["dioxus/web"]

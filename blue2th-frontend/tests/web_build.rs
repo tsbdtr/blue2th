@@ -1047,3 +1047,179 @@ fn test_no_stale_mention_of_the_mobile_feature_or_the_gtk_stack_remains() {
         "these still describe the `mobile` feature or the GTK/WebKit stack: {found:?}"
     );
 }
+
+// ── #196: the native TLS client ──────────────────────────────────────────────
+
+/// Every `reqwest` feature that selects a TLS backend or a certificate store.
+/// Observed in reqwest 0.12.28's `Cargo.toml` (`~/.cargo/registry`, read
+/// 2026-10-25). Only `rustls-tls-manual-roots-no-provider` is wanted: rustls,
+/// no root store (the backend is trusted by its pin), and no provider of its
+/// own, so `ring` is the one the app chooses.
+const REQWEST_TLS_FEATURES: [&str; 12] = [
+    "default-tls",
+    "native-tls",
+    "native-tls-alpn",
+    "native-tls-vendored",
+    "rustls-tls",
+    "rustls-tls-manual-roots",
+    "rustls-tls-manual-roots-no-provider",
+    "rustls-tls-native-roots",
+    "rustls-tls-native-roots-no-provider",
+    "rustls-tls-no-provider",
+    "rustls-tls-webpki-roots",
+    "rustls-tls-webpki-roots-no-provider",
+];
+
+/// Whether `entry` turns its crate's default features off.
+fn default_features_off(entry: Option<&toml::Value>) -> bool {
+    entry
+        .and_then(|e| e.get("default-features"))
+        .and_then(toml::Value::as_bool)
+        == Some(false)
+}
+
+// Criterion: the browser build keeps `reqwest` without TLS — the browser does
+// the TLS behind `fetch`. The shared line, which wasm compiles, names no TLS
+// feature and keeps the defaults off (they hold `default-tls`).
+#[test]
+fn test_the_shared_reqwest_names_no_tls_feature() {
+    let manifest = manifest();
+    let shared = manifest.get("dependencies").and_then(|d| d.get("reqwest"));
+    assert!(shared.is_some(), "reqwest must stay a shared dependency");
+    assert!(
+        default_features_off(shared),
+        "the shared reqwest must keep `default-features = false`"
+    );
+    let tls: Vec<String> = strings(shared, "features")
+        .into_iter()
+        .filter(|f| REQWEST_TLS_FEATURES.contains(&f.as_str()))
+        .collect();
+    assert_eq!(tls, Vec::<String>::new(), "no TLS feature may reach wasm");
+}
+
+// Criterion: on native targets `reqwest` speaks rustls with no provider of its
+// own — `rustls-tls-manual-roots-no-provider` and no other TLS feature.
+// Near-miss: `rustls-tls`, which works just as well and brings webpki's root
+// store, which a pinned client never consults.
+#[test]
+fn test_native_reqwest_uses_rustls_with_no_provider_of_its_own() {
+    let manifest = manifest();
+    let native = target_dependencies(&manifest, NATIVE_ONLY);
+    let reqwest = native.as_ref().and_then(|t| t.get("reqwest"));
+    assert!(
+        reqwest.is_some(),
+        "reqwest must be a dependency of [target.'{NATIVE_ONLY}'.dependencies]"
+    );
+    assert!(
+        default_features_off(reqwest),
+        "the native reqwest must keep `default-features = false`"
+    );
+    let tls: Vec<String> = strings(reqwest, "features")
+        .into_iter()
+        .filter(|f| REQWEST_TLS_FEATURES.contains(&f.as_str()))
+        .collect();
+    assert_eq!(tls, vec!["rustls-tls-manual-roots-no-provider".to_string()]);
+}
+
+// Criterion: `rustls` is a native-only dependency on the `ring` provider, its
+// defaults off — they hold `aws_lc_rs`. Near-miss: `rustls = "0.23"` with the
+// defaults, which compiles, works, and links aws-lc.
+#[test]
+fn test_native_rustls_is_on_ring_only() {
+    let manifest = manifest();
+    let shared = manifest
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !shared.contains_key("rustls"),
+        "rustls must not reach the browser build"
+    );
+    let native = target_dependencies(&manifest, NATIVE_ONLY);
+    let rustls = native.as_ref().and_then(|t| t.get("rustls"));
+    assert!(
+        rustls.is_some(),
+        "rustls must be a dependency of [target.'{NATIVE_ONLY}'.dependencies]"
+    );
+    assert!(
+        default_features_off(rustls),
+        "rustls must keep `default-features = false`: its defaults bring aws_lc_rs"
+    );
+    let features = strings(rustls, "features");
+    assert!(
+        features.iter().any(|f| f == "ring"),
+        "rustls must enable `ring`, got {features:?}"
+    );
+    let other_providers: Vec<&String> = features
+        .iter()
+        .filter(|f| matches!(f.as_str(), "aws_lc_rs" | "aws-lc-rs" | "fips"))
+        .collect();
+    assert_eq!(other_providers, Vec::<&String>::new());
+}
+
+/// The crate names of `cargo tree -p blue2th-frontend` for the host, offline,
+/// over `edges`. A command that fails fails the assertion here.
+fn frontend_tree(edges: &str) -> Vec<String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let output = std::process::Command::new(cargo)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "tree",
+            "--offline",
+            "-p",
+            "blue2th-frontend",
+            "-e",
+            edges,
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ])
+        .output();
+    assert!(
+        output.as_ref().is_ok_and(|o| o.status.success()),
+        "cargo tree must run offline on the host tree: {output:?}"
+    );
+    let stdout = output.map(|o| o.stdout).unwrap_or_default();
+    String::from_utf8_lossy(&stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+        .collect()
+}
+
+// Criterion: the app's own build (normal edges) carries rustls on `ring`, and
+// no other TLS stack nor `aws_lc_rs` anywhere in what `cargo test` compiles —
+// the behavioural proof behind the manifest checks, which also catches one
+// arriving through another dependency.
+#[test]
+fn test_the_frontend_tree_has_rustls_on_ring_and_no_other_tls_stack() {
+    let normal = frontend_tree("normal");
+    let missing: Vec<&str> = ["rustls", "ring"]
+        .into_iter()
+        .filter(|wanted| !normal.iter().any(|c| c == wanted))
+        .collect();
+    assert_eq!(
+        missing,
+        Vec::<&str>::new(),
+        "the app's build must carry rustls and ring"
+    );
+
+    let everything = frontend_tree("normal,build,dev");
+    let forbidden: Vec<&String> = everything
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.as_str(),
+                "aws-lc-rs"
+                    | "aws-lc-sys"
+                    | "aws-lc-fips-sys"
+                    | "native-tls"
+                    | "openssl"
+                    | "openssl-sys"
+                    | "hyper-tls"
+            )
+        })
+        .collect();
+    assert_eq!(forbidden, Vec::<&String>::new());
+}

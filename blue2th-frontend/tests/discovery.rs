@@ -40,6 +40,7 @@ fn known_salon() -> AppSettings {
             pairing: PairingMethod::Code,
             id: Some(SALON_ID.to_string()),
             config_pending: false,
+            pin: None,
         }],
         active: Some(0),
         auto_repair_url: true,
@@ -250,6 +251,7 @@ fn test_reconcile_matches_on_the_id_before_the_url() {
         pairing: PairingMethod::Code,
         id: Some("bureau-backend-id".to_string()),
         config_pending: false,
+        pin: None,
     });
     assert_eq!(
         settings::reconcile(
@@ -455,6 +457,7 @@ fn test_adopting_ids_is_idempotent_and_never_reassigns_one() {
         pairing: PairingMethod::Code,
         id: None,
         config_pending: false,
+        pin: None,
     });
     let impostor = found(Some(SALON_ID), "Bureau", "http://192.168.1.42:4000");
     assert!(!settings.adopt_discovered_ids(std::slice::from_ref(&impostor)));

@@ -576,7 +576,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                         // Exactly one of the two is shown: a stale
                                         // error next to a fresh "it answered" (or the
                                         // reverse) is unreadable.
-                                        match backend::test_backend(&url).await {
+                                        match backend::test_backend(&url, None).await {
                                             Ok(_) => {
                                                 *error.write() = None;
                                                 *notice.write() = Some(
@@ -741,9 +741,10 @@ pub(crate) fn AppSettingsPage() -> Element {
                                     let outcome = backend::pair(&compatible, &code).await;
                                     *pairing.write() = false;
                                     match outcome {
-                                        Ok(token) => {
+                                        Ok(paired) => {
                                             let mut next = app_settings.peek().clone();
-                                            match next.set_token(index, Some(token)) {
+                                            // RED (#196): the pin is stored by the green phase.
+                                            match next.set_token(index, Some(paired.token), None) {
                                                 Ok(()) => {
                                                     settings::set_current(next.clone());
                                                     *app_settings.write() = next;

@@ -45,7 +45,8 @@ pub(crate) fn use_backend_health() -> settings::BackendHealth {
     let backend_protocol = use_context::<BackendProtocol>().0;
     let app_settings = use_context::<SettingsState>().0;
     let paired = app_settings.read().active_token().is_some();
-    settings::backend_health(backend_online(), paired, backend_protocol())
+    // RED (#196): the identity verdict is wired by the green phase.
+    settings::backend_health(backend_online(), paired, backend_protocol(), false)
 }
 
 /// The localised message naming which of the two machines to update. One mapping
@@ -355,9 +356,10 @@ pub(crate) fn App() -> Element {
                         },
                     };
                     match backend::pair(&compatible, &link.code).await {
-                        Ok(token) => {
+                        Ok(paired) => {
                             let mut next = app_settings.peek().clone();
-                            match next.upsert_from_pair_link(&link, &token) {
+                            // RED (#196): the pin is stored by the green phase.
+                            match next.upsert_from_pair_link(&link, &paired.token, None) {
                                 Ok(_) => {
                                     settings::set_current(next.clone());
                                     *app_settings.write() = next;

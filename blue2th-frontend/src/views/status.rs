@@ -30,6 +30,8 @@ pub(crate) fn BackendStatus(error: Signal<Option<String>>) -> Element {
         settings::BackendHealth::Incompatible(mismatch) => protocol_message(mismatch),
         settings::BackendHealth::Unpaired => rust_i18n::t!("app_settings.not_paired").to_string(),
         settings::BackendHealth::Ready => rust_i18n::t!("server.online").to_string(),
+        // RED (#196): the identity-changed text is the green phase's.
+        settings::BackendHealth::IdentityChanged => rust_i18n::t!("server.offline").to_string(),
     };
     // One read for the whole list: the active index comes from the same snapshot
     // as the names, so the menu can never mark a row the list no longer holds.
@@ -69,6 +71,8 @@ pub(crate) fn BackendStatus(error: Signal<Option<String>>) -> Element {
                             settings::BackendHealth::Incompatible(_) => "#f97316",
                             settings::BackendHealth::Unpaired => "#f59e0b",
                             settings::BackendHealth::Ready => "#22c55e",
+                            // RED (#196): the violet is the green phase's.
+                            settings::BackendHealth::IdentityChanged => "#ef4444",
                         },
                     ),
                 }

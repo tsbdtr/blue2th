@@ -488,3 +488,28 @@ fn test_locale_value_reads_the_named_namespace_only() {
     );
     assert_eq!(locale_value(content, "device.not_paired"), None);
 }
+
+// Criterion (#196): the identity-changed banner reads, word for word, what the
+// spec gives in each language — it is the only place the user learns that a
+// violet dot means "pair again", since a phone has no hover for the dot's title.
+#[test]
+fn test_the_identity_changed_banner_says_to_pair_again() {
+    let expected = [
+        (
+            "en",
+            "This backend's identity changed. Tap to pair it again.",
+        ),
+        (
+            "fr",
+            "L'identité de ce backend a changé. Touchez pour l'appairer de nouveau.",
+        ),
+    ];
+    for (locale, wording) in expected {
+        let content = std::fs::read_to_string(locale_path(locale)).expect("read the locale file");
+        assert_eq!(
+            locale_value(&content, "server.identity_changed").as_deref(),
+            Some(wording),
+            "{locale}.yaml: server.identity_changed"
+        );
+    }
+}
