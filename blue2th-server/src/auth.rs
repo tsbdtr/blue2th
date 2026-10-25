@@ -338,6 +338,13 @@ impl AuthStore {
         &self.token
     }
 
+    /// Replace the token at start because a new TLS key was generated next to
+    /// it (#195), so that [`AuthStore::minted_a_new_token`] arms a code.
+    pub fn rotate_token(&mut self) {
+        self.rotate();
+        self.minted = true;
+    }
+
     /// Arm `count` fresh pairing codes and return them, replacing any previous
     /// ones. Every armed code redeems once; failed attempts are counted once
     /// for all of them.

@@ -557,11 +557,11 @@ async fn canned_backend(
 // backend whose announced range contains this app's `PROTOCOL_VERSION`.
 #[tokio::test]
 async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
-    // Range 2..=2, matching `PROTOCOL_VERSION` since the API moved under
-    // `/api` (#166).
+    // Range 3..=3, matching `PROTOCOL_VERSION` since the API moved to TLS
+    // (#195).
     let (base, served) = canned_backend(
         "200 OK",
-        r#"{"status":"ok","version":"0.1.0","protocol":2,"protocol_min":2}"#,
+        r#"{"status":"ok","version":"0.1.0","protocol":3,"protocol_min":3}"#,
     )
     .await
     .expect("start the canned backend");
@@ -574,13 +574,13 @@ async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
 
     assert_eq!(
         blue2th_proto::PROTOCOL_VERSION,
-        2,
-        "the canned payload above is written for contract 2"
+        3,
+        "the canned payload above is written for contract 3"
     );
     assert_eq!(
         checked.map_err(|e| e.to_string()),
         Ok(CompatibleBackend { url: base }),
-        "a backend announcing 2..=2 serves an app speaking 2, at the checked URL"
+        "a backend announcing 3..=3 serves an app speaking 3, at the checked URL"
     );
 }
 

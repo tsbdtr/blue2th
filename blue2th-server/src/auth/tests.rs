@@ -629,3 +629,45 @@ fn test_auth_store_first_write_creates_the_state_dir_700() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// Criterion (#195, token rotation): `rotate_token` replaces a reloaded token
+// with a fresh one, persists it, and makes `minted_a_new_token()` true, so the
+// start arms a pairing code. Near-miss: the existing `rotate`, which replaces
+// and persists but leaves `minted_a_new_token()` false.
+#[test]
+fn test_rotate_token_replaces_persists_and_reports_minting() {
+    let path = temp_store("rotate-token");
+    let first = AuthStore::with_store(Some(path.clone()));
+    let old = first.token().to_string();
+    let mut store = AuthStore::with_store(Some(path.clone()));
+    assert!(
+        !store.minted_a_new_token(),
+        "the second start reloads the token"
+    );
+    assert_eq!(store.token(), old);
+
+    store.rotate_token();
+
+    assert_ne!(
+        store.token(),
+        old,
+        "the token travelled in clear: a new one"
+    );
+    assert!(store.minted_a_new_token(), "a rotation must arm a code");
+    assert_eq!(
+        AuthStore::with_store(Some(path.clone())).token(),
+        store.token(),
+        "the rotated token is the one the next start reloads"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("store parent"));
+}
+
+// Criterion (#195, token rotation): without a store, `rotate_token` still
+// replaces the token and reports minting.
+#[test]
+fn test_rotate_token_without_a_store_replaces_the_token() {
+    let mut store = AuthStore::with_token("handed-in");
+    store.rotate_token();
+    assert_ne!(store.token(), "handed-in");
+    assert!(store.minted_a_new_token());
+}

@@ -914,11 +914,11 @@ fn test_pairing_qr_encodes_the_link_it_is_given() {
 fn test_advertised_url_replaces_the_wildcard_with_the_lan_address() {
     let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
     assert_eq!(
-        advertised_url_from(DEFAULT_BIND, lan),
+        advertised_url_from(DEFAULT_BIND, lan, Scheme::Http),
         "http://192.168.1.107:4000"
     );
     assert_eq!(
-        advertised_url_from("[::]:4000", lan),
+        advertised_url_from("[::]:4000", lan, Scheme::Http),
         "http://192.168.1.107:4000"
     );
 }
@@ -930,7 +930,8 @@ fn test_advertised_url_keeps_an_explicit_bind_address() {
     assert_eq!(
         advertised_url_from(
             "10.1.2.3:4321",
-            Some(std::net::Ipv4Addr::new(192, 168, 1, 107))
+            Some(std::net::Ipv4Addr::new(192, 168, 1, 107)),
+            Scheme::Http,
         ),
         "http://10.1.2.3:4321"
     );
@@ -942,11 +943,11 @@ fn test_advertised_url_keeps_an_explicit_bind_address() {
 #[test]
 fn test_advertised_url_without_a_lan_address_keeps_the_bind_address() {
     assert_eq!(
-        advertised_url_from(DEFAULT_BIND, None),
+        advertised_url_from(DEFAULT_BIND, None, Scheme::Http),
         "http://0.0.0.0:4000"
     );
     assert_eq!(
-        advertised_url_from("no-port-here", None),
+        advertised_url_from("no-port-here", None, Scheme::Http),
         "http://no-port-here"
     );
 }
@@ -957,11 +958,17 @@ fn test_advertised_url_without_a_lan_address_keeps_the_bind_address() {
 #[test]
 fn test_advertised_service_resolves_the_wildcard_bind_to_the_lan_address() {
     let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
-    let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "blue2th-PC");
+    let record = advertised_service_from(
+        DEFAULT_BIND,
+        lan,
+        "backend-id-42",
+        "blue2th-PC",
+        Scheme::Http,
+    );
     assert_eq!(record.url, "http://192.168.1.107:4000");
     assert_eq!(
         record.url,
-        advertised_url_from(DEFAULT_BIND, lan),
+        advertised_url_from(DEFAULT_BIND, lan, Scheme::Http),
         "the mDNS record and the pairing QR must advertise the same address"
     );
 }
@@ -972,7 +979,13 @@ fn test_advertised_service_resolves_the_wildcard_bind_to_the_lan_address() {
 #[test]
 fn test_advertised_service_carries_the_host_and_port_it_announces() {
     let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
-    let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "blue2th-PC");
+    let record = advertised_service_from(
+        DEFAULT_BIND,
+        lan,
+        "backend-id-42",
+        "blue2th-PC",
+        Scheme::Http,
+    );
     assert_eq!(
         record.endpoint,
         Some(("192.168.1.107".to_string(), 4000)),
@@ -981,7 +994,8 @@ fn test_advertised_service_carries_the_host_and_port_it_announces() {
     let (host, port) = record.endpoint.clone().expect("just asserted");
     assert_eq!(record.url, format!("http://{host}:{port}"));
 
-    let explicit = advertised_service_from("10.1.2.3:4321", lan, "backend-id-42", "Salon");
+    let explicit =
+        advertised_service_from("10.1.2.3:4321", lan, "backend-id-42", "Salon", Scheme::Http);
     assert_eq!(
         explicit.endpoint,
         Some(("10.1.2.3".to_string(), 4321)),
@@ -995,7 +1009,8 @@ fn test_advertised_service_carries_the_host_and_port_it_announces() {
 #[test]
 fn test_advertised_service_without_a_usable_port_has_no_endpoint() {
     for bind in ["no-port-here", "0.0.0.0:not-a-port"] {
-        let record = advertised_service_from(bind, None, "backend-id-42", "blue2th-PC");
+        let record =
+            advertised_service_from(bind, None, "backend-id-42", "blue2th-PC", Scheme::Http);
         assert_eq!(record.endpoint, None, "{bind} carries no port to announce");
         assert_eq!(
             record.url,
@@ -1014,6 +1029,7 @@ fn test_advertised_service_carries_the_id_and_the_name_txt_records() {
         Some(std::net::Ipv4Addr::new(192, 168, 1, 107)),
         "backend-id-42",
         "Salon",
+        Scheme::Http,
     );
     assert_eq!(
         record.url, "http://10.1.2.3:4321",
@@ -1041,7 +1057,7 @@ fn test_advertised_service_carries_the_id_and_the_name_txt_records() {
 #[test]
 fn test_advertised_service_round_trips_through_discovered_from_txt() {
     let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
-    let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "Salon");
+    let record = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "Salon", Scheme::Http);
     let txt: Vec<(&str, &str)> = record
         .txt
         .iter()
@@ -4581,4 +4597,318 @@ fn test_full_path_follows_the_mount_not_the_path() {
     assert_eq!(root.full_path(), "/status");
     assert_eq!(api_health.full_path(), "/api/health");
     assert_eq!(api_nested.full_path(), "/api/devices/{addr}/connect");
+}
+
+// ---- #195: the API over HTTPS ----
+
+// Criterion (URL scheme): in TLS mode the QR carries `https://`, for a
+// wildcard bind, an explicit one and a bind address with no port alike.
+#[test]
+fn test_advertised_url_over_tls_is_https() {
+    let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+    assert_eq!(
+        advertised_url_from(DEFAULT_BIND, lan, Scheme::Https),
+        "https://192.168.1.107:4000"
+    );
+    assert_eq!(
+        advertised_url_from("10.1.2.3:4321", lan, Scheme::Https),
+        "https://10.1.2.3:4321"
+    );
+    assert_eq!(
+        advertised_url_from("no-port-here", None, Scheme::Https),
+        "https://no-port-here"
+    );
+}
+
+// Criterion (URL scheme): the scheme is the one asked for, both ways, on the
+// same bind address — so a swap or a hard-coded scheme fails one side.
+#[test]
+fn test_advertised_url_follows_the_scheme_it_is_given() {
+    let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+    let https = advertised_url_from(DEFAULT_BIND, lan, Scheme::Https);
+    let http = advertised_url_from(DEFAULT_BIND, lan, Scheme::Http);
+    assert_eq!(https, "https://192.168.1.107:4000");
+    assert_eq!(http, "http://192.168.1.107:4000");
+}
+
+// Criterion (URL scheme): the mDNS record's URL in TLS mode is `https://`,
+// the same URL the QR carries.
+#[test]
+fn test_advertised_service_over_tls_announces_an_https_url() {
+    let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+    let record = advertised_service_from(DEFAULT_BIND, lan, "abc", "Salon", Scheme::Https);
+    assert_eq!(record.url, "https://192.168.1.107:4000");
+    assert_eq!(
+        record.url,
+        advertised_url_from(DEFAULT_BIND, lan, Scheme::Https),
+        "the mDNS record and the pairing QR advertise the same URL"
+    );
+    let plain = advertised_service_from(DEFAULT_BIND, lan, "abc", "Salon", Scheme::Http);
+    assert_eq!(plain.url, "http://192.168.1.107:4000");
+}
+
+// Criterion (name derivation): the record's host name is `<label>.local.`,
+// with the label derived from the id (`abc` → SHA-256 ba7816bf8f…). Guard:
+// the host name of today, `<IP>.local.` (`192.168.1.107.local.`), fails.
+#[test]
+fn test_advertised_service_host_name_is_the_label_of_the_id() {
+    let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+    let record = advertised_service_from(DEFAULT_BIND, lan, "abc", "Salon", Scheme::Https);
+    assert_eq!(record.host_name, "blue2th-ba7816bf8f.local.");
+    assert_eq!(
+        record.host_name,
+        format!("{}.local.", tls::local_host_label("abc")),
+        "the mDNS host name and the certificate's name share one label"
+    );
+}
+
+// Criterion (name derivation): the host name depends on the id alone — not
+// on the bind address, nor on the scheme.
+#[test]
+fn test_advertised_service_host_name_depends_on_the_id_only() {
+    let lan = Some(std::net::Ipv4Addr::new(192, 168, 1, 107));
+    let wildcard = advertised_service_from(DEFAULT_BIND, lan, "abc", "Salon", Scheme::Https);
+    let explicit = advertised_service_from("10.1.2.3:4321", lan, "abc", "Salon", Scheme::Http);
+    let other = advertised_service_from(DEFAULT_BIND, lan, "backend-id-42", "Salon", Scheme::Https);
+    assert_eq!(wildcard.host_name, "blue2th-ba7816bf8f.local.");
+    assert_eq!(explicit.host_name, wildcard.host_name);
+    assert_eq!(other.host_name, "blue2th-2d6c2ef88b.local.");
+}
+
+// Criterion (token rotation), guard: rotate iff the key was minted and the
+// token reloaded. Key minted + token reloaded rotates; key minted + token
+// minted does not (no double mint); a reloaded key never rotates.
+#[test]
+fn test_must_rotate_token_only_for_a_new_key_next_to_a_reloaded_token() {
+    assert!(must_rotate_token(true, false), "new key, old token: rotate");
+    assert!(
+        !must_rotate_token(true, true),
+        "new key, new token: already fresh"
+    );
+    assert!(
+        !must_rotate_token(false, false),
+        "old key, old token: nothing changed"
+    );
+    assert!(
+        !must_rotate_token(false, true),
+        "old key, new token: AuthStore minted it"
+    );
+}
+
+// Criterion (token rotation): a rotated token arms one pairing code at start,
+// through the same `codes_to_arm` rule as a minted one. Near-miss: before the
+// rotation, a reloaded token arms none.
+#[test]
+fn test_a_rotated_token_arms_one_pairing_code() {
+    let mut store = AuthStore::with_token(TOKEN);
+    assert_eq!(
+        codes_to_arm(&Cli::default(), store.minted_a_new_token()),
+        None
+    );
+    store.rotate_token();
+    assert_eq!(
+        codes_to_arm(&Cli::default(), store.minted_a_new_token()),
+        Some(1)
+    );
+}
+
+// Criterion (token rotation): a rotation logs that every client paired before
+// must pair again.
+#[test]
+fn test_token_rotation_notice_says_clients_must_pair_again() {
+    let notice = token_rotation_notice();
+    assert!(notice.contains("pair again"), "got {notice:?}");
+}
+
+// Criterion (mDNS conflict): the `NameChange` warning names the old name, then
+// the new one, and the probable cause — another backend publishing the same
+// id, e.g. a copied state directory. Captured: `mdns-sd` 0.21.5 renames a host
+// with a `-N` suffix, N >= 2 (`src/service_daemon.rs`, read 2026-10-24).
+#[test]
+fn test_name_change_warning_names_both_names_and_the_probable_cause() {
+    let original = "blue2th-ba7816bf8f.local.";
+    let renamed = "blue2th-ba7816bf8f-2.local.";
+    let warning = name_change_warning(original, renamed);
+    let first = warning.find(original);
+    let second = warning.find(renamed);
+    assert!(
+        first.is_some() && second.is_some(),
+        "both names appear, got {warning:?}"
+    );
+    assert!(first < second, "the old name comes first, got {warning:?}");
+    assert!(
+        warning.contains("another backend") && warning.contains("same id"),
+        "the probable cause, got {warning:?}"
+    );
+    assert!(warning.contains("state directory"), "got {warning:?}");
+}
+
+const HOST: &str = "blue2th-ba7816bf8f.local.";
+const HOST_RENAMED: &str = "blue2th-ba7816bf8f-2.local.";
+
+// Criterion (mDNS conflict): only a host-name rename warns. The instance name
+// `blue2th` is the same on every backend, so its rename says nothing about a
+// copied id. Observed 2026-10-24 (manual verification, two instances sharing a
+// state directory): one conflict also gave `SRV` and `TXT` renames of
+// `blue2th._blue2th._tcp.local.` to `blue2th (2)._blue2th._tcp.local.`.
+#[test]
+fn test_name_change_warnings_skip_an_instance_name_rename() {
+    let mut warnings = NameChangeWarnings::default();
+    for rr_type in [mdns_sd::RRType::SRV, mdns_sd::RRType::TXT] {
+        let warning = warnings.warning_for(
+            rr_type,
+            "blue2th._blue2th._tcp.local.",
+            "blue2th (2)._blue2th._tcp.local.",
+        );
+        assert_eq!(warning, None, "an instance-name rename via {rr_type:?}");
+    }
+}
+
+// Criterion (mDNS conflict): one warning per (old, new) pair. Observed
+// 2026-10-24: `mdns-sd` reported the same host rename once per interface
+// (`eth0`, `wlp2s0`).
+#[test]
+fn test_name_change_warnings_warn_once_per_host_rename() {
+    let mut warnings = NameChangeWarnings::default();
+    assert_eq!(
+        warnings.warning_for(mdns_sd::RRType::A, HOST, HOST_RENAMED),
+        Some(name_change_warning(HOST, HOST_RENAMED)),
+        "the first report warns"
+    );
+    assert_eq!(
+        warnings.warning_for(mdns_sd::RRType::A, HOST, HOST_RENAMED),
+        None,
+        "the same rename reported for a second interface"
+    );
+    assert_eq!(
+        warnings.warning_for(mdns_sd::RRType::AAAA, HOST, HOST_RENAMED),
+        None,
+        "the same rename reported for the AAAA record"
+    );
+}
+
+// Guard (mDNS conflict): a first `AAAA` rename warns — a filter on `A` alone
+// would drop it.
+#[test]
+fn test_name_change_warnings_warn_on_a_first_aaaa_rename() {
+    let mut warnings = NameChangeWarnings::default();
+    assert_eq!(
+        warnings.warning_for(mdns_sd::RRType::AAAA, HOST, HOST_RENAMED),
+        Some(name_change_warning(HOST, HOST_RENAMED))
+    );
+}
+
+// Guard (mDNS conflict): a rename of the same host to a new name warns again —
+// a de-duplication keyed on the original alone would swallow it.
+#[test]
+fn test_name_change_warnings_warn_again_for_a_new_host_name() {
+    let mut warnings = NameChangeWarnings::default();
+    let third = "blue2th-ba7816bf8f-3.local.";
+    assert!(warnings
+        .warning_for(mdns_sd::RRType::A, HOST, HOST_RENAMED)
+        .is_some());
+    assert_eq!(
+        warnings.warning_for(mdns_sd::RRType::A, HOST, third),
+        Some(name_change_warning(HOST, third))
+    );
+}
+
+// Criterion (URL scheme / certificate): the certificate's IP is the advertised
+// host when that is an IP literal other than the wildcard — the detected LAN
+// address in place of `0.0.0.0` or `[::]`, an explicit `--bind` IP, a bracketed
+// IPv6 one — and none for a host name, a bind with no port, or a wildcard with
+// no LAN address detected. Near-miss: `0.0.0.0` parses as an `IpAddr`, so only
+// the unspecified check keeps it off the certificate.
+#[test]
+fn test_certificate_ip_is_the_advertised_ip_literal_and_never_the_wildcard() {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let lan = Some(Ipv4Addr::new(192, 168, 1, 107));
+    let lan_ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 107)));
+    assert_eq!(certificate_ip(DEFAULT_BIND, lan), lan_ip);
+    assert_eq!(certificate_ip("[::]:4000", lan), lan_ip);
+    assert_eq!(
+        certificate_ip("10.1.2.3:4321", lan),
+        Some(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))),
+        "an explicit --bind IP wins over the detected one"
+    );
+    assert_eq!(
+        certificate_ip("[::1]:4000", None),
+        Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+        "a bracketed IPv6 bind is an IP literal"
+    );
+    for (bind, detected) in [
+        ("localhost:4000", lan),
+        ("no-port-here", lan),
+        (DEFAULT_BIND, None),
+        ("[::]:4000", None),
+    ] {
+        assert_eq!(
+            certificate_ip(bind, detected),
+            None,
+            "{bind} with {detected:?} carries no IP"
+        );
+    }
+}
+
+/// A per-test directory under the system temp dir, `0700` like the state
+/// directory. Never the real state directory.
+fn tls_scratch(name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("blue2th-test-lib-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the scratch dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod 700");
+    dir
+}
+
+// Criterion (plain mode): the plain mode reads and writes no key file. A
+// malformed key, which refuses a TLS start, is not even read: the start goes
+// on with no key, and the file is byte for byte what it was. Near-miss: the
+// same file in TLS mode refuses.
+#[test]
+fn test_startup_tls_key_in_plain_mode_reads_no_key_file() {
+    let dir = tls_scratch("plain-key-malformed");
+    let path = dir.join(tls::KEY_FILE);
+    std::fs::write(&path, "not a key").expect("store a malformed key");
+
+    assert!(
+        startup_tls_key(false, Some(&path)).is_err(),
+        "the near-miss: in TLS mode the malformed key refuses the start"
+    );
+    let plain = startup_tls_key(true, Some(&path));
+    assert!(
+        matches!(plain, Ok(None)),
+        "the plain mode starts with no key"
+    );
+    assert_eq!(
+        std::fs::read(&path).ok(),
+        Some(b"not a key".to_vec()),
+        "the file is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Criterion (plain mode): with no key on disk, the plain mode generates none
+// and writes nothing; TLS mode generates and writes one, so no token is
+// rotated behind a development run.
+#[test]
+fn test_startup_tls_key_in_plain_mode_writes_no_key_file() {
+    let dir = tls_scratch("plain-key-missing");
+    let path = dir.join(tls::KEY_FILE);
+
+    assert!(matches!(startup_tls_key(true, Some(&path)), Ok(None)));
+    assert!(
+        std::fs::read_dir(&dir)
+            .map(|mut it| it.next().is_none())
+            .unwrap_or(false),
+        "the plain mode wrote nothing in the state directory"
+    );
+
+    let tls_key = startup_tls_key(false, Some(&path));
+    assert!(
+        matches!(&tls_key, Ok(Some(key)) if key.minted && key.persisted),
+        "the near-miss: TLS mode generates and writes the key"
+    );
+    assert!(path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }

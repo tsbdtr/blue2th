@@ -20,9 +20,13 @@ Open the settings (the gear at the top right), section **Backends**.
   lists what it hears: *New* for one it does not know, *Already known* or
   *Up to date* for one it does. Tap a new one to add it. This needs both devices
   on the same Wi-Fi network; see the table below when nothing shows up.
-- **Or add the address by hand**: `http://<the PC's LAN address>:4000`, the
+- **Or add the address by hand**: `https://<the PC's LAN address>:4000`, the
   address the backend printed when it started. **Test** answers *Backend
   answered* when the address is right.
+
+The backend serves its API over HTTPS, with a certificate it issued itself. The
+app does not need it to be signed by anyone; a browser does, and shows a
+certificate warning the first time it opens the backend.
 
 A backend the app knows is recognised by a stable id, not by its address, so
 when the PC gets a new address from the router the app repairs the entry
@@ -34,7 +38,7 @@ Choose **How to pair** on the backend's entry:
 
 - **Scan the QR** — point any camera app at the QR in the backend's banner. The
   link opens blue2th, adds or updates the backend, pairs it and makes it active.
-  Nothing to type.
+  Nothing to type. This is the recommended way.
 - **Type a code** — the six characters from the banner, then **Pair**. The code
   ignores the difference between `O` and `0` or `I` and `1` by never using them.
 
@@ -49,6 +53,28 @@ for all of them: the fifth cancels every code.
 
 The status card on the home screen turns green, *Backend connected*, and the
 speakers can be loaded. To pair a second phone, arm a new code the same way.
+
+## Opening the backend in a browser
+
+`http://<the PC's LAN address>:4000` redirects to the `https://` address. The
+browser then warns that the certificate is not trusted: the backend issued it
+itself, and no authority vouches for it. Before accepting, compare its
+fingerprint with the line the backend logs at every start:
+
+```
+TLS certificate SHA-256 fingerprint: AB:CD:…:EF
+```
+
+- **Firefox**: on the warning page, **Advanced…**, then **View Certificate**;
+  the **SHA-256** line under **Fingerprints** reads exactly like the log line.
+- **Chrome**: click **Not secure** in the address bar, then the certificate
+  entry; the **SHA-256 Fingerprint** under **Fingerprints** carries the same
+  hex digits, possibly in lower case and without the colons.
+
+When they match, accept the risk. The exception holds for this certificate
+only (for how long depends on the browser): the browser warns again once the
+backend issues a new one, which it logs at start, for instance when the PC gets
+a new LAN address.
 
 ## What the status colours mean
 
@@ -68,10 +94,12 @@ comes into play.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| The search finds nothing | The phone is not on the PC's network: mobile data, a guest Wi-Fi, or a VPN carrying the app's traffic away. Or the backend is not running. | Wi-Fi settings on the phone: same network, an address in the same range as the PC. A VPN with split tunnelling must list blue2th as bypassed — **reinstalling the app drops it from that list**. On the PC, `curl http://<lan address>:4000/health`. |
+| The search finds nothing | The phone is not on the PC's network: mobile data, a guest Wi-Fi, or a VPN carrying the app's traffic away. Or the backend is not running. | Wi-Fi settings on the phone: same network, an address in the same range as the PC. A VPN with split tunnelling must list blue2th as bypassed — **reinstalling the app drops it from that list**. On the PC, `curl -k https://<lan address>:4000/health`. |
 | Search finds nothing, but the address typed by hand tests fine | Multicast is filtered: the router isolates Wi-Fi clients, or the PC's firewall drops mDNS. | `sudo firewall-cmd --list-services` includes `mdns`; otherwise add it (see [`INSTALL.md`](INSTALL.md)). Typing the address is a perfectly good fallback. |
 | *Backend unreachable* with the right address | TCP 4000 is blocked on the PC, or the PC listens on another interface than the one the phone reaches. | `sudo firewall-cmd --list-ports`; the address the backend printed at start; `blue2th-server --bind 0.0.0.0:4000` to listen everywhere (`BLUE2TH_BIND` is read by debug builds only). |
-| *Not paired* right after a backend restart | `auth.json` was deleted or unreadable on the PC, so the backend minted a new token and forgot every phone. | Run with `--pair` and pair again. |
+| *Not paired* right after a backend restart | `auth.json` was deleted or unreadable on the PC, so the backend minted a new token and forgot every phone. Or `tls-key.pem` was missing — the first start of a version serving HTTPS, or the file was deleted — and the new key came with a new token, which the log says. | Pair again with the code the banner shows, or run with `--pair` for a new one. |
+| The backend refuses to start over `tls-key.pem` | The key file is there but unreadable or damaged. The backend leaves it as it is rather than replace a key that might be restored. | Restore the file if you have a copy. Otherwise delete it: the next start generates a new key and a new token, and every client pairs again. |
+| The browser warns about the certificate again | The backend issued a new certificate at start (it logs why), for instance after a change of LAN address. | Compare the fingerprint again, as above, then accept. |
 | The pairing code is refused | Expired (five minutes), already used — by another client, when several were paired from one start — or cancelled by five wrong attempts across all armed codes. | Restart the backend with `--pair` (or `--pair <n>` for several clients) for new ones. |
 | A speaker "refused to pair" | The speaker is not in pairing mode, or is already connected to another device. | Put it in pairing mode and tap it again. |
 | Spotify signs in, but nothing plays | The Spotify account is not on the application's Development-mode allowlist, or `librespot` was never seeded. | Both steps under *Spotify* in [`INSTALL.md`](INSTALL.md). |
