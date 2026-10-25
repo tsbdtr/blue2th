@@ -157,7 +157,9 @@ pub fn is_new_find(found: &[DiscoveredBackend], candidate: &DiscoveredBackend) -
 #[cfg(not(target_arch = "wasm32"))]
 fn resolved_to_backend(service: &mdns_sd::ResolvedService) -> Option<DiscoveredBackend> {
     let addr = service.get_addresses_v4().into_iter().min()?;
-    let url = format!("http://{addr}:{}", service.get_port());
+    // `https://`: the backend serves its API over TLS (#195), and the app
+    // pins its key (#196).
+    let url = format!("https://{addr}:{}", service.get_port());
     // The DTO is built by proto from the TXT pairs, so the app reads exactly what
     // the server writes.
     let txt: Vec<(&str, &str)> = [blue2th_proto::TXT_KEY_ID, blue2th_proto::TXT_KEY_NAME]

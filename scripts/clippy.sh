@@ -12,13 +12,16 @@
 #
 #   host:    the whole workspace, tests included;
 #   android: the frontend for aarch64-linux-android, tests included. clippy
-#            does not link, so no NDK is needed;
+#            does not link, but `ring`'s build script compiles C for the
+#            target (#196): the NDK's clang and llvm-ar are handed to `cc`, from
+#            ANDROID_NDK_HOME, or else the highest version under
+#            $ANDROID_HOME/ndk/;
 #   wasm:    the frontend's browser build. No --all-targets: the
 #            dev-dependencies pull tokio `net` → mio, which does not compile
 #            for wasm32.
 #
-# Exit codes: 0 every target is clean, 2 rustup or a required target is
-# missing (checked before any cargo call), otherwise the failing cargo's own.
+# Exit codes: 0 every target is clean, 2 rustup, a required target or the NDK
+# is missing (checked before any cargo call), otherwise the failing cargo's own.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -54,11 +57,30 @@ if ((${#missing[@]} > 0)); then
     exit 2
 fi
 
+# The NDK: ANDROID_NDK_HOME when set and not empty — an empty value would build
+# "/toolchains/…" — otherwise the highest version under $ANDROID_HOME/ndk/,
+# compared as versions (`sort -V`: "30.0.14904198" above "30.0.9" and "9.0.1").
+ndk="${ANDROID_NDK_HOME:-}"
+if [[ -z "$ndk" && -n "${ANDROID_HOME:-}" && -d "$ANDROID_HOME/ndk" ]]; then
+    highest="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+    # An empty ndk/ yields no version, and no version is no NDK.
+    [[ -n "$highest" ]] && ndk="$ANDROID_HOME/ndk/$highest"
+fi
+if [[ -z "$ndk" ]]; then
+    echo "clippy.sh: no Android NDK found; ring's build script needs its C compiler for aarch64-linux-android" >&2
+    echo "Set ANDROID_NDK_HOME to the NDK, or install one under \$ANDROID_HOME/ndk/" >&2
+    exit 2
+fi
+ndk_bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
 echo "--- clippy (host) ---"
 cargo clippy --workspace --all-targets -- "${FLAGS[@]}"
 
 echo "--- clippy (android) ---"
-cargo clippy -p blue2th-frontend --target aarch64-linux-android --all-targets -- "${FLAGS[@]}"
+# API 24 in the compiler's name: the app's minSdk.
+CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android24-clang" \
+    AR_aarch64_linux_android="$ndk_bin/llvm-ar" \
+    cargo clippy -p blue2th-frontend --target aarch64-linux-android --all-targets -- "${FLAGS[@]}"
 
 echo "--- clippy (wasm) ---"
 cargo clippy -p blue2th-frontend --target wasm32-unknown-unknown --no-default-features --features web -- "${FLAGS[@]}"

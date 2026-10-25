@@ -627,8 +627,18 @@ pub(crate) fn BackendScan() -> Element {
                     "{rust_i18n::t!(\"server.not_paired\")}"
                 }
             },
-            // RED (#196): the identity-changed banner is the green phase's.
-            Some(settings::DeviceListNotice::IdentityChanged) | None => rsx! {},
+            // Violet like the dot, and tappable like the unpaired banner:
+            // pairing again is the fix, one screen away (#196).
+            Some(settings::DeviceListNotice::IdentityChanged) => rsx! {
+                button {
+                    class: "device-list-warning identity-changed",
+                    onclick: move |_| {
+                        navigator.push(Route::AppSettingsPage {});
+                    },
+                    "{rust_i18n::t!(\"server.identity_changed\")}"
+                }
+            },
+            None => rsx! {},
         }
         button {
             class: "{btn_class}",

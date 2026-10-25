@@ -497,14 +497,17 @@ dependencies = [
  "ndk-context",
  "rcgen",
  "reqwest",
+ "ring",
  "rust-i18n",
  "rustls",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tokio-rustls",
  "toml 0.8.23",
+ "tower",
  "web-sys",
 ]
 

@@ -911,6 +911,25 @@ body {
     background: color-mix(in oklch, var(--state-degraded-subtle) 85%, var(--text-primary));
 }
 
+/* The identity-changed variant (#196): the backend presented another key than
+   the one pinned at pairing. A <button> like the unpaired one, since pairing
+   again is the fix. Provisional: a violet that stands out while testing; the
+   redesign's mockups give this state a screen of its own (#200). */
+.device-list-warning.identity-changed {
+    background: var(--state-identity-subtle);
+    color: var(--state-identity);
+    border-color: var(--state-identity);
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.device-list-warning.identity-changed:active {
+    background: color-mix(in oklch, var(--state-identity-subtle) 85%, var(--text-primary));
+}
+
 .toast-error {
     position: fixed;
     bottom: 32px;
