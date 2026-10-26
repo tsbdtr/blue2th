@@ -185,6 +185,60 @@ on the PC and per backend on the phone. A `401`
 surfaces in the app as *not paired*, distinct from a backend that cannot be
 reached at all.
 
+### The app's side of TLS: a pinned key
+
+The app trusts a backend by its key, never by an authority (#196). Each backend
+entry holds, next to its token, a **pin**: the SHA-256 of the whole DER of the
+certificate's `SubjectPublicKeyInfo`, stored as 64 lower-case hex characters.
+Anything else stored there — empty, another length, upper case — is no pin,
+and leaves the entry not paired.
+
+The pin is set by **trust on first use**. The `/health` check that opens a
+pairing accepts any key and records the one its handshake presented; the
+`/pair` call that follows is pinned to it, so a key that changes in between
+never receives the code, and the pairing fails. That first handshake is the
+window #197 is about.
+
+The verifier is a custom `rustls` `ServerCertVerifier`, on the `ring` provider,
+handed to `reqwest` through `use_preconfigured_tls`. It **ignores** the server
+name, the IP, the validity dates and any intermediate: the certificate is
+self-signed, its IP follows the DHCP lease, and a phone with a wrong clock must
+not refuse a known key. It **checks** that the end-entity certificate's SPKI
+hashes to the pin, and still verifies the TLS 1.2 and 1.3 handshake signatures
+with the provider's algorithms, so a peer replaying the pinned certificate
+without its private key is refused.
+
+There is no global verifier state. Every call builds its client from the entry
+it targets — the URL and that entry's pin, through `tls::client_for`: the
+active backend's calls and its now-playing feed, the probe, the config push
+and read, the pause and release sent to a backend being left or removed, the
+settings page's *Test*.
+
+**The token never travels on a connection its entry's pin did not verify.** On
+the phone an entry is paired only with a valid pin, a token and an `https://`
+address; a debug build also pairs an `http://` address with a token, for a
+`BLUE2TH_PLAIN_HTTP` backend. Any other entry fails fast as *not paired*,
+before a request is built. The probe of an `https://` entry without a pin runs
+unpinned, and carries no `Authorization`. So an entry paired before TLS — an
+`http://` address, a token, no pin — reads as *not paired* in a release build
+until it is paired again, which pairs over `https://` and rewrites the address.
+
+A refused key is **identity changed**, a state of its own: a typed
+`PinMismatch` inside the `rustls` error, recognised by type along the error's
+source chain, never by its message. It is not *unreachable*: a handshake
+happened, and the backend answered with another key — a regenerated
+`tls-key.pem`, or another machine at the address. It outranks every other
+status, counts as a failed probe, blocks every action, and parks the
+now-playing feed until the entry's pin or address changes or another entry
+becomes active. Pairing again is the fix.
+
+The pin is not the fingerprint the backend logs for browsers: that line hashes
+the whole certificate, which a reissue changes while the key, and so the pin,
+stays. The two values never match, and are not meant to be compared.
+
+The browser build holds no pin: its `fetch` does the TLS, and its user's
+certificate exception stands in for it.
+
 ### Identity and discovery
 
 A backend is identified by a stable id it mints once (`identity.json`), not by
@@ -441,8 +495,8 @@ the price to pay only if the compromise bites.
 ## The app
 
 The app holds a list of **named backends**, one active at a time, persisted in
-`SharedPreferences`, each with its address, its token, its pairing method and
-the backend's stable id. Every switch goes through one function, so the status
+`SharedPreferences`, each with its address, its token, the pin of its key, its
+pairing method and the backend's stable id. Every switch goes through one function, so the status
 card and the settings page cannot drift apart. Unconfigured means unconfigured:
 with no backend, calls fail fast instead of timing out against localhost.
 
@@ -454,6 +508,10 @@ backend dials remembered speakers, and the backend's name.
 The design tokens live in `docs/design/tokens.css` and reach the app through
 `blue2th-frontend/tailwind.css`, which `dx` regenerates into
 `assets/tailwind.css`; `main.css` speaks only that vocabulary.
+
+The native client's TLS runs on `rustls` with `ring`, whose build script
+compiles C for the target: the Android lint (`scripts/clippy.sh`) needs the
+NDK's compiler, although clippy links nothing.
 
 Two things the app is not: a Bluetooth controller, and a test subject. Dioxus
 components are not test-runnable here, so what is rendered is specified in

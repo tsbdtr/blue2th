@@ -36,6 +36,7 @@ fn entry(
         pairing: PairingMethod::Code,
         id: None,
         config_pending: false,
+        pin: None,
     }
 }
 

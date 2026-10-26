@@ -34,6 +34,11 @@
   --state-error-subtle: oklch(0.298 0.075 25);
   --state-unknown: oklch(0.620 0.018 265);
   --state-unknown-subtle: oklch(0.278 0.012 265);
+  /* A backend whose identity changed (#196), outside the charter canvas.
+     Provisional: a violet that stands out while testing; the redesign's
+     mockups give this state a screen of its own (#200). */
+  --state-identity: oklch(0.700 0.170 300);
+  --state-identity-subtle: oklch(0.295 0.070 300);
   --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.45);
   --shadow-md: 0 6px 16px -4px oklch(0 0 0 / 0.55);
   --shadow-lg: 0 24px 48px -12px oklch(0 0 0 / 0.65);
@@ -71,6 +76,8 @@
   --state-error-subtle: oklch(0.952 0.032 25);
   --state-unknown: oklch(0.552 0.014 265);
   --state-unknown-subtle: oklch(0.938 0.006 265);
+  --state-identity: oklch(0.540 0.180 300);
+  --state-identity-subtle: oklch(0.950 0.035 300);
   --shadow-sm: 0 1px 2px oklch(0.4 0.02 265 / 0.10);
   --shadow-md: 0 6px 16px -4px oklch(0.4 0.02 265 / 0.14);
   --shadow-lg: 0 24px 48px -12px oklch(0.4 0.02 265 / 0.20);

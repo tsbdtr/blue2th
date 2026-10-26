@@ -25,6 +25,11 @@ pub(crate) struct BackendOnline(pub(crate) Signal<bool>);
 #[derive(Clone, Copy)]
 struct BackendProtocol(Signal<Option<blue2th_proto::ProtocolMismatch>>);
 
+/// Whether the last `/health` poll's handshake presented a key other than the
+/// one pinned for the active backend (#196), shared via context.
+#[derive(Clone, Copy)]
+struct BackendIdentityChanged(Signal<bool>);
+
 /// Whether the backend has been declared **gone**, shared via context.
 ///
 /// Slower and stricter than [`BackendOnline`], which goes false on the very first
@@ -43,9 +48,30 @@ pub(crate) struct BackendGone(pub(crate) Signal<bool>);
 pub(crate) fn use_backend_health() -> settings::BackendHealth {
     let backend_online = use_context::<BackendOnline>().0;
     let backend_protocol = use_context::<BackendProtocol>().0;
+    let identity_changed = use_context::<BackendIdentityChanged>().0;
     let app_settings = use_context::<SettingsState>().0;
-    let paired = app_settings.read().active_token().is_some();
-    settings::backend_health(backend_online(), paired, backend_protocol())
+    let paired = app_settings.read().active_backend().is_some_and(|entry| {
+        settings::entry_paired(entry, settings::CLIENT_KIND, cfg!(debug_assertions))
+    });
+    settings::backend_health(
+        backend_online(),
+        paired,
+        backend_protocol(),
+        identity_changed(),
+    )
+}
+
+/// The localised message of a failure the user is shown: a refused key names
+/// the identity change and the fix (#196), a contract mismatch the machine to
+/// update; anything else keeps its own wording.
+pub(crate) fn backend_error_text(e: &backend::BackendError) -> String {
+    if e.is_identity_changed() {
+        return rust_i18n::t!("server.identity_changed_error").to_string();
+    }
+    match e.protocol_mismatch() {
+        Some(mismatch) => protocol_message(mismatch),
+        None => e.to_string(),
+    }
 }
 
 /// The localised message naming which of the two machines to update. One mapping
@@ -90,6 +116,23 @@ async fn await_new_token() {
     loop {
         timer::sleep(PAIRING_RECHECK_INTERVAL).await;
         if settings::current().active_token() != refused {
+            return;
+        }
+    }
+}
+
+/// Wait until the active backend's identity may have been settled — its pin
+/// changed (paired again), its address changed (a discovery repair), or another
+/// backend became active (#196).
+///
+/// The now-playing feed parks here after a refused key: retrying would only
+/// repeat the handshake that was refused, and a new token alone changes nothing
+/// about the key the backend presents.
+async fn await_new_identity() {
+    let refused = settings::current();
+    loop {
+        timer::sleep(PAIRING_RECHECK_INTERVAL).await;
+        if settings::identity_park_lifted(&refused, &settings::current()) {
             return;
         }
     }
@@ -149,6 +192,10 @@ pub(crate) fn App() -> Element {
     // were still true.
     let backend_gone: Signal<bool> = use_signal(|| false);
     use_context_provider(|| BackendGone(backend_gone));
+    // …and whether its handshake presented another key than the pinned one
+    // (#196).
+    let backend_identity_changed: Signal<bool> = use_signal(|| false);
+    use_context_provider(|| BackendIdentityChanged(backend_identity_changed));
 
     // Settings are read once from the app's storage (the phone's, or the
     // browser's `localStorage`) and shared from the root: every screen must
@@ -173,22 +220,23 @@ pub(crate) fn App() -> Element {
         let mut backend_online = backend_online;
         let mut backend_protocol = backend_protocol;
         let mut backend_gone = backend_gone;
+        let mut backend_identity_changed = backend_identity_changed;
         spawn(async move {
             // Local to this task on purpose: nothing else reads the run length,
             // only the verdict it produces, which is the signal above.
             let mut failures: u32 = 0;
             loop {
                 let probe = backend::ping_backend().await;
-                let reachable = probe.is_ok();
-                let mismatch = match probe {
-                    Ok(health) => {
-                        blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
-                            .err()
-                    },
-                    // Unreachable: nothing was compared, so the mismatch last
-                    // seen says nothing about the backend now — it is cleared.
-                    Err(_) => None,
-                };
+                // Unreachable: nothing was compared, so the mismatch last seen
+                // says nothing about the backend now — the verdict clears it. A
+                // refused key is a failed probe too, so a machine whose
+                // identity changed is declared gone like any other (#196).
+                let verdict = backend::probe_verdict(&probe);
+                let reachable = verdict.reachable;
+                let mismatch = verdict.mismatch;
+                if *backend_identity_changed.peek() != verdict.identity_changed {
+                    *backend_identity_changed.write() = verdict.identity_changed;
+                }
                 // Usable means reachable *and* speaking the same contract: the
                 // name push below is a write, and writing to a backend whose
                 // `/config` may have kept its shape while changing its meaning
@@ -313,6 +361,13 @@ pub(crate) fn App() -> Element {
                         await_new_token().await;
                         continue;
                     }
+                    // A refused key: the same park, until the identity may
+                    // have been settled rather than until a new token (#196).
+                    if e.is_identity_changed() {
+                        *background_error.write() = Some(backend_error_text(e));
+                        await_new_identity().await;
+                        continue;
+                    }
                 }
                 // The stream closed (backend down or restarted); retry shortly.
                 timer::sleep(SSE_RETRY_DELAY).await;
@@ -347,17 +402,20 @@ pub(crate) fn App() -> Element {
                     let compatible = match backend::check_backend_protocol(&link.url).await {
                         Ok(compatible) => compatible,
                         Err(e) => {
-                            *background_error.write() = Some(match e.protocol_mismatch() {
-                                Some(mismatch) => protocol_message(mismatch),
-                                None => e.to_string(),
-                            });
+                            *background_error.write() = Some(backend_error_text(&e));
                             continue;
                         },
                     };
                     match backend::pair(&compatible, &link.code).await {
-                        Ok(token) => {
+                        Ok(paired) => {
                             let mut next = app_settings.peek().clone();
-                            match next.upsert_from_pair_link(&link, &token) {
+                            // The token and the pin of the key the pairing met
+                            // (#196): trusted from now on.
+                            match next.upsert_from_pair_link(
+                                &link,
+                                &paired.token,
+                                paired.pin.as_deref(),
+                            ) {
                                 Ok(_) => {
                                     settings::set_current(next.clone());
                                     *app_settings.write() = next;
@@ -370,7 +428,7 @@ pub(crate) fn App() -> Element {
                                 Err(e) => *background_error.write() = Some(e.to_string()),
                             }
                         },
-                        Err(e) => *background_error.write() = Some(e.to_string()),
+                        Err(e) => *background_error.write() = Some(backend_error_text(&e)),
                     }
                     continue;
                 }
@@ -407,3 +465,6 @@ pub(crate) fn App() -> Element {
         Router::<Route> {}
     }
 }
+
+#[cfg(test)]
+mod tests;

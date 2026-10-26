@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::app::{protocol_message, use_locale, SettingsState};
+use super::app::{backend_error_text, use_locale, SettingsState};
 use crate::{backend, discovery, jni_util, settings};
 use dioxus::prelude::*;
 
@@ -21,6 +21,12 @@ pub(crate) async fn sync_backend_config(
     settings::set_current(settled.clone());
     *app_settings.write() = settled;
     outcome
+}
+
+/// The address this build contacts for `raw`, as typed or stored (#196): see
+/// [`settings::contacted_url`].
+fn contacted_url(raw: &str) -> Result<String, settings::SettingsError> {
+    settings::contacted_url(raw, settings::CLIENT_KIND, cfg!(debug_assertions))
 }
 
 /// One row of the discovery list (phase 6.6): a service the browse found, ready
@@ -123,10 +129,16 @@ pub(crate) fn AppSettingsPage() -> Element {
     let active_pairing: Option<(usize, String, settings::PairingMethod, bool)> = {
         let snapshot = app_settings.read();
         snapshot.active.and_then(|i| {
-            snapshot
-                .backends
-                .get(i)
-                .map(|b| (i, b.url.clone(), b.pairing, b.token.is_some()))
+            snapshot.backends.get(i).map(|b| {
+                (
+                    i,
+                    b.url.clone(),
+                    b.pairing,
+                    // The paired rule of this build (#196): an entry stored
+                    // before the backend spoke TLS reads as not paired.
+                    settings::entry_paired(b, settings::CLIENT_KIND, cfg!(debug_assertions)),
+                )
+            })
         })
     };
     let paired_now = active_pairing
@@ -569,14 +581,23 @@ pub(crate) fn AppSettingsPage() -> Element {
                             button {
                                 class: "backend-test",
                                 onclick: move |_| {
-                                    let url = url_draft();
                                     let mut error = error;
                                     let mut notice = notice;
+                                    // The address the app would store (#196).
+                                    let url = match contacted_url(&url_draft()) {
+                                        Ok(url) => url,
+                                        Err(e) => {
+                                            *notice.write() = None;
+                                            *error.write() = Some(e.to_string());
+                                            return;
+                                        },
+                                    };
                                     spawn(async move {
                                         // Exactly one of the two is shown: a stale
                                         // error next to a fresh "it answered" (or the
-                                        // reverse) is unreadable.
-                                        match backend::test_backend(&url).await {
+                                        // reverse) is unreadable. A typed address
+                                        // belongs to no entry yet, so no pin.
+                                        match backend::test_backend(&url, None).await {
                                             Ok(_) => {
                                                 *error.write() = None;
                                                 *notice.write() = Some(
@@ -585,7 +606,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                             },
                                             Err(e) => {
                                                 *notice.write() = None;
-                                                *error.write() = Some(e.to_string());
+                                                *error.write() = Some(backend_error_text(&e));
                                             },
                                         }
                                     });
@@ -596,7 +617,10 @@ pub(crate) fn AppSettingsPage() -> Element {
                                 class: "backend-add",
                                 onclick: move |_| {
                                     let mut next = app_settings.peek().clone();
-                                    match next.add(&name_draft(), &url_draft()) {
+                                    // The scheme of this build first (#196).
+                                    let added = contacted_url(&url_draft())
+                                        .and_then(|url| next.add(&name_draft(), &url));
+                                    match added {
                                         Ok(()) => {
                                             let added = next.backends.len().saturating_sub(1);
                                             // First backend added: it becomes the active
@@ -714,9 +738,20 @@ pub(crate) fn AppSettingsPage() -> Element {
                                 if code.is_empty() {
                                     return;
                                 }
-                                let url = url.clone();
                                 let mut error = error;
                                 let mut notice = notice;
+                                // The address pairing contacts: the stored one,
+                                // given the scheme of this build — an entry
+                                // stored as `http://` is paired over `https://`
+                                // in a release build, and rewritten so (#196).
+                                let url = match contacted_url(&url) {
+                                    Ok(url) => url,
+                                    Err(e) => {
+                                        *notice.write() = None;
+                                        *error.write() = Some(e.to_string());
+                                        return;
+                                    },
+                                };
                                 let mut code_draft = code_draft;
                                 let mut pairing = pairing;
                                 *pairing.write() = true;
@@ -729,10 +764,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                         Err(e) => {
                                             *pairing.write() = false;
                                             *notice.write() = None;
-                                            *error.write() = Some(match e.protocol_mismatch() {
-                                                Some(mismatch) => protocol_message(mismatch),
-                                                None => e.to_string(),
-                                            });
+                                            *error.write() = Some(backend_error_text(&e));
                                             return;
                                         },
                                     };
@@ -741,9 +773,15 @@ pub(crate) fn AppSettingsPage() -> Element {
                                     let outcome = backend::pair(&compatible, &code).await;
                                     *pairing.write() = false;
                                     match outcome {
-                                        Ok(token) => {
+                                        Ok(paired) => {
                                             let mut next = app_settings.peek().clone();
-                                            match next.set_token(index, Some(token)) {
+                                            // The contacted address, the token and
+                                            // the pin of the key the pairing met
+                                            // (#196): trusted from now on.
+                                            let stored = next.set_url(index, &url).and_then(|()| {
+                                                next.set_token(index, Some(paired.token), paired.pin)
+                                            });
+                                            match stored {
                                                 Ok(()) => {
                                                     settings::set_current(next.clone());
                                                     *app_settings.write() = next;
@@ -772,7 +810,7 @@ pub(crate) fn AppSettingsPage() -> Element {
                                         },
                                         Err(e) => {
                                             *notice.write() = None;
-                                            *error.write() = Some(e.to_string());
+                                            *error.write() = Some(backend_error_text(&e));
                                         },
                                     }
                                 });

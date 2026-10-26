@@ -126,3 +126,28 @@ fn test_discovery_error_has_no_variant_for_an_empty_scan() {
         "a browse failure must surface its own detail"
     );
 }
+
+// Criterion (#196): discovery builds `https://{addr}:{port}` — the backend
+// serves its API over TLS (#195), so an `http://` find would be an address the
+// release app refuses to send its token to. Built from a resolved service,
+// with no network: `mdns-sd` turns a `ServiceInfo` into what a browse yields.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_resolved_to_backend_builds_an_https_url() {
+    let info = mdns_sd::ServiceInfo::new(
+        blue2th_proto::SERVICE_TYPE,
+        "blue2th-PC",
+        "blue2th-pc.local.",
+        "192.168.1.107",
+        4000,
+        [(blue2th_proto::TXT_KEY_ID, "salon-id")].as_slice(),
+    )
+    .expect("describe the service");
+
+    let found = resolved_to_backend(&info.as_resolved_service());
+
+    assert_eq!(
+        found.map(|backend| backend.url),
+        Some("https://192.168.1.107:4000".to_string())
+    );
+}

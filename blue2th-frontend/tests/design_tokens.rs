@@ -18,7 +18,9 @@ const MAIN_RS: &str = include_str!("../src/main.rs");
 
 const RADII: [&str; 4] = ["--radius-sm", "--radius-md", "--radius-lg", "--radius-full"];
 
-/// The charter's two theme blocks, verbatim (spec section A).
+/// The charter's two theme blocks, verbatim (spec section A), plus the
+/// `--state-identity` pair #196 added for a backend whose identity changed —
+/// the charter had no violet, and `main.css` may use only its tokens.
 const EXPECTED_THEME_BLOCKS: &str = r#"
 :root {
   color-scheme: dark;
@@ -49,6 +51,8 @@ const EXPECTED_THEME_BLOCKS: &str = r#"
   --state-error-subtle: oklch(0.298 0.075 25);
   --state-unknown: oklch(0.620 0.018 265);
   --state-unknown-subtle: oklch(0.278 0.012 265);
+  --state-identity: oklch(0.700 0.170 300);
+  --state-identity-subtle: oklch(0.295 0.070 300);
   --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.45);
   --shadow-md: 0 6px 16px -4px oklch(0 0 0 / 0.55);
   --shadow-lg: 0 24px 48px -12px oklch(0 0 0 / 0.65);
@@ -86,6 +90,8 @@ const EXPECTED_THEME_BLOCKS: &str = r#"
   --state-error-subtle: oklch(0.952 0.032 25);
   --state-unknown: oklch(0.552 0.014 265);
   --state-unknown-subtle: oklch(0.938 0.006 265);
+  --state-identity: oklch(0.540 0.180 300);
+  --state-identity-subtle: oklch(0.950 0.035 300);
   --shadow-sm: 0 1px 2px oklch(0.4 0.02 265 / 0.10);
   --shadow-md: 0 6px 16px -4px oklch(0.4 0.02 265 / 0.14);
   --shadow-lg: 0 24px 48px -12px oklch(0.4 0.02 265 / 0.20);
@@ -484,8 +490,8 @@ fn test_light_theme_redefines_every_colour_and_shadow_token() {
         only_light.is_empty(),
         "the light block declares tokens the dark block does not: {only_light:?}"
     );
-    assert_eq!(dark.len(), 34, "the dark block must declare 34 tokens");
-    assert_eq!(light.len(), 30, "the light block must declare 30 tokens");
+    assert_eq!(dark.len(), 36, "the dark block must declare 36 tokens");
+    assert_eq!(light.len(), 32, "the light block must declare 32 tokens");
 }
 
 // Criterion: `tokens.css` declares `:root { color-scheme: dark; … }` and the
@@ -751,5 +757,36 @@ fn test_the_helpers_strip_comments_and_find_every_var() {
     assert!(
         block_of(two_line, "@media (min-width: 900px) and (pointer: fine)").is_some(),
         "a media query split over two lines is matched"
+    );
+}
+
+// Criterion (#196): the identity-changed banner has its own colours next to
+// the unpaired one — the violet `--state-identity` pair, in both properties a
+// tappable warning sets — and a pressed state like the unpaired banner's.
+// Near-miss: a banner left on the amber of `.device-list-warning`, which every
+// other test here accepts, since amber is a charter token too.
+#[test]
+fn test_main_css_paints_the_identity_changed_banner_violet() {
+    let banner = exact_block(MAIN_CSS, ".device-list-warning.identity-changed");
+    assert!(
+        banner.is_some(),
+        "main.css has no `.device-list-warning.identity-changed` rule"
+    );
+    let declared = declarations(&banner.unwrap_or_default().body);
+    let wanted = [
+        ("background", "var(--state-identity-subtle)"),
+        ("color", "var(--state-identity)"),
+        ("border-color", "var(--state-identity)"),
+    ];
+    for (property, value) in wanted {
+        assert_eq!(
+            declared.get(property).map(String::as_str),
+            Some(value),
+            "`.device-list-warning.identity-changed` {property}"
+        );
+    }
+    assert!(
+        exact_block(MAIN_CSS, ".device-list-warning.identity-changed:active").is_some(),
+        "the tappable banner needs a pressed state, like `.device-list-warning.unpaired:active`"
     );
 }

@@ -38,6 +38,10 @@ pub struct BackendError {
     /// the status mapping. Kept apart from `not_paired`, which is about this app
     /// and its backend: the two are different failures with different remedies.
     pairing_failed: bool,
+    /// Whether the backend presented a key other than the one pinned for it
+    /// (#196). Typed like `not_paired`: an identity change is neither an
+    /// unreachable backend nor an unpaired one.
+    identity_changed: bool,
     /// The status the backend answered, when this failure came from a response.
     /// Retained, not interpreted: a status only acquires a meaning where a route
     /// gives it one.
@@ -51,6 +55,7 @@ impl BackendError {
             not_paired: false,
             mismatch: None,
             pairing_failed: false,
+            identity_changed: false,
             status: None,
         }
     }
@@ -63,6 +68,7 @@ impl BackendError {
             not_paired: false,
             mismatch: Some(mismatch),
             pairing_failed: false,
+            identity_changed: false,
             status: None,
         }
     }
@@ -82,6 +88,7 @@ impl BackendError {
             not_paired: true,
             mismatch: None,
             pairing_failed: false,
+            identity_changed: false,
             status: None,
         }
     }
@@ -103,6 +110,7 @@ impl BackendError {
             not_paired: false,
             mismatch: None,
             pairing_failed: true,
+            identity_changed: false,
             status: None,
         }
     }
@@ -112,6 +120,21 @@ impl BackendError {
     /// mode and tap again.
     pub fn is_pairing_failed(&self) -> bool {
         self.pairing_failed
+    }
+
+    /// The typed "this backend's identity changed" failure: its TLS handshake
+    /// presented a key other than the one pinned at pairing (#196).
+    pub fn identity_changed() -> Self {
+        Self {
+            identity_changed: true,
+            ..Self::new(IDENTITY_CHANGED)
+        }
+    }
+
+    /// Whether this failure is a refused key — pair again — rather than an
+    /// unreachable backend.
+    pub fn is_identity_changed(&self) -> bool {
+        self.identity_changed
     }
 
     /// The HTTP status the backend answered, when this failure came from a
@@ -167,6 +190,10 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 /// Message carried by every call made while the active backend has no token, or
 /// answered 401 (phase 6.4).
 pub const NOT_PAIRED: &str = "not paired";
+
+/// Message carried by a refused backend key (#196). The screens show a
+/// localised message instead, read from the typed flag.
+pub const IDENTITY_CHANGED: &str = "backend identity changed";
 
 /// Fallback message for a refused Bluetooth pairing carried by a response with
 /// no body. The screen shows the localised `device.pairing_failed` instead; this
@@ -225,14 +252,109 @@ fn backend_error_for(status: u16, body: &str) -> BackendError {
 /// The active backend's base URL **and** token, or a typed failure. Pure.
 ///
 /// Nothing configured fails with [`NO_BACKEND_CONFIGURED`]; an active backend
-/// that was never paired fails with [`BackendError::not_paired`] — in both cases
-/// before any request is built, so an unpaired app never waits on a timeout.
+/// that is not paired by [`crate::settings::entry_paired`] fails with
+/// [`BackendError::not_paired`] — in both cases before any request is built, so
+/// an unpaired app never waits on a timeout, and a token never leaves for a
+/// TLS backend no pin verifies (#196).
 fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendError> {
     let base = base_url_from(settings)?;
     let token = settings
-        .active_token()
+        .active_backend()
+        .and_then(bearer_of)
         .ok_or_else(BackendError::not_paired)?;
     Ok((base, token))
+}
+
+/// The token `entry` may send: its own, when it is paired on this client and
+/// build, and none otherwise (#196). Pure.
+fn bearer_of(entry: &crate::settings::BackendEntry) -> Option<String> {
+    let paired =
+        crate::settings::entry_paired(entry, crate::settings::CLIENT_KIND, cfg!(debug_assertions));
+    // Owned copy: the token outlives the settings snapshot it is read from.
+    paired.then(|| entry.token.clone()).flatten()
+}
+
+/// What a call aimed at an explicit backend carries: that entry's token, and
+/// the pin its handshake must present (#196).
+struct Credentials {
+    token: String,
+    pin: Option<String>,
+}
+
+/// The credentials of `entry`, when it is paired on this client and build.
+fn credentials_of(entry: &crate::settings::BackendEntry) -> Option<Credentials> {
+    Some(Credentials {
+        token: bearer_of(entry)?,
+        // Owned copy: the credentials outlive the entry, which may be removed.
+        pin: entry.pin.clone(),
+    })
+}
+
+/// The client for an explicit backend, pinned by `credentials`, and the token
+/// its requests carry.
+fn explicit_client<'a>(
+    base: &str,
+    credentials: Option<&'a Credentials>,
+) -> Result<(BackendClient, Option<&'a str>), BackendError> {
+    let client = client_for(base, credentials.and_then(|c| c.pin.as_deref()))?;
+    Ok((client, credentials.map(|c| c.token.as_str())))
+}
+
+/// The client of one backend: the TLS module's on native targets.
+#[cfg(not(target_arch = "wasm32"))]
+type BackendClient = crate::tls::TlsClient;
+
+/// The client of one backend: `fetch`'s in the browser.
+#[cfg(target_arch = "wasm32")]
+type BackendClient = BrowserClient;
+
+/// The client every request to one backend goes through: on native targets the
+/// TLS module's, accepting only the key `pin` names (any key when it names
+/// none); in the browser, `fetch`'s, which does its own TLS (#196).
+#[cfg(not(target_arch = "wasm32"))]
+fn client_for(url: &str, pin: Option<&str>) -> Result<BackendClient, BackendError> {
+    crate::tls::client_for(url, pin.and_then(crate::tls::Pin::parse))
+        .map_err(|e| BackendError::new(e.to_string()))
+}
+
+/// The browser's client: `fetch` does the TLS, so there is no pin to check.
+#[cfg(target_arch = "wasm32")]
+fn client_for(_url: &str, _pin: Option<&str>) -> Result<BackendClient, BackendError> {
+    Ok(BrowserClient(reqwest::Client::new()))
+}
+
+/// The browser's stand-in for the TLS module's client.
+#[cfg(target_arch = "wasm32")]
+struct BrowserClient(reqwest::Client);
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserClient {
+    fn http(&self) -> &reqwest::Client {
+        &self.0
+    }
+}
+
+/// The pin of the key the client's handshake presented, as stored.
+#[cfg(not(target_arch = "wasm32"))]
+fn presented_pin(client: &BackendClient) -> Option<String> {
+    client.presented_pin().map(|pin| pin.to_hex())
+}
+
+/// The browser never sees the backend's key.
+#[cfg(target_arch = "wasm32")]
+fn presented_pin(_client: &BackendClient) -> Option<String> {
+    None
+}
+
+/// A failed request as a typed error: a refused key is
+/// [`BackendError::identity_changed`], recognised by type; anything else keeps
+/// its whole source chain as the message.
+fn transport_error(err: &reqwest::Error) -> BackendError {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tls::is_pin_mismatch(err) {
+        return BackendError::identity_changed();
+    }
+    BackendError::new(describe(err))
 }
 
 /// `POST {base}/api/pair` — exchange a short-lived pairing code for the backend's
@@ -244,7 +366,7 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// ```
 /// # async fn demo() -> Result<(), blue2th_frontend::backend::BackendError> {
 /// let backend = blue2th_frontend::backend::check_backend_protocol("http://pc:8080").await?;
-/// let _token = blue2th_frontend::backend::pair(&backend, "K7M2QX").await?;
+/// let _paired = blue2th_frontend::backend::pair(&backend, "K7M2QX").await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -258,8 +380,12 @@ fn authed_base_from(settings: &AppSettings) -> Result<(String, String), BackendE
 /// # Ok(())
 /// # }
 /// ```
-pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<String, BackendError> {
-    let request = reqwest::Client::new()
+pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<Paired, BackendError> {
+    // Pinned to the key the checked `/health` handshake presented: a key that
+    // changed in between never receives the code (#196).
+    let client = client_for(&backend.url, backend.pin.as_deref())?;
+    let request = client
+        .http()
         .post(pair_url(&backend.url))
         .timeout(SETTINGS_CALL_TIMEOUT)
         .json(&PairRequest {
@@ -267,7 +393,22 @@ pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<String, Bac
             code: code.to_string(),
         });
     let granted: PairResponse = send_json(request).await?;
-    Ok(granted.token)
+    Ok(Paired {
+        token: granted.token,
+        // Owned copy: the pairing's result outlives the checked backend.
+        pin: backend.pin.clone(),
+    })
+}
+
+/// What a pairing yields (#196): the backend's API token, and the pin of the
+/// key its handshakes presented — `None` over plain `http://` and in the
+/// browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paired {
+    /// The long-lived API token.
+    pub token: String,
+    /// The SPKI pin, 64 lower-case hex characters.
+    pub pin: Option<String>,
 }
 
 /// How long a settings-page call waits before giving up.
@@ -284,20 +425,43 @@ const SETTINGS_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// compile-time address, no seeded default, not even a localhost fallback, so an
 /// unconfigured app attempts no network call at all.
 ///
-/// Every guarded call goes through this: the token is a *default header* on the
-/// client rather than something each call site remembers to add, so a new call
-/// cannot silently ship unauthenticated.
-fn authed_client() -> Result<(reqwest::Client, String), BackendError> {
-    let (base, token) = authed_base_from(&crate::settings::current())?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    let value = reqwest::header::HeaderValue::from_str(&auth_header_value(&token))
+/// Every guarded call goes through this: the token is added by the client's own
+/// `get` and `post` rather than something each call site remembers to add, so a
+/// new call cannot silently ship unauthenticated.
+fn authed_client() -> Result<(Authed, String), BackendError> {
+    let settings = crate::settings::current();
+    let (base, token) = authed_base_from(&settings)?;
+    let bearer = reqwest::header::HeaderValue::from_str(&auth_header_value(&token))
         .map_err(|_| BackendError::not_paired())?;
-    headers.insert(reqwest::header::AUTHORIZATION, value);
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .map_err(|e| BackendError::new(describe(&e)))?;
-    Ok((client, base))
+    let client = client_for(&base, settings.active_pin().as_deref())?;
+    Ok((Authed { client, bearer }, base))
+}
+
+/// The active backend's client, pinned to its key, and the bearer every
+/// request it builds carries.
+struct Authed {
+    client: BackendClient,
+    bearer: reqwest::header::HeaderValue,
+}
+
+impl Authed {
+    /// `GET url`, with the bearer.
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        // Clone of the header value: each request owns its headers.
+        self.client
+            .http()
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, self.bearer.clone())
+    }
+
+    /// `POST url`, with the bearer.
+    fn post(&self, url: &str) -> reqwest::RequestBuilder {
+        // Clone of the header value: each request owns its headers.
+        self.client
+            .http()
+            .post(url)
+            .header(reqwest::header::AUTHORIZATION, self.bearer.clone())
+    }
 }
 
 /// Send a prepared request and decode its JSON payload.
@@ -309,10 +473,7 @@ fn authed_client() -> Result<(reqwest::Client, String), BackendError> {
 async fn send_json<T: serde::de::DeserializeOwned>(
     request: reqwest::RequestBuilder,
 ) -> Result<T, BackendError> {
-    let response = request
-        .send()
-        .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
+    let response = request.send().await.map_err(|e| transport_error(&e))?;
     backend_error_message(response)
         .await?
         .json::<T>()
@@ -344,10 +505,11 @@ fn config_url(base: &str) -> String {
 /// a call site.
 async fn set_config_at(
     base: &str,
-    token: Option<&str>,
+    credentials: Option<&Credentials>,
     config: ConfigRequest,
 ) -> Result<ServerConfig, BackendError> {
-    let request = bearing(reqwest::Client::new().post(config_url(base)), token);
+    let (client, token) = explicit_client(base, credentials)?;
+    let request = bearing(client.http().post(config_url(base)), token);
     // Serialized as it came in: rebuilding it field by field here is how a
     // setting added later reaches the wire everywhere but in this one call.
     send_json(request.timeout(SETTINGS_CALL_TIMEOUT).json(&config)).await
@@ -385,20 +547,25 @@ fn bearing(request: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::Re
 ///
 /// It carries *that* backend's token: the guard applies here like anywhere else,
 /// and the active token now belongs to the backend being switched to.
-async fn pause_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
-    post_at(base, "spotify/pause", token).await
+async fn pause_at(base: &str, credentials: Option<&Credentials>) -> Result<(), BackendError> {
+    post_at(base, "spotify/pause", credentials).await
 }
 
 /// `POST {base}/api/{path}` against an explicit address, carrying *that* backend's
 /// token. The body-less counterpart of [`set_config_at`], for the calls aimed at
 /// a backend the app is leaving rather than the one it resolves to.
-async fn post_at(base: &str, path: &str, token: Option<&str>) -> Result<(), BackendError> {
+async fn post_at(
+    base: &str,
+    path: &str,
+    credentials: Option<&Credentials>,
+) -> Result<(), BackendError> {
     let url = api_url(base, path);
-    let response = bearing(reqwest::Client::new().post(&url), token)
+    let (client, token) = explicit_client(base, credentials)?;
+    let response = bearing(client.http().post(&url), token)
         .timeout(SETTINGS_CALL_TIMEOUT)
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
+        .map_err(|e| transport_error(&e))?;
     backend_error_message(response).await?;
     Ok(())
 }
@@ -415,10 +582,10 @@ async fn post_at(base: &str, path: &str, token: Option<&str>) -> Result<(), Back
 /// Every step is best-effort and independent: a backend that is already down
 /// must not stop the app from letting go of the rest. The last failure is
 /// returned so the page can say something, but none of them is worth undoing.
-async fn release_at(base: &str, token: Option<&str>) -> Result<(), BackendError> {
+async fn release_at(base: &str, credentials: Option<&Credentials>) -> Result<(), BackendError> {
     let mut failure = None;
     for path in ["spotify/pause", "stop", "spotify/stop"] {
-        if let Err(e) = post_at(base, path, token).await {
+        if let Err(e) = post_at(base, path, credentials).await {
             failure = Some(e);
         }
     }
@@ -446,11 +613,12 @@ fn is_last_reference(remaining: &[crate::settings::BackendEntry], base: &str) ->
 /// is best-effort on top.
 pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<(), BackendError> {
     // Captured before the removal: afterwards the entry is gone, and its own
-    // token is the only one that backend will accept.
+    // token is the only one that backend will accept — sent only through its
+    // own pin (#196).
     let released = settings
         .backends
         .get(index)
-        .map(|b| (b.url.clone(), b.token.clone()));
+        .map(|b| (b.url.clone(), credentials_of(b)));
 
     settings
         .remove(index)
@@ -458,13 +626,13 @@ pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<
     // Owned copy: the cache keeps its own settings beyond this borrow.
     crate::settings::set_current(settings.clone());
 
-    let Some((base, token)) = released else {
+    let Some((base, credentials)) = released else {
         return Ok(());
     };
     if !is_last_reference(&settings.backends, &base) {
         return Ok(());
     }
-    release_at(&base, token.as_deref()).await
+    release_at(&base, credentials.as_ref()).await
 }
 
 /// `GET {base}/api/config` — the configuration of the active backend of `settings`
@@ -475,7 +643,8 @@ pub async fn remove_backend(settings: &mut AppSettings, index: usize) -> Result<
 /// active entry, so it must come from that entry's backend.
 pub async fn fetch_config(settings: &AppSettings) -> Result<ServerConfig, BackendError> {
     let (base, token) = authed_base_from(settings)?;
-    let request = bearing(reqwest::Client::new().get(config_url(&base)), Some(&token));
+    let client = client_for(&base, settings.active_pin().as_deref())?;
+    let request = bearing(client.http().get(config_url(&base)), Some(&token));
     send_json(request.timeout(SETTINGS_CALL_TIMEOUT)).await
 }
 
@@ -492,13 +661,17 @@ pub async fn sync_config(settings: &mut AppSettings) -> Result<(), BackendError>
     match crate::settings::config_sync(settings) {
         ConfigSync::Push => {
             let (base, token) = authed_base_from(settings)?;
+            let credentials = Credentials {
+                token,
+                pin: settings.active_pin(),
+            };
             let pushed = settings
                 .active_backend()
                 .map(config_body)
                 .ok_or_else(|| BackendError::new(NO_BACKEND_CONFIGURED))?;
             // Owned copy: the body is consumed by the request, and the
             // confirmation compares the entry against what was sent.
-            set_config_at(&base, Some(&token), pushed.clone()).await?;
+            set_config_at(&base, Some(&credentials), pushed.clone()).await?;
             settings.confirm_config_push(&base, &pushed);
         },
         ConfigSync::Read => {
@@ -565,7 +738,7 @@ pub async fn activate_backend(
     // token, which the switch is about to stop being the active one.
     let previous = settings
         .active_backend()
-        .map(|b| (b.url.clone(), b.token.clone()));
+        .map(|b| (b.url.clone(), credentials_of(b)));
 
     // Switch locally first, and persist: a slow or dead backend must never hold
     // the app on a target the user has left.
@@ -580,9 +753,9 @@ pub async fn activate_backend(
     // Both remote steps are best-effort and independent; the last failure is
     // surfaced so the toast says something, but neither undoes the switch.
     let mut failure = None;
-    if let Some((base, token)) = previous {
+    if let Some((base, credentials)) = previous {
         if is_left_behind(&base, arriving.as_deref()) {
-            if let Err(e) = pause_at(&base, token.as_deref()).await {
+            if let Err(e) = pause_at(&base, credentials.as_ref()).await {
                 failure = Some(e);
             }
         }
@@ -604,12 +777,15 @@ pub async fn activate_backend(
 }
 
 /// `GET {base}/health` against an explicit address — the settings page's `Test`
-/// action, which pings a backend that is not (yet) the active one.
-pub async fn test_backend(url: &str) -> Result<HealthStatus, BackendError> {
+/// action, which pings a backend that is not (yet) the active one, through the
+/// entry's `pin` (#196). It sends no token.
+pub async fn test_backend(url: &str, pin: Option<&str>) -> Result<HealthStatus, BackendError> {
+    let client = client_for(url, pin)?;
     // Bounded: a typo'd address that drops packets would otherwise leave the
     // `Test` button waiting forever with no answer either way.
     send_json(
-        reqwest::Client::new()
+        client
+            .http()
             .get(health_url(url))
             .timeout(SETTINGS_CALL_TIMEOUT),
     )
@@ -640,6 +816,9 @@ pub const PROTOCOL_MISMATCH: &str = "incompatible backend";
 #[derive(Debug, PartialEq, Eq)]
 pub struct CompatibleBackend {
     url: String,
+    /// The pin of the key the `/health` handshake presented (#196): `None`
+    /// over plain `http://` and in the browser.
+    pin: Option<String>,
 }
 
 /// Probe `GET {url}/health` and check the wire contract this app speaks against
@@ -651,11 +830,21 @@ pub struct CompatibleBackend {
 pub async fn check_backend_protocol(url: &str) -> Result<CompatibleBackend, BackendError> {
     // An unreachable backend surfaces its transport error untouched: "cannot
     // reach" must never read as "incompatible".
-    let health = test_backend(url).await?;
+    // Unpinned: this is the first handshake of a pairing, whose key is the one
+    // trusted from now on (#196).
+    let client = client_for(url, None)?;
+    let health: HealthStatus = send_json(
+        client
+            .http()
+            .get(health_url(url))
+            .timeout(SETTINGS_CALL_TIMEOUT),
+    )
+    .await?;
     blue2th_proto::check_protocol(&health, blue2th_proto::PROTOCOL_VERSION)
         .map_err(BackendError::protocol)?;
     Ok(CompatibleBackend {
         url: url.to_owned(),
+        pin: presented_pin(&client),
     })
 }
 
@@ -680,16 +869,48 @@ fn describe(err: &reqwest::Error) -> String {
 /// open on the backend precisely so an app holding no (or a stale) token can
 /// still tell "not paired" from "unreachable". Requiring a bearer here would
 /// paint an alive-but-unpaired backend as offline — the exact confusion the open
-/// probe exists to prevent. The bearer is still sent when there is one, so the
-/// request is identical for a paired app.
+/// probe exists to prevent. The bearer is still sent when the entry is paired,
+/// so the request is identical for a paired app — and only then: an `https://`
+/// entry with no valid pin is probed unpinned, and its token stays home (#196).
 pub async fn ping_backend() -> Result<HealthStatus, BackendError> {
     let settings = crate::settings::current();
     let base = base_url_from(&settings)?;
-    let mut request = reqwest::Client::new().get(health_url(&base));
-    if let Some(token) = settings.active_token() {
-        request = request.header(reqwest::header::AUTHORIZATION, auth_header_value(&token));
+    let entry = settings.active_backend();
+    let client = client_for(&base, entry.and_then(|b| b.pin.as_deref()))?;
+    let token = entry.and_then(bearer_of);
+    send_json(bearing(
+        client.http().get(health_url(&base)),
+        token.as_deref(),
+    ))
+    .await
+}
+
+/// What one `/health` probe says about the active backend (#196), as the
+/// probe loop folds it into the status dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeVerdict {
+    /// The probe answered: the backend is reachable.
+    pub reachable: bool,
+    /// The wire contract it announced, when this app does not speak it.
+    pub mismatch: Option<ProtocolMismatch>,
+    /// Its handshake presented a key other than the pinned one.
+    pub identity_changed: bool,
+}
+
+/// Read one probe's outcome. Pure.
+pub fn probe_verdict(probe: &Result<HealthStatus, BackendError>) -> ProbeVerdict {
+    match probe {
+        Ok(health) => ProbeVerdict {
+            reachable: true,
+            mismatch: blue2th_proto::check_protocol(health, blue2th_proto::PROTOCOL_VERSION).err(),
+            identity_changed: false,
+        },
+        Err(e) => ProbeVerdict {
+            reachable: false,
+            mismatch: None,
+            identity_changed: e.is_identity_changed(),
+        },
     }
-    send_json(request).await
 }
 
 /// Run a backend scan: consume the `/api/scan` SSE feed for `SCAN_WINDOW`, collecting
@@ -701,7 +922,7 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
         .get(&url)
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
+        .map_err(|e| transport_error(&e))?;
     // Typed rather than `error_for_status`: the caller's reconnect loop must be
     // able to stop on a 401 instead of retrying a revoked token forever.
     let response = backend_error_message(response).await?;
@@ -712,7 +933,7 @@ pub async fn scan_devices() -> Result<Vec<DeviceInfo>, BackendError> {
 
     let collect = async {
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| BackendError::new(describe(&e)))?;
+            let chunk = chunk.map_err(|e| transport_error(&e))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
             // SSE events are separated by a blank line.
             while let Some(pos) = buffer.find("\n\n") {
@@ -948,7 +1169,7 @@ pub async fn report_presence(presence: ClientPresence) -> Result<(), BackendErro
         .json(&PresenceRequest { presence })
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
+        .map_err(|e| transport_error(&e))?;
     backend_error_message(response).await?;
     Ok(())
 }
@@ -994,7 +1215,7 @@ async fn post_spotify_transport(action: &str) -> Result<(), BackendError> {
         .post(&url)
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
+        .map_err(|e| transport_error(&e))?;
     backend_error_message(response).await?;
     Ok(())
 }
@@ -1012,7 +1233,7 @@ where
         .get(&url)
         .send()
         .await
-        .map_err(|e| BackendError::new(describe(&e)))?;
+        .map_err(|e| transport_error(&e))?;
     // Typed rather than `error_for_status`: the caller's reconnect loop must be
     // able to stop on a 401 instead of retrying a revoked token forever.
     let response = backend_error_message(response).await?;
@@ -1020,7 +1241,7 @@ where
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| BackendError::new(describe(&e)))?;
+        let chunk = chunk.map_err(|e| transport_error(&e))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         // SSE events are separated by a blank line.
         while let Some(pos) = buffer.find("\n\n") {
@@ -1073,3 +1294,8 @@ fn sse_device_payload(block: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests;
+
+// #196: the calls over a real TLS handshake, against a loopback backend with
+// a certificate made for the test. Native only, like the `tls` module.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tls_tests;

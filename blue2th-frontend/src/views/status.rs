@@ -30,6 +30,9 @@ pub(crate) fn BackendStatus(error: Signal<Option<String>>) -> Element {
         settings::BackendHealth::Incompatible(mismatch) => protocol_message(mismatch),
         settings::BackendHealth::Unpaired => rust_i18n::t!("app_settings.not_paired").to_string(),
         settings::BackendHealth::Ready => rust_i18n::t!("server.online").to_string(),
+        settings::BackendHealth::IdentityChanged => {
+            rust_i18n::t!("server.identity_changed").to_string()
+        },
     };
     // One read for the whole list: the active index comes from the same snapshot
     // as the names, so the menu can never mark a row the list no longer holds.
@@ -69,6 +72,11 @@ pub(crate) fn BackendStatus(error: Signal<Option<String>>) -> Element {
                             settings::BackendHealth::Incompatible(_) => "#f97316",
                             settings::BackendHealth::Unpaired => "#f59e0b",
                             settings::BackendHealth::Ready => "#22c55e",
+                            // Violet, a charter token of its own (#196).
+                            // Provisional: a colour that stands out while
+                            // testing; the redesign's mockups give this state
+                            // a screen of its own (#200).
+                            settings::BackendHealth::IdentityChanged => "var(--state-identity)",
                         },
                     ),
                 }

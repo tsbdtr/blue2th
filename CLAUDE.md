@@ -66,7 +66,9 @@ with `-D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic
 first failure. A host-only lint never sees the Android or browser code, so an item
 only one target uses reads as dead and used to collect an `allow(dead_code)`; gate
 it with `cfg` instead. The cross targets are needed once, and the script refuses
-to run (exit 2) without them — clippy does not link, so no NDK is needed:
+to run (exit 2) without them — or without the NDK, which the Android lint needs
+for `ring`'s C (`ANDROID_NDK_HOME`, else the highest version under
+`$ANDROID_HOME/ndk/`):
 
 ```bash
 rustup target add aarch64-linux-android wasm32-unknown-unknown

@@ -8,7 +8,9 @@ use super::*;
 /// touching the cache take this lock and leave it empty behind them.
 /// Async-aware on purpose: these tests hold the guard across `await`s, which
 /// a `std::sync::Mutex` must never do.
-static SETTINGS_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+///
+/// `pub(super)`: the TLS tests of `backend` (#196) touch the same cache.
+pub(super) static SETTINGS_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[test]
 fn test_health_url_appends_path() {
@@ -292,6 +294,7 @@ fn entry(name: &str, url: &str) -> crate::settings::BackendEntry {
         pairing: crate::settings::PairingMethod::Code,
         id: None,
         config_pending: false,
+        pin: None,
     }
 }
 
@@ -461,6 +464,7 @@ fn active_with_token(url: &str, token: Option<&str>) -> AppSettings {
             // Phase 6.6: an entry that never met a discovered service.
             id: None,
             config_pending: false,
+            pin: None,
         }],
         active: Some(0),
         auto_repair_url: true,
@@ -579,8 +583,12 @@ async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
     );
     assert_eq!(
         checked.map_err(|e| e.to_string()),
-        Ok(CompatibleBackend { url: base }),
-        "a backend announcing 3..=3 serves an app speaking 3, at the checked URL"
+        Ok(CompatibleBackend {
+            url: base,
+            pin: None,
+        }),
+        "a backend announcing 3..=3 serves an app speaking 3, at the checked URL, \
+         with no pin over plain http (#196)"
     );
 }
 
@@ -754,12 +762,24 @@ async fn test_pair_exchanges_the_code_for_the_token() {
         .await
         .expect("start the canned backend");
 
-    let token = pair(&CompatibleBackend { url: base }, "K7M2QX").await;
+    let paired = pair(
+        &CompatibleBackend {
+            url: base,
+            pin: None,
+        },
+        "K7M2QX",
+    )
+    .await;
     let request = served.within_bound().await.expect("serve one request");
 
+    // Plain `http://` (a debug build's `BLUE2TH_PLAIN_HTTP` backend): no
+    // handshake, so no pin (#196).
     assert_eq!(
-        token.map_err(|e| e.to_string()),
-        Ok("api-token-value".to_string())
+        paired.map_err(|e| e.to_string()),
+        Ok(Paired {
+            token: "api-token-value".to_string(),
+            pin: None,
+        })
     );
     assert!(
         request.starts_with("POST /api/pair "),
@@ -784,9 +804,15 @@ async fn test_pair_with_a_refused_code_reports_not_paired() {
         .await
         .expect("start the canned backend");
 
-    let error = pair(&CompatibleBackend { url: base }, "AAAAAA")
-        .await
-        .expect_err("a refused code must not yield a token");
+    let error = pair(
+        &CompatibleBackend {
+            url: base,
+            pin: None,
+        },
+        "AAAAAA",
+    )
+    .await
+    .expect_err("a refused code must not yield a token");
     served
         .within_bound()
         .await
@@ -1288,7 +1314,7 @@ async fn test_activate_backend_pauses_the_previous_one_with_its_own_token() {
         .add("Bureau", "http://127.0.0.1:2")
         .expect("add the backend being switched to");
     settings
-        .set_token(1, Some("arriving-token".to_string()))
+        .set_token(1, Some("arriving-token".to_string()), None)
         .expect("pair the backend being switched to");
 
     // Fails on the arriving backend (port 2 is never listening); the pause on
@@ -1867,7 +1893,7 @@ async fn test_health_probes_stay_at_the_root() {
     let sent: Vec<Sent> = vec![
         sent!("GET", "/health", |_| ping_backend()),
         sent!("GET", "/health", |base| check_backend_protocol(&base)),
-        sent!("GET", "/health", |base| test_backend(&base)),
+        sent!("GET", "/health", |base| test_backend(&base, None)),
     ];
     assert_eq!(mismatches(sent), Vec::<String>::new());
 }
@@ -1883,4 +1909,126 @@ fn test_browser_presence_post_goes_under_api_tolerating_a_trailing_slash() {
         post.ok().map(|p| p.url),
         Some("http://10.0.0.5:4000/api/client/presence".to_string())
     );
+}
+
+// ---- #196: the identity-changed failure and the probe's verdict ----
+
+// Criterion: `BackendError` carries an identity change typed, like
+// `not_paired` and `mismatch`, so the UI tells it from an unreachable backend.
+// Near-miss, both ways: every other typed failure must answer `false`, and the
+// identity change must answer none of the other kinds.
+#[test]
+fn test_identity_changed_is_a_typed_failure_of_its_own() {
+    let changed = BackendError::identity_changed();
+    assert_eq!(
+        (
+            changed.is_identity_changed(),
+            changed.is_not_paired(),
+            changed.protocol_mismatch(),
+            changed.is_pairing_failed(),
+        ),
+        (true, false, None, false)
+    );
+
+    let others = [
+        BackendError::new("connection refused"),
+        BackendError::not_paired(),
+        BackendError::protocol(ProtocolMismatch::BackendTooOld),
+        BackendError::pairing_failed(),
+        backend_error_for(401, ""),
+        backend_error_for(502, "bad gateway"),
+    ];
+    let flagged: Vec<String> = others
+        .iter()
+        .filter(|e| e.is_identity_changed())
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(flagged, Vec::<String>::new());
+}
+
+/// A `/health` payload announcing the contract range `min..=max`.
+fn health(min: u32, max: u32) -> HealthStatus {
+    HealthStatus {
+        status: "ok".to_string(),
+        version: "0.2.0".to_string(),
+        auth_required: true,
+        protocol: max,
+        protocol_min: min,
+    }
+}
+
+// Criterion: the probe loop reads a `ping_backend` error that is
+// `identity_changed` as an identity change — and as a failed probe.
+#[test]
+fn test_probe_verdict_of_an_identity_change_is_unreachable_and_identity_changed() {
+    assert_eq!(
+        probe_verdict(&Err(BackendError::identity_changed())),
+        ProbeVerdict {
+            reachable: false,
+            mismatch: None,
+            identity_changed: true,
+        }
+    );
+}
+
+// Criterion (guard, "any other error is Offline as today"): a transport error,
+// a 401 and a refused Bluetooth bond are failed probes and nothing more.
+// Near-miss: a verdict that reads every error as an identity change.
+#[test]
+fn test_probe_verdict_of_any_other_error_is_only_unreachable() {
+    let verdicts: Vec<ProbeVerdict> = [
+        BackendError::new("connection refused"),
+        BackendError::not_paired(),
+        BackendError::pairing_failed(),
+    ]
+    .into_iter()
+    .map(|e| probe_verdict(&Err(e)))
+    .collect();
+    let offline = ProbeVerdict {
+        reachable: false,
+        mismatch: None,
+        identity_changed: false,
+    };
+    assert_eq!(verdicts, vec![offline, offline, offline]);
+}
+
+// Criterion: an answered probe is reachable, with the contract compared as
+// today.
+#[test]
+fn test_probe_verdict_of_an_answer_is_reachable_and_compares_the_contract() {
+    let speaking = blue2th_proto::PROTOCOL_VERSION;
+    assert_eq!(
+        (
+            probe_verdict(&Ok(health(speaking, speaking))),
+            probe_verdict(&Ok(health(0, 0))),
+        ),
+        (
+            ProbeVerdict {
+                reachable: true,
+                mismatch: None,
+                identity_changed: false,
+            },
+            ProbeVerdict {
+                reachable: true,
+                mismatch: Some(ProtocolMismatch::BackendTooOld),
+                identity_changed: false,
+            },
+        )
+    );
+}
+
+// Criterion: a pin-mismatch probe counts as a failed probe for `track_probe`:
+// `PROBES_BEFORE_CLEARING` of them in a row declare the backend gone, so the
+// screens drop the state of a machine whose identity is no longer the paired
+// one.
+#[test]
+fn test_identity_changed_probes_declare_the_backend_gone() {
+    let mut failures = 0;
+    let gone: Vec<bool> = (0..crate::settings::PROBES_BEFORE_CLEARING)
+        .map(|_| {
+            let verdict = probe_verdict(&Err(BackendError::identity_changed()));
+            crate::settings::track_probe(&mut failures, verdict.reachable)
+        })
+        .collect();
+    assert_eq!(gone, vec![false, false, true]);
 }

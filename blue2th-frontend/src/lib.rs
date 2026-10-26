@@ -13,3 +13,7 @@ pub mod jni_util;
 pub mod lifecycle;
 pub mod settings;
 pub mod timer;
+// The backend's TLS and its pinned key (#196). Native only: the browser does
+// its own TLS behind `fetch`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tls;

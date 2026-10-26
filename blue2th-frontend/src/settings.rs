@@ -78,6 +78,13 @@ pub struct BackendEntry {
     /// before #160 holds nothing unsent, and reads on its first sync.
     #[serde(default)]
     pub config_pending: bool,
+    /// The SHA-256 of the backend's public key (its SPKI), as 64 lower-case hex
+    /// characters, set at pairing (#196). Every TLS handshake with that backend
+    /// must present this key. `serde(default)`: an entry stored before #196
+    /// loads with no pin; see [`entry_paired`] for what that entry reads as on
+    /// each target and build.
+    #[serde(default)]
+    pub pin: Option<String>,
 }
 
 /// The default for [`BackendEntry::restore_during_playback`]: on, so a speaker
@@ -188,6 +195,9 @@ pub enum BackendHealth {
     Unpaired,
     /// Reachable and paired — the only fully working state.
     Ready,
+    /// The backend's handshake presented a key other than the one pinned at
+    /// pairing (#196): pair it again.
+    IdentityChanged,
 }
 
 /// Classify the active backend for the status dot. Pure.
@@ -198,8 +208,14 @@ pub fn backend_health(
     online: bool,
     paired: bool,
     mismatch: Option<ProtocolMismatch>,
+    identity_changed: bool,
 ) -> BackendHealth {
-    // Ranked `Offline` > `Incompatible` > `Unpaired` > `Ready`: an unreachable
+    // An identity change outranks everything: it is only known from a handshake
+    // that happened, and nothing else was compared over a refused key (#196).
+    if identity_changed {
+        return BackendHealth::IdentityChanged;
+    }
+    // Then `Offline` > `Incompatible` > `Unpaired` > `Ready`: an unreachable
     // backend announced no range, so nothing was compared; and a token is
     // useless while the two ends cannot talk.
     match (online, mismatch, paired) {
@@ -225,6 +241,9 @@ pub enum DeviceListNotice {
     /// The backend answers but holds no token: every route but `/health` 401s
     /// until the user pairs it.
     Unpaired,
+    /// The backend presented another key than the pinned one (#196): the
+    /// user pairs it again.
+    IdentityChanged,
 }
 
 /// The notice the device list must carry permanently, if any. Pure.
@@ -241,6 +260,7 @@ pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
     match health {
         BackendHealth::Incompatible(mismatch) => Some(DeviceListNotice::Incompatible(mismatch)),
         BackendHealth::Unpaired => Some(DeviceListNotice::Unpaired),
+        BackendHealth::IdentityChanged => Some(DeviceListNotice::IdentityChanged),
         BackendHealth::Offline | BackendHealth::Ready => None,
     }
 }
@@ -259,9 +279,105 @@ pub fn device_list_notice(health: BackendHealth) -> Option<DeviceListNotice> {
 /// with a "not paired" toast for a request that never had a chance (#37).
 pub fn backend_actionable(health: BackendHealth) -> bool {
     match health {
-        BackendHealth::Offline | BackendHealth::Incompatible(_) | BackendHealth::Unpaired => false,
+        BackendHealth::Offline
+        | BackendHealth::Incompatible(_)
+        | BackendHealth::Unpaired
+        | BackendHealth::IdentityChanged => false,
         BackendHealth::Ready => true,
     }
+}
+
+/// Whether `entry` is paired, on this kind of client and build (#196). Pure.
+///
+/// - native release: a valid pin, a token and an `https://` URL;
+/// - native debug: the same, or an `http://` URL with a token (a backend run
+///   with `BLUE2TH_PLAIN_HTTP`);
+/// - browser: a token.
+pub fn entry_paired(entry: &BackendEntry, kind: ClientKind, debug: bool) -> bool {
+    if entry.token.is_none() {
+        return false;
+    }
+    match kind {
+        ClientKind::Browser => true,
+        ClientKind::Phone => {
+            let pinned = entry.pin.as_deref().is_some_and(is_stored_pin);
+            match url_scheme(&entry.url) {
+                Some(scheme) if scheme.eq_ignore_ascii_case("https") => pinned,
+                Some(scheme) if scheme.eq_ignore_ascii_case("http") => debug,
+                _ => false,
+            }
+        },
+    }
+}
+
+/// Whether `stored` is a pin as the app stores it: exactly 64 lower-case hex
+/// characters (#196). Anything else — empty, another length, upper case — names
+/// no pin. Pure.
+pub(crate) fn is_stored_pin(stored: &str) -> bool {
+    stored.len() == 64
+        && stored
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The scheme of `url`, before its `://`, or `None` when it has none. Pure.
+fn url_scheme(url: &str) -> Option<&str> {
+    url.split_once("://").map(|(scheme, _)| scheme)
+}
+
+/// A typed backend address, given a scheme for this build (#196), then
+/// normalised by [`normalise_url`]. Pure.
+///
+/// No scheme becomes `https://`; `http://` becomes `https://` in a release
+/// build and is kept in a debug one; `https://` is kept. The scheme is
+/// matched whatever its case.
+pub fn typed_backend_url(raw: &str, debug: bool) -> Result<String, SettingsError> {
+    let trimmed = raw.trim();
+    let with_scheme = match trimmed.split_once("://") {
+        Some((scheme, rest)) => {
+            let scheme = scheme.to_ascii_lowercase();
+            let scheme = if scheme == "http" && !debug {
+                "https".to_string()
+            } else {
+                scheme
+            };
+            format!("{scheme}://{rest}")
+        },
+        None => format!("https://{trimmed}"),
+    };
+    normalise_url(&with_scheme)
+}
+
+/// The address a client contacts for `raw`, as typed or stored (#196). Pure.
+///
+/// The phone gives it the scheme of the build, through [`typed_backend_url`].
+/// The browser keeps it as [`normalise_url`] does: its page reaches the backend
+/// wherever the page itself came from, and its own `fetch` does the TLS.
+pub fn contacted_url(raw: &str, kind: ClientKind, debug: bool) -> Result<String, SettingsError> {
+    match kind {
+        ClientKind::Browser => normalise_url(raw),
+        ClientKind::Phone => typed_backend_url(raw, debug),
+    }
+}
+
+/// Whether the now-playing feed, parked on an identity change while `refused`
+/// was the settings, may resume now that they are `current` (#196): the
+/// active entry's pin changed, its address changed, or another entry became
+/// active. Pure.
+pub fn identity_park_lifted(refused: &AppSettings, current: &AppSettings) -> bool {
+    // The token is left out on purpose: a new token over the same refused key
+    // would only retry the handshake that was refused.
+    // Owned copies of the address and the pin: the two snapshots are compared
+    // whole, out of either borrow.
+    let identity = |settings: &AppSettings| {
+        (
+            settings.active,
+            settings
+                .active_backend()
+                .map(|b| (b.url.clone(), b.pin.clone())),
+        )
+    };
+    identity(refused) != identity(current)
 }
 
 /// How many consecutive failed `/health` probes declare the backend **gone**.
@@ -401,6 +517,12 @@ pub fn normalise_url(raw: &str) -> Result<String, SettingsError> {
     Ok(format!("{scheme}://{host}"))
 }
 
+/// `url` without its scheme: the host, port and path a backend answers at.
+/// Pure.
+fn without_scheme(url: &str) -> &str {
+    url.split_once("://").map_or(url, |(_, rest)| rest)
+}
+
 impl AppSettings {
     /// Add a backend. The name goes through the shared proto validator and must
     /// not collide with an existing one; the URL is normalised.
@@ -426,6 +548,8 @@ impl AppSettings {
             id: None,
             // The typed name is the one the backend has to learn (#160).
             config_pending: true,
+            // No key is known until the first pairing handshake (#196).
+            pin: None,
         });
         Ok(())
     }
@@ -527,12 +651,19 @@ impl AppSettings {
         self.discovery_adds_backends = enabled;
     }
 
-    /// Store the API token obtained by pairing with the backend at `index`.
-    pub fn set_token(&mut self, index: usize, token: Option<String>) -> Result<(), SettingsError> {
+    /// Store the API token obtained by pairing with the backend at `index`,
+    /// and the pin of the key that pairing met (#196).
+    pub fn set_token(
+        &mut self,
+        index: usize,
+        token: Option<String>,
+        pin: Option<String>,
+    ) -> Result<(), SettingsError> {
         let Some(entry) = self.backends.get_mut(index) else {
             return Err(SettingsError::UnknownBackend);
         };
         entry.token = token;
+        entry.pin = pin;
         Ok(())
     }
 
@@ -560,13 +691,23 @@ impl AppSettings {
         &mut self,
         link: &PairLink,
         token: &str,
+        pin: Option<&str>,
     ) -> Result<usize, SettingsError> {
         let url = normalise_url(&link.url)?;
-        if let Some(index) = self.backends.iter().position(|b| b.url == url) {
-            // Known address: only the token moves. The local name is kept — the
-            // user may have renamed this backend deliberately, and a QR must not
-            // undo that.
-            self.set_token(index, Some(token.to_string()))?;
+        // The same address first; then the same host and port under another
+        // scheme — an entry stored as `http://` before the backend spoke TLS
+        // (#196). Neither the link nor `/pair` carries an id to match on.
+        let known = self.backends.iter().position(|b| b.url == url).or_else(|| {
+            self.backends
+                .iter()
+                .position(|b| without_scheme(&b.url) == without_scheme(&url))
+        });
+        if let Some(index) = known {
+            // Known machine: the address, the token and the pin move. The local
+            // name is kept — the user may have renamed this backend
+            // deliberately, and a QR must not undo that.
+            self.set_url(index, &url)?;
+            self.set_token(index, Some(token.to_string()), pin.map(str::to_string))?;
             self.activate(index)?;
             return Ok(index);
         }
@@ -583,7 +724,7 @@ impl AppSettings {
         if let Some(entry) = self.backends.get_mut(index) {
             entry.config_pending = false;
         }
-        self.set_token(index, Some(token.to_string()))?;
+        self.set_token(index, Some(token.to_string()), pin.map(str::to_string))?;
         // The method is chosen when a backend is added, and this one was added by
         // scanning: offering the QR again is what re-pairing it will most likely
         // mean. Only on creation — for a known entry the user's own choice wins,
@@ -597,6 +738,12 @@ impl AppSettings {
     /// active backend has not been paired yet.
     pub fn active_token(&self) -> Option<String> {
         self.active_backend().and_then(|b| b.token.clone())
+    }
+
+    /// The active backend's stored pin (#196), or `None` when nothing is active
+    /// or the active backend holds none.
+    pub fn active_pin(&self) -> Option<String> {
+        self.active_backend().and_then(|b| b.pin.clone())
     }
 
     /// Toggle the restore-during-playback setting of the backend at `index`.
@@ -818,6 +965,7 @@ pub fn browser_settings(stored: AppSettings, origin: &str) -> AppSettings {
             pairing: PairingMethod::Code,
             id: None,
             config_pending: false,
+            pin: None,
         });
     AppSettings {
         backends: vec![entry],
