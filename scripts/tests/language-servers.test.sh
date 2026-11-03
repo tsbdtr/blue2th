@@ -9,20 +9,31 @@
 # `git worktree remove` emptied the directory, and the removal failed half-way.
 # Sourced by scripts/tests/run.sh; each test_* runs in its own subshell.
 #
-# The servers are stand-ins: a copy of `sleep` named after the real binary, so
+# The servers are stand-ins: a copy of `bash` named after the real binary, so
 # the process name the function matches on is the real one. Each test sources
 # the helper in its own `bash -c`, as cleanup.sh does, so a missing helper fails
 # the tests one by one instead of aborting the runner.
+#
+# Not a copy of `sleep`: uutils coreutils (Ubuntu 26.04's default) is one
+# multicall binary that refuses to run under a name that is not its own, and
+# the process name is exactly that name — neither a symlink nor `exec -a` gets
+# past it. `bash` is a binary of its own, whatever it is called.
 
-# start_named <name> <dir>: runs a copy of `sleep` named <name> with <dir> as
+# start_named <name> <dir>: runs a copy of `bash` named <name> with <dir> as
 # its working directory, and sets $started to its pid once the process carries
 # that name. Every process started here is stopped when the test ends, whether
 # it passed or not.
 start_named() {
     local name="$1" dir="$2" pid comm _
     mkdir -p "$tmp/bin" "$dir"
-    [[ -x "$tmp/bin/$name" ]] || cp "$(command -v sleep)" "$tmp/bin/$name"
-    (cd "$dir" && exec "$tmp/bin/$name" 60) </dev/null >/dev/null 2>&1 &
+    [[ -x "$tmp/bin/$name" ]] || cp "$(command -v bash)" "$tmp/bin/$name"
+    [[ -p "$tmp/idle" ]] || mkfifo "$tmp/idle"
+    # A builtin `read` on a FIFO nobody writes to waits in the stand-in itself:
+    # `sleep 60` would run as a child, left behind once the stand-in is killed.
+    # Opened read-write so the open does not wait for a writer.
+    # shellcheck disable=SC2016  # $1 is the stand-in's own argument
+    (cd "$dir" && exec "$tmp/bin/$name" -c 'exec 3<>"$1"; read -r -t 60 _ <&3' _ "$tmp/idle") \
+        </dev/null >/dev/null 2>&1 &
     pid=$!
     started_pids+=("$pid")
     # `|| true`: `set -e` holds inside the trap, and a stand-in the test already
