@@ -12,5 +12,14 @@ publish.workspace = true
 [dependencies]
 serde = { workspace = true }
 
+[features]
+# #197: the SPAKE2 exchange the native app and the backend pair through
+# (`pake`). Off by default, so the browser build, which pairs over
+# `POST /api/pair`, never compiles it.
+pake = []
+
 [dev-dependencies]
 serde_json = "1"
+# #197: the raw SPAKE2 the `pake` tests run against our halves, to pin the
+# group, the roles and the identities the exchange uses.
+spake2 = "0.4.0"

@@ -416,5 +416,125 @@ impl Default for AuthStore {
     }
 }
 
+/// How long a PAKE session opened by `POST /pair/start` waits for its
+/// `finish` (#197).
+pub const PAKE_SESSION_TTL: Duration = Duration::from_secs(30);
+
+/// How many `POST /pair/start` one source address may send within
+/// [`PAIR_START_WINDOW`] (#197).
+pub const PAIR_START_LIMIT: usize = 5;
+
+/// The sliding window [`PAIR_START_LIMIT`] is counted over (#197).
+pub const PAIR_START_WINDOW: Duration = Duration::from_secs(10);
+
+/// What [`AuthStore::advance`] did to the code queue (#197).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueStep {
+    /// The active code is still valid, or there is no queue at all.
+    Unchanged,
+    /// The active code expired and the next one was activated.
+    Activated,
+    /// The active code expired and it was the last one.
+    Ended,
+}
+
+/// What a successful [`AuthStore::start_pake`] answers (#197).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PakeStarted {
+    /// The session `finish` must name.
+    pub session: String,
+    /// The backend's SPAKE2 message.
+    pub msg: Vec<u8>,
+}
+
+/// What a successful [`AuthStore::finish_pake`] answers (#197).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PakeFinished {
+    /// The backend's confirmation.
+    pub confirm: Vec<u8>,
+    /// The API token.
+    pub token: String,
+}
+
+impl AuthStore {
+    /// The active code's position in the queue, `(k, n)` with `k` counted
+    /// from 1, or `None` when no code is active (#197).
+    pub fn active_position(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Failed attempts counted against the armed codes, across `finish` and
+    /// `POST /pair` (#197).
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
+    /// How many clients paired since the codes were armed (#197).
+    pub fn paired(&self) -> u32 {
+        0
+    }
+
+    /// Activate the next code when the active one has expired at `now`
+    /// (#197).
+    pub fn advance(&mut self, _now: SystemTime) -> QueueStep {
+        QueueStep::Unchanged
+    }
+
+    /// `POST /pair/start`: open the one PAKE session on the active code,
+    /// replacing any open one (#197).
+    pub fn start_pake(
+        &mut self,
+        _client_msg: &[u8],
+        _now: SystemTime,
+    ) -> Result<PakeStarted, PairError> {
+        Err(PairError::Rejected)
+    }
+
+    /// `POST /pair/finish`: check the app's confirmation over `binding` and,
+    /// when it holds, consume the code and release the token (#197).
+    pub fn finish_pake(
+        &mut self,
+        _session: &str,
+        _confirm: &[u8],
+        _binding: &blue2th_proto::pake::Binding,
+        _now: SystemTime,
+    ) -> Result<PakeFinished, PairError> {
+        Err(PairError::Rejected)
+    }
+}
+
+/// The per-source-address limit on `POST /pair/start` (#197):
+/// [`PAIR_START_LIMIT`] requests in a sliding [`PAIR_START_WINDOW`].
+#[derive(Debug, Default)]
+pub struct PairRateLimiter {
+    _seen: (),
+}
+
+impl PairRateLimiter {
+    /// A limiter that has seen nothing.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a request from `peer` at `now`: `Ok` when it passes, or how
+    /// long until it would. A request with no known address is counted under
+    /// one shared key.
+    pub fn check(
+        &mut self,
+        _peer: Option<std::net::IpAddr>,
+        _now: std::time::Instant,
+    ) -> Result<(), Duration> {
+        Ok(())
+    }
+}
+
+/// The `Retry-After` value of a wait, in whole seconds (#197).
+pub fn retry_after_secs(_wait: Duration) -> u64 {
+    0
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pairing_tests;

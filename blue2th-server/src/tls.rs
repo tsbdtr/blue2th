@@ -460,6 +460,12 @@ pub fn certificate_fingerprint(cert_der: &[u8]) -> String {
         .join(":")
 }
 
+/// What the pairing exchange of #197 is bound to over TLS: the SHA-256 of the
+/// backend's `SubjectPublicKeyInfo` DER — the pin the app stores (#196).
+pub fn pairing_binding(_spki_der: &[u8]) -> blue2th_proto::pake::Binding {
+    blue2th_proto::pake::Binding::PlainHttp
+}
+
 /// The `rustls` server configuration serving `cert` with `key`.
 pub fn server_config(
     cert: &IssuedCert,

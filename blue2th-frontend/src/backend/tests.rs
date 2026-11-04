@@ -561,11 +561,11 @@ async fn canned_backend(
 // backend whose announced range contains this app's `PROTOCOL_VERSION`.
 #[tokio::test]
 async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
-    // Range 3..=3, matching `PROTOCOL_VERSION` since the API moved to TLS
-    // (#195).
+    // Range 3..=4: `PROTOCOL_VERSION` is 4 since pairing runs through a PAKE
+    // (#197), and the backend still serves the apps of #196.
     let (base, served) = canned_backend(
         "200 OK",
-        r#"{"status":"ok","version":"0.1.0","protocol":3,"protocol_min":3}"#,
+        r#"{"status":"ok","version":"0.1.0","protocol":4,"protocol_min":3}"#,
     )
     .await
     .expect("start the canned backend");
@@ -578,8 +578,8 @@ async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
 
     assert_eq!(
         blue2th_proto::PROTOCOL_VERSION,
-        3,
-        "the canned payload above is written for contract 3"
+        4,
+        "the canned payload above is written for contract 4"
     );
     assert_eq!(
         checked.map_err(|e| e.to_string()),
@@ -587,7 +587,7 @@ async fn test_check_backend_protocol_accepts_a_backend_inside_the_range() {
             url: base,
             pin: None,
         }),
-        "a backend announcing 3..=3 serves an app speaking 3, at the checked URL, \
+        "a backend announcing 3..=4 serves an app speaking 4, at the checked URL, \
          with no pin over plain http (#196)"
     );
 }
@@ -754,11 +754,14 @@ async fn test_a_call_without_a_token_fails_fast_as_not_paired() {
     );
 }
 
-// Criterion: `pair(backend, code)` exchanges the code for the token — and sends
-// no bearer, since the app has none yet.
+// Criterion (#197): the native `pair(backend, code)` opens with `POST
+// /api/pair/start` — never `POST /api/pair` — sends no bearer, since the app
+// has none yet, and never puts the code itself on the wire. The whole
+// exchange is in `backend::pake_tests`; this canned backend answers the
+// first call only.
 #[tokio::test]
-async fn test_pair_exchanges_the_code_for_the_token() {
-    let (base, served) = canned_backend("200 OK", r#"{"token":"api-token-value"}"#)
+async fn test_pair_opens_with_pair_start_and_never_sends_the_code() {
+    let (base, served) = canned_backend("401 Unauthorized", "pairing refused")
         .await
         .expect("start the canned backend");
 
@@ -772,22 +775,14 @@ async fn test_pair_exchanges_the_code_for_the_token() {
     .await;
     let request = served.within_bound().await.expect("serve one request");
 
-    // Plain `http://` (a debug build's `BLUE2TH_PLAIN_HTTP` backend): no
-    // handshake, so no pin (#196).
-    assert_eq!(
-        paired.map_err(|e| e.to_string()),
-        Ok(Paired {
-            token: "api-token-value".to_string(),
-            pin: None,
-        })
+    assert!(paired.is_err(), "a refused start yields no token");
+    assert!(
+        request.starts_with("POST /api/pair/start "),
+        "the exchange must open with POST /api/pair/start, got {request}"
     );
     assert!(
-        request.starts_with("POST /api/pair "),
-        "the exchange must POST /api/pair, got {request}"
-    );
-    assert!(
-        request.contains("K7M2QX"),
-        "the submitted code must be on the wire, got {request}"
+        !request.contains("K7M2QX"),
+        "the code must not travel, got {request}"
     );
     assert_eq!(
         header_value(&request, "authorization"),
@@ -796,10 +791,11 @@ async fn test_pair_exchanges_the_code_for_the_token() {
     );
 }
 
-// Criterion (non-nominal): a refused code reads as "not paired", distinct
-// from an unreachable backend, so the settings page can say so.
+// Criterion (#197, non-nominal): a 401 on `start` is the pairing refusal —
+// the error the screens show as "Code refused" — distinct from an
+// unreachable backend.
 #[tokio::test]
-async fn test_pair_with_a_refused_code_reports_not_paired() {
+async fn test_pair_with_a_refused_start_reports_the_pairing_refusal() {
     let (base, served) = canned_backend("401 Unauthorized", "pairing refused")
         .await
         .expect("start the canned backend");
@@ -818,7 +814,7 @@ async fn test_pair_with_a_refused_code_reports_not_paired() {
         .await
         .expect("the call must reach the canned backend");
 
-    assert!(error.is_not_paired(), "got {error}");
+    assert!(error.is_pairing_refused(), "got {error}");
 }
 
 // Criterion (non-nominal): the SSE feeds must treat a 401 as terminal rather

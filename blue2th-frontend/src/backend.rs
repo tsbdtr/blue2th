@@ -137,6 +137,30 @@ impl BackendError {
         self.identity_changed
     }
 
+    /// The typed "the backend refused the pairing" failure (#197): a 401 on
+    /// `start` or `finish`, or a backend confirmation that does not check out.
+    /// One failure for all of them: the app cannot tell a wrong code from an
+    /// expired one, and must not pretend to.
+    pub fn pairing_refused() -> Self {
+        Self::new(PAIRING_REFUSED)
+    }
+
+    /// Whether this failure is a refused pairing.
+    pub fn is_pairing_refused(&self) -> bool {
+        false
+    }
+
+    /// The typed "too many pairing attempts" failure (#197): a 429 on
+    /// `start`.
+    pub fn pairing_rate_limited() -> Self {
+        Self::new(PAIRING_RATE_LIMITED)
+    }
+
+    /// Whether this failure is a rate-limited pairing.
+    pub fn is_pairing_rate_limited(&self) -> bool {
+        false
+    }
+
     /// The HTTP status the backend answered, when this failure came from a
     /// response at all. `None` for the failures built without one (no backend
     /// configured, no token stored, a transport error).
@@ -190,6 +214,14 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 /// Message carried by every call made while the active backend has no token, or
 /// answered 401 (phase 6.4).
 pub const NOT_PAIRED: &str = "not paired";
+
+/// Message carried by a refused pairing (#197). The screens show a localised
+/// message instead, read from the typed flag.
+pub const PAIRING_REFUSED: &str = "pairing refused";
+
+/// Message carried by a rate-limited pairing (#197). The screens show a
+/// localised message instead, read from the typed flag.
+pub const PAIRING_RATE_LIMITED: &str = "too many pairing attempts";
 
 /// Message carried by a refused backend key (#196). The screens show a
 /// localised message instead, read from the typed flag.
@@ -398,6 +430,15 @@ pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<Paired, Bac
         // Owned copy: the pairing's result outlives the checked backend.
         pin: backend.pin.clone(),
     })
+}
+
+/// What the pairing exchange of a backend at `url` is bound to (#197): the
+/// plain-HTTP label over `http://`, the key hash `pin` names over
+/// `https://`, and `None` — run no exchange — for an `https://` backend whose
+/// handshake presented no valid pin. Pure.
+#[cfg(not(target_arch = "wasm32"))]
+fn binding_for(_url: &str, _pin: Option<&str>) -> Option<blue2th_proto::pake::Binding> {
+    None
 }
 
 /// What a pairing yields (#196): the backend's API token, and the pin of the
@@ -1299,3 +1340,6 @@ mod tests;
 // a certificate made for the test. Native only, like the `tls` module.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tls_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pake_tests;

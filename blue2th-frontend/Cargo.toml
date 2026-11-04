@@ -29,6 +29,9 @@ futures = "0.3"
 # (#159). Gated on `not(wasm32)` rather than on Android so the host build, and
 # host clippy, keep checking the native code.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# #197: the native app pairs through the SPAKE2 exchange of `pake`. Native
+# only: the browser pairs over `POST /api/pair` and never compiles it.
+blue2th-proto = { path = "../blue2th-proto", features = ["pake"] }
 tokio = { version = "1", features = ["time", "rt"] }
 # Phase 6.6: browsing `_blue2th._tcp.local.` on the LAN. See the workspace entry.
 mdns-sd = { workspace = true }

@@ -14,7 +14,8 @@ tokio = { workspace = true, features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.7", features = ["cors"] }
-blue2th-proto = { path = "../blue2th-proto" }
+# #197: `pake`, the SPAKE2 exchange the native app pairs through.
+blue2th-proto = { path = "../blue2th-proto", features = ["pake"] }
 # BlueZ over D-Bus (requires libdbus dev headers at build time and bluetoothd at
 # runtime). The `bluetoothd` feature enables the high-level Adapter/Device API.
 bluer = { version = "0.17", features = ["bluetoothd"] }

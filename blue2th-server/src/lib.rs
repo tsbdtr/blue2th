@@ -978,6 +978,10 @@ pub struct Cli {
     /// belongs to another user
     #[arg(long)]
     pub skip_state_permissions_check: bool,
+    /// Exit with status 1 when the pairing codes run out with no client
+    /// paired (requires --pair)
+    #[arg(long)]
+    pub exit_if_unpaired: bool,
 }
 
 /// Refuse a whitespace-only `--bind`: it passes clap's non-empty check, then
@@ -1054,6 +1058,53 @@ pub fn pairing_banners(url: &str, name: &str, codes: &[String]) -> String {
         .collect()
 }
 
+/// The banner block of the active code, printed when it activates (#197):
+/// `Pairing code k/n` before the block when `n > 1`, exactly
+/// [`pairing_banner`] when `n == 1`. `position` is `(k, n)`.
+pub fn active_pairing_banner(
+    _url: &str,
+    _name: &str,
+    _code: &str,
+    _position: (u32, u32),
+) -> String {
+    String::new()
+}
+
+/// The line logged when a client paired (#197): the peer's IP without its
+/// port, and ` (code k/n)` when `n > 1`. Never the code, never the token.
+pub fn pair_success_line(_peer: Option<std::net::SocketAddr>, _position: (u32, u32)) -> String {
+    String::new()
+}
+
+/// The line logged when a pairing attempt was refused and counted (#197):
+/// the failure count out of [`auth::MAX_PAIRING_ATTEMPTS`] and the peer's IP
+/// without its port. Never the code.
+pub fn pair_refusal_line(_peer: Option<std::net::SocketAddr>, _failures: u32) -> String {
+    String::new()
+}
+
+/// The warning logged when the attempt cap cancelled every remaining code
+/// (#197).
+pub fn pairing_cancelled_line() -> String {
+    String::new()
+}
+
+/// The line logged when the code queue has ended (#197).
+pub fn no_code_left_line() -> String {
+    String::new()
+}
+
+/// The line logged before `--exit-if-unpaired` stops the backend (#197).
+pub fn exit_unpaired_line() -> String {
+    String::new()
+}
+
+/// Whether the backend must exit with status 1 (#197): `--exit-if-unpaired`
+/// was given, the code queue has ended, and no client paired. Pure.
+pub fn should_exit_unpaired(_exit_if_unpaired: bool, _queue_ended: bool, _paired: u32) -> bool {
+    false
+}
+
 /// Render `link` as a QR code in text a terminal can show.
 pub fn pairing_qr(link: &str) -> String {
     match qrcode::QrCode::new(link.as_bytes()) {
@@ -1113,6 +1164,17 @@ pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router
         RouterHandle::over_graph(graph_pw::PipeWireGraph::detached()),
     )
     .0
+}
+
+/// [`app_with_auth_store`], with the binding `POST /pair/finish` checks the
+/// app's confirmation against (#197): the SHA-256 of the backend's SPKI over
+/// TLS, the plain-HTTP label in the debug mode.
+pub fn app_with_auth_store_and_binding(
+    spotify_auth: SpotifyAuth,
+    auth: AuthStore,
+    _binding: blue2th_proto::pake::Binding,
+) -> Router {
+    app_with_auth_store(spotify_auth, auth)
 }
 
 /// [`app_with_auth_store`], also handing back the [`AppState`] the router was
@@ -2783,3 +2845,6 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pairing_tests;
