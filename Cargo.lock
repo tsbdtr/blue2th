@@ -524,8 +524,10 @@ dependencies = [
 name = "blue2th-proto"
 version = "0.1.0"
 dependencies = [
+ "hmac",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "spake2",
 ]
 

@@ -44,23 +44,47 @@ Choose **How to pair** on the backend's entry:
 - **Type a code** — the six characters from the banner, then **Pair**. The code
   ignores the difference between `O` and `0` or `I` and `1` by never using them.
 
-The code is valid for **five minutes** and works **once**; five wrong attempts
+The code is valid for **five minutes** and works **once**; three wrong attempts
 cancel it. Run `blue2th-server --pair` on the PC for a fresh one.
 
 To pair several clients from one start — a phone and a browser, say — run
-`blue2th-server --pair <n>` with `n` from 1 to 10: the banner prints one block
-per code, numbered `1/n` to `n/n`. Each code works once and for five minutes,
-using one leaves the others valid, and the five wrong attempts are counted once
-for all of them: the fifth cancels every code.
+`blue2th-server --pair <n>` with `n` from 1 to 10. The codes are active **one at
+a time**: the banner shows the active one, numbered `k/n`, and only that one is
+accepted. The next is printed when the active one is used or expires, and its
+five minutes start then. The three wrong attempts are counted once for all of
+them: the third cancels every code, the active one and those still waiting.
+
+With `--exit-if-unpaired` next to `--pair`, the backend exits with status 1
+when its codes run out — used, expired or cancelled — and no client paired:
+`no client paired: exiting (--exit-if-unpaired)`. One client paired keeps it
+running.
 
 The status card on the home screen turns green, *Backend connected*, and the
 speakers can be loaded. To pair a second phone, arm a new code the same way.
 
-Pairing trusts the key the backend presents at that moment — trust on first
-use — so pair on a network you trust. The app keeps a hash of that key (its
-SPKI), not of the certificate: it is not the fingerprint the backend logs for
-browsers, below, and the two values never match. A new certificate on the same
-key, after a change of LAN address for instance, changes nothing for the app.
+The code itself never travels. The app and the backend run a password
+exchange on it (SPAKE2) and each proves to the other that it knows the code,
+over the key the app's connection met. A machine sitting between the two —
+relaying the connection with a key of its own — would have to know the code to
+pass, and even then its proof is computed over its own key, which the backend
+refuses: the attempt counts as a wrong one. So a wrong code and a relay look
+alike, both refused, both counted against the three attempts. The app keeps a
+hash of the backend's key (its SPKI), not of the certificate: it is not the
+fingerprint the backend logs for browsers, below, and the two values never
+match. A new certificate on the same key, after a change of LAN address for
+instance, changes nothing for the app.
+
+The backend logs every pairing with the address the request came from —
+`client paired from <ip>`, or `pairing attempt refused (k/3) from <ip>` — never
+the code nor the token. More than five pairing starts in ten seconds from one
+address are refused for a few seconds (*Too many pairing attempts*), without
+counting as wrong attempts.
+
+A browser still pairs by sending the code to the backend, inside its own TLS
+connection, which is why it checks the certificate's fingerprint first (below).
+
+If the connection drops at the very end of a pairing, after the backend
+answered, the code is used up and the app is not paired: arm a new code.
 
 The app (a release build) pairs an entry whose address starts with `http://`
 over `https://`, and rewrites its address so.
@@ -118,7 +142,8 @@ redesign's mockups give this state a screen of its own (#200).
 | *Identity changed* (violet) right after a backend restart | `tls-key.pem` was missing — the file was deleted — and the backend generated a new key, with a new token, which the log says. | Tap the banner and pair again with the code the banner shows, or run with `--pair` for a new one. |
 | The backend refuses to start over `tls-key.pem` | The key file is there but unreadable or damaged. The backend leaves it as it is rather than replace a key that might be restored. | Restore the file if you have a copy. Otherwise delete it: the next start generates a new key and a new token, and every client pairs again. |
 | The browser warns about the certificate again | The backend issued a new certificate at start (it logs why), for instance after a change of LAN address. | Compare the fingerprint again, as above, then accept. |
-| The pairing code is refused | Expired (five minutes), already used — by another client, when several were paired from one start — or cancelled by five wrong attempts across all armed codes. | Restart the backend with `--pair` (or `--pair <n>` for several clients) for new ones. |
+| *Code refused: wrong, expired or already used* | Mistyped, expired (five minutes from its activation), already used — by another client, when several were paired from one start — cancelled by three wrong attempts across all armed codes, or not active yet: with `--pair <n>`, only the code the banner shows is accepted. A machine relaying the connection reads the same. | Type the code the banner shows; otherwise restart the backend with `--pair` (or `--pair <n>` for several clients) for new ones. |
+| *Too many pairing attempts* | More than five pairing starts in ten seconds from the phone's address. | Wait a few seconds, then try again. |
 | A speaker "refused to pair" | The speaker is not in pairing mode, or is already connected to another device. | Put it in pairing mode and tap it again. |
 | Spotify signs in, but nothing plays | The Spotify account is not on the application's Development-mode allowlist, or `librespot` was never seeded. | Both steps under *Spotify* in [`INSTALL.md`](INSTALL.md). |
 

@@ -68,6 +68,12 @@ pub(crate) fn backend_error_text(e: &backend::BackendError) -> String {
     if e.is_identity_changed() {
         return rust_i18n::t!("server.identity_changed_error").to_string();
     }
+    if e.is_pairing_refused() {
+        return rust_i18n::t!("server.pairing_refused").to_string();
+    }
+    if e.is_pairing_rate_limited() {
+        return rust_i18n::t!("server.pairing_rate_limited").to_string();
+    }
     match e.protocol_mismatch() {
         Some(mismatch) => protocol_message(mismatch),
         None => e.to_string(),

@@ -11,12 +11,18 @@ publish.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+# #197: the `pake` feature's SPAKE2 (`Ed25519Group`) and the HMAC-SHA256 of its
+# confirmations. Pure Rust, no platform code: they compile for the app and the
+# backend alike. `hmac`/`sha2` on the versions `spake2` itself pulls in.
+spake2 = { version = "0.4.0", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [features]
 # #197: the SPAKE2 exchange the native app and the backend pair through
 # (`pake`). Off by default, so the browser build, which pairs over
 # `POST /api/pair`, never compiles it.
-pake = []
+pake = ["dep:spake2", "dep:hmac", "dep:sha2"]
 
 [dev-dependencies]
 serde_json = "1"

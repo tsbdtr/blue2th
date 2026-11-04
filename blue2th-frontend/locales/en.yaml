@@ -8,6 +8,8 @@ server:
   not_paired: "This backend is not paired. Tap to pair it."
   identity_changed: "This backend's identity changed. Tap to pair it again."
   identity_changed_error: "This backend's identity changed: pair it again."
+  pairing_refused: "Code refused: wrong, expired or already used. Run blue2th-server --pair for a new one."
+  pairing_rate_limited: "Too many pairing attempts: wait a few seconds, then try again."
 
 protocol:
   backend_too_old: "This backend is too old for the app. Update the backend on the server."

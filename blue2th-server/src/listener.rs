@@ -5,6 +5,7 @@
 //! Also the debug-only plain mode (`BLUE2TH_PLAIN_HTTP`).
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::{
@@ -120,8 +121,12 @@ async fn plain_answer(method: Method, uri: Uri, headers: HeaderMap) -> Response 
     if path == "/health" {
         // The release version stays off the clear side; the protocol range is
         // what an app paired over HTTP needs to say "update the app".
-        return Json(HealthStatus::ok(REDUCED_HEALTH_VERSION).with_auth_required(true))
-            .into_response();
+        let health = HealthStatus {
+            protocol: PLAIN_HEALTH_PROTOCOL,
+            protocol_min: PLAIN_HEALTH_PROTOCOL,
+            ..HealthStatus::ok(REDUCED_HEALTH_VERSION).with_auth_required(true)
+        };
+        return Json(health).into_response();
     }
     let host = headers
         .get(header::HOST)
@@ -137,6 +142,12 @@ async fn plain_answer(method: Method, uri: Uri, headers: HeaderMap) -> Response 
 
 /// The version the plain `/health` announces in place of the release one.
 const REDUCED_HEALTH_VERSION: &str = "0.0.0";
+
+/// The protocol range the plain `/health` announces: the contract at which the
+/// API moved behind TLS (#195). The plain side serves no API, so its range only
+/// has to tell an app older than that to update; it does not follow the TLS
+/// side's later bumps (#197).
+const PLAIN_HEALTH_PROTOCOL: u32 = 3;
 
 /// The first byte of a TLS handshake record (RFC 8446 §5.1, `handshake(22)`).
 const TLS_HANDSHAKE: u8 = 0x16;
@@ -169,7 +180,7 @@ where
                     let plain_router = plain_router.clone();
                     let acceptor = acceptor.clone();
                     tokio::spawn(async move {
-                        dispatch(stream, tls_router, plain_router, acceptor, limits).await;
+                        dispatch(stream, peer, tls_router, plain_router, acceptor, limits).await;
                         tracing::trace!("connection from {peer} closed");
                     });
                 },
@@ -191,6 +202,7 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 /// handshake, plain HTTP to the plain router otherwise.
 async fn dispatch(
     stream: TcpStream,
+    peer: SocketAddr,
     tls_router: Router,
     plain_router: Router,
     acceptor: TlsAcceptor,
@@ -210,11 +222,11 @@ async fn dispatch(
         },
     }
     if first[0] != TLS_HANDSHAKE {
-        serve_http(stream, plain_router).await;
+        serve_http(stream, peer, plain_router).await;
         return;
     }
     match timeout(limits.handshake, acceptor.accept(stream)).await {
-        Ok(Ok(tls)) => serve_http(tls, tls_router).await,
+        Ok(Ok(tls)) => serve_http(tls, peer, tls_router).await,
         // A scanner fails handshakes all day: never above `debug`.
         Ok(Err(e)) => tracing::debug!("TLS handshake failed: {e}"),
         Err(_) => tracing::debug!(
@@ -225,10 +237,14 @@ async fn dispatch(
 }
 
 /// Serve HTTP/1.1 or h2 on `io` with `router` until the connection ends.
-async fn serve_http<I>(io: I, router: Router)
+///
+/// Every request carries the `ConnectInfo` of `peer`, the address the
+/// connection was accepted from: the pairing routes log it (#197).
+async fn serve_http<I>(io: I, peer: SocketAddr, router: Router)
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let router = router.layer(axum::Extension(axum::extract::ConnectInfo(peer)));
     let service = TowerToHyperService::new(router);
     if let Err(e) = Builder::new(TokioExecutor::new())
         .serve_connection_with_upgrades(TokioIo::new(io), service)
