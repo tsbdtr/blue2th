@@ -52,7 +52,7 @@ libspa = "0.10"
 # through `bluer`, so this adds no package.
 # #194: `user`, for `geteuid` in the state directory's start-up check. A
 # feature of the same crate: no new package either.
-nix = { version = "0.29", features = ["process", "user"] }
+nix = { version = "0.31", features = ["process", "user"] }
 # #170: the command line (`Cli`), parsed with `--help`, `--version`, the
 # `--opt=value` form and refusals of unknown or repeated options for free.
 # Default features kept: colour and "did you mean" suggestions. Not `env`: it
@@ -80,7 +80,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 [dev-dependencies]
 # `kill`, for the shutdown tests that deliver a signal to themselves. Kept out
 # of the binary: `process` is all the parent-death signal needs.
-nix = { version = "0.29", features = ["signal"] }
+nix = { version = "0.31", features = ["signal"] }
 tower = { version = "0.5", features = ["util"] }
 # #80: `tokio::time::pause`/`advance`, so the confirmation timer is tested on
 # a clock the test moves. A dev-only feature of a crate already in the tree.
