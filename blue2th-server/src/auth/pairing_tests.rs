@@ -345,6 +345,37 @@ fn test_start_without_an_active_code_is_refused_without_counting() {
     assert_eq!(store.failures(), 0);
 }
 
+// Criterion: `start` with no active code counts no failure — also when the
+// active code has expired but the queue task has not advanced past it yet, the
+// one case where codes are still armed, so the counter could move.
+#[test]
+fn test_start_on_an_expired_code_not_yet_advanced_counts_no_failure() {
+    let mut store = two_codes();
+    let (_, msg) = ClientHalf::start(FIRST);
+    assert_eq!(
+        store.start_pake(&msg, t0() + PAIRING_TTL),
+        Err(PairError::Rejected)
+    );
+    assert_eq!(store.failures(), 0);
+    assert_eq!(store.active_position(), Some((1, 2)), "nothing advanced");
+}
+
+// Criterion: an attempt with no code armed is not a guess at anything, so it
+// counts nothing — on either route, before any code was armed and after the
+// last one was used. The counter is what the `k/3` of the refusal line and
+// the queue end's "no pairing code left" read.
+#[test]
+fn test_an_attempt_with_no_code_armed_counts_no_failure() {
+    let mut store = AuthStore::with_token(TOKEN);
+    assert_eq!(store.redeem("QQQQQQ", t0()), Err(PairError::Rejected));
+    assert_eq!(store.failures(), 0, "nothing armed yet");
+
+    let mut store = one_code();
+    assert!(pairs(&mut store, FIRST, t0()), "the one code pairs");
+    assert_eq!(store.redeem("QQQQQQ", t0()), Err(PairError::Rejected));
+    assert_eq!(store.failures(), 0, "the last code was used");
+}
+
 // Criterion: a successful `finish` consumes its session — the same request
 // replayed releases nothing more, and counts nothing.
 #[test]

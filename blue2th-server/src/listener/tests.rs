@@ -184,7 +184,9 @@ fn test_plain_bind_refuses_anything_but_an_ip_literal_loopback() {
 
 // Criterion (plain-HTTP router), guard: `GET /health` answers 200 with the
 // reduced payload — status ok, version `0.0.0` (never the release version),
-// auth required, protocol 3..=3.
+// auth required, and the protocol range of the build (#197: it follows
+// `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` rather than a literal),
+// which still tells an HTTP-era app to update.
 #[tokio::test]
 async fn test_plain_router_health_is_the_reduced_payload() {
     let response = plain(request("GET", "/health", &[])).await;
@@ -199,11 +201,19 @@ async fn test_plain_router_health_is_the_reduced_payload() {
             status: "ok".to_string(),
             version: "0.0.0".to_string(),
             auth_required: true,
-            protocol: 3,
-            protocol_min: 3,
+            protocol: blue2th_proto::PROTOCOL_VERSION,
+            protocol_min: blue2th_proto::MIN_SUPPORTED_PROTOCOL_VERSION,
         }),
         "got {}",
         String::from_utf8_lossy(&bytes)
+    );
+    // The HTTP-era app (#195 moved the API behind TLS) was built at protocol 2:
+    // the plain side exists to tell it "update the app".
+    const HTTP_ERA_APP_PROTOCOL: u32 = 2;
+    assert_eq!(
+        health.map(|h| blue2th_proto::check_protocol(&h, HTTP_ERA_APP_PROTOCOL)),
+        Some(Err(blue2th_proto::ProtocolMismatch::BackendTooNew)),
+        "an HTTP-era app reading the plain /health is told to update"
     );
     assert!(
         !String::from_utf8_lossy(&bytes).contains(env!("CARGO_PKG_VERSION")),

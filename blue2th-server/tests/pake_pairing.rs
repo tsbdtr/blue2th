@@ -364,6 +364,31 @@ async fn test_every_refusal_reads_like_the_pair_route_refusal() {
     }
 }
 
+// Criterion (the binding is never empty): a router whose binding was never
+// set refuses every `finish`, over the label and over a key hash alike, with
+// the one refusal — it has nothing to check a confirmation against.
+#[tokio::test]
+async fn test_a_backend_without_a_binding_refuses_every_finish() {
+    let mut store = AuthStore::with_token(TOKEN);
+    let codes = store.arm_pairing(1, std::time::SystemTime::now());
+    let app = blue2th_server::app_with_auth_store(
+        SpotifyAuth::with_config(None, "blue2th://spotify-callback".to_string()),
+        store,
+    );
+    let pair = pair_code(&app, "QQQQQQ", addr(PHONE)).await.expect("pair");
+    assert_eq!(pair.status, StatusCode::UNAUTHORIZED);
+    for binding in [OWN, Binding::PlainHttp] {
+        let (answer, _) = exchange(&app, &first(&codes), &binding, addr(PHONE))
+            .await
+            .expect("exchange");
+        assert_eq!(
+            (answer.status, answer.body.as_str()),
+            (StatusCode::UNAUTHORIZED, pair.body.as_str()),
+            "{binding:?}: no binding set, no finish passes"
+        );
+    }
+}
+
 // ---- Failures that are not guesses ----
 
 // Criterion: a `finish` on an unknown or replaced session counts no failure
@@ -763,5 +788,39 @@ async fn test_a_rate_limited_start_logs_nothing_at_info() {
     assert!(
         !after.contains("192.168.1.77") && !after.contains("429"),
         "a 429 must not reach the terminal at info: {after}"
+    );
+}
+
+// Criterion: the refusal line reports a counted failure, `k/3` — a refusal
+// that counted nothing (an unknown session, no active code) logs no such
+// line, so the terminal never shows a `0/3` or repeats a count.
+#[tokio::test]
+async fn test_a_refusal_that_counts_nothing_logs_no_refusal_line() {
+    let captured = Captured::default();
+    let _guard = tracing::subscriber::set_default(capturing(&captured, tracing::Level::TRACE));
+    let (app, codes) = armed(1);
+
+    let unknown = finish(&app, "deadbeefdeadbeef", &[0u8; CONFIRM_LEN], addr(PHONE))
+        .await
+        .expect("unknown session");
+    assert_eq!(unknown.status, StatusCode::UNAUTHORIZED);
+    let used = pair_code(&app, &first(&codes), addr(PHONE))
+        .await
+        .expect("use the code");
+    assert_eq!(used.status, StatusCode::OK);
+    let (_, msg) = ClientHalf::start("QQQQQQ");
+    let no_code = start(&app, &msg, addr(PHONE)).await.expect("start");
+    assert_eq!(no_code.status, StatusCode::UNAUTHORIZED);
+    let wrong = pair_code(&app, "QQQQQQ", addr(PHONE)).await.expect("pair");
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+
+    let logs = captured.text();
+    assert!(
+        logs.contains("client paired from 192.168.1.42"),
+        "the capture sees the pairing lines: {logs}"
+    );
+    assert!(
+        !logs.contains("pairing attempt refused"),
+        "no failure was counted, so none is reported: {logs}"
     );
 }

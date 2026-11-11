@@ -308,7 +308,16 @@ fn test_binding_from_pin_hex_accepts_only_a_full_pin() {
     let short = &pin[..63];
     let long = format!("{pin}1");
     let not_hex = format!("g{}", &pin[1..]);
-    for refused in ["", short, long.as_str(), not_hex.as_str()] {
+    // `11…` has no letter, so it cannot tell upper from lower case: a pin
+    // with letters can. `Pin::to_hex` writes lower case, so an upper-case
+    // pin is not one the app stored.
+    let lettered = "ab".repeat(32);
+    assert_eq!(
+        Binding::from_pin_hex(&lettered),
+        Some(Binding::Spki([0xab; 32]))
+    );
+    let upper = lettered.to_uppercase();
+    for refused in ["", short, long.as_str(), not_hex.as_str(), upper.as_str()] {
         assert_eq!(
             Binding::from_pin_hex(refused),
             None,
@@ -328,6 +337,7 @@ fn test_hex_round_trips_and_refuses_a_wrong_length_or_digit() {
     assert_eq!(from_hex("00abff", 2), None, "one byte too many");
     assert_eq!(from_hex("00abff", 4), None, "one byte short");
     assert_eq!(from_hex("", MESSAGE_LEN), None, "empty");
+    assert_eq!(from_hex("", 0), None, "an empty field is never a value");
     assert_eq!(from_hex("abc", 2), None, "odd length");
     assert_eq!(from_hex("0g", 1), None, "not a hex digit");
 }

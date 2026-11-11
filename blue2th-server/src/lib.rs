@@ -385,7 +385,11 @@ const MAX_PAIR_COUNT: u32 = 10;
 
 /// Run the backend with its parsed command line: initialise tracing, bind the
 /// socket and serve the router.
-pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// The exit code is returned rather than an error when `--exit-if-unpaired`
+/// stopped the server (#197): that stop already logged its own line, and an
+/// error would have `main` print it a second time.
+pub async fn run(cli: Cli) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     init_tracing();
 
     // #194: before any store reads or writes its file.
@@ -577,13 +581,15 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     unpaired_exit(&exit_unpaired)
 }
 
-/// What `run` returns once the server stopped: an error — exit status 1 —
-/// when `--exit-if-unpaired` stopped it (#197).
-fn unpaired_exit(exit_unpaired: &AtomicBool) -> Result<(), Box<dyn std::error::Error>> {
+/// What `run` returns once the server stopped: exit status 1 when
+/// `--exit-if-unpaired` stopped it (#197), success otherwise.
+fn unpaired_exit(
+    exit_unpaired: &AtomicBool,
+) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     if exit_unpaired.load(Ordering::SeqCst) {
-        return Err(Box::new(StartRefusal(exit_unpaired_line())));
+        return Ok(std::process::ExitCode::FAILURE);
     }
-    Ok(())
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 /// How often the pairing queue task looks at the active code (#197).

@@ -121,12 +121,8 @@ async fn plain_answer(method: Method, uri: Uri, headers: HeaderMap) -> Response 
     if path == "/health" {
         // The release version stays off the clear side; the protocol range is
         // what an app paired over HTTP needs to say "update the app".
-        let health = HealthStatus {
-            protocol: PLAIN_HEALTH_PROTOCOL,
-            protocol_min: PLAIN_HEALTH_PROTOCOL,
-            ..HealthStatus::ok(REDUCED_HEALTH_VERSION).with_auth_required(true)
-        };
-        return Json(health).into_response();
+        return Json(HealthStatus::ok(REDUCED_HEALTH_VERSION).with_auth_required(true))
+            .into_response();
     }
     let host = headers
         .get(header::HOST)
@@ -142,12 +138,6 @@ async fn plain_answer(method: Method, uri: Uri, headers: HeaderMap) -> Response 
 
 /// The version the plain `/health` announces in place of the release one.
 const REDUCED_HEALTH_VERSION: &str = "0.0.0";
-
-/// The protocol range the plain `/health` announces: the contract at which the
-/// API moved behind TLS (#195). The plain side serves no API, so its range only
-/// has to tell an app older than that to update; it does not follow the TLS
-/// side's later bumps (#197).
-const PLAIN_HEALTH_PROTOCOL: u32 = 3;
 
 /// The first byte of a TLS handshake record (RFC 8446 §5.1, `handshake(22)`).
 const TLS_HANDSHAKE: u8 = 0x16;
