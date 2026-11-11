@@ -513,3 +513,42 @@ fn test_the_identity_changed_banner_says_to_pair_again() {
         );
     }
 }
+
+// Criterion (#197): the pairing refusal and the rate-limit message exist in
+// both locales; the English wording is the spec's, word for word, and the
+// French one is a translation rather than a copy. The refusal names the
+// command in both, since that is the remedy.
+#[test]
+fn test_the_pairing_refusal_and_rate_limit_messages_are_localised() {
+    let expected = [
+        (
+            "server.pairing_refused",
+            "Code refused: wrong, expired or already used. Run blue2th-server --pair for a new one.",
+        ),
+        (
+            "server.pairing_rate_limited",
+            "Too many pairing attempts: wait a few seconds, then try again.",
+        ),
+    ];
+    let en = std::fs::read_to_string(locale_path("en")).expect("read en.yaml");
+    let fr = std::fs::read_to_string(locale_path("fr")).expect("read fr.yaml");
+    for (key, wording) in expected {
+        assert_eq!(
+            locale_value(&en, key).as_deref(),
+            Some(wording),
+            "en.yaml: {key}"
+        );
+        let french = locale_value(&fr, key);
+        assert!(
+            french
+                .as_deref()
+                .is_some_and(|t| !t.is_empty() && t != wording),
+            "fr.yaml must translate {key}, got {french:?}"
+        );
+    }
+    assert!(
+        locale_value(&fr, "server.pairing_refused")
+            .is_some_and(|t| t.contains("blue2th-server --pair")),
+        "the French refusal names the command too"
+    );
+}

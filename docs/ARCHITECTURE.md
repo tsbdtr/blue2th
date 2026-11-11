@@ -45,7 +45,7 @@ intent.
 |---|---|---|
 | `blue2th-frontend` | the phone (Dioxus 0.7, Android) | The remote UI, the list of known backends and their tokens, backend discovery, the Spotify sign-in redirect. No Bluetooth of its own. |
 | `blue2th-server` | the PC (Axum / Tokio) | Everything with a side effect: BlueZ through `bluer`, the PipeWire graph, the `librespot` child process, the Spotify tokens, the persisted state. |
-| `blue2th-proto` | both | The serde types both sides speak, and the protocol version. Target-agnostic by rule: it is compiled into an Android app and a Linux binary. |
+| `blue2th-proto` | both | The serde types both sides speak, the protocol version, and — behind the non-default `pake` feature — the pairing exchange both sides compute (#197). Target-agnostic by rule: it is compiled into an Android app and a Linux binary. |
 
 A single cargo workspace holds the three, with one version for the product:
 the app, the backend and the contract are built from one tag and released
@@ -89,7 +89,7 @@ path under `/api` answers 404, without a token.
 
 | Area | Routes |
 |---|---|
-| Liveness and pairing | `GET /health`, `POST /api/pair` |
+| Liveness and pairing | `GET /health`, `POST /api/pair`, `POST /api/pair/start` and `/finish` |
 | Bluetooth | `GET /api/adapters`, `GET /api/devices`, `GET /api/scan` (SSE), `POST /api/devices/{addr}/connect` and `/disconnect` |
 | Playback targets | `POST /api/devices/{addr}/select` and `/deselect`, `POST /api/devices/{addr}/offset`, `GET /api/targets` |
 | Local transport | `POST /api/play`, `/api/pause`, `/api/stop`, `/api/volume`; `GET /api/playback` |
@@ -166,7 +166,8 @@ Every route requires `Authorization: Bearer <token>`, with two exceptions that
 exist for a reason each. `GET /health` is open so that a phone holding a wrong
 or missing token reads the backend as *not paired* rather than *offline* — the
 two states are fixed differently, and an open probe is what tells them apart.
-`POST /api/pair` is open because it is how a phone gets a token in the first place.
+The pairing routes — `POST /api/pair`, `/pair/start` and `/pair/finish` — are
+open because they are how a client gets a token in the first place.
 
 Pairing is therefore the one door, and everything rests on the code behind it
 being short-lived, one-shot and rate-limited: a six-character code with
@@ -174,8 +175,10 @@ unlimited attempts is not a secret. The code is armed on a first run, whenever
 the token store is missing or unreadable (a fresh token has just invalidated
 every phone, so someone must be able to pair again), when a new TLS key replaced
 a token that travelled in clear (the same reason), and otherwise only on
-`--pair`. It lives five minutes, works once, and five failed attempts cancel
-it. Every refusal reads the same, so the route cannot be used to enumerate. The
+`--pair`. With `--pair <n>` the codes are active one at a time, each for five
+minutes from its activation; a code works once, and three failed attempts,
+counted once across every code and every pairing route, cancel them all. Every
+refusal reads the same, so the routes cannot be used to enumerate. The
 code reaches the phone typed by hand, or as a QR carrying a `blue2th://pair`
 deep link with the address, the name and the code in one scan.
 
@@ -193,11 +196,21 @@ certificate's `SubjectPublicKeyInfo`, stored as 64 lower-case hex characters.
 Anything else stored there — empty, another length, upper case — is no pin,
 and leaves the entry not paired.
 
-The pin is set by **trust on first use**. The `/health` check that opens a
-pairing accepts any key and records the one its handshake presented; the
-`/pair` call that follows is pinned to it, so a key that changes in between
-never receives the code, and the pairing fails. That first handshake is the
-window #197 is about.
+The `/health` check that opens a pairing accepts any key and records the one
+its handshake presented; the pairing calls that follow are pinned to it. That
+first handshake is not trusted on its own (#197): the native app pairs through
+SPAKE2 on the code (`blue2th_proto::pake`, `spake2` on `Ed25519Group`, the app
+as side A, the backend as side B), `POST /api/pair/start` then
+`/api/pair/finish`. Each side proves it derived the same key with an HMAC over
+the **binding** — the SHA-256 of the SPKI the app pinned, which the backend
+computes from the key it serves — under a label of its own. A relay holding
+the code still computes its proof over its own key, and the backend refuses
+it as a counted failure. The code never travels, and the app keeps the token
+only once the backend's own proof checks out. In the plain-HTTP debug mode
+both sides bind to the fixed label `blue2th-plain-http`, which a TLS backend
+never accepts. `start` is limited to five requests per source address in a
+sliding ten seconds, and the backend holds one session at a time, for thirty
+seconds. The browser keeps `POST /api/pair`, inside its own TLS.
 
 The verifier is a custom `rustls` `ServerCertVerifier`, on the `ring` provider,
 handed to `reqwest` through `use_preconfigured_tls`. It **ignores** the server

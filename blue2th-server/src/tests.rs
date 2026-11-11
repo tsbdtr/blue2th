@@ -481,6 +481,7 @@ fn test_cli_skip_state_permissions_check_sets_the_flag() {
             pair: None,
             bind: None,
             skip_state_permissions_check: true,
+            exit_if_unpaired: false,
         })
     );
     assert_eq!(
@@ -510,6 +511,7 @@ fn test_cli_bare_pair_requests_one_code() {
             pair: Some(1),
             bind: None,
             skip_state_permissions_check: false,
+            exit_if_unpaired: false,
         })
     );
 }
@@ -526,6 +528,7 @@ fn test_cli_pair_accepts_both_ends_of_the_range() {
                 pair: Some(count),
                 bind: None,
                 skip_state_permissions_check: false,
+                exit_if_unpaired: false,
             }),
             "--pair {value}"
         );
@@ -541,6 +544,7 @@ fn test_cli_pair_reads_the_equals_form() {
             pair: Some(3),
             bind: None,
             skip_state_permissions_check: false,
+            exit_if_unpaired: false,
         })
     );
 }
@@ -640,6 +644,7 @@ fn test_cli_pair_followed_by_a_flag_requests_one_code() {
             pair: Some(1),
             bind: Some("192.168.1.20:4000".to_string()),
             skip_state_permissions_check: false,
+            exit_if_unpaired: false,
         })
     );
 }
@@ -652,6 +657,7 @@ fn test_cli_reads_bind_and_pair_in_either_order() {
         pair: Some(3),
         bind: Some("192.168.1.20:4000".to_string()),
         skip_state_permissions_check: false,
+        exit_if_unpaired: false,
     });
     assert_eq!(
         parsed(&["--bind", "192.168.1.20:4000", "--pair", "3"]),
@@ -673,6 +679,7 @@ fn test_cli_bind_reads_the_equals_form() {
             pair: None,
             bind: Some("0.0.0.0:4000".to_string()),
             skip_state_permissions_check: false,
+            exit_if_unpaired: false,
         })
     );
 }
@@ -816,6 +823,7 @@ fn test_codes_to_arm_follows_the_pair_count() {
         pair: Some(3),
         bind: None,
         skip_state_permissions_check: false,
+        exit_if_unpaired: false,
     };
     assert_eq!(codes_to_arm(&three, false), Some(3));
     assert_eq!(codes_to_arm(&three, true), Some(3));

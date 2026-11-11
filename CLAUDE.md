@@ -20,6 +20,11 @@ A single **cargo workspace** with three layers (design record in `docs/ARCHITECT
   (`bluer`) and audio (PipeWire). This is where the audio engine lives.
 - **proto** — `blue2th-proto`: serde DTOs shared by mobile and server. **Must stay
   target-agnostic** — no platform or hardware dependencies, ever.
+  One exception to "DTOs only": the SPAKE2 pairing exchange lives in
+  `blue2th_proto::pake`, behind the non-default `pake` feature, so that the app
+  and the backend compute the same bytes from one source (#197). It is still
+  target-agnostic — pure Rust, no platform or hardware dependency — and the
+  browser build does not compile it.
 
 A feature may touch one, two, or all three layers. Quality commands run across the
 whole workspace; the Android NDK build runs only when the mobile layer changed.
@@ -186,7 +191,7 @@ templates are dx's code, not ours.
 ### Error Handling
 - **No `unwrap()` or `expect()` outside `#[cfg(test)]`** — use `?` to propagate, or handle `None`/`Err` explicitly
 - **Server (Axum) handlers** return `Result<Json<T>, AppError>` (`AppError: IntoResponse`); internal logic uses typed errors (`bluer::Result<_>`, `Result<_, AudioError>`). Propagate with `?`, never panic
-- **Proto** types carry no error handling — they are plain serde DTOs and must not depend on platform/hardware crates
+- **Proto** types carry no error handling — they are plain serde DTOs and must not depend on platform/hardware crates. The exception is `blue2th_proto::pake` (feature `pake`), whose exchange can fail on a malformed peer message: one source for both sides' bytes is worth that (#197)
 - **UI event handlers** that call the backend (over `reqwest`) must handle both `Ok` and `Err` — surface errors to the user via state (e.g. `Signal<Option<String>>` for an error message), never silently drop them
 - **`panic!`, `todo!`, `unreachable!`** are forbidden outside test code
 

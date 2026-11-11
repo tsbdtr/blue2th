@@ -1223,3 +1223,50 @@ fn test_the_frontend_tree_has_rustls_on_ring_and_no_other_tls_stack() {
         .collect();
     assert_eq!(forbidden, Vec::<&String>::new());
 }
+
+// Criterion (#197): the wasm build keeps `POST /api/pair` and does not
+// compile the `pake` feature — only the native target table enables it on
+// `blue2th-proto`; the shared line, which wasm compiles, does not, no wasm
+// table does, and the feature is not one of the proto's defaults (which
+// would bring it through the shared line anyway).
+#[test]
+fn test_the_pake_feature_reaches_the_native_build_only() {
+    let manifest = manifest();
+    let shared = manifest
+        .get("dependencies")
+        .and_then(|d| d.get("blue2th-proto"));
+    assert!(shared.is_some(), "blue2th-proto stays a shared dependency");
+    assert!(
+        !strings(shared, "features").iter().any(|f| f == "pake"),
+        "the shared blue2th-proto must not enable `pake`"
+    );
+
+    let native = target_dependencies(&manifest, NATIVE_ONLY);
+    let native_proto = native.as_ref().and_then(|t| t.get("blue2th-proto"));
+    assert!(
+        strings(native_proto, "features")
+            .iter()
+            .any(|f| f == "pake"),
+        "[target.'{NATIVE_ONLY}'.dependencies] must enable blue2th-proto's `pake`"
+    );
+
+    let wasm = target_dependencies(&manifest, WASM_ONLY);
+    let wasm_proto = wasm.as_ref().and_then(|t| t.get("blue2th-proto"));
+    assert!(
+        !strings(wasm_proto, "features").iter().any(|f| f == "pake"),
+        "no wasm table may enable `pake`"
+    );
+
+    let proto = parse("../blue2th-proto/Cargo.toml");
+    assert!(
+        feature(&proto, "pake").is_some(),
+        "blue2th-proto declares the `pake` feature"
+    );
+    assert!(
+        !feature(&proto, "default")
+            .unwrap_or_default()
+            .iter()
+            .any(|f| f == "pake"),
+        "`pake` must not be a default feature of blue2th-proto"
+    );
+}

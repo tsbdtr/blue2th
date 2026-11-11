@@ -184,16 +184,25 @@ async fn test_public_routes_answer_without_a_bearer() {
     }
 }
 
-// Criterion: only `/health` and `POST /pair` are public. Any other public entry
+// Criterion (#197): the public routes are exactly `GET /health`, `POST
+// /pair`, `POST /pair/start` and `POST /pair/finish`. Any other public entry
 // is an open door, whoever added it and for whatever reason.
 #[test]
-fn test_only_health_and_pair_are_public() {
+fn test_only_health_and_the_pairing_routes_are_public() {
     let public: Vec<(&str, &str)> = ROUTES
         .iter()
         .filter(|s| s.public)
         .map(|s| (s.method, s.path))
         .collect();
-    assert_eq!(public, vec![("GET", "/health"), ("POST", "/pair")]);
+    assert_eq!(
+        public,
+        vec![
+            ("GET", "/health"),
+            ("POST", "/pair"),
+            ("POST", "/pair/start"),
+            ("POST", "/pair/finish"),
+        ]
+    );
 }
 
 // Criterion: the route table is the single source of truth — it must name every
@@ -207,6 +216,8 @@ fn test_route_table_lists_every_route_the_backend_serves() {
     let expected: &[(&str, &str, bool, Mount)] = &[
         ("GET", "/health", true, Root),
         ("POST", "/pair", true, Api),
+        ("POST", "/pair/start", true, Api),
+        ("POST", "/pair/finish", true, Api),
         ("GET", "/adapters", false, Api),
         ("GET", "/devices", false, Api),
         ("POST", "/devices/{addr}/connect", false, Api),

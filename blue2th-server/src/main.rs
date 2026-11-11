@@ -8,7 +8,7 @@
 use clap::Parser;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     // Parsed here rather than returned: clap prints its own message (or the
     // help) and exits with its own code, where a returned `clap::Error` would
     // exit 1 with its `Debug` dump.

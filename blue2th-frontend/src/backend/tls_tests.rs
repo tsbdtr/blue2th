@@ -14,8 +14,8 @@ use super::tests::SETTINGS_GUARD;
 use super::*;
 use crate::settings::{AppSettings, BackendEntry, PairingMethod};
 use crate::tls::testing::{
-    header_value, method_and_path, one_digit_off, ordinary, Conn, Seen, TestKey, TlsBackend,
-    HEALTH_OK,
+    binding_of, header_value, method_and_path, one_digit_off, ordinary, pake_responder, Conn,
+    PakeFake, Seen, TestKey, TlsBackend, HEALTH_OK, PAKE_TOKEN,
 };
 
 /// The token every paired entry of these tests holds.
@@ -287,15 +287,22 @@ async fn test_check_backend_protocol_records_the_key_of_its_health_handshake() {
     );
 }
 
-// Criterion: `pair` returns the token **and** the recorded pin, over a `/pair`
-// connection that presented the same key — and still sends no bearer.
+// Criterion (#197): `pair` returns the token **and** the recorded pin, over
+// `start`/`finish` connections that presented the same key — the fake
+// checks the app's confirmation over that key's hash — and still sends no
+// bearer.
 #[tokio::test]
 async fn test_pair_returns_the_token_and_the_pin_of_the_checked_handshake() {
     let key = TestKey::generate().expect("generate a key");
     let presents = ordinary(&key).expect("present the key");
+    let respond = pake_responder("K7M2QX", binding_of(&key), PakeFake::Honest);
     let backend = TlsBackend::start(vec![
         Conn::ok(std::sync::Arc::clone(&presents), HEALTH_OK),
-        Conn::ok(presents, PAIR_OK),
+        Conn::responding(
+            std::sync::Arc::clone(&presents),
+            std::sync::Arc::clone(&respond),
+        ),
+        Conn::responding(presents, respond),
     ])
     .await
     .expect("start the TLS backend");
@@ -311,7 +318,7 @@ async fn test_pair_returns_the_token_and_the_pin_of_the_checked_handshake() {
     assert_eq!(
         paired.map_err(|e| e.to_string()),
         Ok(Paired {
-            token: "api-token-value".to_string(),
+            token: PAKE_TOKEN.to_string(),
             pin: Some(key.pin_hex()),
         })
     );
@@ -322,16 +329,17 @@ async fn test_pair_returns_the_token_and_the_pin_of_the_checked_handshake() {
             .collect::<Vec<_>>(),
         vec![
             ("GET".to_string(), "/health".to_string()),
-            ("POST".to_string(), "/api/pair".to_string()),
+            ("POST".to_string(), "/api/pair/start".to_string()),
+            ("POST".to_string(), "/api/pair/finish".to_string()),
         ]
     );
-    assert_eq!(
-        requests
-            .get(1)
-            .and_then(|r| header_value(r, "authorization")),
-        None,
-        "pairing is the one call made without a bearer"
-    );
+    for request in requests.iter().skip(1) {
+        assert_eq!(
+            header_value(request, "authorization"),
+            None,
+            "pairing is made without a bearer"
+        );
+    }
 }
 
 // Criterion (guard, TOFU holds across the pairing): the key changes between the

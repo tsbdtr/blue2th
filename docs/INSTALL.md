@@ -73,7 +73,8 @@ so. `--pair` arms a new one whenever you want to pair another phone.
 
 | Option | Effect |
 |---|---|
-| `--pair [n]` | Arm `n` pairing codes at once, 1 to 10 (one when `n` is left out), each printed as its own banner block numbered `k/n`. Each code works once and for five minutes; five wrong attempts in total, across all of them, cancel every code. `--pair 2` pairs a phone and a browser from one start. Any other count refuses to start. |
+| `--pair [n]` | Arm `n` pairing codes, 1 to 10 (one when `n` is left out). They are active one at a time: only the active code is accepted, and its banner block, numbered `k/n`, is printed when it activates — the first at start, each next one when the previous is used or expires. Each code works once and for five minutes from its activation; three wrong attempts in total, across all of them, cancel every code. `--pair 2` pairs a phone and a browser from one start. Any other count refuses to start. |
+| `--exit-if-unpaired` | With `--pair` only (refused alone): when the codes run out — the last one used, expired or cancelled — and no client paired, log `no client paired: exiting (--exit-if-unpaired)` and exit with status 1. One client paired keeps the backend running. |
 | `--bind <host:port>` | Bind address. Overrides the automatic LAN choice — useful when the PC has several interfaces (the backend takes the first routable one) or to listen on `0.0.0.0:4000`. A missing or empty value refuses to start. |
 
 `blue2th-server --help` lists these options and `--version` prints the version. An unknown option, or one given twice, refuses to start.

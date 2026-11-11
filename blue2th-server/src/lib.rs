@@ -29,9 +29,10 @@ use axum::{
 };
 use blue2th_proto::{
     AdapterInfo, AudioGraphStatus, AuthCallbackRequest, AuthUrlResponse, ClientPresence,
-    ConfigRequest, DeviceInfo, HealthStatus, OffsetRequest, PairRequest, PairResponse,
-    PlaybackState, PlaybackStatus, PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState,
-    SpotifyState, SpotifyStatus, SpotifyVolumeRequest, TargetsState, VolumeRequest,
+    ConfigRequest, DeviceInfo, HealthStatus, OffsetRequest, PairFinishRequest, PairFinishResponse,
+    PairRequest, PairResponse, PairStartRequest, PairStartResponse, PlaybackState, PlaybackStatus,
+    PresenceRequest, ServerConfig, SpeakerTarget, SpotifyAuthState, SpotifyState, SpotifyStatus,
+    SpotifyVolumeRequest, TargetsState, VolumeRequest,
 };
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -128,7 +129,8 @@ pub struct RouteSpec {
     /// Axum path template, e.g. `/devices/{addr}/connect`.
     pub path: &'static str,
     /// Whether the route answers without `Authorization: Bearer <token>`.
-    /// Only `GET /health` and `POST /pair` may be public.
+    /// Only `GET /health` and the pairing routes (`POST /pair`, `/pair/start`,
+    /// `/pair/finish`) may be public.
     pub public: bool,
     /// Where the route is mounted: at the root, or under
     /// [`blue2th_proto::API_PREFIX`] (#166). `path` stays prefix-free either way.
@@ -170,6 +172,18 @@ pub const ROUTES: &[RouteSpec] = &[
     RouteSpec {
         method: "POST",
         path: "/pair",
+        public: true,
+        mount: Mount::Api,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/pair/start",
+        public: true,
+        mount: Mount::Api,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/pair/finish",
         public: true,
         mount: Mount::Api,
     },
@@ -371,7 +385,11 @@ const MAX_PAIR_COUNT: u32 = 10;
 
 /// Run the backend with its parsed command line: initialise tracing, bind the
 /// socket and serve the router.
-pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// The exit code is returned rather than an error when `--exit-if-unpaired`
+/// stopped the server (#197): that stop already logged its own line, and an
+/// error would have `main` print it a second time.
+pub async fn run(cli: Cli) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     init_tracing();
 
     // #194: before any store reads or writes its file.
@@ -450,16 +468,27 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
+    // #197: what `POST /pair/finish` checks the app's confirmation against —
+    // the served key's SPKI hash, or the label when no key is served.
+    auth_store.set_binding(match &key {
+        Some(key) => tls::pairing_binding(&rcgen::PublicKeyData::subject_public_key_info(&key.key)),
+        None => blue2th_proto::pake::Binding::PlainHttp,
+    });
+
+    // The codes are shown one at a time, each when it activates (#197): the
+    // first now, the next ones by the pairing queue task.
+    let mut pairing_queue = None;
     if let Some(count) = codes_to_arm(&cli, auth_store.minted_a_new_token()) {
-        let codes = auth_store.arm_pairing(count, std::time::SystemTime::now());
-        tracing::info!(
-            "{}",
-            pairing_banners(
-                &advertised_url_from(&addr, detected, scheme),
-                server_name.name(),
-                &codes
-            )
-        );
+        auth_store.arm_pairing(count, std::time::SystemTime::now());
+        let url = advertised_url_from(&addr, detected, scheme);
+        if let (Some(code), Some(position)) = (auth_store.armed(), auth_store.active_position()) {
+            tracing::info!(
+                "{}",
+                active_pairing_banner(&url, server_name.name(), code.code(), position)
+            );
+        }
+        // Owned copy: the task outlives the name, which the router takes.
+        pairing_queue = Some((url, server_name.name().to_string()));
     } else {
         tracing::info!("this backend is already paired; run with --pair to arm a new code");
     }
@@ -492,6 +521,31 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     spawn_event_repair(state.clone(), graph_events);
     spawn_confirmation_timer(state.clone());
 
+    // #197: `--exit-if-unpaired` stops the server through the same path as a
+    // signal, so the sources are stopped before the process exits.
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<()>();
+    if let Some((url, name)) = pairing_queue {
+        spawn_pairing_queue(state.clone(), url, name, cli.exit_if_unpaired, exit_tx);
+    }
+    let exit_unpaired = Arc::new(AtomicBool::new(false));
+    let stop = {
+        // Clone of the `Arc`: the stop future records why it resolved.
+        let exit_unpaired = Arc::clone(&exit_unpaired);
+        async move {
+            let unpaired = async {
+                // A queue that ended with a client paired drops the sender:
+                // that is no reason to stop.
+                if exit_rx.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                () = shutdown_signal() => {}
+                () = unpaired => exit_unpaired.store(true, Ordering::SeqCst),
+            }
+        }
+    };
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("blue2th-server listening on {}://{addr}", scheme.as_str());
 
@@ -503,26 +557,92 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             listener::plain_router(),
             acceptor,
             listener::Limits::PRODUCTION,
-            shutdown_signal(),
+            stop,
         )
         .await?;
         tracing::info!("shutting down: stopping the Spotify source");
         stop_sources_for_shutdown(&state).await;
-        return Ok(());
+        return unpaired_exit(&exit_unpaired);
     }
 
     // The plain mode serves the whole router as before #195.
     // No graceful drain: the SSE streams never end, so waiting on the open
     // connections would wait forever. The serve future is simply dropped once
     // the signal wins, and the sources are stopped before returning.
+    // `ConnectInfo`, so the pairing routes log the peer here too (#197).
+    let served = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
     tokio::select! {
-        served = axum::serve(listener, router) => served?,
-        () = shutdown_signal() => {
+        served = axum::serve(listener, served) => served?,
+        () = stop => {
             tracing::info!("shutting down: stopping the Spotify source");
             stop_sources_for_shutdown(&state).await;
         }
     }
-    Ok(())
+    unpaired_exit(&exit_unpaired)
+}
+
+/// What `run` returns once the server stopped: exit status 1 when
+/// `--exit-if-unpaired` stopped it (#197), success otherwise.
+fn unpaired_exit(
+    exit_unpaired: &AtomicBool,
+) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    if exit_unpaired.load(Ordering::SeqCst) {
+        return Ok(std::process::ExitCode::FAILURE);
+    }
+    Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// How often the pairing queue task looks at the active code (#197).
+const PAIRING_QUEUE_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Follow the pairing code queue (#197): advance it when the active code
+/// expires, print each code's banner when it activates, log when the queue
+/// has ended, and — with `--exit-if-unpaired` — fire `exit` when it ended with
+/// no client paired. The first code's banner is printed by `run`.
+fn spawn_pairing_queue(
+    state: AppState,
+    url: String,
+    name: String,
+    exit_if_unpaired: bool,
+    exit: tokio::sync::oneshot::Sender<()>,
+) {
+    tokio::spawn(async move {
+        let mut last = state.auth.lock().await.active_position();
+        let mut tick = tokio::time::interval(PAIRING_QUEUE_TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let (position, code, failures, paired) = {
+                let mut auth = state.auth.lock().await;
+                auth.advance(std::time::SystemTime::now());
+                (
+                    auth.active_position(),
+                    // Owned copy: the banner is printed once the lock is
+                    // released.
+                    auth.armed().map(|c| c.code().to_string()),
+                    auth.failures(),
+                    auth.paired(),
+                )
+            };
+            if position == last {
+                continue;
+            }
+            last = position;
+            if let (Some(position), Some(code)) = (position, code) {
+                tracing::info!("{}", active_pairing_banner(&url, &name, &code, position));
+                continue;
+            }
+            // The cap logged its own warning when it cancelled the codes.
+            if failures < auth::MAX_PAIRING_ATTEMPTS {
+                tracing::info!("{}", no_code_left_line());
+            }
+            if should_exit_unpaired(exit_if_unpaired, true, paired) {
+                tracing::error!("{}", exit_unpaired_line());
+                let _ = exit.send(());
+            }
+            return;
+        }
+    });
 }
 
 /// Resolves once the process is asked to stop: SIGINT (Ctrl-C) or SIGTERM
@@ -978,6 +1098,10 @@ pub struct Cli {
     /// belongs to another user
     #[arg(long)]
     pub skip_state_permissions_check: bool,
+    /// Exit with status 1 when the pairing codes run out with no client
+    /// paired (requires --pair)
+    #[arg(long, requires = "pair")]
+    pub exit_if_unpaired: bool,
 }
 
 /// Refuse a whitespace-only `--bind`: it passes clap's non-empty check, then
@@ -1054,6 +1178,75 @@ pub fn pairing_banners(url: &str, name: &str, codes: &[String]) -> String {
         .collect()
 }
 
+/// The banner block of the active code, printed when it activates (#197):
+/// `Pairing code k/n` before the block when `n > 1`, exactly
+/// [`pairing_banner`] when `n == 1`. `position` is `(k, n)`.
+pub fn active_pairing_banner(url: &str, name: &str, code: &str, position: (u32, u32)) -> String {
+    let (k, n) = position;
+    if n > 1 {
+        format!("\nPairing code {k}/{n}:{}", pairing_banner(url, name, code))
+    } else {
+        pairing_banner(url, name, code)
+    }
+}
+
+/// `from <ip>`, or `from an unknown address` when there is no peer: the IP
+/// alone, never the port.
+fn from_peer(peer: Option<std::net::SocketAddr>) -> String {
+    match peer {
+        Some(addr) => format!("from {}", addr.ip()),
+        None => "from an unknown address".to_string(),
+    }
+}
+
+/// The line logged when a client paired (#197): the peer's IP without its
+/// port, and ` (code k/n)` when `n > 1`. Never the code, never the token.
+pub fn pair_success_line(peer: Option<std::net::SocketAddr>, position: (u32, u32)) -> String {
+    let (k, n) = position;
+    let line = format!("client paired {}", from_peer(peer));
+    if n > 1 {
+        format!("{line} (code {k}/{n})")
+    } else {
+        line
+    }
+}
+
+/// The line logged when a pairing attempt was refused and counted (#197):
+/// the failure count out of [`auth::MAX_PAIRING_ATTEMPTS`] and the peer's IP
+/// without its port. Never the code.
+pub fn pair_refusal_line(peer: Option<std::net::SocketAddr>, failures: u32) -> String {
+    format!(
+        "pairing attempt refused ({failures}/{}) {}",
+        auth::MAX_PAIRING_ATTEMPTS,
+        from_peer(peer)
+    )
+}
+
+/// The warning logged when the attempt cap cancelled every remaining code
+/// (#197).
+pub fn pairing_cancelled_line() -> String {
+    format!(
+        "pairing codes cancelled after {} failed attempts — run with --pair for new ones",
+        auth::MAX_PAIRING_ATTEMPTS
+    )
+}
+
+/// The line logged when the code queue has ended (#197).
+pub fn no_code_left_line() -> String {
+    "no pairing code left".to_string()
+}
+
+/// The line logged before `--exit-if-unpaired` stops the backend (#197).
+pub fn exit_unpaired_line() -> String {
+    "no client paired: exiting (--exit-if-unpaired)".to_string()
+}
+
+/// Whether the backend must exit with status 1 (#197): `--exit-if-unpaired`
+/// was given, the code queue has ended, and no client paired. Pure.
+pub fn should_exit_unpaired(exit_if_unpaired: bool, queue_ended: bool, paired: u32) -> bool {
+    exit_if_unpaired && queue_ended && paired == 0
+}
+
 /// Render `link` as a QR code in text a terminal can show.
 pub fn pairing_qr(link: &str) -> String {
     match qrcode::QrCode::new(link.as_bytes()) {
@@ -1113,6 +1306,18 @@ pub fn app_with_auth_store(spotify_auth: SpotifyAuth, auth: AuthStore) -> Router
         RouterHandle::over_graph(graph_pw::PipeWireGraph::detached()),
     )
     .0
+}
+
+/// [`app_with_auth_store`], with the binding `POST /pair/finish` checks the
+/// app's confirmation against (#197): the SHA-256 of the backend's SPKI over
+/// TLS, the plain-HTTP label in the debug mode.
+pub fn app_with_auth_store_and_binding(
+    spotify_auth: SpotifyAuth,
+    mut auth: AuthStore,
+    binding: blue2th_proto::pake::Binding,
+) -> Router {
+    auth.set_binding(binding);
+    app_with_auth_store(spotify_auth, auth)
 }
 
 /// [`app_with_auth_store`], also handing back the [`AppState`] the router was
@@ -1216,6 +1421,8 @@ fn route_handler(spec: &RouteSpec) -> axum::routing::MethodRouter<AppState> {
     match (spec.method, spec.path) {
         ("GET", "/health") => get(health),
         ("POST", "/pair") => post(pair),
+        ("POST", "/pair/start") => post(pair_start),
+        ("POST", "/pair/finish") => post(pair_finish),
         ("GET", "/adapters") => get(adapters),
         ("GET", "/devices") => get(devices),
         ("POST", "/devices/{addr}/connect") => post(connect),
@@ -1281,28 +1488,158 @@ async fn require_bearer(
     next.run(request).await
 }
 
-/// `POST /pair` — exchange an armed pairing code for the API token.
+/// The peer address the listener attached to the request (#197), when it
+/// attached one.
+type Peer = Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>;
+
+/// The socket address of a [`Peer`].
+fn peer_addr(peer: Peer) -> Option<std::net::SocketAddr> {
+    peer.map(|axum::Extension(axum::extract::ConnectInfo(addr))| addr)
+}
+
+/// The answer to every refused pairing, on every pairing route: one status and
+/// one body, so no caller can tell a wrong code from a relay, an expired, a
+/// used or a cancelled one.
+fn pairing_refusal(e: auth::PairError) -> AppError {
+    AppError {
+        status: StatusCode::UNAUTHORIZED,
+        message: e.to_string(),
+    }
+}
+
+/// Log what a refused pairing attempt did to the attempt count (#197): one
+/// line when it counted, and the cancellation warning when it reached the cap.
+fn log_counted_refusal(
+    peer: Option<std::net::SocketAddr>,
+    failures_before: u32,
+    failures_after: u32,
+) {
+    if failures_after <= failures_before {
+        return;
+    }
+    tracing::warn!("{}", pair_refusal_line(peer, failures_after));
+    if failures_after >= auth::MAX_PAIRING_ATTEMPTS {
+        tracing::warn!("{}", pairing_cancelled_line());
+    }
+}
+
+/// `POST /pair` — exchange the active pairing code for the API token.
 ///
-/// **The one open door.** Everything protecting the API rests on the code being
-/// armed only briefly, one-shot and attempt-capped; every refusal answers the
-/// same 401 with the same message, so a caller cannot tell an unknown code from
-/// an expired or already-used one.
+/// **An open door**, kept for the browser (#197). Everything protecting the API
+/// rests on the code being armed only briefly, one-shot and attempt-capped;
+/// every refusal answers the same 401 with the same message, so a caller cannot
+/// tell an unknown code from an expired or already-used one.
 async fn pair(
     State(state): State<AppState>,
+    peer: Peer,
     body: axum::body::Bytes,
 ) -> Result<Json<PairResponse>, AppError> {
+    let peer = peer_addr(peer);
     // A malformed body is a client error, not a refused code: nothing was
     // guessed, so distinguishing the two leaks nothing an attacker could use.
     let submitted = serde_json::from_slice::<PairRequest>(&body)
         .map(|req| req.code)
         .map_err(|e| AppError::bad_request(format!("invalid pair body: {e}")))?;
     let mut auth = state.auth.lock().await;
+    let position = auth.active_position();
+    let failures = auth.failures();
     match auth.redeem(&submitted, std::time::SystemTime::now()) {
-        Ok(token) => Ok(Json(PairResponse { token })),
-        Err(e) => Err(AppError {
-            status: StatusCode::UNAUTHORIZED,
-            message: e.to_string(),
-        }),
+        Ok(token) => {
+            tracing::info!("{}", pair_success_line(peer, position.unwrap_or((1, 1))));
+            Ok(Json(PairResponse { token }))
+        },
+        Err(e) => {
+            log_counted_refusal(peer, failures, auth.failures());
+            Err(pairing_refusal(e))
+        },
+    }
+}
+
+/// The most a `start` or `finish` body is read: both carry a few hex fields.
+const PAIR_BODY_LIMIT: usize = 4096;
+
+/// `POST /pair/start` (#197) — open the PAKE session on the active code: the
+/// app's SPAKE2 message in, the session and the backend's message out.
+///
+/// Rate limited per source address, checked before the body is read; a 429
+/// is logged at `debug` only, and counts no failure.
+async fn pair_start(
+    State(state): State<AppState>,
+    peer: Peer,
+    body: axum::body::Body,
+) -> Result<Response, AppError> {
+    let peer = peer_addr(peer);
+    let limited = state
+        .auth
+        .lock()
+        .await
+        .check_start_rate(peer.map(|addr| addr.ip()), std::time::Instant::now());
+    if let Err(wait) = limited {
+        tracing::debug!("pairing start rate limited {}", from_peer(peer));
+        let retry = auth::retry_after_secs(wait).to_string();
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, retry)],
+            "too many pairing attempts",
+        )
+            .into_response());
+    }
+    let body = axum::body::to_bytes(body, PAIR_BODY_LIMIT)
+        .await
+        .map_err(|e| AppError::bad_request(format!("invalid pair start body: {e}")))?;
+    let request = serde_json::from_slice::<PairStartRequest>(&body)
+        .map_err(|e| AppError::bad_request(format!("invalid pair start body: {e}")))?;
+    let msg = blue2th_proto::pake::from_hex(&request.msg, blue2th_proto::pake::MESSAGE_LEN)
+        .ok_or_else(|| AppError::bad_request("invalid pair start body: msg"))?;
+    let started = state
+        .auth
+        .lock()
+        .await
+        .start_pake(&msg, std::time::SystemTime::now())
+        .map_err(pairing_refusal)?;
+    Ok(Json(PairStartResponse {
+        session: started.session,
+        msg: blue2th_proto::pake::to_hex(&started.msg),
+    })
+    .into_response())
+}
+
+/// `POST /pair/finish` (#197) — check the app's confirmation over this
+/// backend's binding and, when it holds, answer the backend's own confirmation
+/// and the token.
+async fn pair_finish(
+    State(state): State<AppState>,
+    peer: Peer,
+    body: axum::body::Bytes,
+) -> Result<Json<PairFinishResponse>, AppError> {
+    let peer = peer_addr(peer);
+    let request = serde_json::from_slice::<PairFinishRequest>(&body)
+        .map_err(|e| AppError::bad_request(format!("invalid pair finish body: {e}")))?;
+    let confirm = blue2th_proto::pake::from_hex(&request.confirm, blue2th_proto::pake::CONFIRM_LEN)
+        .ok_or_else(|| AppError::bad_request("invalid pair finish body: confirm"))?;
+    let mut auth = state.auth.lock().await;
+    let binding = auth
+        .binding()
+        .ok_or_else(|| pairing_refusal(auth::PairError::Rejected))?;
+    let position = auth.active_position();
+    let failures = auth.failures();
+    match auth.finish_pake(
+        &request.session,
+        &confirm,
+        &binding,
+        std::time::SystemTime::now(),
+    ) {
+        Ok(finished) => {
+            tracing::info!("{}", pair_success_line(peer, position.unwrap_or((1, 1))));
+            Ok(Json(PairFinishResponse {
+                confirm: blue2th_proto::pake::to_hex(&finished.confirm),
+                token: finished.token,
+            }))
+        },
+        Err(e) => {
+            log_counted_refusal(peer, failures, auth.failures());
+            Err(pairing_refusal(e))
+        },
     }
 }
 
@@ -2783,3 +3120,6 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pairing_tests;

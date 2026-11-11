@@ -67,6 +67,16 @@ fn full_router() -> axum::Router {
 /// listener, not on the issuance) and the production `tls::server_config`.
 /// `None` when any step of the set-up fails.
 async fn start(limits: Limits) -> Option<Server> {
+    start_serving(limits, full_router(), listener::plain_router()).await
+}
+
+/// [`start`], serving `tls_router` and `plain_router` instead of the
+/// backend's own.
+async fn start_serving(
+    limits: Limits,
+    tls_router: axum::Router,
+    plain_router: axum::Router,
+) -> Option<Server> {
     let key = tls::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).ok()?;
     let params = rcgen::CertificateParams::new(vec![NAME.to_string()]).ok()?;
     let made = params.self_signed(&key).ok()?;
@@ -82,8 +92,8 @@ async fn start(limits: Limits) -> Option<Server> {
     let (stop, stopped) = oneshot::channel::<()>();
     let task = tokio::spawn(listener::serve(
         socket,
-        full_router(),
-        listener::plain_router(),
+        tls_router,
+        plain_router,
         acceptor,
         limits,
         async move {
@@ -470,5 +480,59 @@ async fn test_serve_stops_on_the_shutdown_signal() {
     assert!(
         TcpStream::connect(server.addr).await.is_err(),
         "the listening socket is closed once serve returned"
+    );
+}
+
+// ---- #197: the peer address reaches the handlers ----
+
+/// The IP of the `ConnectInfo` the listener attached to the request, or
+/// `none` when it attached none.
+async fn peer_ip(request: axum::extract::Request) -> String {
+    request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map_or_else(|| "none".to_string(), |info| info.0.ip().to_string())
+}
+
+/// A router answering `GET /peer` with [`peer_ip`].
+fn peer_router() -> axum::Router {
+    axum::Router::new().route("/peer", axum::routing::get(peer_ip))
+}
+
+// Criterion: the pairing routes log the peer address the connection was
+// accepted from (`ConnectInfo`) — so the listener hands it down, on the TLS
+// path and on the plain one alike.
+#[tokio::test]
+async fn test_serve_hands_the_peer_address_to_the_handlers_on_both_paths() {
+    let server = start_serving(
+        Limits {
+            first_byte: LONG,
+            handshake: LONG,
+        },
+        peer_router(),
+        peer_router(),
+    )
+    .await;
+    assert!(server.is_some(), "the test server starts");
+    let Some(server) = server else { return };
+
+    let over_tls = match tls_connect(&server, &[b"http/1.1"]).await {
+        Some(stream) => get(stream, "/peer", None).await,
+        None => None,
+    };
+    let plain = match plain_connect(&server).await {
+        Some(stream) => get(stream, "/peer", None).await,
+        None => None,
+    };
+
+    assert_eq!(
+        over_tls,
+        Some((200, "127.0.0.1".to_string())),
+        "over TLS, the handler sees the peer"
+    );
+    assert_eq!(
+        plain,
+        Some((200, "127.0.0.1".to_string())),
+        "in plain HTTP, the handler sees the peer"
     );
 }

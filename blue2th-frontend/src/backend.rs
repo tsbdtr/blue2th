@@ -8,10 +8,15 @@ use std::time::Duration;
 
 use blue2th_proto::{
     api_url, AuthCallbackRequest, AuthUrlResponse, ClientPresence, ConfigRequest, DeviceInfo,
-    HealthStatus, NowPlaying, OffsetRequest, PairRequest, PairResponse, PlaybackState,
-    PresenceRequest, ProtocolMismatch, ServerConfig, SpotifyAuthState, SpotifyState, TargetsState,
-    VolumeRequest,
+    HealthStatus, NowPlaying, OffsetRequest, PlaybackState, PresenceRequest, ProtocolMismatch,
+    ServerConfig, SpotifyAuthState, SpotifyState, TargetsState, VolumeRequest,
 };
+// The browser pairs over `POST /api/pair`; the native app through the PAKE of
+// #197.
+#[cfg(not(target_arch = "wasm32"))]
+use blue2th_proto::{PairFinishRequest, PairFinishResponse, PairStartRequest, PairStartResponse};
+#[cfg(target_arch = "wasm32")]
+use blue2th_proto::{PairRequest, PairResponse};
 use futures::StreamExt;
 
 use crate::settings::{AppSettings, ConfigSync};
@@ -42,6 +47,11 @@ pub struct BackendError {
     /// (#196). Typed like `not_paired`: an identity change is neither an
     /// unreachable backend nor an unpaired one.
     identity_changed: bool,
+    /// Whether the backend refused the pairing exchange (#197): a 401 on
+    /// `start` or `finish`, or a confirmation that does not check out.
+    pairing_refused: bool,
+    /// Whether the backend rate-limited the pairing exchange (#197).
+    rate_limited: bool,
     /// The status the backend answered, when this failure came from a response.
     /// Retained, not interpreted: a status only acquires a meaning where a route
     /// gives it one.
@@ -56,6 +66,8 @@ impl BackendError {
             mismatch: None,
             pairing_failed: false,
             identity_changed: false,
+            pairing_refused: false,
+            rate_limited: false,
             status: None,
         }
     }
@@ -69,6 +81,8 @@ impl BackendError {
             mismatch: Some(mismatch),
             pairing_failed: false,
             identity_changed: false,
+            pairing_refused: false,
+            rate_limited: false,
             status: None,
         }
     }
@@ -89,6 +103,8 @@ impl BackendError {
             mismatch: None,
             pairing_failed: false,
             identity_changed: false,
+            pairing_refused: false,
+            rate_limited: false,
             status: None,
         }
     }
@@ -111,6 +127,8 @@ impl BackendError {
             mismatch: None,
             pairing_failed: true,
             identity_changed: false,
+            pairing_refused: false,
+            rate_limited: false,
             status: None,
         }
     }
@@ -135,6 +153,36 @@ impl BackendError {
     /// unreachable backend.
     pub fn is_identity_changed(&self) -> bool {
         self.identity_changed
+    }
+
+    /// The typed "the backend refused the pairing" failure (#197): a 401 on
+    /// `start` or `finish`, or a backend confirmation that does not check out.
+    /// One failure for all of them: the app cannot tell a wrong code from an
+    /// expired one, and must not pretend to.
+    pub fn pairing_refused() -> Self {
+        Self {
+            pairing_refused: true,
+            ..Self::new(PAIRING_REFUSED)
+        }
+    }
+
+    /// Whether this failure is a refused pairing.
+    pub fn is_pairing_refused(&self) -> bool {
+        self.pairing_refused
+    }
+
+    /// The typed "too many pairing attempts" failure (#197): a 429 on
+    /// `start`.
+    pub fn pairing_rate_limited() -> Self {
+        Self {
+            rate_limited: true,
+            ..Self::new(PAIRING_RATE_LIMITED)
+        }
+    }
+
+    /// Whether this failure is a rate-limited pairing.
+    pub fn is_pairing_rate_limited(&self) -> bool {
+        self.rate_limited
     }
 
     /// The HTTP status the backend answered, when this failure came from a
@@ -191,6 +239,14 @@ pub const NO_BACKEND_CONFIGURED: &str = "no backend configured";
 /// answered 401 (phase 6.4).
 pub const NOT_PAIRED: &str = "not paired";
 
+/// Message carried by a refused pairing (#197). The screens show a localised
+/// message instead, read from the typed flag.
+pub const PAIRING_REFUSED: &str = "pairing refused";
+
+/// Message carried by a rate-limited pairing (#197). The screens show a
+/// localised message instead, read from the typed flag.
+pub const PAIRING_RATE_LIMITED: &str = "too many pairing attempts";
+
 /// Message carried by a refused backend key (#196). The screens show a
 /// localised message instead, read from the typed flag.
 pub const IDENTITY_CHANGED: &str = "backend identity changed";
@@ -212,6 +268,7 @@ fn status_line(status: u16) -> String {
 }
 
 /// Build the `{base}/api/pair` URL, tolerating a trailing slash on the base.
+#[cfg(any(test, target_arch = "wasm32"))]
 fn pair_url(base: &str) -> String {
     api_url(base, "pair")
 }
@@ -357,9 +414,35 @@ fn transport_error(err: &reqwest::Error) -> BackendError {
     BackendError::new(describe(err))
 }
 
-/// `POST {base}/api/pair` — exchange a short-lived pairing code for the backend's
-/// long-lived API token. The one call that carries no bearer, since the app has
-/// none yet.
+/// The browser's pairing: `POST {base}/api/pair` with the code, over the TLS
+/// `fetch` does itself (#197 keeps it; the native [`pair`] runs the PAKE).
+#[cfg(target_arch = "wasm32")]
+pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<Paired, BackendError> {
+    // Pinned to the key the checked `/health` handshake presented: a key that
+    // changed in between never receives the code (#196).
+    let client = client_for(&backend.url, backend.pin.as_deref())?;
+    let request = client
+        .http()
+        .post(pair_url(&backend.url))
+        .timeout(SETTINGS_CALL_TIMEOUT)
+        .json(&PairRequest {
+            // Owned copy: `PairRequest` is a plain DTO built for serialization.
+            code: code.to_string(),
+        });
+    let granted: PairResponse = send_json(request).await?;
+    Ok(Paired {
+        token: granted.token,
+        // Owned copy: the pairing's result outlives the checked backend.
+        pin: backend.pin.clone(),
+    })
+}
+
+/// Exchange a short-lived pairing code for the backend's long-lived API token.
+/// The one exchange that carries no bearer, since the app has none yet.
+///
+/// The native app runs SPAKE2 on the code through `POST {base}/api/pair/start`
+/// and `/api/pair/finish`, bound to the key its handshake presented, so the
+/// code never travels (#197); the browser posts it to `POST {base}/api/pair`.
 ///
 /// It takes the [`CompatibleBackend`] that [`check_backend_protocol`] returns:
 ///
@@ -380,24 +463,88 @@ fn transport_error(err: &reqwest::Error) -> BackendError {
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn pair(backend: &CompatibleBackend, code: &str) -> Result<Paired, BackendError> {
+    use blue2th_proto::pake;
+
+    // No binding, no exchange: an `https://` backend whose handshake presented
+    // no pin would bind the confirmation to nothing.
+    let binding = binding_for(&backend.url, backend.pin.as_deref())
+        .ok_or_else(|| BackendError::new(NO_PAIRING_BINDING))?;
     // Pinned to the key the checked `/health` handshake presented: a key that
-    // changed in between never receives the code (#196).
+    // changed in between never runs the exchange (#196).
     let client = client_for(&backend.url, backend.pin.as_deref())?;
+    let (half, msg) = pake::ClientHalf::start(code);
     let request = client
         .http()
-        .post(pair_url(&backend.url))
+        .post(api_url(&backend.url, "pair/start"))
         .timeout(SETTINGS_CALL_TIMEOUT)
-        .json(&PairRequest {
-            // Owned copy: `PairRequest` is a plain DTO built for serialization.
-            code: code.to_string(),
+        .json(&PairStartRequest {
+            msg: pake::to_hex(&msg),
         });
-    let granted: PairResponse = send_json(request).await?;
+    let started: PairStartResponse = send_pairing_json(request).await?;
+    let server_msg = pake::from_hex(&started.msg, pake::MESSAGE_LEN)
+        .ok_or_else(BackendError::pairing_refused)?;
+    let key = half
+        .finish(&server_msg)
+        .map_err(|_| BackendError::pairing_refused())?;
+    let request = client
+        .http()
+        .post(api_url(&backend.url, "pair/finish"))
+        .timeout(SETTINGS_CALL_TIMEOUT)
+        .json(&PairFinishRequest {
+            session: started.session,
+            confirm: pake::to_hex(&pake::confirm_a(&key, &binding)),
+        });
+    let finished: PairFinishResponse = send_pairing_json(request).await?;
+    // The token is kept only once the backend proved it ran the exchange on
+    // the same code, over the same key.
+    let confirmed = pake::from_hex(&finished.confirm, pake::CONFIRM_LEN)
+        .is_some_and(|confirm| pake::check_confirm_b(&key, &binding, &confirm));
+    if !confirmed {
+        return Err(BackendError::pairing_refused());
+    }
     Ok(Paired {
-        token: granted.token,
+        token: finished.token,
         // Owned copy: the pairing's result outlives the checked backend.
         pin: backend.pin.clone(),
     })
+}
+
+/// Message carried when the app refuses to run the pairing exchange because
+/// the backend's handshake presented no key to bind it to (#197).
+#[cfg(not(target_arch = "wasm32"))]
+const NO_PAIRING_BINDING: &str = "the backend presented no key to pair with";
+
+/// [`send_json`] for the pairing exchange (#197): a 401 is the pairing
+/// refusal rather than "not paired", a 429 the rate limit.
+#[cfg(not(target_arch = "wasm32"))]
+async fn send_pairing_json<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T, BackendError> {
+    send_json(request).await.map_err(|e| match e.status() {
+        Some(401) => BackendError {
+            status: e.status,
+            ..BackendError::pairing_refused()
+        },
+        Some(429) => BackendError {
+            status: e.status,
+            ..BackendError::pairing_rate_limited()
+        },
+        _ => e,
+    })
+}
+
+/// What the pairing exchange of a backend at `url` is bound to (#197): the
+/// plain-HTTP label over `http://`, the key hash `pin` names over
+/// `https://`, and `None` — run no exchange — for an `https://` backend whose
+/// handshake presented no valid pin. Pure.
+#[cfg(not(target_arch = "wasm32"))]
+fn binding_for(url: &str, pin: Option<&str>) -> Option<blue2th_proto::pake::Binding> {
+    if url.starts_with("http://") {
+        return Some(blue2th_proto::pake::Binding::PlainHttp);
+    }
+    blue2th_proto::pake::Binding::from_pin_hex(pin?)
 }
 
 /// What a pairing yields (#196): the backend's API token, and the pin of the
@@ -1299,3 +1446,6 @@ mod tests;
 // a certificate made for the test. Native only, like the `tls` module.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tls_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pake_tests;

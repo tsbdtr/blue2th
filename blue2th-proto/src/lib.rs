@@ -8,6 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "pake")]
+pub mod pake;
+
 /// Health/version payload returned by the backend `GET /health` endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthStatus {
@@ -49,7 +52,7 @@ pub struct HealthStatus {
 /// Bumped whenever the HTTP surface changes in a way an older peer cannot
 /// follow. Compiled into both sides, so the comparison never depends on what a
 /// payload claims about itself.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest client contract a backend built from this source still serves.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 3;
@@ -159,6 +162,43 @@ pub struct PairRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairResponse {
     /// The API token the app stores with the backend entry.
+    pub token: String,
+}
+
+/// Body of `POST /pair/start` (#197): the app's SPAKE2 message, lower-case hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairStartRequest {
+    /// The app's SPAKE2 message (`start_a`), lower-case hex.
+    pub msg: String,
+}
+
+/// Response of `POST /pair/start` (#197): the session the exchange runs in and
+/// the backend's SPAKE2 message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairStartResponse {
+    /// The session `finish` names, lower-case hex.
+    pub session: String,
+    /// The backend's SPAKE2 message (`start_b`), lower-case hex.
+    pub msg: String,
+}
+
+/// Body of `POST /pair/finish` (#197): the app's confirmation, a MAC over the
+/// binding of the TLS key it saw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairFinishRequest {
+    /// The session `start` answered, lower-case hex.
+    pub session: String,
+    /// The app's confirmation, lower-case hex.
+    pub confirm: String,
+}
+
+/// Response of a successful `POST /pair/finish` (#197): the backend's own
+/// confirmation, and the token the app keeps only once it checked it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairFinishResponse {
+    /// The backend's confirmation, lower-case hex.
+    pub confirm: String,
+    /// The API token.
     pub token: String,
 }
 

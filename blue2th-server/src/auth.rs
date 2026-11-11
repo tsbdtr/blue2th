@@ -29,7 +29,7 @@ pub const PAIRING_TTL: Duration = Duration::from_secs(300);
 /// How many failed attempts, counted across every armed code, invalidate them
 /// all. The code is short, so an attempt cap is not a nicety — it is what makes
 /// it a secret at all.
-pub const MAX_PAIRING_ATTEMPTS: u32 = 5;
+pub const MAX_PAIRING_ATTEMPTS: u32 = 3;
 
 /// Number of characters in a minted pairing code (short enough to type).
 pub const PAIRING_CODE_LEN: usize = 6;
@@ -242,8 +242,21 @@ struct StoredToken {
 pub struct AuthStore {
     /// The long-lived bearer token every guarded route requires.
     token: String,
-    /// The pairing codes currently armed, unconsumed ones only (#160).
+    /// The pairing codes currently armed, unconsumed ones only (#160), in
+    /// turn: the first is the active one, the only one accepted (#197).
     pairing: Vec<PairingCode>,
+    /// How many codes were armed, for the active code's `k/n` (#197).
+    armed_total: u32,
+    /// Clients paired since the codes were armed, on either route (#197).
+    paired: u32,
+    /// The one PAKE session `POST /pair/start` opened, if any (#197).
+    session: Option<PakeSession>,
+    /// What `POST /pair/finish` checks the app's confirmation against (#197):
+    /// the SHA-256 of the served key's SPKI, or the plain-HTTP label. `None`
+    /// until the server sets it, and every `finish` is refused meanwhile.
+    binding: Option<blue2th_proto::pake::Binding>,
+    /// The per-address limit on `POST /pair/start` (#197).
+    start_limiter: PairRateLimiter,
     /// Failed redemptions since the codes were armed, counted once for all of
     /// them: n codes must not multiply the attempts an attacker gets.
     failures: u32,
@@ -261,6 +274,11 @@ impl AuthStore {
         Self {
             token: generate_token(),
             pairing: Vec::new(),
+            armed_total: 0,
+            paired: 0,
+            session: None,
+            binding: None,
+            start_limiter: PairRateLimiter::new(),
             failures: 0,
             store: None,
             minted: true,
@@ -273,6 +291,11 @@ impl AuthStore {
         Self {
             token: token.into(),
             pairing: Vec::new(),
+            armed_total: 0,
+            paired: 0,
+            session: None,
+            binding: None,
+            start_limiter: PairRateLimiter::new(),
             failures: 0,
             store: None,
             // Handed in, not minted: nothing was invalidated.
@@ -302,6 +325,11 @@ impl AuthStore {
         Self {
             token,
             pairing: Vec::new(),
+            armed_total: 0,
+            paired: 0,
+            session: None,
+            binding: None,
+            start_limiter: PairRateLimiter::new(),
             failures: 0,
             store,
             minted,
@@ -357,6 +385,8 @@ impl AuthStore {
     fn arm_codes(&mut self, count: u32, mut mint: impl FnMut() -> PairingCode) -> Vec<String> {
         self.pairing.clear();
         self.failures = 0;
+        self.paired = 0;
+        self.session = None;
         while self.pairing.len() < count as usize {
             let minted = mint();
             // Two equal codes would be one code redeemable twice.
@@ -364,6 +394,7 @@ impl AuthStore {
                 self.pairing.push(minted);
             }
         }
+        self.armed_total = count;
         self.pairing
             .iter()
             // Owned copies: the codes are handed to the operator while the
@@ -374,33 +405,43 @@ impl AuthStore {
 
     /// Exchange a submitted code for the API token.
     ///
-    /// Any armed code redeems; on success that code alone is consumed
-    /// (one-shot). On failure the attempt is recorded once for all codes, and
-    /// reaching [`MAX_PAIRING_ATTEMPTS`] invalidates every armed code. Every
-    /// failure returns the same [`PairError`].
+    /// Only the active code redeems (#197); on success it is consumed
+    /// (one-shot) and the next one activates. On failure the attempt is
+    /// recorded once for all codes, and reaching [`MAX_PAIRING_ATTEMPTS`]
+    /// invalidates every armed code. Every failure returns the same
+    /// [`PairError`].
     pub fn redeem(&mut self, submitted: &str, now: SystemTime) -> Result<String, PairError> {
-        let matched = self
-            .pairing
-            .iter()
-            .position(|code| verify_code(Some(code), submitted, now).is_ok());
-        match matched {
-            Some(index) => {
-                // One-shot: a code that worked once must never work again.
-                self.pairing.remove(index);
-                Ok(self.token.clone())
-            },
-            None => {
-                if !self.pairing.is_empty() {
-                    self.failures = self.failures.saturating_add(1);
-                    // The cap is what makes a six-character secret viable at
-                    // all; past it the codes are not merely refused, they are
-                    // gone.
-                    if self.failures >= MAX_PAIRING_ATTEMPTS {
-                        self.pairing.clear();
-                    }
-                }
-                Err(PairError::Rejected)
-            },
+        if verify_code(self.pairing.first(), submitted, now).is_ok() {
+            self.consume_active(now);
+            return Ok(self.token.clone());
+        }
+        self.count_failure();
+        Err(PairError::Rejected)
+    }
+
+    /// Consume the active code — one-shot: a code that worked once must never
+    /// work again — and activate the next, its five minutes counted from `now`.
+    fn consume_active(&mut self, now: SystemTime) {
+        if !self.pairing.is_empty() {
+            self.pairing.remove(0);
+        }
+        if let Some(next) = self.pairing.first_mut() {
+            next.expires_at = now + PAIRING_TTL;
+        }
+        self.paired = self.paired.saturating_add(1);
+    }
+
+    /// Record a failed attempt against the armed codes, if any. The cap is
+    /// what makes a six-character secret viable at all; past it the codes are
+    /// not merely refused, they are gone.
+    fn count_failure(&mut self) {
+        if self.pairing.is_empty() {
+            return;
+        }
+        self.failures = self.failures.saturating_add(1);
+        if self.failures >= MAX_PAIRING_ATTEMPTS {
+            self.pairing.clear();
+            self.session = None;
         }
     }
 
@@ -416,5 +457,253 @@ impl Default for AuthStore {
     }
 }
 
+/// How long a PAKE session opened by `POST /pair/start` waits for its
+/// `finish` (#197).
+pub const PAKE_SESSION_TTL: Duration = Duration::from_secs(30);
+
+/// How many `POST /pair/start` one source address may send within
+/// [`PAIR_START_WINDOW`] (#197).
+pub const PAIR_START_LIMIT: usize = 5;
+
+/// The sliding window [`PAIR_START_LIMIT`] is counted over (#197).
+pub const PAIR_START_WINDOW: Duration = Duration::from_secs(10);
+
+/// What [`AuthStore::advance`] did to the code queue (#197).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueStep {
+    /// The active code is still valid, or there is no queue at all.
+    Unchanged,
+    /// The active code expired and the next one was activated.
+    Activated,
+    /// The active code expired and it was the last one.
+    Ended,
+}
+
+/// What a successful [`AuthStore::start_pake`] answers (#197).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PakeStarted {
+    /// The session `finish` must name.
+    pub session: String,
+    /// The backend's SPAKE2 message.
+    pub msg: Vec<u8>,
+}
+
+/// What a successful [`AuthStore::finish_pake`] answers (#197).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PakeFinished {
+    /// The backend's confirmation.
+    pub confirm: Vec<u8>,
+    /// The API token.
+    pub token: String,
+}
+
+/// The one PAKE session `POST /pair/start` opened (#197).
+struct PakeSession {
+    /// The id `finish` must name.
+    id: String,
+    /// The key the backend's half derived.
+    key: blue2th_proto::pake::SharedKey,
+    /// The code the session ran on: refused once it is no longer the active
+    /// one.
+    code: String,
+    /// When `start` opened it.
+    opened_at: SystemTime,
+}
+
+/// Bytes of entropy in a session id.
+const SESSION_ID_BYTES: usize = 16;
+
+impl AuthStore {
+    /// The active code's position in the queue, `(k, n)` with `k` counted
+    /// from 1, or `None` when no code is active (#197).
+    pub fn active_position(&self) -> Option<(u32, u32)> {
+        if self.pairing.is_empty() {
+            return None;
+        }
+        let remaining = u32::try_from(self.pairing.len()).unwrap_or(u32::MAX);
+        let total = self.armed_total.max(remaining);
+        Some((total - remaining + 1, total))
+    }
+
+    /// Set the binding `POST /pair/finish` checks against (#197).
+    pub fn set_binding(&mut self, binding: blue2th_proto::pake::Binding) {
+        self.binding = Some(binding);
+    }
+
+    /// The binding `POST /pair/finish` checks against, once set (#197).
+    pub fn binding(&self) -> Option<blue2th_proto::pake::Binding> {
+        self.binding
+    }
+
+    /// Record a `POST /pair/start` from `peer` against the per-address limit
+    /// (#197): see [`PairRateLimiter::check`].
+    pub fn check_start_rate(
+        &mut self,
+        peer: Option<std::net::IpAddr>,
+        now: std::time::Instant,
+    ) -> Result<(), Duration> {
+        self.start_limiter.check(peer, now)
+    }
+
+    /// Failed attempts counted against the armed codes, across `finish` and
+    /// `POST /pair` (#197).
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
+    /// How many clients paired since the codes were armed (#197).
+    pub fn paired(&self) -> u32 {
+        self.paired
+    }
+
+    /// Activate the next code when the active one has expired at `now`
+    /// (#197). The next code's five minutes start at the expiry instant.
+    pub fn advance(&mut self, now: SystemTime) -> QueueStep {
+        let Some(active) = self.pairing.first() else {
+            return QueueStep::Unchanged;
+        };
+        if now < active.expires_at() {
+            return QueueStep::Unchanged;
+        }
+        let expired_at = active.expires_at();
+        self.pairing.remove(0);
+        self.session = None;
+        match self.pairing.first_mut() {
+            Some(next) => {
+                next.expires_at = expired_at + PAIRING_TTL;
+                QueueStep::Activated
+            },
+            None => QueueStep::Ended,
+        }
+    }
+
+    /// The active code, when it is still valid at `now`.
+    fn active_code(&self, now: SystemTime) -> Option<&PairingCode> {
+        self.pairing.first().filter(|code| now < code.expires_at())
+    }
+
+    /// `POST /pair/start`: open the one PAKE session on the active code,
+    /// replacing any open one (#197).
+    pub fn start_pake(
+        &mut self,
+        client_msg: &[u8],
+        now: SystemTime,
+    ) -> Result<PakeStarted, PairError> {
+        // Owned copy: the session keeps the code it ran on while the queue
+        // may move on.
+        let code = self
+            .active_code(now)
+            .map(|c| c.code().to_string())
+            .ok_or(PairError::Rejected)?;
+        let (half, msg) = blue2th_proto::pake::ServerHalf::start(&code);
+        let key = half.finish(client_msg).map_err(|_| PairError::Rejected)?;
+        let mut raw = [0u8; SESSION_ID_BYTES];
+        rand::thread_rng().fill(&mut raw[..]);
+        let id = blue2th_proto::pake::to_hex(&raw);
+        self.session = Some(PakeSession {
+            // Owned copy: the store keeps the id, the caller sends it.
+            id: id.clone(),
+            key,
+            code,
+            opened_at: now,
+        });
+        Ok(PakeStarted { session: id, msg })
+    }
+
+    /// `POST /pair/finish`: check the app's confirmation over `binding` and,
+    /// when it holds, consume the code and release the token (#197).
+    ///
+    /// An unknown, replaced or expired session, or one whose code is no longer
+    /// the active one, is refused without counting: nothing was guessed. A
+    /// confirmation that does not check out counts one failure.
+    pub fn finish_pake(
+        &mut self,
+        session: &str,
+        confirm: &[u8],
+        binding: &blue2th_proto::pake::Binding,
+        now: SystemTime,
+    ) -> Result<PakeFinished, PairError> {
+        let named = self
+            .session
+            .as_ref()
+            .is_some_and(|open| constant_time_eq(&open.id, session));
+        if !named {
+            return Err(PairError::Rejected);
+        }
+        // Consumed whatever happens next: a session answers one `finish`.
+        let open = self.session.take().ok_or(PairError::Rejected)?;
+        let alive = now
+            .duration_since(open.opened_at)
+            .is_ok_and(|age| age < PAKE_SESSION_TTL);
+        let on_active = self
+            .active_code(now)
+            .is_some_and(|code| code.code() == open.code);
+        if !alive || !on_active {
+            return Err(PairError::Rejected);
+        }
+        if !blue2th_proto::pake::check_confirm_a(&open.key, binding, confirm) {
+            self.count_failure();
+            return Err(PairError::Rejected);
+        }
+        self.consume_active(now);
+        Ok(PakeFinished {
+            confirm: blue2th_proto::pake::confirm_b(&open.key, binding).to_vec(),
+            // Owned copy: the token is handed out, the store keeps its own.
+            token: self.token.clone(),
+        })
+    }
+}
+
+/// The per-source-address limit on `POST /pair/start` (#197):
+/// [`PAIR_START_LIMIT`] requests in a sliding [`PAIR_START_WINDOW`].
+#[derive(Debug, Default)]
+pub struct PairRateLimiter {
+    /// The instants of the requests still inside the window, per source
+    /// address; `None` is the shared key of the requests with no address.
+    seen: std::collections::HashMap<
+        Option<std::net::IpAddr>,
+        std::collections::VecDeque<std::time::Instant>,
+    >,
+}
+
+impl PairRateLimiter {
+    /// A limiter that has seen nothing.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a request from `peer` at `now`: `Ok` when it passes, or how
+    /// long until it would. A request with no known address is counted under
+    /// one shared key. A refused request is not recorded.
+    pub fn check(
+        &mut self,
+        peer: Option<std::net::IpAddr>,
+        now: std::time::Instant,
+    ) -> Result<(), Duration> {
+        let inside =
+            |at: &std::time::Instant| now.saturating_duration_since(*at) < PAIR_START_WINDOW;
+        // Addresses whose requests all left the window are forgotten, so a
+        // scan from many addresses does not grow the map for good.
+        self.seen.retain(|_, times| times.iter().any(inside));
+        let times = self.seen.entry(peer).or_default();
+        times.retain(inside);
+        if times.len() >= PAIR_START_LIMIT {
+            let oldest = times.front().copied().unwrap_or(now);
+            return Err((oldest + PAIR_START_WINDOW).saturating_duration_since(now));
+        }
+        times.push_back(now);
+        Ok(())
+    }
+}
+
+/// The `Retry-After` value of a wait, in whole seconds (#197), rounded up so
+/// a client is never told to come back before it would pass.
+pub fn retry_after_secs(wait: Duration) -> u64 {
+    wait.as_secs() + u64::from(wait.subsec_nanos() > 0)
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pairing_tests;

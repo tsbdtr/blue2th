@@ -947,3 +947,32 @@ fn test_server_config_offers_h2_and_http_1_1() {
         Some(vec![b"h2".to_vec(), b"http/1.1".to_vec()])
     );
 }
+
+// ---- #197: the binding of the pairing exchange ----
+
+// Criterion: the binding is the SHA-256 of the backend's SPKI DER over TLS —
+// computed here with `sha2`, apart from the code under test — the same
+// bytes as the pin the app stores in `Pin::to_hex`'s format, and two keys
+// give two bindings. Never the plain-HTTP label.
+#[test]
+fn test_pairing_binding_is_the_sha256_of_the_spki_der() {
+    use blue2th_proto::pake::Binding;
+
+    let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("generate a key");
+    let other = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("generate a key");
+    let spki = key.subject_public_key_info();
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&Sha256::digest(&spki));
+
+    assert_eq!(pairing_binding(&spki), Binding::Spki(digest));
+    let pin: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        Binding::from_pin_hex(&pin),
+        Some(pairing_binding(&spki)),
+        "the app's stored pin and the backend's binding are one value"
+    );
+    assert_ne!(
+        pairing_binding(&spki),
+        pairing_binding(&other.subject_public_key_info())
+    );
+}

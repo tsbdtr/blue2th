@@ -801,13 +801,15 @@ fn test_default_backend_name_satisfies_the_validator() {
 
 // ---- backend protocol compatibility check (#33) ----
 
-// Criterion: proto — `PROTOCOL_VERSION` and `MIN_SUPPORTED_PROTOCOL_VERSION`
-// exist and are both `3` since the API moved to TLS (#195; `2` since it moved
-// under `/api`, #166), and `HealthStatus::ok()` fills the range from them so a
-// backend cannot forget to announce it.
+// Criterion (#197): `PROTOCOL_VERSION` is 4 since pairing runs through
+// `POST /pair/start` and `/pair/finish`; `MIN_SUPPORTED_PROTOCOL_VERSION`
+// stays 3, so an app of #196 still pairs over `POST /pair` (`3` since the API
+// moved to TLS, #195; `2` since it moved under `/api`, #166).
+// `HealthStatus::ok()` fills the range from them so a backend cannot forget
+// to announce it.
 #[test]
 fn test_health_status_announces_the_compiled_protocol_range() {
-    assert_eq!(PROTOCOL_VERSION, 3);
+    assert_eq!(PROTOCOL_VERSION, 4);
     assert_eq!(MIN_SUPPORTED_PROTOCOL_VERSION, 3);
 
     let status = HealthStatus::ok("0.1.0");
@@ -1014,6 +1016,101 @@ fn test_pair_response_round_trips_through_json() {
     let parsed: PairResponse = serde_json::from_str(&json).expect("deserialize PairResponse");
     assert_eq!(original, parsed);
     assert!(json.contains("\"token\""), "got {json}");
+}
+
+// ---- #197: pairing through a PAKE ----
+
+/// A `/health` announcing `protocol_min..=protocol`.
+fn health_announcing(protocol: u32, protocol_min: u32) -> HealthStatus {
+    HealthStatus {
+        status: "ok".to_string(),
+        version: "0.2.0".to_string(),
+        auth_required: true,
+        protocol,
+        protocol_min,
+    }
+}
+
+// Criterion (#197): an app on protocol 4 meets a backend on protocol 3 (no
+// `start`/`finish`): the backend must be updated — reported from the
+// `/health` check, before any pairing call.
+#[test]
+fn test_check_protocol_app_4_against_backend_3_is_backend_too_old() {
+    assert_eq!(
+        check_protocol(&health_announcing(3, 3), 4),
+        Err(ProtocolMismatch::BackendTooOld)
+    );
+    assert_eq!(
+        check_protocol(&health_announcing(3, 3), PROTOCOL_VERSION),
+        Err(ProtocolMismatch::BackendTooOld),
+        "this build's app speaks 4, which a protocol-3 backend cannot serve"
+    );
+}
+
+// Criterion (#197): an app of #196 (protocol 3) meets a backend on protocol
+// 4, minimum 3: compatible — it still pairs over `POST /pair`.
+#[test]
+fn test_check_protocol_app_3_against_backend_4_is_compatible() {
+    assert_eq!(check_protocol(&health_announcing(4, 3), 3), Ok(()));
+    assert_eq!(
+        check_protocol(&HealthStatus::ok("0.2.0"), 3),
+        Ok(()),
+        "this build's backend still serves an app of #196"
+    );
+    assert_eq!(
+        HealthStatus::ok("0.2.0").protocol,
+        4,
+        "and announces protocol 4"
+    );
+}
+
+// Criterion: the `start`/`finish` DTOs round-trip through serde with their
+// field names on the wire (`msg`, `session`, `confirm`, `token`), each field
+// a distinct value so a swap fails.
+#[test]
+fn test_pair_start_and_finish_dtos_round_trip_with_their_field_names() {
+    let start = PairStartRequest {
+        msg: "00aa".to_string(),
+    };
+    let json = serde_json::to_string(&start).expect("serialize PairStartRequest");
+    assert_eq!(json, r#"{"msg":"00aa"}"#);
+    assert_eq!(
+        serde_json::from_str::<PairStartRequest>(&json).ok(),
+        Some(start)
+    );
+
+    let started = PairStartResponse {
+        session: "5e55".to_string(),
+        msg: "bb11".to_string(),
+    };
+    let json = serde_json::to_string(&started).expect("serialize PairStartResponse");
+    assert_eq!(json, r#"{"session":"5e55","msg":"bb11"}"#);
+    assert_eq!(
+        serde_json::from_str::<PairStartResponse>(&json).ok(),
+        Some(started)
+    );
+
+    let finish = PairFinishRequest {
+        session: "5e55".to_string(),
+        confirm: "c0ff".to_string(),
+    };
+    let json = serde_json::to_string(&finish).expect("serialize PairFinishRequest");
+    assert_eq!(json, r#"{"session":"5e55","confirm":"c0ff"}"#);
+    assert_eq!(
+        serde_json::from_str::<PairFinishRequest>(&json).ok(),
+        Some(finish)
+    );
+
+    let finished = PairFinishResponse {
+        confirm: "beef".to_string(),
+        token: "tok-123".to_string(),
+    };
+    let json = serde_json::to_string(&finished).expect("serialize PairFinishResponse");
+    assert_eq!(json, r#"{"confirm":"beef","token":"tok-123"}"#);
+    assert_eq!(
+        serde_json::from_str::<PairFinishResponse>(&json).ok(),
+        Some(finished)
+    );
 }
 
 // Criterion: `pair_deep_link(url, name, code)` builds the `blue2th://pair?…`

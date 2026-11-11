@@ -8,6 +8,8 @@ server:
   not_paired: "Cette backend n'est pas appairée. Touchez pour l'appairer."
   identity_changed: "L'identité de ce backend a changé. Touchez pour l'appairer de nouveau."
   identity_changed_error: "L'identité de ce backend a changé : appairez-le de nouveau."
+  pairing_refused: "Code refusé : erroné, expiré ou déjà utilisé. Lancez blue2th-server --pair pour en obtenir un nouveau."
+  pairing_rate_limited: "Trop de tentatives d'appairage : patientez quelques secondes, puis réessayez."
 
 protocol:
   backend_too_old: "Ce backend est trop ancien pour l'application. Mettez à jour le backend sur le PC."
